@@ -144,11 +144,14 @@ dependencies = [
 name = "npnr-packer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "log",
  "npnr-chipdb",
- "npnr-context",
  "npnr-netlist",
+ "npnr-plugin",
  "npnr-types",
+ "rustc-hash",
+ "thiserror",
 ]
 
 [[package]]

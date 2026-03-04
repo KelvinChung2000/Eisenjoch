@@ -7,6 +7,12 @@ description = "Database-driven packer"
 [dependencies]
 npnr-types = { workspace = true }
 npnr-netlist = { workspace = true }
-npnr-context = { workspace = true }
 npnr-chipdb = { workspace = true }
+npnr-plugin = { workspace = true }
+rustc-hash = { workspace = true }
 log = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+npnr-chipdb = { workspace = true, features = ["test-utils"] }
