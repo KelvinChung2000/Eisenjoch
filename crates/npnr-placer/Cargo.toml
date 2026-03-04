@@ -7,8 +7,12 @@ description = "HeAP and simulated annealing placers"
 [dependencies]
 npnr-types = { workspace = true }
 npnr-netlist = { workspace = true }
+npnr-chipdb = { workspace = true }
 npnr-context = { workspace = true }
-npnr-timing = { workspace = true }
 rustc-hash = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+npnr-chipdb = { workspace = true, features = ["test-utils"] }

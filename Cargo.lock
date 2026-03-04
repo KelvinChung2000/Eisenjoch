@@ -156,12 +156,13 @@ name = "npnr-placer"
 version = "0.1.0"
 dependencies = [
  "log",
+ "npnr-chipdb",
  "npnr-context",
  "npnr-netlist",
- "npnr-timing",
  "npnr-types",
  "rayon",
  "rustc-hash",
+ "thiserror",
 ]
 
 [[package]]
@@ -188,11 +189,13 @@ name = "npnr-router"
 version = "0.1.0"
 dependencies = [
  "log",
+ "npnr-chipdb",
  "npnr-context",
  "npnr-netlist",
  "npnr-timing",
  "npnr-types",
  "rustc-hash",
+ "thiserror",
 ]
 
 [[package]]
