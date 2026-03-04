@@ -169,6 +169,8 @@ name = "npnr-plugin"
 version = "0.1.0"
 dependencies = [
  "log",
+ "npnr-chipdb",
+ "npnr-netlist",
  "npnr-types",
  "thiserror",
 ]
@@ -198,9 +200,11 @@ name = "npnr-timing"
 version = "0.1.0"
 dependencies = [
  "log",
- "npnr-context",
+ "npnr-chipdb",
  "npnr-netlist",
  "npnr-types",
+ "rustc-hash",
+ "thiserror",
 ]
 
 [[package]]
