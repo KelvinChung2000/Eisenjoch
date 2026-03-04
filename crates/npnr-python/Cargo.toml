@@ -2,8 +2,21 @@
 name = "npnr-python"
 version = "0.1.0"
 edition = "2021"
-description = "PyO3 Python bindings"
+
+[lib]
+name = "nextpnr"
+crate-type = ["cdylib"]
 
 [dependencies]
 npnr-types = { workspace = true }
-log = { workspace = true }
+npnr-chipdb = { workspace = true }
+npnr-netlist = { workspace = true }
+npnr-context = { workspace = true }
+npnr-frontend = { workspace = true }
+npnr-timing = { workspace = true }
+npnr-packer = { workspace = true }
+npnr-placer = { workspace = true }
+npnr-router = { workspace = true }
+npnr-plugin = { workspace = true }
+pyo3 = { workspace = true }
+anyhow = { workspace = true }

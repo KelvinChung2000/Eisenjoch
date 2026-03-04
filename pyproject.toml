@@ -15,7 +15,7 @@ python-source = "python"
 module-name = "nextpnr"
 
 [project.scripts]
-nextpnr-himbaechel = "nextpnr_cli:cli"
+nextpnr-himbaechel = "nextpnr_cli:main"
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]
