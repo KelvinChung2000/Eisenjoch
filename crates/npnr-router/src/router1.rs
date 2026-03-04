@@ -201,7 +201,7 @@ pub fn route_router1(ctx: &mut Context, cfg: &Router1Cfg) -> Result<(), RouterEr
 /// Collect all net indices that need routing.
 ///
 /// A net needs routing if it has a connected driver and at least one user.
-fn collect_routable_nets(ctx: &Context) -> Vec<NetIdx> {
+pub fn collect_routable_nets(ctx: &Context) -> Vec<NetIdx> {
     let mut result = Vec::new();
     for (_, &net_idx) in &ctx.design.nets {
         let net = ctx.design.net(net_idx);
@@ -322,7 +322,7 @@ fn route_net(
 ///
 /// Iterates the BEL's pins in the chipdb to find one matching `port_name`,
 /// then returns the corresponding tile wire as a WireId.
-fn find_bel_pin_wire(ctx: &Context, bel: npnr_types::BelId, port_name: IdString) -> WireId {
+pub fn find_bel_pin_wire(ctx: &Context, bel: npnr_types::BelId, port_name: IdString) -> WireId {
     let bel_info = ctx.chipdb.bel_info(bel);
     let pins = bel_info.pins.get();
     let port_str = ctx.name_of(port_name);
@@ -457,7 +457,7 @@ fn astar_route(
 ///
 /// For each PIP in the path, binds the PIP and its destination wire to the
 /// given net, and records the routing in the net's wire map.
-fn bind_route(ctx: &mut Context, net_idx: NetIdx, net_name: IdString, path: &[PipId]) {
+pub fn bind_route(ctx: &mut Context, net_idx: NetIdx, net_name: IdString, path: &[PipId]) {
     for &pip in path {
         let dst_wire = ctx.get_pip_dst_wire(pip);
         ctx.bind_pip(pip, net_name, PlaceStrength::Strong);
@@ -474,7 +474,7 @@ fn bind_route(ctx: &mut Context, net_idx: NetIdx, net_name: IdString, path: &[Pi
 }
 
 /// Rip up (unroute) a net by unbinding all its wires and PIPs.
-fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
+pub fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
     let net = ctx.design.net(net_idx);
     let wires: Vec<WireId> = net.wires.keys().cloned().collect();
     let pips: Vec<PipId> = net.wires.values().map(|pm| pm.pip).collect();
