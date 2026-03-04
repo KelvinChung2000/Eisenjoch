@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nextpnr"
+requires-python = ">=3.8"
+dynamic = ["version"]
+description = "Rust reimplementation of nextpnr FPGA place-and-route"
+
+[tool.maturin]
+manifest-path = "crates/npnr-python/Cargo.toml"
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "nextpnr"
+
+[project.scripts]
+nextpnr-himbaechel = "nextpnr_cli:cli"
+
+[project.optional-dependencies]
+cli = ["typer>=0.9"]
