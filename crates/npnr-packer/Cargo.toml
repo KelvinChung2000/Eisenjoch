@@ -1,0 +1,12 @@
+[package]
+name = "npnr-packer"
+version = "0.1.0"
+edition = "2021"
+description = "Database-driven packer"
+
+[dependencies]
+npnr-types = { workspace = true }
+npnr-netlist = { workspace = true }
+npnr-context = { workspace = true }
+npnr-chipdb = { workspace = true }
+log = { workspace = true }

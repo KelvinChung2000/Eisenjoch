@@ -1,0 +1,13 @@
+[package]
+name = "npnr-context"
+version = "0.1.0"
+edition = "2021"
+description = "Context struct and architecture API"
+
+[dependencies]
+npnr-types = { workspace = true }
+npnr-chipdb = { workspace = true }
+npnr-netlist = { workspace = true }
+rustc-hash = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "npnr-timing"
+version = "0.1.0"
+edition = "2021"
+description = "Static timing analysis"
+
+[dependencies]
+npnr-types = { workspace = true }
+npnr-netlist = { workspace = true }
+npnr-context = { workspace = true }
+log = { workspace = true }

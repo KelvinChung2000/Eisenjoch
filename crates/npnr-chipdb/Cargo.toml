@@ -1,0 +1,11 @@
+[package]
+name = "npnr-chipdb"
+version = "0.1.0"
+edition = "2021"
+description = "Memory-mapped BBA/bin chip database reader"
+
+[dependencies]
+npnr-types = { workspace = true }
+memmap2 = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

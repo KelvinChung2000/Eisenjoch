@@ -1,0 +1,9 @@
+[package]
+name = "npnr-python"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 Python bindings"
+
+[dependencies]
+npnr-types = { workspace = true }
+log = { workspace = true }

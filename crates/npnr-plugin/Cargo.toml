@@ -1,0 +1,10 @@
+[package]
+name = "npnr-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Plugin loading system"
+
+[dependencies]
+npnr-types = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
