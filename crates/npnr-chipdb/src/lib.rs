@@ -118,8 +118,8 @@ impl ChipDb {
     ///
     /// # Safety
     /// The caller must ensure the bytes represent a valid chipdb binary.
-    #[cfg(test)]
-    unsafe fn from_bytes(bytes: &[u8]) -> Result<Self, ChipDbError> {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub unsafe fn from_bytes(bytes: &[u8]) -> Result<Self, ChipDbError> {
         let min_size = std::mem::size_of::<ChipInfoPod>();
         if bytes.len() < min_size {
             return Err(ChipDbError::TooSmall {
@@ -335,6 +335,16 @@ impl ChipDb {
         }
     }
 
+    /// Get BEL bucket (placement category) as a string.
+    pub fn bel_bucket(&self, bel: BelId) -> &str {
+        let info = self.bel_info(bel);
+        let ptr = info.bucket.get();
+        unsafe {
+            let cstr = CStr::from_ptr(ptr as *const std::ffi::c_char);
+            cstr.to_str().unwrap_or("<invalid utf8>")
+        }
+    }
+
     /// Get BEL location (x, y, z).
     pub fn bel_loc(&self, bel: BelId) -> Loc {
         let (x, y) = self.tile_xy(bel.tile());
@@ -370,6 +380,9 @@ impl ChipDb {
         &self.chip_info().tile_insts.get()[tile as usize]
     }
 }
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod testutil;
 
 #[cfg(test)]
 mod tests;

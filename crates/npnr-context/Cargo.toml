@@ -11,3 +11,6 @@ npnr-netlist = { workspace = true }
 rustc-hash = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+npnr-chipdb = { workspace = true, features = ["test-utils"] }
