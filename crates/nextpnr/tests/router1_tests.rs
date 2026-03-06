@@ -2,7 +2,7 @@ use nextpnr::chipdb::testutil::make_test_chipdb;
 use nextpnr::context::Context;
 use nextpnr::netlist::PortRef;
 use nextpnr::router::router1::{route_router1, Router1Cfg};
-use nextpnr::router::RouterError;
+use nextpnr::router::{Router, Router1, RouterError};
 use nextpnr::types::{BelId, PlaceStrength, PortType};
 
 /// Create a fresh Context backed by the synthetic 2x2 chipdb.
@@ -95,4 +95,11 @@ fn route_design_with_no_users() {
     let cfg = Router1Cfg::default();
     let result = route_router1(&mut ctx, &cfg);
     assert!(result.is_ok());
+}
+
+#[test]
+fn route_via_trait() {
+    let mut ctx = make_context();
+    let cfg = Router1Cfg::default();
+    Router1.route(&mut ctx, &cfg).expect("trait dispatch should work");
 }

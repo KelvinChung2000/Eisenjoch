@@ -2,7 +2,7 @@ use nextpnr::chipdb::testutil::make_test_chipdb;
 use nextpnr::context::Context;
 use nextpnr::netlist::PortRef;
 use nextpnr::router::router2::{route_router2, Router2Cfg};
-use nextpnr::router::RouterError;
+use nextpnr::router::{Router, Router2, RouterError};
 use nextpnr::types::{BelId, PlaceStrength, PortType};
 
 /// Create a fresh Context backed by the synthetic 2x2 chipdb.
@@ -133,4 +133,11 @@ fn route_r2_same_pin_driver_and_sink() {
     let cfg = Router2Cfg::default();
     let result = route_router2(&mut ctx, &cfg);
     assert!(result.is_ok());
+}
+
+#[test]
+fn route_r2_via_trait() {
+    let mut ctx = make_context();
+    let cfg = Router2Cfg::default();
+    Router2.route(&mut ctx, &cfg).expect("trait dispatch should work");
 }
