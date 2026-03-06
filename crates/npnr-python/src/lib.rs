@@ -8,6 +8,12 @@ use pyo3::prelude::*;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::{Context, DeterministicRng};
 use ::nextpnr::frontend::parse_json;
+use ::nextpnr::placer::Placer;
+use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
+use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
+use ::nextpnr::router::Router;
+use ::nextpnr::router::router1::{Router1, Router1Cfg};
+use ::nextpnr::router::router2::{Router2, Router2Cfg};
 use ::nextpnr::timing::TimingAnalyser;
 use ::nextpnr::types::DelayT;
 
@@ -101,17 +107,17 @@ impl PyContext {
     fn place(&mut self, placer: &str, seed: u64) -> PyResult<()> {
         match placer {
             "heap" => {
-                let mut cfg = ::nextpnr::placer::heap::PlacerHeapCfg::default();
+                let mut cfg = PlacerHeapCfg::default();
                 cfg.seed = seed;
                 *self.ctx.rng_mut() = DeterministicRng::new(seed);
-                ::nextpnr::placer::heap::place_heap(&mut self.ctx, &cfg)
+                PlacerHeap.place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("HeAP placer error: {}", e)))
             }
             "sa" => {
-                let mut cfg = ::nextpnr::placer::sa::PlacerSaCfg::default();
+                let mut cfg = PlacerSaCfg::default();
                 cfg.seed = seed;
                 *self.ctx.rng_mut() = DeterministicRng::new(seed);
-                ::nextpnr::placer::sa::place_sa(&mut self.ctx, &cfg)
+                PlacerSa.place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!(
@@ -129,13 +135,13 @@ impl PyContext {
     fn route(&mut self, router: &str) -> PyResult<()> {
         match router {
             "router1" => {
-                let cfg = ::nextpnr::router::router1::Router1Cfg::default();
-                ::nextpnr::router::router1::route_router1(&mut self.ctx, &cfg)
+                let cfg = Router1Cfg::default();
+                Router1.route(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router1 error: {}", e)))
             }
             "router2" => {
-                let cfg = ::nextpnr::router::router2::Router2Cfg::default();
-                ::nextpnr::router::router2::route_router2(&mut self.ctx, &cfg)
+                let cfg = Router2Cfg::default();
+                Router2.route(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router2 error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!(
