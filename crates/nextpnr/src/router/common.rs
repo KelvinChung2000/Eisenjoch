@@ -1,14 +1,9 @@
 //! Shared helper functions used by both Router1 and Router2.
 
 use crate::context::{BelPinWireMap, Context};
-use crate::netlist::{NetIdx, PipMap};
+use crate::netlist::NetIdx;
 use crate::types::{BelId, IdString, PipId, PlaceStrength, WireId};
 use rustc_hash::FxHashMap;
-
-/// Build a lookup map from (BelId, pin name) to the corresponding wire.
-pub(crate) fn build_bel_pin_wire_map(ctx: &Context) -> BelPinWireMap {
-    ctx.bel_pin_wire_map()
-}
 
 /// Look up a BEL pin wire using a pre-built map.
 #[inline]
@@ -27,8 +22,7 @@ pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetIdx> {
     let mut result = Vec::new();
     for net_idx in ctx.design().iter_net_indices() {
         let net = ctx.net(net_idx);
-        let info = net.info();
-        if info.alive && info.has_driver() && info.num_users() > 0 {
+        if net.is_alive() && net.has_driver() && net.num_users() > 0 {
             result.push(net_idx);
         }
     }
@@ -44,14 +38,8 @@ pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetIdx, path: &[PipId]) {
         let dst_wire = ctx.pip_dst_wire(pip);
         ctx.bind_pip(pip, net_idx, PlaceStrength::Strong);
         ctx.bind_wire(dst_wire, net_idx, PlaceStrength::Strong);
-        let net = ctx.design_mut().net_mut(net_idx);
-        net.wires.insert(
-            dst_wire,
-            PipMap {
-                pip: Some(pip),
-                strength: PlaceStrength::Strong,
-            },
-        );
+        ctx.net_edit(net_idx)
+            .add_wire(dst_wire, Some(pip), PlaceStrength::Strong);
     }
 }
 
@@ -59,8 +47,7 @@ pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetIdx, path: &[PipId]) {
 pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
     let net = ctx.net(net_idx);
     let entries: Vec<(WireId, Option<PipId>)> = net
-        .info()
-        .wires
+        .wires()
         .iter()
         .map(|(&wire, pm)| (wire, pm.pip))
         .collect();
@@ -72,7 +59,7 @@ pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
         }
     }
 
-    ctx.design_mut().net_mut(net_idx).wires.clear();
+    ctx.net_edit(net_idx).clear_wires();
 }
 
 /// Find all wires that are used by more than one net (congested).
@@ -81,11 +68,10 @@ pub(crate) fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
 
     for net_idx in ctx.design().iter_net_indices() {
         let net = ctx.net(net_idx);
-        let info = net.info();
-        if !info.alive {
+        if !net.is_alive() {
             continue;
         }
-        for &wire in info.wires.keys() {
+        for &wire in net.wires().keys() {
             *wire_usage.entry(wire).or_default() += 1;
         }
     }

@@ -100,8 +100,8 @@ pub(crate) fn compute_bbox(ctx: &Context, net_idx: NetIdx, margin: i32) -> Bound
     let mut found_any = false;
 
     // Include driver cell location.
-    if net.info().driver.is_connected() {
-        if let Some(driver_cell_idx) = net.info().driver.cell {
+    if net.driver().is_connected() {
+        if let Some(driver_cell_idx) = net.driver().cell {
             let cell = ctx.cell(driver_cell_idx);
             if let Some(bel) = cell.bel() {
                 let loc = bel.loc();
@@ -115,7 +115,7 @@ pub(crate) fn compute_bbox(ctx: &Context, net_idx: NetIdx, margin: i32) -> Bound
     }
 
     // Include all user cell locations.
-    for user in &net.info().users {
+    for user in net.users() {
         if !user.is_connected() {
             continue;
         }
@@ -260,6 +260,7 @@ impl Router2State {
     }
 
     /// Recompute wire usage and ownership from the current design state.
+    #[cfg(test)]
     pub fn update_usage(&mut self, design: &crate::netlist::Design) {
         self.wire_usage.clear();
         self.wire_owner.clear();
@@ -477,10 +478,10 @@ fn route_net_r2(
     bel_pin_map: &BelPinWireMap,
 ) -> Result<(), RouterError> {
     let net = ctx.net(net_idx);
-    let net_name = net.info().name;
+    let net_name = net.name_id();
 
     // Determine the driver wire.
-    let driver = &net.info().driver;
+    let driver = net.driver();
     if !driver.is_connected() {
         return Ok(());
     }
@@ -517,24 +518,18 @@ fn route_net_r2(
     // Bind the source wire to this net if not already bound.
     if ctx.is_wire_available(src_wire) {
         ctx.bind_wire(src_wire, net_idx, PlaceStrength::Strong);
-        let net_mut = ctx.design_mut().net_mut(net_idx);
-        net_mut.wires.insert(
-            src_wire,
-            crate::netlist::PipMap {
-                pip: None,
-                strength: PlaceStrength::Strong,
-            },
-        );
+        ctx.net_edit(net_idx)
+            .add_wire(src_wire, None, PlaceStrength::Strong);
     }
 
     // Compute the bounding box for this net.
     let bbox = compute_bbox(ctx, net_idx, state.cfg.bb_margin);
 
     // Collect sink wires before mutating ctx.
-    let num_users = ctx.net(net_idx).info().users.len();
+    let num_users = ctx.net(net_idx).num_users();
     let mut sink_wires = Vec::with_capacity(num_users);
     for user_idx in 0..num_users {
-        let user = &ctx.net(net_idx).info().users[user_idx];
+        let user = &ctx.net(net_idx).users()[user_idx];
         if !user.is_connected() {
             continue;
         }
@@ -556,13 +551,13 @@ fn route_net_r2(
     // Route to each sink.
     for sink_wire in sink_wires {
         // Check if this sink is already routed.
-        if ctx.net(net_idx).info().wires.contains_key(&sink_wire) {
+        if ctx.net(net_idx).wires().contains_key(&sink_wire) {
             continue;
         }
 
         // Collect current routing tree wires as potential A* start points.
         let existing_wires: Vec<WireId> =
-            ctx.net(net_idx).info().wires.keys().copied().collect();
+            ctx.net(net_idx).wires().keys().copied().collect();
 
         let path = astar_route_r2(ctx, &existing_wires, sink_wire, net_idx, state, &bbox);
 
@@ -673,7 +668,7 @@ mod tests {
     use super::*;
     use crate::chipdb::testutil::make_test_chipdb;
     use crate::context::Context;
-    use crate::netlist::{NetIdx, PipMap, PortRef};
+    use crate::netlist::{NetIdx, PortRef};
     use crate::types::{BelId, PipId, PlaceStrength, PortType, WireId};
     use rustc_hash::FxHashSet;
     use std::collections::BinaryHeap;
@@ -681,13 +676,6 @@ mod tests {
     fn make_context() -> Context {
         let chipdb = make_test_chipdb();
         Context::new(chipdb)
-    }
-
-    fn make_pip_map(pip: Option<PipId>) -> PipMap {
-        PipMap {
-            pip,
-            strength: PlaceStrength::Strong,
-        }
     }
 
     // BoundingBox tests
@@ -739,7 +727,7 @@ mod tests {
     fn compute_bbox_no_placed_cells() {
         let mut ctx = make_context();
         let net_name = ctx.id("unplaced_net");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let bb = compute_bbox(&ctx, net_idx, 0);
         assert_eq!(bb.x0, 0);
         assert_eq!(bb.y0, 0);
@@ -753,14 +741,14 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let cell_name = ctx.id("driver");
-        let cell_idx = ctx.design_mut().add_cell(cell_name, lut_type);
-        ctx.design_mut().cell_mut(cell_idx).add_port(port, PortType::Out);
+        let cell_idx = ctx.add_cell(cell_name, lut_type);
+        ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
         let net_name = ctx.id("test_net");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell_idx), port, budget: 0,
-        };
+        });
         let bb = compute_bbox(&ctx, net_idx, 0);
         assert_eq!(bb.x0, 0);
         assert_eq!(bb.y0, 0);
@@ -774,14 +762,14 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let cell_name = ctx.id("driver");
-        let cell_idx = ctx.design_mut().add_cell(cell_name, lut_type);
-        ctx.design_mut().cell_mut(cell_idx).add_port(port, PortType::Out);
+        let cell_idx = ctx.add_cell(cell_name, lut_type);
+        ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
         let net_name = ctx.id("test_net");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell_idx), port, budget: 0,
-        };
+        });
         let bb = compute_bbox(&ctx, net_idx, 1);
         assert_eq!(bb.x0, 0);
         assert_eq!(bb.y0, 0);
@@ -909,9 +897,9 @@ mod tests {
     fn update_usage_single_net() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_a");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let wire = WireId::new(0, 0);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire, make_pip_map(None));
+        ctx.net_edit(net_idx).add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
@@ -924,11 +912,11 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.design_mut().add_net(net_a_name);
-        ctx.design_mut().net_mut(net_a_idx).wires.insert(wire, make_pip_map(None));
+        let net_a_idx = ctx.add_net(net_a_name);
+        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.design_mut().add_net(net_b_name);
-        ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
+        let net_b_idx = ctx.add_net(net_b_name);
+        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
@@ -943,8 +931,8 @@ mod tests {
     fn find_congested_nets_none() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_a");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).wires.insert(WireId::new(0, 0), make_pip_map(None));
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).add_wire(WireId::new(0, 0), None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
@@ -957,11 +945,11 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.design_mut().add_net(net_a_name);
-        ctx.design_mut().net_mut(net_a_idx).wires.insert(wire, make_pip_map(None));
+        let net_a_idx = ctx.add_net(net_a_name);
+        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.design_mut().add_net(net_b_name);
-        ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
+        let net_b_idx = ctx.add_net(net_b_name);
+        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());

@@ -10,7 +10,7 @@ use std::collections::BinaryHeap;
 
 use crate::context::{BelPinWireMap, Context, WireView};
 use crate::netlist::NetIdx;
-use crate::types::{DelayT, IdString, PipId, PlaceStrength, WireId};
+use crate::types::{DelayT, PipId, PlaceStrength, WireId};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -204,10 +204,6 @@ pub fn route_router1(ctx: &mut Context, cfg: &Router1Cfg) -> Result<(), RouterEr
 }
 
 // ---------------------------------------------------------------------------
-// Net collection
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Single-net routing
 // ---------------------------------------------------------------------------
 
@@ -216,6 +212,7 @@ pub fn route_router1(ctx: &mut Context, cfg: &Router1Cfg) -> Result<(), RouterEr
 /// For each user (sink) of the net, we find the sink cell's BEL pin wire and
 /// run A* from the current routing tree to that sink wire. The resulting path
 /// of PIPs is then bound in the context.
+#[cfg(test)]
 pub(crate) fn route_net(
     ctx: &mut Context,
     net_idx: NetIdx,
@@ -232,10 +229,10 @@ fn route_net_with_lookup(
     bel_pin_map: &BelPinWireMap,
 ) -> Result<(), RouterError> {
     let net = ctx.net(net_idx);
-    let net_name = net.info().name;
+    let net_name = net.name_id();
 
     // Determine the driver wire.
-    let driver = &net.info().driver;
+    let driver = net.driver();
     if !driver.is_connected() {
         return Ok(());
     }
@@ -272,21 +269,15 @@ fn route_net_with_lookup(
     // Bind the source wire to this net if not already bound.
     if ctx.is_wire_available(src_wire) {
         ctx.bind_wire(src_wire, net_idx, PlaceStrength::Strong);
-        let net_mut = ctx.design_mut().net_mut(net_idx);
-        net_mut.wires.insert(
-            src_wire,
-            crate::netlist::PipMap {
-                pip: None,
-                strength: PlaceStrength::Strong,
-            },
-        );
+        ctx.net_edit(net_idx)
+            .add_wire(src_wire, None, PlaceStrength::Strong);
     }
 
     // Collect sink wires. We gather them before mutating ctx to avoid borrow issues.
-    let num_users = ctx.net(net_idx).info().users.len();
+    let num_users = ctx.net(net_idx).num_users();
     let mut sink_wires = Vec::with_capacity(num_users);
     for user_idx in 0..num_users {
-        let user = &ctx.net(net_idx).info().users[user_idx];
+        let user = &ctx.net(net_idx).users()[user_idx];
         if !user.is_connected() {
             continue;
         }
@@ -340,28 +331,13 @@ fn route_net_with_lookup(
 ///
 /// Iterates the BEL's pins in the chipdb to find one matching `port_name`,
 /// then returns the corresponding tile wire as a WireId.
+#[cfg(test)]
 pub(crate) fn find_bel_pin_wire(
     ctx: &Context,
     bel: crate::types::BelId,
-    port_name: IdString,
+    port_name: crate::types::IdString,
 ) -> Option<WireId> {
     ctx.bel_pin_wire(bel, port_name)
-}
-
-pub(crate) fn find_bel_pin_wire_cached(
-    ctx: &Context,
-    bel: crate::types::BelId,
-    port_name: IdString,
-    cache: &mut FxHashMap<(crate::types::BelId, IdString), Option<WireId>>,
-) -> Option<WireId> {
-    let key = (bel, port_name);
-    if let Some(&cached) = cache.get(&key) {
-        return cached;
-    }
-
-    let resolved = ctx.bel_pin_wire(bel, port_name);
-    cache.insert(key, resolved);
-    resolved
 }
 
 // ---------------------------------------------------------------------------
@@ -478,11 +454,6 @@ pub(crate) fn astar_route(
 }
 
 // ---------------------------------------------------------------------------
-// Route binding / unbinding
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
 // Congestion detection
 // ---------------------------------------------------------------------------
 
@@ -493,12 +464,11 @@ fn update_wire_usage_for_net(
     add: bool,
 ) {
     let net = ctx.net(net_idx);
-    let info = net.info();
-    if !info.alive {
+    if !net.is_alive() {
         return;
     }
 
-    for &wire in info.wires.keys() {
+    for &wire in net.wires().keys() {
         if add {
             *wire_usage.entry(wire).or_default() += 1;
         } else if let Some(count) = wire_usage.get_mut(&wire) {
@@ -520,11 +490,10 @@ fn find_nets_touching_wires(ctx: &Context, congested_wires: &[WireId]) -> Vec<Ne
 
     for net_idx in ctx.design().iter_net_indices() {
         let net = ctx.net(net_idx);
-        let info = net.info();
-        if !info.alive {
+        if !net.is_alive() {
             continue;
         }
-        if info.wires.keys().any(|wire| congested.contains(wire)) {
+        if net.wires().keys().any(|wire| congested.contains(wire)) {
             nets.insert(net_idx);
         }
     }
@@ -545,11 +514,10 @@ pub(crate) fn find_congested_nets(ctx: &Context) -> Vec<NetIdx> {
     let mut congested_nets = FxHashSet::default();
     for net_idx in ctx.design().iter_net_indices() {
         let net = ctx.net(net_idx);
-        let info = net.info();
-        if !info.alive {
+        if !net.is_alive() {
             continue;
         }
-        if info.wires.keys().any(|w| congested_wires.contains(w)) {
+        if net.wires().keys().any(|w| congested_wires.contains(w)) {
             congested_nets.insert(net_idx);
         }
     }
@@ -563,7 +531,7 @@ mod tests {
     use super::*;
     use crate::chipdb::testutil::make_test_chipdb;
     use crate::context::Context;
-    use crate::netlist::{PipMap, PortRef};
+    use crate::netlist::PortRef;
     use crate::types::{BelId, PipId, PlaceStrength, PortType, WireId};
     use rustc_hash::{FxHashMap, FxHashSet};
     use std::collections::BinaryHeap;
@@ -571,13 +539,6 @@ mod tests {
     fn make_context() -> Context {
         let chipdb = make_test_chipdb();
         Context::new(chipdb)
-    }
-
-    fn make_pip_map(pip: Option<PipId>) -> PipMap {
-        PipMap {
-            pip,
-            strength: PlaceStrength::Strong,
-        }
     }
 
     // QueueEntry ordering tests
@@ -702,26 +663,26 @@ mod tests {
     fn bind_route_records_wires_and_pips() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_bind");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let pip = PipId::new(0, 0);
         let dst_wire = ctx.pip(pip).dst_wire().id();
         bind_route(&mut ctx, net_idx, &[pip]);
         assert!(!ctx.wire(dst_wire).is_available());
-        assert_eq!(ctx.wire(dst_wire).bound_net().map(|n| n.info().name), Some(net_name));
+        assert_eq!(ctx.wire(dst_wire).bound_net().map(|n| n.name_id()), Some(net_name));
         assert!(!ctx.pip(pip).is_available());
-        let net = ctx.design().net(net_idx);
-        assert!(net.wires.contains_key(&dst_wire));
-        assert_eq!(net.wires[&dst_wire].pip, Some(pip));
+        let net = ctx.net(net_idx);
+        assert!(net.wires().contains_key(&dst_wire));
+        assert_eq!(net.wires()[&dst_wire].pip, Some(pip));
     }
 
     #[test]
     fn bind_empty_route() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_empty");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         bind_route(&mut ctx, net_idx, &[]);
-        let net = ctx.design().net(net_idx);
-        assert!(net.wires.is_empty());
+        let net = ctx.net(net_idx);
+        assert!(net.wires().is_empty());
     }
 
     // Unroute tests
@@ -730,51 +691,51 @@ mod tests {
     fn unroute_clears_net_wires() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_rip");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let wire = WireId::new(0, 1);
         let pip = PipId::new(0, 0);
         ctx.bind_wire(wire, net_idx, PlaceStrength::Strong);
         ctx.bind_pip(pip, net_idx, PlaceStrength::Strong);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire, make_pip_map(Some(pip)));
+        ctx.net_edit(net_idx).add_wire(wire, Some(pip), PlaceStrength::Strong);
         assert!(!ctx.wire(wire).is_available());
         assert!(!ctx.pip(pip).is_available());
         unroute_net(&mut ctx, net_idx);
         assert!(ctx.wire(wire).is_available());
         assert!(ctx.pip(pip).is_available());
-        assert!(ctx.design().net(net_idx).wires.is_empty());
+        assert!(ctx.net(net_idx).wires().is_empty());
     }
 
     #[test]
     fn unroute_handles_invalid_pip() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_src");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let wire = WireId::new(0, 0);
         ctx.bind_wire(wire, net_idx, PlaceStrength::Strong);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire, make_pip_map(None));
+        ctx.net_edit(net_idx).add_wire(wire, None, PlaceStrength::Strong);
         unroute_net(&mut ctx, net_idx);
         assert!(ctx.wire(wire).is_available());
-        assert!(ctx.design().net(net_idx).wires.is_empty());
+        assert!(ctx.net(net_idx).wires().is_empty());
     }
 
     #[test]
     fn unroute_multiple_wires() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_multi");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let wire0 = WireId::new(0, 0);
         let wire1 = WireId::new(0, 1);
         let pip = PipId::new(0, 0);
         ctx.bind_wire(wire0, net_idx, PlaceStrength::Strong);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire0, make_pip_map(None));
+        ctx.net_edit(net_idx).add_wire(wire0, None, PlaceStrength::Strong);
         ctx.bind_wire(wire1, net_idx, PlaceStrength::Strong);
         ctx.bind_pip(pip, net_idx, PlaceStrength::Strong);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire1, make_pip_map(Some(pip)));
+        ctx.net_edit(net_idx).add_wire(wire1, Some(pip), PlaceStrength::Strong);
         unroute_net(&mut ctx, net_idx);
         assert!(ctx.wire(wire0).is_available());
         assert!(ctx.wire(wire1).is_available());
         assert!(ctx.pip(pip).is_available());
-        assert!(ctx.design().net(net_idx).wires.is_empty());
+        assert!(ctx.net(net_idx).wires().is_empty());
     }
 
     // Congestion detection tests
@@ -790,9 +751,9 @@ mod tests {
     fn no_congestion_with_single_net() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_a");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let wire = WireId::new(0, 0);
-        ctx.design_mut().net_mut(net_idx).wires.insert(wire, make_pip_map(None));
+        ctx.net_edit(net_idx).add_wire(wire, None, PlaceStrength::Strong);
         assert!(find_congested_wires(&ctx).is_empty());
     }
 
@@ -801,11 +762,11 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.design_mut().add_net(net_a_name);
-        ctx.design_mut().net_mut(net_a_idx).wires.insert(wire, make_pip_map(None));
+        let net_a_idx = ctx.add_net(net_a_name);
+        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.design_mut().add_net(net_b_name);
-        ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
+        let net_b_idx = ctx.add_net(net_b_name);
+        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
         let congested = find_congested_wires(&ctx);
         assert_eq!(congested.len(), 1);
         assert_eq!(congested[0], wire);
@@ -816,11 +777,11 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.design_mut().add_net(net_a_name);
-        ctx.design_mut().net_mut(net_a_idx).wires.insert(wire, make_pip_map(None));
+        let net_a_idx = ctx.add_net(net_a_name);
+        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.design_mut().add_net(net_b_name);
-        ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
+        let net_b_idx = ctx.add_net(net_b_name);
+        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
         let congested_nets_result = find_congested_nets(&ctx);
         assert_eq!(congested_nets_result.len(), 2);
         let net_set: FxHashSet<NetIdx> = congested_nets_result.into_iter().collect();
@@ -832,11 +793,11 @@ mod tests {
     fn non_shared_wires_not_congested() {
         let mut ctx = make_context();
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.design_mut().add_net(net_a_name);
-        ctx.design_mut().net_mut(net_a_idx).wires.insert(WireId::new(0, 0), make_pip_map(None));
+        let net_a_idx = ctx.add_net(net_a_name);
+        ctx.net_edit(net_a_idx).add_wire(WireId::new(0, 0), None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.design_mut().add_net(net_b_name);
-        ctx.design_mut().net_mut(net_b_idx).wires.insert(WireId::new(1, 0), make_pip_map(None));
+        let net_b_idx = ctx.add_net(net_b_name);
+        ctx.net_edit(net_b_idx).add_wire(WireId::new(1, 0), None, PlaceStrength::Strong);
         assert!(find_congested_wires(&ctx).is_empty());
         assert!(find_congested_nets(&ctx).is_empty());
     }
@@ -849,15 +810,15 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port_name = ctx.id("I0");
         let cell_name = ctx.id("cell_a");
-        let cell_idx = ctx.design_mut().add_cell(cell_name, lut_type);
-        ctx.design_mut().cell_mut(cell_idx).add_port(port_name, PortType::Out);
+        let cell_idx = ctx.add_cell(cell_name, lut_type);
+        ctx.cell_edit(cell_idx).add_port(port_name, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
         let net_name = ctx.id("net_self");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell_idx), port: port_name, budget: 0,
-        };
-        ctx.design_mut().net_mut(net_idx).users.push(PortRef {
+        });
+        ctx.net_edit(net_idx).add_user_raw(PortRef {
             cell: Some(cell_idx), port: port_name, budget: 0,
         });
         let penalty = FxHashMap::default();
@@ -871,19 +832,19 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let driver_name = ctx.id("driver");
-        let driver_idx = ctx.design_mut().add_cell(driver_name, lut_type);
-        ctx.design_mut().cell_mut(driver_idx).add_port(port, PortType::Out);
+        let driver_idx = ctx.add_cell(driver_name, lut_type);
+        ctx.cell_edit(driver_idx).add_port(port, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), driver_idx, PlaceStrength::Placer);
         let sink_name = ctx.id("sink");
-        let sink_idx = ctx.design_mut().add_cell(sink_name, lut_type);
-        ctx.design_mut().cell_mut(sink_idx).add_port(port, PortType::In);
+        let sink_idx = ctx.add_cell(sink_name, lut_type);
+        ctx.cell_edit(sink_idx).add_port(port, PortType::In);
         ctx.bind_bel(BelId::new(1, 0), sink_idx, PlaceStrength::Placer);
         let net_name = ctx.id("test_net");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(driver_idx), port, budget: 0,
-        };
-        ctx.design_mut().net_mut(net_idx).users.push(PortRef {
+        });
+        ctx.net_edit(net_idx).add_user_raw(PortRef {
             cell: Some(sink_idx), port, budget: 0,
         });
         let penalty = FxHashMap::default();
@@ -947,7 +908,7 @@ mod tests {
     fn collect_routable_nets_skips_no_driver() {
         let mut ctx = make_context();
         let net_name = ctx.id("no_driver");
-        ctx.design_mut().add_net(net_name);
+        ctx.add_net(net_name);
         assert!(collect_routable_nets(&ctx).is_empty());
     }
 
@@ -957,14 +918,14 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let cell_name = ctx.id("cell");
-        let cell_idx = ctx.design_mut().add_cell(cell_name, lut_type);
-        ctx.design_mut().cell_mut(cell_idx).add_port(port, PortType::Out);
+        let cell_idx = ctx.add_cell(cell_name, lut_type);
+        ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
         let net_name = ctx.id("routable");
-        let net_idx = ctx.design_mut().add_net(net_name);
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        let net_idx = ctx.add_net(net_name);
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell_idx), port, budget: 0,
-        };
-        ctx.design_mut().net_mut(net_idx).users.push(PortRef {
+        });
+        ctx.net_edit(net_idx).add_user_raw(PortRef {
             cell: Some(cell_idx), port, budget: 0,
         });
         let nets = collect_routable_nets(&ctx);
