@@ -451,6 +451,7 @@ impl From<&NetView<'_>> for NetIdx {
 
 pub struct DesignView<'a> {
     design: &'a Design,
+    #[allow(dead_code)]
     pool: &'a IdStringPool,
 }
 

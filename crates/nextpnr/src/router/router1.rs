@@ -395,23 +395,17 @@ pub(crate) fn astar_route(
             // Trace back the path through visited.
             let mut pips = Vec::new();
             let mut current = dst_wire;
-            loop {
-                if let Some(&(_, pip)) = visited.get(&current) {
-                    let pip = match pip {
-                        Some(pip) => pip,
-                        None => {
-                            break;
-                        }
-                    };
-                    if !pip.is_valid() {
-                        // Reached a source wire.
-                        break;
-                    }
-                    pips.push(pip);
-                    current = ctx.pip_src_wire(pip);
-                } else {
+            while let Some(&(_, pip)) = visited.get(&current) {
+                let pip = match pip {
+                    Some(pip) => pip,
+                    None => break,
+                };
+                if !pip.is_valid() {
+                    // Reached a source wire.
                     break;
                 }
+                pips.push(pip);
+                current = ctx.pip_src_wire(pip);
             }
             pips.reverse();
             return Some(pips);

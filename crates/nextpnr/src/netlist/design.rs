@@ -65,8 +65,7 @@ impl Design {
             let slot_idx = self.cell_store.len() as u32;
             self.cell_store.push(Some(CellInfo::new(name, cell_type)));
             self.cell_generation.push(0);
-            let idx = CellIdx::new(slot_idx, 0);
-            idx
+            CellIdx::new(slot_idx, 0)
         };
         self.cells.insert(name, idx);
         idx
@@ -99,9 +98,7 @@ impl Design {
 
     #[inline]
     pub fn cell_idx_at_slot(&self, slot: usize) -> Option<CellIdx> {
-        if self.cell_store.get(slot).and_then(|c| c.as_ref()).is_none() {
-            return None;
-        }
+        self.cell_store.get(slot).and_then(|c| c.as_ref())?;
         let slot_u32 = u32::try_from(slot).ok()?;
         let generation = *self.cell_generation.get(slot)?;
         Some(CellIdx::new(slot_u32, generation))
@@ -146,8 +143,7 @@ impl Design {
             let slot_idx = self.net_store.len() as u32;
             self.net_store.push(Some(NetInfo::new(name)));
             self.net_generation.push(0);
-            let idx = NetIdx::new(slot_idx, 0);
-            idx
+            NetIdx::new(slot_idx, 0)
         };
         self.nets.insert(name, idx);
         idx
@@ -180,9 +176,7 @@ impl Design {
 
     #[inline]
     pub fn net_idx_at_slot(&self, slot: usize) -> Option<NetIdx> {
-        if self.net_store.get(slot).and_then(|n| n.as_ref()).is_none() {
-            return None;
-        }
+        self.net_store.get(slot).and_then(|n| n.as_ref())?;
         let slot_u32 = u32::try_from(slot).ok()?;
         let generation = *self.net_generation.get(slot)?;
         Some(NetIdx::new(slot_u32, generation))

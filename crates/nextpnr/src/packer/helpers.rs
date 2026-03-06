@@ -9,6 +9,7 @@ use crate::types::{IdString, PortType};
 /// Removes the port from the net's driver or users list and clears the port's
 /// net reference. If the port is not connected or does not exist, this is a
 /// no-op.
+#[allow(dead_code)]
 pub(crate) fn disconnect_port(ctx: &mut Context, cell: CellIdx, port: IdString) {
     let cell_info = ctx.design().cell(cell);
     let (net_idx, user_idx) = match cell_info.port(port) {
@@ -58,22 +59,26 @@ pub(crate) fn connect_port(ctx: &mut Context, cell: CellIdx, port: IdString, net
 /// Rename a cell port, preserving its connection state.
 ///
 /// If the old port does not exist, this is a no-op.
+#[allow(dead_code)]
 pub(crate) fn rename_port(ctx: &mut Context, cell: CellIdx, old_name: IdString, new_name: IdString) {
     ctx.cell_edit(cell).rename_port(old_name, new_name);
 }
 
 /// Get the net connected to a cell port, if any.
+#[allow(dead_code)]
 pub(crate) fn get_net_for_port(ctx: &Context, cell: CellIdx, port: IdString) -> Option<NetIdx> {
     ctx.design().cell(cell).port(port).and_then(|p| p.net)
 }
 
 /// Check if a net has exactly one connected user.
+#[allow(dead_code)]
 pub(crate) fn is_single_fanout(ctx: &Context, net: NetIdx) -> bool {
     let net_info = ctx.design().net(net);
     net_info.users.iter().filter(|u| u.is_connected()).count() == 1
 }
 
 /// Remove a cell from the design by name (marks it dead).
+#[allow(dead_code)]
 pub(crate) fn remove_cell(ctx: &mut Context, cell_name: IdString) {
     ctx.remove_cell(cell_name);
 }
