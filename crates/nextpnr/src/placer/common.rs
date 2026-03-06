@@ -10,7 +10,7 @@ use super::PlacerError;
 /// Collect all live, placeable cell indices grouped by their cell type.
 ///
 /// Returns a map from cell type IdString to the list of CellIdx values.
-fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellIdx>> {
+pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellIdx>> {
     let mut map: FxHashMap<IdString, Vec<CellIdx>> = FxHashMap::default();
     for (cell_idx, cell) in ctx.design().iter_alive_cells() {
         map.entry(cell.cell_type).or_default().push(cell_idx);
@@ -24,7 +24,7 @@ fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellIdx>> {
 /// Returns 0.0 for nets with no driver, no users, or dead nets.
 pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
     let net = ctx.net(net_idx);
-    if !net.info().alive || !net.info().driver.is_connected() || net.info().users.is_empty() {
+    if !net.is_alive() || !net.driver().is_connected() || net.users().is_empty() {
         return 0.0;
     }
 
@@ -34,7 +34,7 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
     let mut max_y = i32::MIN;
 
     // Include driver location.
-    let driver_cell_idx = match net.info().driver.cell {
+    let driver_cell_idx = match net.driver().cell {
         Some(cell_idx) => cell_idx,
         None => return 0.0,
     };
@@ -48,7 +48,7 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
     }
 
     // Include all user locations.
-    for user in &net.info().users {
+    for user in net.users() {
         if !user.is_connected() {
             continue;
         }
@@ -76,7 +76,7 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
 /// Compute total HPWL cost across all alive nets.
 pub(crate) fn total_hpwl(ctx: &Context) -> f64 {
     let mut total = 0.0;
-    for (net_idx, _net) in ctx.design().iter_alive_nets() {
+    for (net_idx, _) in ctx.design().iter_alive_nets() {
         total += net_hpwl(ctx, net_idx);
     }
     total
@@ -131,7 +131,7 @@ pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
         for (i, &cell_idx) in unplaced.iter().enumerate() {
             let bel = available[i];
             if !ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer) {
-                let cell_name = ctx.cell(cell_idx).info().name;
+                let cell_name = ctx.cell(cell_idx).name_id();
                 return Err(PlacerError::InitialPlacementFailed(
                     ctx.name_of(cell_name).to_owned(),
                 ));

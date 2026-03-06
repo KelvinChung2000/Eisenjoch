@@ -16,6 +16,7 @@ use crate::types::{BelId, PlaceStrength};
 use log::{debug, info};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::common::cells_by_type;
 use super::PlacerError;
 
 /// HeAP analytical placer.
@@ -34,6 +35,7 @@ impl super::Placer for PlacerHeap {
 // ---------------------------------------------------------------------------
 
 /// Configuration for the HeAP placer.
+#[derive(Clone)]
 pub struct PlacerHeapCfg {
     /// RNG seed for reproducibility.
     pub seed: u64,
@@ -369,16 +371,7 @@ impl HeapState {
         let cell_y = vec![cy; n];
 
         Ok(Self {
-            cfg: PlacerHeapCfg {
-                seed: cfg.seed,
-                timing_weight: cfg.timing_weight,
-                alpha: cfg.alpha,
-                beta: cfg.beta,
-                max_iterations: cfg.max_iterations,
-                spreading_threshold: cfg.spreading_threshold,
-                solver_tolerance: cfg.solver_tolerance,
-                max_solver_iters: cfg.max_solver_iters,
-            },
+            cfg: cfg.clone(),
             movable_cells,
             cell_to_idx,
             cell_x,
@@ -431,7 +424,7 @@ impl HeapState {
             for (i, &cell_idx) in unplaced.iter().enumerate() {
                 let bel = available[i];
                 if !ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer) {
-                    let cell_name = ctx.cell(cell_idx).info().name;
+                    let cell_name = ctx.cell(cell_idx).name_id();
                     return Err(PlacerError::InitialPlacementFailed(
                         ctx.name_of(cell_name).to_owned(),
                     ));
@@ -885,16 +878,8 @@ impl HeapState {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Collect all live, placeable cell indices grouped by their cell type.
-fn cells_by_type(ctx: &Context) -> FxHashMap<crate::types::IdString, Vec<CellIdx>> {
-    let mut map: FxHashMap<crate::types::IdString, Vec<CellIdx>> = FxHashMap::default();
-    for (cell_idx, cell) in ctx.design().iter_alive_cells() {
-        map.entry(cell.cell_type).or_default().push(cell_idx);
-    }
-    map
-}
-
 /// Count how many BELs fall within the given rectangular region.
+#[cfg(test)]
 pub(crate) fn count_bels_in_region(ctx: &Context, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
     let mut count = 0;
     for bel in ctx.bels() {
@@ -956,7 +941,7 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
 
     // Final validation: check all alive cells are placed.
     for (cell_idx, cell) in ctx.design().iter_alive_cells() {
-        if !cell.bel.is_some() {
+        if cell.bel.is_none() {
             return Err(PlacerError::PlacementFailed(format!(
                 "Cell {} (index {}) is alive but has no BEL after placement",
                 ctx.name_of(cell.name),
@@ -993,33 +978,31 @@ mod tests {
 
         for i in 0..n {
             let name = ctx.id(&format!("cell_{}", i));
-            ctx.design_mut().add_cell(name, cell_type);
+            ctx.add_cell(name, cell_type);
             cell_names.push(name);
         }
 
         if n >= 2 {
             let net_name = ctx.id("net_0");
-            let net_idx = ctx.design_mut().add_net(net_name);
+            let net_idx = ctx.add_net(net_name);
             let q_port = ctx.id("Q");
             let a_port = ctx.id("A");
 
             let cell0_idx = ctx.design().cell_by_name(cell_names[0]).unwrap();
-            ctx.design_mut().cell_mut(cell0_idx).add_port(q_port, PortType::Out);
-            ctx.design_mut().cell_mut(cell0_idx).port_mut(q_port).unwrap().net = Some(net_idx);
+            ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
+            ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
 
-            ctx.design_mut().net_mut(net_idx).driver = PortRef {
+            ctx.net_edit(net_idx).set_driver_raw(PortRef {
                 cell: Some(cell0_idx), port: q_port, budget: 0,
-            };
+            });
 
             for i in 1..n {
                 let cell_idx = ctx.design().cell_by_name(cell_names[i]).unwrap();
-                ctx.design_mut().cell_mut(cell_idx).add_port(a_port, PortType::In);
-                ctx.design_mut().cell_mut(cell_idx).port_mut(a_port).unwrap().net = Some(net_idx);
-                let user_idx = ctx.design().net(net_idx).users.len() as u32;
-                ctx.design_mut().cell_mut(cell_idx).port_mut(a_port).unwrap().user_idx = Some(user_idx);
-                ctx.design_mut().net_mut(net_idx).users.push(PortRef {
+                ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
+                let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
                     cell: Some(cell_idx), port: a_port, budget: 0,
                 });
+                ctx.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
             }
         }
 
