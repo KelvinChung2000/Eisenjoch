@@ -97,12 +97,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
         }
 
         // Check if "O" port drives exactly one FF "D" port.
-        let port_info = match cell.port(o_port) {
-            Some(p) if p.net.is_some() => p,
-            _ => continue,
-        };
-
-        let net_idx = match port_info.net {
+        let net_idx = match cell.port(o_port).and_then(|p| p.net) {
             Some(net_idx) => net_idx,
             None => continue,
         };
@@ -178,16 +173,9 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
             continue;
         }
 
-        let is_head = match cell.port(ci_port) {
+        let is_head = match cell.port(ci_port).and_then(|p| p.net) {
             None => true,
-            Some(ci_info) if ci_info.net.is_none() => true,
-            Some(ci_info) => {
-                let net_idx = match ci_info.net {
-                    Some(net_idx) => net_idx,
-                    None => {
-                        continue;
-                    }
-                };
+            Some(net_idx) => {
                 let net = ctx.design().net(net_idx);
                 if !net.driver.is_connected() {
                     true

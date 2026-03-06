@@ -4,7 +4,7 @@ use crate::netlist::{
     PortInfo, PortRef, TimingIndex,
 };
 use crate::types::{
-    BelId, DelayQuad, DelayT, IdString, IdStringPool, Loc, PipId, PlaceStrength, Property, WireId,
+    BelId, DelayQuad, DelayT, IdString, Loc, PipId, PlaceStrength, Property, WireId,
 };
 use rustc_hash::FxHashMap;
 
@@ -451,13 +451,11 @@ impl From<&NetView<'_>> for NetIdx {
 
 pub struct DesignView<'a> {
     design: &'a Design,
-    #[allow(dead_code)]
-    pool: &'a IdStringPool,
 }
 
 impl<'a> DesignView<'a> {
-    pub(crate) fn new(design: &'a Design, pool: &'a IdStringPool) -> Self {
-        Self { design, pool }
+    pub(crate) fn new(design: &'a Design) -> Self {
+        Self { design }
     }
 
     #[inline]

@@ -191,7 +191,7 @@ impl Context {
     /// Read-only design view through DesignView proxy.
     #[inline]
     pub fn design_view(&self) -> DesignView<'_> {
-        DesignView::new(&self.design, &self.id_pool)
+        DesignView::new(&self.design)
     }
 
     /// Get a CellEditor for mutating a cell.
