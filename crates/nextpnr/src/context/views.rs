@@ -1,6 +1,11 @@
 use super::Context;
-use crate::netlist::{CellIdx, CellInfo, Cluster, Design, HierarchicalCell, NetIdx, NetInfo};
-use crate::types::{BelId, DelayQuad, IdString, IdStringPool, Loc, PipId, PlaceStrength, WireId};
+use crate::netlist::{
+    CellIdx, CellInfo, Cluster, Design, FlatIndex, HierarchicalCell, NetIdx, NetInfo, PipMap,
+    PortInfo, PortRef, TimingIndex,
+};
+use crate::types::{
+    BelId, DelayQuad, DelayT, IdString, IdStringPool, Loc, PipId, PlaceStrength, Property, WireId,
+};
 use rustc_hash::FxHashMap;
 
 pub struct IdStringView<'a> {
@@ -191,6 +196,36 @@ impl<'a> NetView<'a> {
     pub fn wire_views(&self) -> impl Iterator<Item = WireView<'a>> + 'a {
         self.wire_ids().map(|wire| WireView::new(self.ctx, wire))
     }
+
+    #[inline]
+    pub fn name_id(&self) -> IdString { self.info().name }
+
+    #[inline]
+    pub fn driver(&self) -> &'a PortRef { &self.info().driver }
+
+    #[inline]
+    pub fn users(&self) -> &'a [PortRef] { &self.info().users }
+
+    #[inline]
+    pub fn wires(&self) -> &'a FxHashMap<WireId, PipMap> { &self.info().wires }
+
+    #[inline]
+    pub fn is_alive(&self) -> bool { self.info().alive }
+
+    #[inline]
+    pub fn has_driver(&self) -> bool { self.info().has_driver() }
+
+    #[inline]
+    pub fn num_users(&self) -> usize { self.info().num_users() }
+
+    #[inline]
+    pub fn clock_constraint(&self) -> DelayT { self.info().clock_constraint }
+
+    #[inline]
+    pub fn region(&self) -> Option<u32> { self.info().region }
+
+    #[inline]
+    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }
 }
 
 pub struct WireView<'a> {
@@ -333,6 +368,45 @@ impl<'a> CellView<'a> {
     pub fn bel(&self) -> Option<BelView<'a>> {
         self.info().bel.map(|bel| BelView::new(self.ctx, bel))
     }
+
+    #[inline]
+    pub fn name_id(&self) -> IdString { self.info().name }
+
+    #[inline]
+    pub fn cell_type_id(&self) -> IdString { self.info().cell_type }
+
+    #[inline]
+    pub fn bel_id(&self) -> Option<BelId> { self.info().bel }
+
+    #[inline]
+    pub fn bel_strength(&self) -> PlaceStrength { self.info().bel_strength }
+
+    #[inline]
+    pub fn is_alive(&self) -> bool { self.info().alive }
+
+    #[inline]
+    pub fn ports(&self) -> &'a FxHashMap<IdString, PortInfo> { &self.info().ports }
+
+    #[inline]
+    pub fn port(&self, name: IdString) -> Option<&'a PortInfo> { self.info().port(name) }
+
+    #[inline]
+    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }
+
+    #[inline]
+    pub fn params(&self) -> &'a FxHashMap<IdString, Property> { &self.info().params }
+
+    #[inline]
+    pub fn cluster(&self) -> Option<CellIdx> { self.info().cluster }
+
+    #[inline]
+    pub fn region(&self) -> Option<u32> { self.info().region }
+
+    #[inline]
+    pub fn flat_index(&self) -> Option<FlatIndex> { self.info().flat_index }
+
+    #[inline]
+    pub fn timing_index(&self) -> Option<TimingIndex> { self.info().timing_index }
 }
 
 impl From<BelView<'_>> for BelId {
