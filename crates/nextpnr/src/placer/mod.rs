@@ -4,6 +4,11 @@ pub mod common;
 pub mod heap;
 pub mod sa;
 
+pub use heap::PlacerHeap;
+pub use sa::PlacerSa;
+
+use crate::context::Context;
+
 /// Errors that can occur during placement.
 #[derive(Debug, thiserror::Error)]
 pub enum PlacerError {
@@ -13,4 +18,10 @@ pub enum PlacerError {
     PlacementFailed(String),
     #[error("Initial placement failed: could not place cell {0}")]
     InitialPlacementFailed(String),
+}
+
+/// Trait for placement algorithms.
+pub trait Placer {
+    type Config;
+    fn place(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), PlacerError>;
 }

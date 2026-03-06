@@ -18,6 +18,17 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::PlacerError;
 
+/// HeAP analytical placer.
+pub struct PlacerHeap;
+
+impl super::Placer for PlacerHeap {
+    type Config = PlacerHeapCfg;
+
+    fn place(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::PlacerError> {
+        place_heap(ctx, cfg)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------

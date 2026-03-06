@@ -14,6 +14,17 @@ use log::{debug, info};
 use super::common::{initial_placement, net_hpwl, total_hpwl};
 use super::PlacerError;
 
+/// Simulated annealing placer.
+pub struct PlacerSa;
+
+impl super::Placer for PlacerSa {
+    type Config = PlacerSaCfg;
+
+    fn place(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::PlacerError> {
+        place_sa(ctx, cfg)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
