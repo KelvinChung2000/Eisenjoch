@@ -93,8 +93,7 @@ impl PyContext {
                 "Plugin loading not yet implemented",
             ));
         }
-        let (design, chipdb, id_pool) = self.ctx.packer_parts();
-        ::nextpnr::packer::pack(design, chipdb, id_pool, None)
+        ::nextpnr::packer::pack(&mut self.ctx, None)
             .map_err(|e| PyRuntimeError::new_err(format!("Packer error: {}", e)))
     }
 
