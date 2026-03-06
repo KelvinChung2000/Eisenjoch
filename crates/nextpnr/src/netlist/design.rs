@@ -115,7 +115,7 @@ impl Design {
     }
 
     #[inline]
-    pub fn cell_mut(&mut self, idx: CellIdx) -> &mut CellInfo {
+    pub(crate) fn cell_mut(&mut self, idx: CellIdx) -> &mut CellInfo {
         let slot = idx.slot() as usize;
         assert_eq!(self.cell_generation[slot], idx.generation(), "stale CellIdx generation");
         self.cell_store[slot].as_mut().expect("dead CellIdx slot")
@@ -196,7 +196,7 @@ impl Design {
     }
 
     #[inline]
-    pub fn net_mut(&mut self, idx: NetIdx) -> &mut NetInfo {
+    pub(crate) fn net_mut(&mut self, idx: NetIdx) -> &mut NetInfo {
         let slot = idx.slot() as usize;
         assert_eq!(self.net_generation[slot], idx.generation(), "stale NetIdx generation");
         self.net_store[slot].as_mut().expect("dead NetIdx slot")

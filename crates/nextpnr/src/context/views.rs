@@ -178,7 +178,7 @@ impl<'a> NetView<'a> {
     }
 
     #[inline]
-    pub fn info(&self) -> &'a NetInfo {
+    pub(crate) fn info(&self) -> &'a NetInfo {
         self.ctx.design().net(self.id)
     }
 
@@ -360,7 +360,7 @@ impl<'a> CellView<'a> {
     }
 
     #[inline]
-    pub fn info(&self) -> &'a CellInfo {
+    pub(crate) fn info(&self) -> &'a CellInfo {
         self.ctx.design().cell(self.id)
     }
 

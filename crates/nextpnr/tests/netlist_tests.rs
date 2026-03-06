@@ -935,7 +935,7 @@ fn net_attrs() {
     let idx = d.add_net(pool.intern("n"));
 
     let key = pool.intern("SRC");
-    d.net_mut(idx).attrs.insert(key, Property::string("module.v:42"));
+    d.net_edit(idx).set_attr(key, Property::string("module.v:42"));
 
     assert_eq!(
         d.net(idx).attrs.get(&key).unwrap().as_str(),

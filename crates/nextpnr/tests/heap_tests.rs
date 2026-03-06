@@ -30,7 +30,7 @@ fn make_context_with_cells(n: usize) -> Context {
         let q_port = ctx.id("Q");
         let a_port = ctx.id("A");
 
-        let cell0_idx = ctx.design().cell_by_name(cell_names[0]).unwrap();
+        let cell0_idx = ctx.design_view().cell_by_name(cell_names[0]).unwrap();
         ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
         ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
 
@@ -41,7 +41,7 @@ fn make_context_with_cells(n: usize) -> Context {
         });
 
         for i in 1..n {
-            let cell_idx = ctx.design().cell_by_name(cell_names[i]).unwrap();
+            let cell_idx = ctx.design_view().cell_by_name(cell_names[i]).unwrap();
             ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
 
             let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
@@ -85,8 +85,9 @@ fn full_heap_placement_2_cells() {
         ..PlacerHeapCfg::default()
     };
     place_heap(&mut ctx, &cfg).expect("HeAP placement should succeed");
-    for (_idx, cell) in ctx.design().iter_alive_cells() {
-        assert!(cell.bel.is_some());
+    for cell_view in ctx.cells() {
+        if !cell_view.is_alive() { continue; }
+        assert!(cell_view.bel_id().is_some());
     }
 }
 
@@ -100,8 +101,9 @@ fn full_heap_placement_4_cells() {
     };
     place_heap(&mut ctx, &cfg).expect("HeAP placement should succeed");
     let mut used_bels = std::collections::HashSet::new();
-    for (_idx, cell) in ctx.design().iter_alive_cells() {
-        let bel = cell.bel.expect("alive cell should be placed");
+    for cell_view in ctx.cells() {
+        if !cell_view.is_alive() { continue; }
+        let bel = cell_view.bel_id().expect("alive cell should be placed");
         assert!(used_bels.insert(bel));
     }
 }
@@ -116,8 +118,8 @@ fn full_heap_placement_single_cell() {
     };
     place_heap(&mut ctx, &cfg).expect("HeAP placement should succeed");
     let cell_name = ctx.id("cell_0");
-    let cell_idx = ctx.design().cell_by_name(cell_name).unwrap();
-    assert!(ctx.design().cell(cell_idx).bel.is_some());
+    let cell_idx = ctx.design_view().cell_by_name(cell_name).unwrap();
+    assert!(ctx.cell(cell_idx).bel_id().is_some());
 }
 
 #[test]
@@ -134,9 +136,10 @@ fn full_heap_deterministic() {
     let mut ctx2 = make_context_with_cells(3);
     place_heap(&mut ctx2, &cfg).expect("run 2");
 
-    for (cidx, c1) in ctx1.design().iter_alive_cells() {
-        let c2 = ctx2.design().cell(cidx);
-        assert_eq!(c1.bel, c2.bel, "cell {} placed differently", cidx.raw());
+    for c1 in ctx1.cells() {
+        if !c1.is_alive() { continue; }
+        let c2 = ctx2.cell(c1.id());
+        assert_eq!(c1.bel_id(), c2.bel_id(), "cell {} placed differently", c1.id().raw());
     }
 }
 

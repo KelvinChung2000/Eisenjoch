@@ -128,9 +128,9 @@ fn bind_bel_updates_cell_info() {
 
     assert!(ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer));
 
-    let cell = ctx.design().cell(cell_idx);
-    assert_eq!(cell.bel, Some(bel));
-    assert_eq!(cell.bel_strength, PlaceStrength::Placer);
+    let cell = ctx.cell(cell_idx);
+    assert_eq!(cell.bel_id(), Some(bel));
+    assert_eq!(cell.bel_strength(), PlaceStrength::Placer);
 }
 
 #[test]
@@ -162,9 +162,9 @@ fn unbind_bel() {
     assert!(ctx.bel(bel).is_available());
     assert!(ctx.bel(bel).bound_cell().is_none());
 
-    let cell = ctx.design().cell(cell_idx);
-    assert!(cell.bel.is_none());
-    assert_eq!(cell.bel_strength, PlaceStrength::None);
+    let cell = ctx.cell(cell_idx);
+    assert!(cell.bel_id().is_none());
+    assert_eq!(cell.bel_strength(), PlaceStrength::None);
 }
 
 #[test]
@@ -429,8 +429,8 @@ fn full_placement_flow() {
     assert!(!ctx.bel(target_bel).is_available());
     assert_eq!(ctx.bel(target_bel).bound_cell().map(|c| c.name_id()), Some(cell_name));
 
-    let cell = ctx.design().cell(cell_idx);
-    assert_eq!(cell.bel, Some(target_bel));
+    let cell = ctx.cell(cell_idx);
+    assert_eq!(cell.bel_id(), Some(target_bel));
 }
 
 #[test]

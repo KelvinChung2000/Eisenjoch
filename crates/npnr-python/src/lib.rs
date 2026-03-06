@@ -159,7 +159,7 @@ impl PyContext {
         let id = self.ctx.id_pool().intern(net_name);
         self.timing.add_clock_constraint(id, freq_mhz);
         // Also set clock_constraint on the net if it exists in the design.
-        if let Some(net_idx) = self.ctx.design().net_by_name(id) {
+        if let Some(net_idx) = self.ctx.design_view().net_by_name(id) {
             let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
             self.ctx.net_edit(net_idx).set_clock_constraint(period_ps);
         }
@@ -171,8 +171,7 @@ impl PyContext {
     /// Returns:
     ///     A TimingReport with fmax, worst slack, and endpoint counts.
     fn timing_report(&mut self) -> PyResult<PyTimingReport> {
-        self.timing
-            .analyse(self.ctx.design(), self.ctx.id_pool());
+        self.ctx.analyse_timing(&mut self.timing);
         let report = self.timing.report();
         Ok(PyTimingReport {
             fmax: report.fmax,
@@ -203,10 +202,9 @@ impl PyContext {
     #[getter]
     fn cells(&self) -> Vec<String> {
         self.ctx
-            .design()
-            .iter_alive_cells()
-            .filter_map(|(_, cell)| self.ctx.id_pool().lookup(cell.name))
-            .map(str::to_string)
+            .cells()
+            .filter(|c| c.is_alive())
+            .map(|c| c.name().to_string())
             .collect()
     }
 
@@ -214,10 +212,9 @@ impl PyContext {
     #[getter]
     fn nets(&self) -> Vec<String> {
         self.ctx
-            .design()
-            .iter_alive_nets()
-            .filter_map(|(_, net)| self.ctx.id_pool().lookup(net.name))
-            .map(str::to_string)
+            .nets()
+            .filter(|n| n.is_alive())
+            .map(|n| n.name().to_string())
             .collect()
     }
 
@@ -226,8 +223,8 @@ impl PyContext {
             "Context(width={}, height={}, cells={}, nets={})",
             self.ctx.width(),
             self.ctx.height(),
-            self.ctx.design().num_cells(),
-            self.ctx.design().num_nets()
+            self.ctx.design_view().num_cells(),
+            self.ctx.design_view().num_nets()
         )
     }
 }

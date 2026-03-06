@@ -179,17 +179,12 @@ impl Context {
     }
 
     #[inline]
-    pub fn design(&self) -> &Design {
+    pub(crate) fn design(&self) -> &Design {
         &self.design
     }
 
-    #[inline]
-    pub fn design_mut(&mut self) -> &mut Design {
-        &mut self.design
-    }
-
     /// Split borrow: returns mutable design + immutable chipdb + immutable id pool.
-    pub fn packer_parts(&mut self) -> (&mut Design, &ChipDb, &IdStringPool) {
+    pub(crate) fn packer_parts(&mut self) -> (&mut Design, &ChipDb, &IdStringPool) {
         (&mut self.design, &self.chipdb, &self.id_pool)
     }
 
@@ -251,6 +246,12 @@ impl Context {
     #[inline]
     pub fn set_top_module(&mut self, name: IdString) {
         self.design.top_module = name;
+    }
+
+    /// Run timing analysis on the current design.
+    #[inline]
+    pub fn analyse_timing(&self, timing: &mut crate::timing::TimingAnalyser) {
+        timing.analyse(&self.design, &self.id_pool);
     }
 
     /// Mutable access to clusters map (for packer).
