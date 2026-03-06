@@ -115,6 +115,17 @@ impl Router1State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Router1: A* rip-up and reroute.
+pub struct Router1;
+
+impl super::Router for Router1 {
+    type Config = Router1Cfg;
+
+    fn route(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::RouterError> {
+        route_router1(ctx, cfg)
+    }
+}
+
 /// Route all nets in the design using A* rip-up and reroute.
 ///
 /// The algorithm:

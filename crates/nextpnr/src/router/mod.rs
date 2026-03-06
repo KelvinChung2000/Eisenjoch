@@ -4,6 +4,11 @@ pub mod common;
 pub mod router1;
 pub mod router2;
 
+pub use router1::Router1;
+pub use router2::Router2;
+
+use crate::context::Context;
+
 // ---------------------------------------------------------------------------
 // Unified error type
 // ---------------------------------------------------------------------------
@@ -20,4 +25,10 @@ pub enum RouterError {
     /// Generic router error.
     #[error("Router error: {0}")]
     Generic(String),
+}
+
+/// Trait for routing algorithms.
+pub trait Router {
+    type Config;
+    fn route(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), RouterError>;
 }

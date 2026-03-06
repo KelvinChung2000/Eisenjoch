@@ -31,6 +31,7 @@ use super::RouterError;
 // ---------------------------------------------------------------------------
 
 /// Configuration parameters for the Router2 (negotiation-based) algorithm.
+#[derive(Clone)]
 pub struct Router2Cfg {
     /// Maximum number of negotiation iterations.
     pub max_iterations: usize,
@@ -217,10 +218,10 @@ pub(crate) struct Router2State {
 
 impl Router2State {
     /// Create a new Router2 state from the given configuration.
-    pub fn new(cfg: Router2Cfg) -> Self {
+    pub fn new(cfg: &Router2Cfg) -> Self {
         let present_cost = cfg.initial_present_cost;
         Self {
-            cfg,
+            cfg: cfg.clone(),
             present_cost,
             wire_history: FxHashMap::default(),
             wire_usage: FxHashMap::default(),
@@ -582,6 +583,17 @@ fn route_net_r2(
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Router2: Negotiation-based PathFinder router.
+pub struct Router2;
+
+impl super::Router for Router2 {
+    type Config = Router2Cfg;
+
+    fn route(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::RouterError> {
+        route_router2(ctx, cfg)
+    }
+}
+
 /// Route all nets in the design using negotiation-based (PathFinder) routing.
 ///
 /// The algorithm:
@@ -590,7 +602,7 @@ fn route_net_r2(
 /// 3. Iteratively detect congested wires, rip up the involved nets, update
 ///    historical costs, and reroute with increased present-congestion costs.
 /// 4. Repeat until no congestion remains or `max_iterations` is reached.
-pub fn route_router2(ctx: &mut Context, cfg: Router2Cfg) -> Result<(), RouterError> {
+pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterError> {
     let mut state = Router2State::new(cfg);
     let bel_pin_map = ctx.bel_pin_wire_map();
     let nets = collect_routable_nets(ctx);
@@ -782,7 +794,7 @@ mod tests {
     #[test]
     fn wire_cost_base_only() {
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         let net = NetIdx::from_raw(0);
         let cost = state.wire_cost(wire, net);
@@ -798,7 +810,7 @@ mod tests {
             history_cost_multiplier: 1.0,
             ..Router2Cfg::default()
         };
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         let net_a = NetIdx::from_raw(0);
         let net_b = NetIdx::from_raw(1);
@@ -819,7 +831,7 @@ mod tests {
             history_cost_multiplier: 3.0,
             ..Router2Cfg::default()
         };
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         let net = NetIdx::from_raw(0);
         state.wire_history.insert(wire, 5.0);
@@ -836,7 +848,7 @@ mod tests {
             history_cost_multiplier: 1.0,
             ..Router2Cfg::default()
         };
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         let net_a = NetIdx::from_raw(0);
         let net_b = NetIdx::from_raw(1);
@@ -852,7 +864,7 @@ mod tests {
     #[test]
     fn update_history_no_congestion() {
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         state.wire_usage.insert(wire, 1);
         state.update_history();
@@ -862,7 +874,7 @@ mod tests {
     #[test]
     fn update_history_with_congestion() {
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         state.wire_usage.insert(wire, 3);
         state.update_history();
@@ -872,7 +884,7 @@ mod tests {
     #[test]
     fn update_history_accumulates() {
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         state.wire_usage.insert(wire, 2);
         state.update_history();
@@ -887,7 +899,7 @@ mod tests {
     fn update_usage_empty_design() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
         assert!(state.wire_usage.is_empty());
         assert!(state.wire_owner.is_empty());
@@ -901,7 +913,7 @@ mod tests {
         let wire = WireId::new(0, 0);
         ctx.design_mut().net_mut(net_idx).wires.insert(wire, make_pip_map(None));
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
         assert_eq!(state.wire_usage[&wire], 1);
         assert_eq!(state.wire_owner[&wire], net_idx);
@@ -918,7 +930,7 @@ mod tests {
         let net_b_idx = ctx.design_mut().add_net(net_b_name);
         ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
         assert_eq!(state.wire_usage[&wire], 2);
         let owner = state.wire_owner[&wire];
@@ -934,7 +946,7 @@ mod tests {
         let net_idx = ctx.design_mut().add_net(net_name);
         ctx.design_mut().net_mut(net_idx).wires.insert(WireId::new(0, 0), make_pip_map(None));
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
         let congested = state.find_congested_nets(ctx.design());
         assert!(congested.is_empty());
@@ -951,7 +963,7 @@ mod tests {
         let net_b_idx = ctx.design_mut().add_net(net_b_name);
         ctx.design_mut().net_mut(net_b_idx).wires.insert(wire, make_pip_map(None));
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.update_usage(ctx.design());
         let congested = state.find_congested_nets(ctx.design());
         assert_eq!(congested.len(), 2);
@@ -991,7 +1003,7 @@ mod tests {
     fn astar_r2_same_wire_returns_empty_path() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
         let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
         let path = astar_route_r2(&ctx, &[wire], wire, NetIdx::from_raw(0), &state, &bbox);
@@ -1003,7 +1015,7 @@ mod tests {
     fn astar_r2_single_pip_path() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let src = WireId::new(0, 0);
         let dst = WireId::new(0, 1);
         let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
@@ -1018,7 +1030,7 @@ mod tests {
     fn astar_r2_no_path_returns_none() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let src = WireId::new(0, 1);
         let dst = WireId::new(0, 0);
         let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
@@ -1030,7 +1042,7 @@ mod tests {
     fn astar_r2_bbox_prunes_out_of_range() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let src = WireId::new(0, 0);
         let dst = WireId::new(1, 0);
         let bbox = BoundingBox { x0: 0, y0: 0, x1: 0, y1: 0 };
@@ -1042,7 +1054,7 @@ mod tests {
     fn astar_r2_empty_sources_returns_none() {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         let dst = WireId::new(0, 1);
         let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
         let path = astar_route_r2(&ctx, &[], dst, NetIdx::from_raw(0), &state, &bbox);
@@ -1057,7 +1069,7 @@ mod tests {
             initial_present_cost: 2.5,
             ..Router2Cfg::default()
         };
-        let state = Router2State::new(cfg);
+        let state = Router2State::new(&cfg);
         assert!((state.present_cost - 2.5).abs() < f64::EPSILON);
     }
 
@@ -1068,7 +1080,7 @@ mod tests {
             present_cost_growth: 2.0,
             ..Router2Cfg::default()
         };
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         assert!((state.present_cost - 1.0).abs() < f64::EPSILON);
         state.present_cost *= state.cfg.present_cost_growth;
         assert!((state.present_cost - 2.0).abs() < f64::EPSILON);
@@ -1081,7 +1093,7 @@ mod tests {
     #[test]
     fn count_congested_wires_none() {
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.wire_usage.insert(WireId::new(0, 0), 1);
         state.wire_usage.insert(WireId::new(0, 1), 1);
         assert_eq!(state.count_congested_wires(), 0);
@@ -1090,7 +1102,7 @@ mod tests {
     #[test]
     fn count_congested_wires_some() {
         let cfg = Router2Cfg::default();
-        let mut state = Router2State::new(cfg);
+        let mut state = Router2State::new(&cfg);
         state.wire_usage.insert(WireId::new(0, 0), 2);
         state.wire_usage.insert(WireId::new(0, 1), 1);
         state.wire_usage.insert(WireId::new(1, 0), 3);

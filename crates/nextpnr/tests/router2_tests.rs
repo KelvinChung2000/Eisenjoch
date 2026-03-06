@@ -63,7 +63,7 @@ fn router2_error_generic() {
 fn route_r2_empty_design() {
     let mut ctx = make_context();
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, cfg);
+    let result = route_router2(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -74,7 +74,7 @@ fn route_r2_design_with_no_routable_nets() {
     ctx.design_mut().add_net(net_name);
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, cfg);
+    let result = route_router2(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -98,7 +98,7 @@ fn route_r2_design_with_no_users() {
     };
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, cfg);
+    let result = route_router2(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -131,6 +131,6 @@ fn route_r2_same_pin_driver_and_sink() {
         });
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, cfg);
+    let result = route_router2(&mut ctx, &cfg);
     assert!(result.is_ok());
 }

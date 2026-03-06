@@ -5,11 +5,11 @@
 use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
-use npnr_chipdb::ChipDb;
-use npnr_context::{Context, DeterministicRng};
-use npnr_frontend::parse_json;
-use npnr_timing::TimingAnalyser;
-use npnr_types::DelayT;
+use ::nextpnr::chipdb::ChipDb;
+use ::nextpnr::context::{Context, DeterministicRng};
+use ::nextpnr::frontend::parse_json;
+use ::nextpnr::timing::TimingAnalyser;
+use ::nextpnr::types::DelayT;
 
 use std::path::Path;
 
@@ -21,7 +21,7 @@ use std::path::Path;
 ///
 /// Wraps the Rust `Context` (chip database + design netlist + placement/routing
 /// state) and a `TimingAnalyser` for static timing analysis.
-#[pyclass]
+#[pyclass(name = "Context")]
 pub struct PyContext {
     ctx: Context,
     timing: TimingAnalyser,
@@ -69,10 +69,10 @@ impl PyContext {
         let json_str = std::fs::read_to_string(path).map_err(|e| {
             PyFileNotFoundError::new_err(format!("Failed to read {}: {}", path, e))
         })?;
-        let design = parse_json(&json_str, &self.ctx.id_pool).map_err(|e| {
+        let design = parse_json(&json_str, self.ctx.id_pool()).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to parse JSON: {}", e))
         })?;
-        self.ctx.design = design;
+        *self.ctx.design_mut() = design;
         Ok(())
     }
 
@@ -87,13 +87,9 @@ impl PyContext {
                 "Plugin loading not yet implemented",
             ));
         }
-        npnr_packer::pack(
-            &mut self.ctx.design,
-            &self.ctx.chipdb,
-            &self.ctx.id_pool,
-            None,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Packer error: {}", e)))
+        let (design, chipdb, id_pool) = self.ctx.packer_parts();
+        ::nextpnr::packer::pack(design, chipdb, id_pool, None)
+            .map_err(|e| PyRuntimeError::new_err(format!("Packer error: {}", e)))
     }
 
     /// Run a placer on the design.
@@ -105,17 +101,17 @@ impl PyContext {
     fn place(&mut self, placer: &str, seed: u64) -> PyResult<()> {
         match placer {
             "heap" => {
-                let mut cfg = npnr_placer::heap::PlacerHeapCfg::default();
+                let mut cfg = ::nextpnr::placer::heap::PlacerHeapCfg::default();
                 cfg.seed = seed;
-                self.ctx.rng = DeterministicRng::new(seed);
-                npnr_placer::heap::place_heap(&mut self.ctx, &cfg)
+                *self.ctx.rng_mut() = DeterministicRng::new(seed);
+                ::nextpnr::placer::heap::place_heap(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("HeAP placer error: {}", e)))
             }
             "sa" => {
-                let mut cfg = npnr_placer::sa::PlacerSaCfg::default();
+                let mut cfg = ::nextpnr::placer::sa::PlacerSaCfg::default();
                 cfg.seed = seed;
-                self.ctx.rng = DeterministicRng::new(seed);
-                npnr_placer::sa::place_sa(&mut self.ctx, &cfg)
+                *self.ctx.rng_mut() = DeterministicRng::new(seed);
+                ::nextpnr::placer::sa::place_sa(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!(
@@ -133,13 +129,13 @@ impl PyContext {
     fn route(&mut self, router: &str) -> PyResult<()> {
         match router {
             "router1" => {
-                let cfg = npnr_router::router1::Router1Cfg::default();
-                npnr_router::router1::route_router1(&mut self.ctx, &cfg)
+                let cfg = ::nextpnr::router::router1::Router1Cfg::default();
+                ::nextpnr::router::router1::route_router1(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router1 error: {}", e)))
             }
             "router2" => {
-                let cfg = npnr_router::router2::Router2Cfg::default();
-                npnr_router::router2::route_router2(&mut self.ctx, cfg)
+                let cfg = ::nextpnr::router::router2::Router2Cfg::default();
+                ::nextpnr::router::router2::route_router2(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router2 error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!(
@@ -155,12 +151,12 @@ impl PyContext {
     ///     net_name: Name of the clock net.
     ///     freq_mhz: Clock frequency in MHz.
     fn add_clock(&mut self, net_name: &str, freq_mhz: f64) -> PyResult<()> {
-        let id = self.ctx.id_pool.intern(net_name);
+        let id = self.ctx.id_pool().intern(net_name);
         self.timing.add_clock_constraint(id, freq_mhz);
         // Also set clock_constraint on the net if it exists in the design.
-        if let Some(net_idx) = self.ctx.design.net_by_name(id) {
+        if let Some(net_idx) = self.ctx.design().net_by_name(id) {
             let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
-            self.ctx.design.net_mut(net_idx).clock_constraint = period_ps;
+            self.ctx.design_mut().net_mut(net_idx).clock_constraint = period_ps;
         }
         Ok(())
     }
@@ -171,7 +167,7 @@ impl PyContext {
     ///     A TimingReport with fmax, worst slack, and endpoint counts.
     fn timing_report(&mut self) -> PyResult<PyTimingReport> {
         self.timing
-            .analyse(&self.ctx.design, &self.ctx.id_pool);
+            .analyse(self.ctx.design(), self.ctx.id_pool());
         let report = self.timing.report();
         Ok(PyTimingReport {
             fmax: report.fmax,
@@ -202,10 +198,10 @@ impl PyContext {
     #[getter]
     fn cells(&self) -> Vec<String> {
         self.ctx
-            .design
-            .cells
-            .keys()
-            .filter_map(|&id| self.ctx.id_pool.lookup(id))
+            .design()
+            .iter_alive_cells()
+            .filter_map(|(_, cell)| self.ctx.id_pool().lookup(cell.name))
+            .map(str::to_string)
             .collect()
     }
 
@@ -213,10 +209,10 @@ impl PyContext {
     #[getter]
     fn nets(&self) -> Vec<String> {
         self.ctx
-            .design
-            .nets
-            .keys()
-            .filter_map(|&id| self.ctx.id_pool.lookup(id))
+            .design()
+            .iter_alive_nets()
+            .filter_map(|(_, net)| self.ctx.id_pool().lookup(net.name))
+            .map(str::to_string)
             .collect()
     }
 
@@ -225,8 +221,8 @@ impl PyContext {
             "Context(width={}, height={}, cells={}, nets={})",
             self.ctx.width(),
             self.ctx.height(),
-            self.ctx.design.cells.len(),
-            self.ctx.design.nets.len()
+            self.ctx.design().num_cells(),
+            self.ctx.design().num_nets()
         )
     }
 }
@@ -236,7 +232,7 @@ impl PyContext {
 // ---------------------------------------------------------------------------
 
 /// Summary report of timing analysis results.
-#[pyclass]
+#[pyclass(name = "TimingReport")]
 pub struct PyTimingReport {
     /// Maximum achievable frequency in MHz.
     #[pyo3(get)]
