@@ -66,7 +66,7 @@ fn route_empty_design() {
 fn route_design_with_no_routable_nets() {
     let mut ctx = make_context();
     let net_name = ctx.id("no_driver");
-    ctx.design_mut().add_net(net_name);
+    ctx.add_net(net_name);
 
     let cfg = Router1Cfg::default();
     let result = route_router1(&mut ctx, &cfg);
@@ -80,17 +80,17 @@ fn route_design_with_no_users() {
     let port = ctx.id("I0");
 
     let cell_name = ctx.id("driver");
-    let cell_idx = ctx.design_mut().add_cell(cell_name, lut_type);
-    ctx.design_mut().cell_mut(cell_idx).add_port(port, PortType::Out);
+    let cell_idx = ctx.add_cell(cell_name, lut_type);
+    ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
     ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
 
     let net_name = ctx.id("driveronly");
-    let net_idx = ctx.design_mut().add_net(net_name);
-    ctx.design_mut().net_mut(net_idx).driver = PortRef {
+    let net_idx = ctx.add_net(net_name);
+    ctx.net_edit(net_idx).set_driver_raw(PortRef {
         cell: Some(cell_idx),
         port,
         budget: 0,
-    };
+    });
 
     let cfg = Router1Cfg::default();
     let result = route_router1(&mut ctx, &cfg);

@@ -20,46 +20,36 @@ fn make_context_with_cells(n: usize) -> Context {
 
     for i in 0..n {
         let name = ctx.id(&format!("cell_{}", i));
-        ctx.design_mut().add_cell(name, cell_type);
+        ctx.add_cell(name, cell_type);
         cell_names.push(name);
     }
 
     if n >= 2 {
         let net_name = ctx.id("net_0");
-        let net_idx = ctx.design_mut().add_net(net_name);
+        let net_idx = ctx.add_net(net_name);
         let q_port = ctx.id("Q");
         let a_port = ctx.id("A");
 
         let cell0_idx = ctx.design().cell_by_name(cell_names[0]).unwrap();
-        ctx.design_mut()
-            .cell_mut(cell0_idx)
-            .add_port(q_port, PortType::Out);
-        ctx.design_mut().cell_mut(cell0_idx).port_mut(q_port).unwrap().net = Some(net_idx);
+        ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
+        ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
 
-        ctx.design_mut().net_mut(net_idx).driver = PortRef {
+        ctx.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell0_idx),
             port: q_port,
             budget: 0,
-        };
+        });
 
         for i in 1..n {
             let cell_idx = ctx.design().cell_by_name(cell_names[i]).unwrap();
-            ctx.design_mut()
-                .cell_mut(cell_idx)
-                .add_port(a_port, PortType::In);
-            ctx.design_mut().cell_mut(cell_idx).port_mut(a_port).unwrap().net = Some(net_idx);
+            ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
 
-            let user_idx = ctx.design().net(net_idx).users.len() as u32;
-            ctx.design_mut()
-                .cell_mut(cell_idx)
-                .port_mut(a_port)
-                .unwrap()
-                .user_idx = Some(user_idx);
-            ctx.design_mut().net_mut(net_idx).users.push(PortRef {
+            let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
                 cell: Some(cell_idx),
                 port: a_port,
                 budget: 0,
             });
+            ctx.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
         }
     }
 
