@@ -78,7 +78,7 @@ impl PyContext {
         let design = parse_json(&json_str, self.ctx.id_pool()).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to parse JSON: {}", e))
         })?;
-        *self.ctx.design_mut() = design;
+        self.ctx.set_design(design);
         Ok(())
     }
 
@@ -161,7 +161,7 @@ impl PyContext {
         // Also set clock_constraint on the net if it exists in the design.
         if let Some(net_idx) = self.ctx.design().net_by_name(id) {
             let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
-            self.ctx.design_mut().net_mut(net_idx).clock_constraint = period_ps;
+            self.ctx.net_edit(net_idx).set_clock_constraint(period_ps);
         }
         Ok(())
     }
