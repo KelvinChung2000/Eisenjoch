@@ -24,6 +24,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::common::{
     bind_route, collect_routable_nets, find_bel_pin_wire_preindexed, unroute_net,
 };
+use super::RouterError;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -62,24 +63,6 @@ impl Default for Router2Cfg {
             verbose: false,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during Router2 routing.
-#[derive(Debug, thiserror::Error)]
-pub enum Router2Error {
-    /// A* search could not find any path for the named net.
-    #[error("Failed to route net {0}: no path found")]
-    NoPath(String),
-    /// Routing did not converge within the iteration limit.
-    #[error("Routing failed after {0} iterations, {1} nets still congested")]
-    Congestion(usize, usize),
-    /// Generic router error.
-    #[error("Router2 error: {0}")]
-    Generic(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +474,7 @@ fn route_net_r2(
     net_idx: NetIdx,
     state: &Router2State,
     bel_pin_map: &BelPinWireMap,
-) -> Result<(), Router2Error> {
+) -> Result<(), RouterError> {
     let net = ctx.net(net_idx);
     let net_name = net.info().name;
 
@@ -503,7 +486,7 @@ fn route_net_r2(
     let driver_cell_idx = match driver.cell {
         Some(cell_idx) => cell_idx,
         None => {
-            return Err(Router2Error::Generic(format!(
+            return Err(RouterError::Generic(format!(
                 "Driver cell for net {} is missing",
                 ctx.name_of(net_name)
             )));
@@ -515,7 +498,7 @@ fn route_net_r2(
     let driver_bel = match driver_cell.bel() {
         Some(bel) => bel.id(),
         None => {
-            return Err(Router2Error::Generic(format!(
+            return Err(RouterError::Generic(format!(
                 "Driver cell for net {} is not placed",
                 ctx.name_of(net_name)
             )));
@@ -524,7 +507,7 @@ fn route_net_r2(
 
     let src_wire =
         find_bel_pin_wire_preindexed(bel_pin_map, driver_bel, driver_port).ok_or_else(|| {
-            Router2Error::Generic(format!(
+            RouterError::Generic(format!(
                 "Cannot find driver wire for net {}",
                 ctx.name_of(net_name)
             ))
@@ -587,7 +570,7 @@ fn route_net_r2(
                 bind_route(ctx, net_idx, &pips);
             }
             None => {
-                return Err(Router2Error::NoPath(ctx.name_of(net_name).to_owned()));
+                return Err(RouterError::NoPath(ctx.name_of(net_name).to_owned()));
             }
         }
     }
@@ -607,7 +590,7 @@ fn route_net_r2(
 /// 3. Iteratively detect congested wires, rip up the involved nets, update
 ///    historical costs, and reroute with increased present-congestion costs.
 /// 4. Repeat until no congestion remains or `max_iterations` is reached.
-pub fn route_router2(ctx: &mut Context, cfg: Router2Cfg) -> Result<(), Router2Error> {
+pub fn route_router2(ctx: &mut Context, cfg: Router2Cfg) -> Result<(), RouterError> {
     let mut state = Router2State::new(cfg);
     let bel_pin_map = ctx.bel_pin_wire_map();
     let nets = collect_routable_nets(ctx);
@@ -665,7 +648,7 @@ pub fn route_router2(ctx: &mut Context, cfg: Router2Cfg) -> Result<(), Router2Er
     if remaining == 0 {
         Ok(())
     } else {
-        Err(Router2Error::Congestion(
+        Err(RouterError::Congestion(
             state.cfg.max_iterations,
             remaining,
         ))

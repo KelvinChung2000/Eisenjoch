@@ -18,6 +18,7 @@ use super::common::{
     bind_route, collect_routable_nets, find_bel_pin_wire_preindexed, find_congested_wires,
     unroute_net,
 };
+use super::RouterError;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -44,24 +45,6 @@ impl Default for Router1Cfg {
             verbose: false,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors that can occur during routing.
-#[derive(Debug, thiserror::Error)]
-pub enum RouterError {
-    /// A* search could not find any path for the named net.
-    #[error("Failed to route net {0}: no path found")]
-    NoPath(String),
-    /// Routing did not converge within the iteration limit.
-    #[error("Routing failed after {0} iterations, {1} nets still congested")]
-    Congestion(usize, usize),
-    /// Generic router error.
-    #[error("Router error: {0}")]
-    Generic(String),
 }
 
 // ---------------------------------------------------------------------------
