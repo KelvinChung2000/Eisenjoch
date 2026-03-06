@@ -5,7 +5,7 @@ use crate::netlist::{CellIdx, NetIdx};
 use crate::types::{BelId, IdString, PlaceStrength};
 use rustc_hash::FxHashMap;
 
-use super::sa::PlacerError;
+use super::PlacerError;
 
 /// Collect all live, placeable cell indices grouped by their cell type.
 ///
