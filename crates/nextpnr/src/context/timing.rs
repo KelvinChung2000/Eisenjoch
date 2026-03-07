@@ -1,6 +1,9 @@
-use super::Context;
+use crate::chipdb::SpeedGradePod;
+use crate::chipdb::WireId;
+use crate::timing::DelayT;
 use crate::netlist::NetId;
-use crate::types::{DelayT, WireId};
+
+use super::Context;
 
 /// Delay scaling factor: picoseconds per Manhattan grid unit.
 const DELAY_SCALE: i32 = 100;
@@ -13,6 +16,21 @@ fn manhattan_delay(loc_a: (i32, i32), loc_b: (i32, i32)) -> DelayT {
 }
 
 impl Context {
+    /// Set the active speed grade index.
+    pub fn set_speed_grade(&mut self, index: usize) {
+        self.speed_grade_idx = index;
+    }
+
+    /// Get the active speed grade index.
+    pub fn speed_grade_idx(&self) -> usize {
+        self.speed_grade_idx
+    }
+
+    /// Get the active speed grade POD, if available.
+    pub fn speed_grade(&self) -> Option<&SpeedGradePod> {
+        self.chipdb.speed_grade(self.speed_grade_idx)
+    }
+
     /// Estimate the delay between two wires using Manhattan distance.
     pub fn estimate_delay(&self, src: impl Into<WireId>, dst: impl Into<WireId>) -> DelayT {
         let src_loc = self.chipdb.tile_xy(src.into().tile());
@@ -21,9 +39,6 @@ impl Context {
     }
 
     /// Estimate delay for a net based on placed driver/user BEL locations.
-    ///
-    /// Returns 0 if cells are not placed. Uses max Manhattan distance
-    /// from driver to any user as a rough estimate.
     pub fn estimate_delay_for_net(&self, net_idx: NetId) -> DelayT {
         let net = self.design.net(net_idx);
         if !net.driver.is_valid() {

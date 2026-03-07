@@ -1,8 +1,10 @@
 mod common;
 
+use nextpnr::chipdb::BelId;
+use nextpnr::common::PlaceStrength;
+use nextpnr::netlist::PortType;
 use nextpnr::placer::common::{initial_placement, net_hpwl, total_hpwl};
 use nextpnr::placer::sa::{revert_swap, try_swap};
-use nextpnr::types::{BelId, PlaceStrength, PortType};
 
 #[test]
 fn hpwl_no_driver_is_zero() {

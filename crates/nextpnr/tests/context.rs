@@ -5,8 +5,11 @@
 
 mod common;
 
+use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::common::{IdString, PlaceStrength};
 use nextpnr::context::BelPin;
-use nextpnr::types::{BelId, DelayQuad, PipId, PlaceStrength, PortType, WireId};
+use nextpnr::netlist::{PortType, Property};
+use nextpnr::timing::DelayQuad;
 
 // =========================================================================
 // Construction and basic queries
@@ -41,7 +44,7 @@ fn string_interning_dedup() {
 #[test]
 fn name_of_unknown_id() {
     let ctx = common::make_context();
-    let bad = nextpnr::types::IdString(9999);
+    let bad = IdString(9999);
     assert_eq!(ctx.name_of(bad), "<unknown>");
 }
 
@@ -514,7 +517,7 @@ fn settings_operations() {
     let mut ctx = common::make_context();
     let key = ctx.id("opt_level");
     ctx.settings_mut()
-        .insert(key, nextpnr::types::Property::int(2));
+        .insert(key, Property::int(2));
     assert_eq!(ctx.settings().get(&key).and_then(|p| p.as_int()), Some(2));
 }
 

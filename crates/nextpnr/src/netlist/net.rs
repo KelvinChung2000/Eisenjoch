@@ -1,7 +1,9 @@
-use crate::types::{DelayT, IdString, PipId, PlaceStrength, Property, WireId};
+use crate::chipdb::{PipId, WireId};
+use crate::common::{IdString, PlaceStrength};
+use crate::timing::DelayT;
 use rustc_hash::FxHashMap;
 
-use super::CellPin;
+use super::{CellPin, Property};
 
 #[derive(Clone, Debug)]
 pub struct PipMap {

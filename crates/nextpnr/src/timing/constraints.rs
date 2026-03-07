@@ -1,7 +1,8 @@
 //! SDC-style timing constraint storage.
 
+use crate::common::IdString;
 use crate::netlist::CellPin;
-use crate::types::{DelayPair, DelayT, IdString};
+use crate::timing::{DelayPair, DelayT};
 
 use super::domain::ClockDomainPair;
 use rustc_hash::FxHashMap;

@@ -8,9 +8,9 @@
 
 use std::path::Path;
 
-use crate::chipdb::ChipDb;
+use crate::chipdb::{BelId, ChipDb};
+use crate::common::{IdString, IdStringPool};
 use crate::netlist::Design;
-use crate::types::{BelId, IdString, IdStringPool};
 
 // ---------------------------------------------------------------------------
 // Error type

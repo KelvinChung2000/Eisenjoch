@@ -138,7 +138,7 @@ fn pip_iteration() {
 #[test]
 fn bel_info_access() {
     let db = make_test_chipdb();
-    let bel = nextpnr::types::BelId::new(0, 0);
+    let bel = BelId::new(0, 0);
     let info = db.bel_info(bel);
     let z: i16 = unsafe { read_packed!(*info, z) };
     assert_eq!(z, 0);
@@ -147,31 +147,31 @@ fn bel_info_access() {
 #[test]
 fn bel_name_access() {
     let db = make_test_chipdb();
-    let bel = nextpnr::types::BelId::new(0, 0);
+    let bel = BelId::new(0, 0);
     assert_eq!(db.bel_name(bel), "LUT0");
 }
 
 #[test]
 fn bel_type_access() {
     let db = make_test_chipdb();
-    let bel = nextpnr::types::BelId::new(0, 0);
+    let bel = BelId::new(0, 0);
     assert_eq!(db.bel_type(bel), "LUT4");
 }
 
 #[test]
 fn bel_loc_access() {
     let db = make_test_chipdb();
-    let bel0 = nextpnr::types::BelId::new(0, 0);
-    assert_eq!(db.bel_loc(bel0), nextpnr::types::Loc::new(0, 0, 0));
+    let bel0 = BelId::new(0, 0);
+    assert_eq!(db.bel_loc(bel0), Loc::new(0, 0, 0));
 
-    let bel3 = nextpnr::types::BelId::new(3, 0);
-    assert_eq!(db.bel_loc(bel3), nextpnr::types::Loc::new(1, 1, 0));
+    let bel3 = BelId::new(3, 0);
+    assert_eq!(db.bel_loc(bel3), Loc::new(1, 1, 0));
 }
 
 #[test]
 fn pip_info_access() {
     let db = make_test_chipdb();
-    let pip = nextpnr::types::PipId::new(0, 0);
+    let pip = PipId::new(0, 0);
     let info = db.pip_info(pip);
     let src_wire: i32 = unsafe { read_packed!(*info, src_wire) };
     let dst_wire: i32 = unsafe { read_packed!(*info, dst_wire) };
@@ -184,7 +184,7 @@ fn pip_info_access() {
 #[test]
 fn pip_src_dst_wire() {
     let db = make_test_chipdb();
-    let pip = nextpnr::types::PipId::new(0, 0);
+    let pip = PipId::new(0, 0);
     let src = db.pip_src_wire(pip);
     let dst = db.pip_dst_wire(pip);
     assert_eq!(src.tile(), 0);
@@ -196,7 +196,7 @@ fn pip_src_dst_wire() {
 #[test]
 fn wire_info_access() {
     let db = make_test_chipdb();
-    let wire = nextpnr::types::WireId::new(0, 0);
+    let wire = WireId::new(0, 0);
     let info = db.wire_info(wire);
     let flags: i32 = unsafe { read_packed!(*info, flags) };
     assert_eq!(flags, 0);
@@ -274,7 +274,7 @@ fn too_small_error() {
 #[test]
 fn bel_pins_accessible() {
     let db = make_test_chipdb();
-    let bel = nextpnr::types::BelId::new(0, 0);
+    let bel = BelId::new(0, 0);
     let info = db.bel_info(bel);
     let pins = info.pins.get();
     assert_eq!(pins.len(), 1);
@@ -287,7 +287,7 @@ fn bel_pins_accessible() {
 #[test]
 fn wire_bel_pins_accessible() {
     let db = make_test_chipdb();
-    let wire = nextpnr::types::WireId::new(0, 0);
+    let wire = WireId::new(0, 0);
     let info = db.wire_info(wire);
     let bel_pins = info.bel_pins.get();
     assert_eq!(bel_pins.len(), 1);
@@ -298,13 +298,13 @@ fn wire_bel_pins_accessible() {
 #[test]
 fn wire_pip_indices_accessible() {
     let db = make_test_chipdb();
-    let wire0 = nextpnr::types::WireId::new(0, 0);
+    let wire0 = WireId::new(0, 0);
     let info0 = db.wire_info(wire0);
     let downhill = info0.pips_downhill.get();
     assert_eq!(downhill.len(), 1);
     assert_eq!(downhill[0], 0);
 
-    let wire1 = nextpnr::types::WireId::new(0, 1);
+    let wire1 = WireId::new(0, 1);
     let info1 = db.wire_info(wire1);
     let uphill = info1.pips_uphill.get();
     assert_eq!(uphill.len(), 1);
@@ -315,7 +315,7 @@ fn wire_pip_indices_accessible() {
 fn all_tile_bels_have_same_info() {
     let db = make_test_chipdb();
     for tile in 0..4 {
-        let bel = nextpnr::types::BelId::new(tile, 0);
+        let bel = BelId::new(tile, 0);
         assert_eq!(db.bel_name(bel), "LUT0");
         assert_eq!(db.bel_type(bel), "LUT4");
     }

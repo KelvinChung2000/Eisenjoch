@@ -2,7 +2,7 @@ mod common;
 
 use nextpnr::packer::helpers::{connect_port, disconnect_port, get_net_for_port, is_single_fanout};
 use nextpnr::packer::{pack_default, passes};
-use nextpnr::types::PortType;
+use nextpnr::netlist::PortType;
 
 fn setup_simple_ctx(ctx: &mut nextpnr::context::Context) {
     let cell_name = ctx.id("my_cell");

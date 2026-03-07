@@ -4,8 +4,9 @@
 //! construction and mutation, Design arena operations (add/remove/lookup),
 //! wiring, hierarchy, clustering, and edge cases.
 
+use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::common::{IdStringPool, PlaceStrength};
 use nextpnr::netlist::*;
-use nextpnr::types::*;
 
 #[allow(non_snake_case)]
 fn CellIdx(raw: u32) -> nextpnr::netlist::CellId {

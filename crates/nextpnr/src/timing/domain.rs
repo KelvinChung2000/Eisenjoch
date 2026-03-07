@@ -1,6 +1,7 @@
 //! Clock domain types and registry for timing analysis.
 
-use crate::types::{ClockEdge, DelayQuad, DelayT, IdString};
+use crate::common::IdString;
+use crate::timing::{ClockEdge, DelayQuad, DelayT};
 use rustc_hash::FxHashMap;
 
 /// Unique identifier for a clock domain within the timing analyser.

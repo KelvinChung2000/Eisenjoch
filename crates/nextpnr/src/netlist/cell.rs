@@ -1,7 +1,8 @@
-use crate::types::{BelId, IdString, PlaceStrength, PortType, Property};
+use crate::chipdb::BelId;
+use crate::common::{IdString, PlaceStrength};
 use rustc_hash::FxHashMap;
 
-use super::{CellId, CellPin, FlatIndex, PortData, TimingIndex};
+use super::{CellId, CellPin, FlatIndex, PortData, PortType, Property, TimingIndex};
 
 pub struct CellInfo {
     pub name: IdString,
@@ -77,7 +78,7 @@ impl CellInfo {
     }
 
     #[inline]
-    pub fn port_budget(&self, name: IdString) -> Option<crate::types::DelayT> {
+    pub fn port_budget(&self, name: IdString) -> Option<crate::timing::DelayT> {
         self.port_data(name).map(|port| port.budget())
     }
 
@@ -96,7 +97,7 @@ impl CellInfo {
     }
 
     #[inline]
-    pub fn set_port_budget(&mut self, name: IdString, budget: crate::types::DelayT) {
+    pub fn set_port_budget(&mut self, name: IdString, budget: crate::timing::DelayT) {
         if let Some(port) = self.port_data_mut(name) {
             port.set_budget(budget);
         }

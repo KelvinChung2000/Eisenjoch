@@ -1,8 +1,9 @@
 //! Shared helper functions used by multiple placer implementations.
 
 use crate::context::Context;
+use crate::chipdb::BelId;
+use crate::common::{IdString, PlaceStrength};
 use crate::netlist::{CellId, NetId};
-use crate::types::{BelId, IdString, PlaceStrength};
 use rustc_hash::FxHashMap;
 
 use super::PlacerError;

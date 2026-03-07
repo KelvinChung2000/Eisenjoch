@@ -5,7 +5,8 @@
 //! and attributes.
 
 use crate::netlist::{CellId, Design, NetId};
-use crate::types::{IdString, IdStringPool, PortType, Property};
+use crate::common::{IdString, IdStringPool};
+use crate::netlist::{PortType, Property};
 use anyhow::{bail, Context, Result};
 use rustc_hash::FxHashMap;
 use serde_json::Value;

@@ -35,10 +35,6 @@ impl Property {
     }
 
     /// Try to interpret this property as an integer.
-    ///
-    /// - `Int` values are returned directly.
-    /// - `String` values are parsed as decimal integers.
-    /// - `BitVector` values are interpreted as binary (only if all bits are '0' or '1').
     pub fn as_int(&self) -> Option<i64> {
         match self {
             Self::Int(v) => Some(*v),
@@ -57,10 +53,6 @@ impl Property {
     }
 
     /// Try to interpret this property as a string.
-    ///
-    /// - `String` values are returned directly.
-    /// - `Int` values are formatted as decimal strings.
-    /// - `BitVector` values are returned as-is.
     pub fn as_str(&self) -> String {
         match self {
             Self::String(s) => s.clone(),
@@ -69,17 +61,14 @@ impl Property {
         }
     }
 
-    /// Returns true if this is a string property.
     pub fn is_string(&self) -> bool {
         matches!(self, Self::String(_))
     }
 
-    /// Returns true if this is an integer property.
     pub fn is_int(&self) -> bool {
         matches!(self, Self::Int(_))
     }
 
-    /// Returns true if this is a bit vector property.
     pub fn is_bit_vector(&self) -> bool {
         matches!(self, Self::BitVector(_))
     }

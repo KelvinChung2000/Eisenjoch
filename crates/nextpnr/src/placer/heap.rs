@@ -10,9 +10,9 @@
 //! model with a virtual node at the net centroid. Anchor forces pull cells
 //! toward their current spread positions, growing stronger each iteration.
 
+use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::types::PlaceStrength;
 use log::{debug, info};
 use rustc_hash::{FxHashMap, FxHashSet};
 

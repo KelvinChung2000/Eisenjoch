@@ -1,11 +1,15 @@
 //! Memory-mapped zero-copy chip database reader for nextpnr-himbaechel.
 
 mod access;
+mod grid;
+mod ids;
 mod load;
 mod pod;
 mod relptr;
 
 pub use access::RegArcInfo;
+pub use grid::Loc;
+pub use ids::{BelId, PipId, WireId};
 pub use pod::*;
 pub use relptr::{RelPtr, RelSlice};
 

@@ -1,7 +1,8 @@
 //! Vivado-style timing report generation.
 
+use crate::common::{IdString, IdStringPool};
 use crate::netlist::NetId;
-use crate::types::{DelayT, IdString, IdStringPool};
+use crate::timing::DelayT;
 
 use super::path::TimingPath;
 use super::TimingAnalyser;

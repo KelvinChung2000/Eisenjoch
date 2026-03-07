@@ -15,9 +15,9 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::netlist::NetId;
-use crate::types::{PipId, WireId};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 

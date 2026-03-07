@@ -1,6 +1,7 @@
 use super::*;
 use crate::read_packed;
-use crate::types::{BelId, ClockEdge, DelayPair, DelayQuad, DelayT, Loc, PipId, PortType, TimingPortClass, WireId};
+use crate::netlist::PortType;
+use crate::timing::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use std::ffi::CStr;
 
 impl ChipDb {

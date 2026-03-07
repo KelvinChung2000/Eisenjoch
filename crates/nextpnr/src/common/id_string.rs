@@ -6,14 +6,6 @@
 use lasso::{Key, Spur, ThreadedRodeo};
 use std::fmt;
 
-// ---------------------------------------------------------------------------
-// Backend abstraction
-// ---------------------------------------------------------------------------
-
-/// Internal interner backend contract.
-///
-/// `IdStringPool` depends on this trait, allowing backend replacement without
-/// touching call sites across the codebase.
 trait InternerBackend {
     fn new() -> Self
     where
@@ -26,7 +18,6 @@ trait InternerBackend {
     fn len(&self) -> usize;
 }
 
-/// Current backend implementation based on `lasso::ThreadedRodeo`.
 struct LassoBackend {
     interner: ThreadedRodeo,
 }

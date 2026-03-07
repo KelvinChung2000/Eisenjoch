@@ -2,7 +2,7 @@
 
 use nextpnr::chipdb::testutil::make_test_chipdb;
 use nextpnr::context::Context;
-use nextpnr::types::PortType;
+use nextpnr::netlist::PortType;
 
 pub fn make_context() -> Context {
     let chipdb = make_test_chipdb();

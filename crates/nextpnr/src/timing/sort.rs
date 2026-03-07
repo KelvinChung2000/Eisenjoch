@@ -6,7 +6,7 @@
 //! driver cells.
 
 use crate::netlist::{CellId, Design};
-use crate::types::PortType;
+use crate::netlist::PortType;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 

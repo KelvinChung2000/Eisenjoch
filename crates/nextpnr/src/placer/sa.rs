@@ -6,9 +6,10 @@
 //! combines HPWL (Half-Perimeter Wire Length) with optional timing-driven
 //! weighting via net criticality.
 
+use crate::chipdb::BelId;
+use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
-use crate::types::{BelId, PlaceStrength};
 use log::{debug, info};
 
 use super::common;

@@ -6,19 +6,16 @@
 
 use std::fmt;
 
-/// Creates a packed u64 from tile and index values.
 #[inline]
 const fn pack(tile: i32, index: i32) -> u64 {
     ((tile as u32 as u64) << 32) | (index as u32 as u64)
 }
 
-/// Extracts the tile (high 32 bits) from a packed u64.
 #[inline]
 const fn unpack_tile(packed: u64) -> i32 {
     (packed >> 32) as u32 as i32
 }
 
-/// Extracts the index (low 32 bits) from a packed u64.
 #[inline]
 const fn unpack_index(packed: u64) -> i32 {
     packed as u32 as i32

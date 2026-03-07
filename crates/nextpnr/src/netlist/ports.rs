@@ -1,6 +1,7 @@
-use crate::types::{DelayT, IdString, PortType};
+use crate::common::IdString;
+use crate::timing::DelayT;
 
-use super::{CellId, NetId};
+use super::{CellId, NetId, PortType};
 
 /// A (cell, port) pair identifying a specific pin on a cell.
 ///

@@ -1,8 +1,9 @@
 //! Shared helper functions used by both Router1 and Router2.
 
 use crate::context::Context;
+use crate::chipdb::{PipId, WireId};
+use crate::common::PlaceStrength;
 use crate::netlist::NetId;
-use crate::types::{PipId, PlaceStrength, WireId};
 use rustc_hash::FxHashMap;
 
 /// Collect all net indices that need routing.

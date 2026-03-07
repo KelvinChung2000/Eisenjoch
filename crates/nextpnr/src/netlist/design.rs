@@ -1,4 +1,4 @@
-use crate::types::IdString;
+use crate::common::IdString;
 use rustc_hash::FxHashMap;
 
 use super::{CellEditor, CellId, CellInfo, Cluster, HierarchicalCell, NetEditor, NetId, NetInfo};

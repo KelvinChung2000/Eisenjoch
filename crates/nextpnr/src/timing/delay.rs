@@ -19,7 +19,10 @@ impl DelayPair {
     /// Create a new delay pair with explicit min and max values.
     #[inline]
     pub const fn new(min_delay: DelayT, max_delay: DelayT) -> Self {
-        Self { min_delay, max_delay }
+        Self {
+            min_delay,
+            max_delay,
+        }
     }
 
     /// Create a delay pair where min and max are the same value.
@@ -64,7 +67,11 @@ impl Sub for DelayPair {
 
 impl fmt::Debug for DelayPair {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DelayPair(min={}, max={})", self.min_delay, self.max_delay)
+        write!(
+            f,
+            "DelayPair(min={}, max={})",
+            self.min_delay, self.max_delay
+        )
     }
 }
 

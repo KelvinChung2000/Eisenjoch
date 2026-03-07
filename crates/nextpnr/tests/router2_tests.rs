@@ -1,8 +1,10 @@
 mod common;
 
+use nextpnr::chipdb::BelId;
+use nextpnr::common::PlaceStrength;
+use nextpnr::netlist::PortType;
 use nextpnr::router::router2::{route_router2, Router2Cfg};
 use nextpnr::router::{Router, Router2, RouterError};
-use nextpnr::types::{BelId, PlaceStrength, PortType};
 
 // =====================================================================
 // Config defaults

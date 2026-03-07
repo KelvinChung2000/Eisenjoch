@@ -8,14 +8,13 @@ use pyo3::prelude::*;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::Context;
 use ::nextpnr::frontend::parse_json;
-use ::nextpnr::placer::Placer;
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
-use ::nextpnr::router::Router;
+use ::nextpnr::placer::Placer;
 use ::nextpnr::router::router1::{Router1, Router1Cfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg};
-use ::nextpnr::timing::TimingAnalyser;
-use ::nextpnr::types::DelayT;
+use ::nextpnr::router::Router;
+use ::nextpnr::timing::{DelayT, TimingAnalyser};
 
 use std::path::Path;
 
@@ -57,9 +56,8 @@ impl PyContext {
             }
         };
 
-        let db = ChipDb::load(Path::new(&chipdb_path)).map_err(|e| {
-            PyFileNotFoundError::new_err(format!("Failed to load chipdb: {}", e))
-        })?;
+        let db = ChipDb::load(Path::new(&chipdb_path))
+            .map_err(|e| PyFileNotFoundError::new_err(format!("Failed to load chipdb: {}", e)))?;
 
         Ok(Self {
             ctx: Context::new(db),
@@ -72,12 +70,10 @@ impl PyContext {
     /// Args:
     ///     path: Path to a Yosys JSON file.
     fn load_design(&mut self, path: &str) -> PyResult<()> {
-        let json_str = std::fs::read_to_string(path).map_err(|e| {
-            PyFileNotFoundError::new_err(format!("Failed to read {}: {}", path, e))
-        })?;
-        let design = parse_json(&json_str, &self.ctx.id_pool).map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to parse JSON: {}", e))
-        })?;
+        let json_str = std::fs::read_to_string(path)
+            .map_err(|e| PyFileNotFoundError::new_err(format!("Failed to read {}: {}", path, e)))?;
+        let design = parse_json(&json_str, &self.ctx.id_pool)
+            .map_err(|e| PyRuntimeError::new_err(format!("Failed to parse JSON: {}", e)))?;
         self.ctx.design = design;
         Ok(())
     }
@@ -108,19 +104,18 @@ impl PyContext {
             "heap" => {
                 let mut cfg = PlacerHeapCfg::default();
                 cfg.seed = seed;
-                PlacerHeap.place(&mut self.ctx, &cfg)
+                PlacerHeap
+                    .place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("HeAP placer error: {}", e)))
             }
             "sa" => {
                 let mut cfg = PlacerSaCfg::default();
                 cfg.seed = seed;
-                PlacerSa.place(&mut self.ctx, &cfg)
+                PlacerSa
+                    .place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
-            _ => Err(PyValueError::new_err(format!(
-                "Unknown placer: {}",
-                placer
-            ))),
+            _ => Err(PyValueError::new_err(format!("Unknown placer: {}", placer))),
         }
     }
 
@@ -133,18 +128,17 @@ impl PyContext {
         match router {
             "router1" => {
                 let cfg = Router1Cfg::default();
-                Router1.route(&mut self.ctx, &cfg)
+                Router1
+                    .route(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router1 error: {}", e)))
             }
             "router2" => {
                 let cfg = Router2Cfg::default();
-                Router2.route(&mut self.ctx, &cfg)
+                Router2
+                    .route(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router2 error: {}", e)))
             }
-            _ => Err(PyValueError::new_err(format!(
-                "Unknown router: {}",
-                router
-            ))),
+            _ => Err(PyValueError::new_err(format!("Unknown router: {}", router))),
         }
     }
 
@@ -159,7 +153,10 @@ impl PyContext {
         // Also set clock_constraint on the net if it exists in the design.
         if let Some(net_idx) = self.ctx.design.net_by_name(id) {
             let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
-            self.ctx.design.net_edit(net_idx).set_clock_constraint(period_ps);
+            self.ctx
+                .design
+                .net_edit(net_idx)
+                .set_clock_constraint(period_ps);
         }
         Ok(())
     }

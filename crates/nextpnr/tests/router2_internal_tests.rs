@@ -1,10 +1,12 @@
 mod common;
 
+use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::NetId;
+use nextpnr::netlist::PortType;
 use nextpnr::router::router2::{
     astar_route_r2, compute_bbox, BoundingBox, R2QueueEntry, Router2Cfg, Router2State,
 };
-use nextpnr::types::{BelId, PipId, PlaceStrength, PortType, WireId};
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;
 

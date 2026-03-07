@@ -1,8 +1,9 @@
 //! Utility functions for netlist manipulation during packing.
 
 use crate::context::Context;
+use crate::common::IdString;
 use crate::netlist::{CellId, NetId};
-use crate::types::{IdString, PortType};
+use crate::netlist::PortType;
 
 /// Disconnect a port from its net.
 ///

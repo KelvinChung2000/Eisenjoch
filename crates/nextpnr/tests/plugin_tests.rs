@@ -6,13 +6,13 @@
 use std::path::Path;
 
 use nextpnr::chipdb::testutil::make_test_chipdb;
-use nextpnr::chipdb::ChipDb;
+use nextpnr::chipdb::{BelId, ChipDb};
+use nextpnr::common::{IdString, IdStringPool};
 use nextpnr::netlist::Design;
 use nextpnr::plugin::{
     DefaultPacker, DefaultPlacerHooks, DefaultRouterHooks, PackerPlugin, PlacerPlugin,
     PluginContext, PluginError, PluginManager, RouterPlugin,
 };
-use nextpnr::types::{BelId, IdString, IdStringPool};
 
 fn make_test_chipdb_helper() -> ChipDb {
     make_test_chipdb()

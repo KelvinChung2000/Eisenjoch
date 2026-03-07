@@ -9,15 +9,19 @@
 //! and criticality for every net.
 
 pub mod constraints;
+mod delay;
 mod domain;
+mod kinds;
 mod path;
 pub mod report;
 pub mod sort;
 
 pub use constraints::SdcConstraints;
+pub use delay::{DelayPair, DelayQuad, DelayT};
 pub use domain::{
     CellArc, CellArcType, ClockDomain, ClockDomainId, ClockDomainPair, DomainRegistry,
 };
+pub use kinds::{ClockEdge, TimingPortClass};
 pub use path::{PathSegment, TimingEndpoint, TimingPath, TimingPortInfo, TimingReport};
 pub use report::{
     format_constraint_coverage, format_cross_domain_report, format_path_detail, TimingSummary,
@@ -25,11 +29,10 @@ pub use report::{
 pub use sort::topological_sort;
 
 use crate::chipdb::ChipDb;
+use crate::common::{IdString, IdStringPool};
 use crate::context::Context;
 use crate::netlist::{CellId, CellPin, Design, NetId};
-use crate::types::{
-    ClockEdge, DelayPair, DelayQuad, DelayT, IdString, IdStringPool, PortType, TimingPortClass,
-};
+use crate::netlist::PortType;
 use log::debug;
 use rustc_hash::{FxHashMap, FxHashSet};
 

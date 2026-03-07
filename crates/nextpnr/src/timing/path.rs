@@ -1,8 +1,9 @@
 //! Timing path and report types.
 
 use super::domain::ClockDomain;
+use crate::common::IdString;
 use crate::netlist::{CellId, NetId};
-use crate::types::{DelayPair, DelayT, IdString, TimingPortClass};
+use crate::timing::{DelayPair, DelayT, TimingPortClass};
 
 /// Classification of a cell port for timing analysis.
 ///
