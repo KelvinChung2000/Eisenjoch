@@ -18,8 +18,7 @@ pub use views::{Bel, BelPin, Cell, IdStringView, Net, Pip, TileView, Wire};
 
 use crate::chipdb::ChipDb;
 use crate::netlist::{CellId, Design, NetId};
-use crate::read_packed;
-use crate::types::{BelId, IdString, IdStringPool, PipId, PlaceStrength, Property, WireId};
+use crate::types::{BelId, IdString, IdStringPool, IntoIdString, PipId, PlaceStrength, Property, WireId};
 use log::warn;
 use rustc_hash::FxHashMap;
 use storage::TileSlotMap;
@@ -153,8 +152,8 @@ impl Context {
 
     /// Intern a string, returning its IdString handle.
     #[inline]
-    pub fn id(&self, s: &str) -> IdString {
-        self.id_pool.intern(s)
+    pub fn id(&self, s: impl IntoIdString) -> IdString {
+        s.into_id(&self.id_pool)
     }
 
     /// Look up the string for an IdString handle.
@@ -349,10 +348,9 @@ impl Context {
     /// All BELs belonging to a given bucket.
     ///
     /// The cache must be populated first via [`populate_bel_buckets`].
-    pub fn bels_for_bucket(&self, bucket: &str) -> impl Iterator<Item = Bel<'_>> {
-        let id = self.id_pool.intern(bucket);
+    pub fn bels_for_bucket(&self, bucket: IdString) -> impl Iterator<Item = Bel<'_>> {
         self.bucket_bels
-            .get(&id)
+            .get(&bucket)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
             .iter()
@@ -364,15 +362,12 @@ impl Context {
     pub fn bel_pin_wire(&self, bp: BelPin) -> Option<Wire<'_>> {
         let port_name = self.name_of(bp.port());
         let bel_info = self.chipdb.bel_info(bp.bel());
-        for pin in bel_info.pins.get() {
-            let name_id: i32 = unsafe { read_packed!(*pin, name) };
-            let pin_name = self.chipdb.constid_str(name_id).unwrap_or("");
-            if pin_name == port_name {
-                let wire: i32 = unsafe { read_packed!(*pin, wire) };
-                return Some(Wire::new(self, WireId::new(bp.bel().tile(), wire)));
-            }
-        }
-        None
+        bel_info.pins.get().iter().find_map(|pin| {
+            let (name_constid, wire_idx) = self.chipdb.bel_pin_fields(pin);
+            let pin_name = self.chipdb.constid_str(name_constid).unwrap_or("");
+            (pin_name == port_name)
+                .then(|| Wire::new(self, WireId::new(bp.bel().tile(), wire_idx)))
+        })
     }
 
     // =====================================================================

@@ -36,7 +36,7 @@ pub enum PackerError {
     UnsupportedCellType(String),
 
     /// An error originating from a packer plugin.
-    #[error("Plugin error: {0}")]
+    #[error("{0}")]
     Plugin(#[from] PluginError),
 }
 
@@ -117,7 +117,7 @@ mod tests {
     fn packer_error_plugin_display() {
         let plugin_err = PluginError::Generic("plugin broke".into());
         let err = PackerError::Plugin(plugin_err);
-        assert_eq!(err.to_string(), "Plugin error: Plugin error: plugin broke");
+        assert_eq!(err.to_string(), "Plugin error: plugin broke");
     }
 
     #[test]

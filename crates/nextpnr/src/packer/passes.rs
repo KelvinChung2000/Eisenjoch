@@ -102,7 +102,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
             None => continue,
         };
         let net = ctx.design.net(net_idx);
-        if net.users.len() != 1 {
+        if net.users.iter().filter(|u| u.is_connected()).count() != 1 {
             continue;
         }
         let user = &net.users[0];
@@ -174,20 +174,12 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
             continue;
         }
 
-        let is_head = match cell.port(ci_port).and_then(|p| p.net) {
-            None => true,
-            Some(net_idx) => {
-                let net = ctx.design.net(net_idx);
-                if !net.driver.is_connected() {
-                    true
-                } else {
-                    match net.driver.cell {
-                        Some(driver_cell) => ctx.design.cell(driver_cell).cell_type != carry_type,
-                        None => true,
-                    }
-                }
-            }
-        };
+        let driven_by_carry = cell
+            .port(ci_port)
+            .and_then(|p| p.net)
+            .and_then(|net_idx| ctx.design.net(net_idx).driver.cell)
+            .is_some_and(|driver| ctx.design.cell(driver).cell_type == carry_type);
+        let is_head = !driven_by_carry;
 
         if is_head {
             chain_heads.push(cell_idx);

@@ -3,15 +3,9 @@
 //! Uses the synthetic chipdb builder from `nextpnr::chipdb::testutil` to create
 //! a minimal 2x2 chip database for testing Context operations.
 
-use nextpnr::chipdb::testutil::make_test_chipdb;
-use nextpnr::context::Context;
-use nextpnr::types::{BelId, DelayQuad, PlaceStrength, PipId, WireId};
+mod common;
 
-/// Create a fresh Context backed by the synthetic 2x2 chipdb.
-fn make_context() -> Context {
-    let chipdb = make_test_chipdb();
-    Context::new(chipdb)
-}
+use nextpnr::types::{BelId, DelayQuad, PlaceStrength, PipId, WireId};
 
 // =========================================================================
 // Construction and basic queries
@@ -19,7 +13,7 @@ fn make_context() -> Context {
 
 #[test]
 fn context_creation() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     assert_eq!(ctx.chipdb().width(), 2);
     assert_eq!(ctx.chipdb().height(), 2);
     assert!(!ctx.verbose());
@@ -29,7 +23,7 @@ fn context_creation() {
 
 #[test]
 fn string_interning() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let id = ctx.id("hello");
     assert!(!id.is_empty());
     assert_eq!(ctx.name_of(id), "hello");
@@ -37,7 +31,7 @@ fn string_interning() {
 
 #[test]
 fn string_interning_dedup() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let a = ctx.id("test");
     let b = ctx.id("test");
     assert_eq!(a, b);
@@ -45,7 +39,7 @@ fn string_interning_dedup() {
 
 #[test]
 fn name_of_unknown_id() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bad = nextpnr::types::IdString(9999);
     assert_eq!(ctx.name_of(bad), "<unknown>");
 }
@@ -56,35 +50,35 @@ fn name_of_unknown_id() {
 
 #[test]
 fn get_bels_count() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bels: Vec<_> = ctx.bels().collect();
     assert_eq!(bels.len(), 4);
 }
 
 #[test]
 fn get_bel_name() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     assert_eq!(ctx.bel(bel).name(), "LUT0");
 }
 
 #[test]
 fn get_bel_type() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     assert_eq!(ctx.bel(bel).bel_type(), "LUT4");
 }
 
 #[test]
 fn get_bel_bucket() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     assert_eq!(ctx.bel(bel).bucket(), "LUT4");
 }
 
 #[test]
 fn get_bel_location() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let loc = ctx.bel(bel).loc();
     assert_eq!(loc.x, 0);
@@ -100,7 +94,7 @@ fn get_bel_location() {
 
 #[test]
 fn bel_initially_available() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     assert!(ctx.bel(bel).is_available());
     assert!(ctx.bel(bel).bound_cell().is_none());
@@ -108,7 +102,7 @@ fn bel_initially_available() {
 
 #[test]
 fn bind_bel_success() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_name = ctx.id("my_lut");
     let cell_type = ctx.id("LUT4");
@@ -120,7 +114,7 @@ fn bind_bel_success() {
 
 #[test]
 fn bind_bel_updates_cell_info() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(1, 0);
     let cell_type = ctx.id("LUT4");
     let cell_name = ctx.id("my_lut");
@@ -135,7 +129,7 @@ fn bind_bel_updates_cell_info() {
 
 #[test]
 fn bind_bel_duplicate_fails() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_type = ctx.id("LUT4");
     let name1 = ctx.id("cell1");
@@ -149,7 +143,7 @@ fn bind_bel_duplicate_fails() {
 
 #[test]
 fn unbind_bel() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(2, 0);
     let cell_type = ctx.id("LUT4");
     let cell_name = ctx.id("my_lut");
@@ -169,7 +163,7 @@ fn unbind_bel() {
 
 #[test]
 fn unbind_bel_not_bound_is_noop() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
     ctx.unbind_bel(bel);
     assert!(ctx.bel(bel).is_available());
@@ -177,7 +171,7 @@ fn unbind_bel_not_bound_is_noop() {
 
 #[test]
 fn bind_rebind_bel() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_type = ctx.id("LUT4");
     let name1 = ctx.id("cell_a");
@@ -197,7 +191,7 @@ fn bind_rebind_bel() {
 
 #[test]
 fn wire_initially_available() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let wire = WireId::new(0, 0);
     assert!(ctx.wire(wire).is_available());
     assert!(ctx.wire(wire).bound_net().is_none());
@@ -205,7 +199,7 @@ fn wire_initially_available() {
 
 #[test]
 fn bind_wire() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let wire = WireId::new(0, 0);
     let net_name = ctx.id("net_a");
     let net_idx = ctx.design.add_net(net_name);
@@ -216,7 +210,7 @@ fn bind_wire() {
 
 #[test]
 fn unbind_wire() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let wire = WireId::new(0, 1);
     let net_name = ctx.id("net_b");
     let net_idx = ctx.design.add_net(net_name);
@@ -228,7 +222,7 @@ fn unbind_wire() {
 
 #[test]
 fn rebind_wire() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let wire = WireId::new(1, 0);
     let net1 = ctx.id("net_1");
     let net2 = ctx.id("net_2");
@@ -245,14 +239,14 @@ fn rebind_wire() {
 
 #[test]
 fn pip_initially_available() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let pip = PipId::new(0, 0);
     assert!(ctx.pip(pip).is_available());
 }
 
 #[test]
 fn bind_pip() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let pip = PipId::new(0, 0);
     let net_name = ctx.id("net_x");
     let net_idx = ctx.design.add_net(net_name);
@@ -262,7 +256,7 @@ fn bind_pip() {
 
 #[test]
 fn unbind_pip() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let pip = PipId::new(1, 0);
     let net_name = ctx.id("net_y");
     let net_idx = ctx.design.add_net(net_name);
@@ -273,7 +267,7 @@ fn unbind_pip() {
 
 #[test]
 fn pip_src_dst_wires() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let pip = PipId::new(0, 0);
     let src = ctx.pip(pip).src_wire().id();
     let dst = ctx.pip(pip).dst_wire().id();
@@ -287,7 +281,7 @@ fn pip_src_dst_wires() {
 
 #[test]
 fn estimate_delay_same_tile() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let w1 = WireId::new(0, 0);
     let w2 = WireId::new(0, 1);
     assert_eq!(ctx.estimate_delay(w1, w2), 0);
@@ -295,7 +289,7 @@ fn estimate_delay_same_tile() {
 
 #[test]
 fn estimate_delay_adjacent() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let w1 = WireId::new(0, 0);
     let w2 = WireId::new(1, 0);
     assert_eq!(ctx.estimate_delay(w1, w2), 100);
@@ -303,7 +297,7 @@ fn estimate_delay_adjacent() {
 
 #[test]
 fn estimate_delay_diagonal() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let w1 = WireId::new(0, 0);
     let w2 = WireId::new(3, 0);
     assert_eq!(ctx.estimate_delay(w1, w2), 200);
@@ -311,7 +305,7 @@ fn estimate_delay_diagonal() {
 
 #[test]
 fn estimate_delay_symmetric() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let w1 = WireId::new(0, 0);
     let w2 = WireId::new(3, 0);
     assert_eq!(ctx.estimate_delay(w1, w2), ctx.estimate_delay(w2, w1));
@@ -319,14 +313,14 @@ fn estimate_delay_symmetric() {
 
 #[test]
 fn pip_delay_returns_default() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let pip = PipId::new(0, 0);
     assert_eq!(ctx.pip(pip).delay(), DelayQuad::default());
 }
 
 #[test]
 fn wire_delay_returns_default() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let wire = WireId::new(0, 0);
     assert_eq!(ctx.wire(wire).delay(), DelayQuad::default());
 }
@@ -337,7 +331,7 @@ fn wire_delay_returns_default() {
 
 #[test]
 fn valid_bel_for_matching_type() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_type = ctx.id("LUT4");
     assert!(ctx.bel(bel).is_valid_for_cell_type(cell_type));
@@ -345,7 +339,7 @@ fn valid_bel_for_matching_type() {
 
 #[test]
 fn invalid_bel_for_mismatched_type() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_type = ctx.id("FF");
     assert!(!ctx.bel(bel).is_valid_for_cell_type(cell_type));
@@ -357,13 +351,13 @@ fn invalid_bel_for_mismatched_type() {
 
 #[test]
 fn bel_buckets_empty_before_populate() {
-    let ctx = make_context();
+    let ctx = common::make_context();
     assert!(ctx.bel_buckets().is_empty());
 }
 
 #[test]
 fn populate_bel_buckets() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
     let buckets = ctx.bel_buckets();
@@ -375,10 +369,11 @@ fn populate_bel_buckets() {
 
 #[test]
 fn get_bels_for_bucket() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
-    let lut_bels: Vec<BelId> = ctx.bels_for_bucket("LUT4").map(|b| b.id()).collect();
+    let lut_bucket = ctx.id("LUT4");
+    let lut_bels: Vec<BelId> = ctx.bels_for_bucket(lut_bucket).map(|b| b.id()).collect();
     assert_eq!(lut_bels.len(), 4);
 
     let mut unique = std::collections::HashSet::new();
@@ -389,14 +384,15 @@ fn get_bels_for_bucket() {
 
 #[test]
 fn get_bels_for_unknown_bucket() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
-    assert_eq!(ctx.bels_for_bucket("NONEXISTENT").count(), 0);
+    let bogus = ctx.id("NONEXISTENT");
+    assert_eq!(ctx.bels_for_bucket(bogus).count(), 0);
 }
 
 #[test]
 fn populate_bel_buckets_idempotent() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
     let first = ctx.bel_buckets().len();
     ctx.populate_bel_buckets();
@@ -410,14 +406,14 @@ fn populate_bel_buckets_idempotent() {
 
 #[test]
 fn full_placement_flow() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
     let cell_type_id = ctx.id("LUT4");
     let cell_name = ctx.id("top/lut_0");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type_id);
 
-    let lut_bels: Vec<BelId> = ctx.bels_for_bucket("LUT4").map(|b| b.id()).collect();
+    let lut_bels: Vec<BelId> = ctx.bels_for_bucket(cell_type_id).map(|b| b.id()).collect();
     assert!(!lut_bels.is_empty());
     let target_bel = lut_bels[0];
 
@@ -435,7 +431,7 @@ fn full_placement_flow() {
 
 #[test]
 fn full_routing_flow() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
 
     let net_name = ctx.id("net_clk");
     let net_idx = ctx.design.add_net(net_name);
@@ -462,7 +458,7 @@ fn full_routing_flow() {
 
 #[test]
 fn settings_operations() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let key = ctx.id("opt_level");
     ctx.settings_mut()
         .insert(key, nextpnr::types::Property::int(2));
@@ -474,8 +470,8 @@ fn settings_operations() {
 
 #[test]
 fn rng_deterministic_from_context() {
-    let mut ctx1 = make_context();
-    let mut ctx2 = make_context();
+    let mut ctx1 = common::make_context();
+    let mut ctx2 = common::make_context();
     let v1 = ctx1.rng_mut().next_u64();
     let v2 = ctx2.rng_mut().next_u64();
     assert_eq!(v1, v2);

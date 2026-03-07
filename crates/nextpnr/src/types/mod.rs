@@ -14,7 +14,7 @@ mod property;
 // Re-export all public types at the crate root for convenience.
 pub use delay::{DelayPair, DelayQuad, DelayT};
 pub use enums::{ClockEdge, PlaceStrength, PortType, TimingPortClass};
-pub use id_string::{IdString, IdStringPool};
+pub use id_string::{IdString, IdStringPool, IntoIdString};
 pub use ids::{BelId, PipId, WireId};
 pub use loc::Loc;
 pub use property::Property;

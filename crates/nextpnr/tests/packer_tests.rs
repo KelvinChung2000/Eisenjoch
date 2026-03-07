@@ -1,14 +1,9 @@
 //! Integration tests for the packer module (public API only).
 
-use nextpnr::chipdb::testutil::make_test_chipdb;
-use nextpnr::context::Context;
+mod common;
+
 use nextpnr::packer::{pack, PackerError};
 use nextpnr::plugin::{PackerPlugin, PluginContext, PluginError};
-
-fn make_test_ctx() -> Context {
-    let chipdb = make_test_chipdb();
-    Context::new(chipdb)
-}
 
 // =====================================================================
 // PackerError tests
@@ -30,7 +25,7 @@ fn packer_error_unsupported_cell_type_display() {
 fn packer_error_plugin_display() {
     let plugin_err = PluginError::Generic("plugin broke".into());
     let err = PackerError::Plugin(plugin_err);
-    assert_eq!(err.to_string(), "Plugin error: Plugin error: plugin broke");
+    assert_eq!(err.to_string(), "Plugin error: plugin broke");
 }
 
 #[test]
@@ -74,7 +69,7 @@ impl PackerPlugin for FailingPacker {
 
 #[test]
 fn pack_delegates_to_plugin() {
-    let mut ctx = make_test_ctx();
+    let mut ctx = common::make_context();
     let mut packer = TrackingPacker::new();
     let result = pack(&mut ctx, Some(&mut packer));
     assert!(result.is_ok());
@@ -83,7 +78,7 @@ fn pack_delegates_to_plugin() {
 
 #[test]
 fn pack_plugin_error_is_propagated() {
-    let mut ctx = make_test_ctx();
+    let mut ctx = common::make_context();
     let mut packer = FailingPacker;
     let result = pack(&mut ctx, Some(&mut packer));
     assert!(result.is_err());
@@ -95,7 +90,7 @@ fn pack_plugin_error_is_propagated() {
 
 #[test]
 fn pack_without_plugin_uses_default() {
-    let mut ctx = make_test_ctx();
+    let mut ctx = common::make_context();
     let result = pack(&mut ctx, None);
     assert!(result.is_ok());
 }

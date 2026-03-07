@@ -11,6 +11,7 @@ use crate::netlist::{CellId, NetId};
 use crate::types::{BelId, PlaceStrength};
 use log::{debug, info};
 
+use super::common;
 use super::common::{initial_placement, net_hpwl, total_hpwl};
 use super::PlacerError;
 
@@ -266,10 +267,8 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
                 None => continue,
             };
 
-            // Get the cell type name for bucket lookup.
-            let cell_type_name = ctx.name_of(cell_type).to_owned();
             let bucket_bels: Vec<_> = ctx
-                .bels_for_bucket(&cell_type_name)
+                .bels_for_bucket(cell_type)
                 .map(|bel| bel.id())
                 .collect();
             let num_bucket_bels = bucket_bels.len();
@@ -355,15 +354,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
     info!("SA Placer: final HPWL cost = {:.2}", current_cost);
 
     // Step 4: final validation -- check all alive cells are placed.
-    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
-        if cell.bel.is_none() {
-            return Err(PlacerError::PlacementFailed(format!(
-                "Cell {} (index {}) is alive but has no BEL after placement",
-                ctx.name_of(cell.name),
-                cell_idx.slot()
-            )));
-        }
-    }
+    common::validate_all_placed(ctx)?;
 
     Ok(())
 }

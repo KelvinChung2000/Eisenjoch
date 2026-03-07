@@ -154,3 +154,26 @@ impl fmt::Debug for IdStringPool {
             .finish()
     }
 }
+
+/// Trait for types that can be converted to an IdString via a pool.
+pub trait IntoIdString {
+    fn into_id(self, pool: &IdStringPool) -> IdString;
+}
+
+impl IntoIdString for &str {
+    fn into_id(self, pool: &IdStringPool) -> IdString {
+        pool.intern(self)
+    }
+}
+
+impl IntoIdString for IdString {
+    fn into_id(self, _pool: &IdStringPool) -> IdString {
+        self
+    }
+}
+
+impl IntoIdString for &String {
+    fn into_id(self, pool: &IdStringPool) -> IdString {
+        pool.intern(self.as_str())
+    }
+}

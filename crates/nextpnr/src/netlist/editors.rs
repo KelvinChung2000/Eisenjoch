@@ -1,6 +1,6 @@
 use crate::types::{BelId, DelayT, IdString, PipId, PlaceStrength, PortType, Property, WireId};
 
-use super::{CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap, PortInfo, PortRef, TimingIndex};
+use super::{CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap, PortRef, TimingIndex};
 
 pub struct CellEditor<'a> {
     cell: &'a mut CellInfo,
@@ -11,59 +11,71 @@ impl<'a> CellEditor<'a> {
         Self { cell }
     }
 
-    pub fn set_bel(&mut self, bel: Option<BelId>, strength: PlaceStrength) {
+    pub fn set_bel(&mut self, bel: Option<BelId>, strength: PlaceStrength) -> &mut Self {
         self.cell.bel = bel;
         self.cell.bel_strength = strength;
+        self
     }
 
-    pub fn add_port(&mut self, name: IdString, port_type: PortType) -> &mut PortInfo {
-        self.cell.add_port(name, port_type)
+    pub fn add_port(&mut self, name: IdString, port_type: PortType) -> &mut Self {
+        self.cell.add_port(name, port_type);
+        self
     }
 
-    pub fn set_port_net(&mut self, port: IdString, net: Option<NetId>, user_idx: Option<u32>) {
+    pub fn set_port_net(&mut self, port: IdString, net: Option<NetId>, user_idx: Option<u32>) -> &mut Self {
         if let Some(p) = self.cell.port_mut(port) {
             p.net = net;
             p.user_idx = user_idx;
         }
+        self
     }
 
-    pub fn rename_port(&mut self, old: IdString, new: IdString) {
+    pub fn rename_port(&mut self, old: IdString, new: IdString) -> &mut Self {
         if let Some(mut port_info) = self.cell.ports.remove(&old) {
             port_info.name = new;
             self.cell.ports.insert(new, port_info);
         }
+        self
     }
 
-    pub fn set_type(&mut self, cell_type: IdString) {
+    pub fn set_type(&mut self, cell_type: IdString) -> &mut Self {
         self.cell.cell_type = cell_type;
+        self
     }
 
-    pub fn set_attr(&mut self, key: IdString, value: Property) {
+    pub fn set_attr(&mut self, key: IdString, value: Property) -> &mut Self {
         self.cell.attrs.insert(key, value);
+        self
     }
 
-    pub fn set_param(&mut self, key: IdString, value: Property) {
+    pub fn set_param(&mut self, key: IdString, value: Property) -> &mut Self {
         self.cell.params.insert(key, value);
+        self
     }
 
-    pub fn set_cluster(&mut self, root: Option<CellId>) {
+    pub fn set_cluster(&mut self, root: Option<CellId>) -> &mut Self {
         self.cell.cluster = root;
+        self
     }
 
-    pub fn set_region(&mut self, region: Option<u32>) {
+    pub fn set_region(&mut self, region: Option<u32>) -> &mut Self {
         self.cell.region = region;
+        self
     }
 
-    pub fn set_flat_index(&mut self, idx: Option<FlatIndex>) {
+    pub fn set_flat_index(&mut self, idx: Option<FlatIndex>) -> &mut Self {
         self.cell.flat_index = idx;
+        self
     }
 
-    pub fn set_timing_index(&mut self, idx: Option<TimingIndex>) {
+    pub fn set_timing_index(&mut self, idx: Option<TimingIndex>) -> &mut Self {
         self.cell.timing_index = idx;
+        self
     }
 
-    pub fn mark_dead(&mut self) {
+    pub fn mark_dead(&mut self) -> &mut Self {
         self.cell.alive = false;
+        self
     }
 }
 
@@ -76,12 +88,14 @@ impl<'a> NetEditor<'a> {
         Self { net }
     }
 
-    pub fn set_driver_raw(&mut self, driver: PortRef) {
+    pub fn set_driver_raw(&mut self, driver: PortRef) -> &mut Self {
         self.net.driver = driver;
+        self
     }
 
-    pub fn clear_driver(&mut self) {
+    pub fn clear_driver(&mut self) -> &mut Self {
         self.net.driver = PortRef::unconnected();
+        self
     }
 
     pub fn add_user(&mut self, cell: CellId, port: IdString) -> u32 {
@@ -96,37 +110,45 @@ impl<'a> NetEditor<'a> {
         idx
     }
 
-    pub fn disconnect_user(&mut self, user_idx: usize) {
+    pub fn disconnect_user(&mut self, user_idx: usize) -> &mut Self {
         if user_idx < self.net.users.len() {
             self.net.users[user_idx] = PortRef::unconnected();
         }
+        self
     }
 
-    pub fn add_wire(&mut self, wire: WireId, pip: Option<PipId>, strength: PlaceStrength) {
+    pub fn add_wire(&mut self, wire: WireId, pip: Option<PipId>, strength: PlaceStrength) -> &mut Self {
         self.net.wires.insert(wire, PipMap { pip, strength });
+        self
     }
 
-    pub fn clear_wires(&mut self) {
+    pub fn clear_wires(&mut self) -> &mut Self {
         self.net.wires.clear();
+        self
     }
 
-    pub fn set_name(&mut self, name: IdString) {
+    pub fn set_name(&mut self, name: IdString) -> &mut Self {
         self.net.name = name;
+        self
     }
 
-    pub fn set_clock_constraint(&mut self, period_ps: DelayT) {
+    pub fn set_clock_constraint(&mut self, period_ps: DelayT) -> &mut Self {
         self.net.clock_constraint = period_ps;
+        self
     }
 
-    pub fn set_attr(&mut self, key: IdString, value: Property) {
+    pub fn set_attr(&mut self, key: IdString, value: Property) -> &mut Self {
         self.net.attrs.insert(key, value);
+        self
     }
 
-    pub fn set_region(&mut self, region: Option<u32>) {
+    pub fn set_region(&mut self, region: Option<u32>) -> &mut Self {
         self.net.region = region;
+        self
     }
 
-    pub fn mark_dead(&mut self) {
+    pub fn mark_dead(&mut self) -> &mut Self {
         self.net.alive = false;
+        self
     }
 }

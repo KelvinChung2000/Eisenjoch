@@ -1,3 +1,4 @@
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
@@ -144,11 +145,35 @@ macro_rules! define_view {
     };
 }
 
-define_view!(Bel, BelId);
-define_view!(Wire, WireId);
-define_view!(Pip, PipId);
+macro_rules! define_hardware_view {
+    ($name:ident, $id_type:ty) => {
+        define_view!($name, $id_type);
+
+        impl fmt::Display for $name<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.id.fmt(f)
+            }
+        }
+    };
+}
+
+define_hardware_view!(Bel, BelId);
+define_hardware_view!(Wire, WireId);
+define_hardware_view!(Pip, PipId);
 define_view!(Cell, CellId);
 define_view!(Net, NetId);
+
+impl fmt::Display for Cell<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl fmt::Display for Net<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
 
 impl<'a> Bel<'a> {
     #[inline]
@@ -244,6 +269,16 @@ impl<'a> Net<'a> {
 
     #[inline]
     pub fn num_users(&self) -> usize { self.info().num_users() }
+
+    #[inline]
+    pub fn connected_users(&self) -> impl Iterator<Item = &'a PortRef> {
+        self.info().users.iter().filter(|u| u.is_connected())
+    }
+
+    #[inline]
+    pub fn fanout(&self) -> usize {
+        self.connected_users().count()
+    }
 
     #[inline]
     pub fn clock_constraint(&self) -> DelayT { self.info().clock_constraint }

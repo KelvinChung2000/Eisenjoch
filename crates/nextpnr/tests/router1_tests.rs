@@ -1,15 +1,9 @@
-use nextpnr::chipdb::testutil::make_test_chipdb;
-use nextpnr::context::Context;
+mod common;
+
 use nextpnr::netlist::PortRef;
 use nextpnr::router::router1::{route_router1, Router1Cfg};
 use nextpnr::router::{Router, Router1, RouterError};
 use nextpnr::types::{BelId, PlaceStrength, PortType};
-
-/// Create a fresh Context backed by the synthetic 2x2 chipdb.
-fn make_context() -> Context {
-    let chipdb = make_test_chipdb();
-    Context::new(chipdb)
-}
 
 // =====================================================================
 // Router1Cfg defaults
@@ -56,7 +50,7 @@ fn router_error_generic() {
 
 #[test]
 fn route_empty_design() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let cfg = Router1Cfg::default();
     let result = route_router1(&mut ctx, &cfg);
     assert!(result.is_ok());
@@ -64,7 +58,7 @@ fn route_empty_design() {
 
 #[test]
 fn route_design_with_no_routable_nets() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let net_name = ctx.id("no_driver");
     ctx.design.add_net(net_name);
 
@@ -75,7 +69,7 @@ fn route_design_with_no_routable_nets() {
 
 #[test]
 fn route_design_with_no_users() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let lut_type = ctx.id("LUT4");
     let port = ctx.id("I0");
 
@@ -99,7 +93,7 @@ fn route_design_with_no_users() {
 
 #[test]
 fn route_via_trait() {
-    let mut ctx = make_context();
+    let mut ctx = common::make_context();
     let cfg = Router1Cfg::default();
     Router1.route(&mut ctx, &cfg).expect("trait dispatch should work");
 }

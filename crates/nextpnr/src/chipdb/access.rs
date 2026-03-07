@@ -85,6 +85,14 @@ impl ChipDb {
             .expect("bel_info: BEL index out of bounds")
     }
 
+    /// Extract (name_constid, wire_index) from a BEL pin, encapsulating unsafe access.
+    #[inline]
+    pub fn bel_pin_fields(&self, pin: &BelPinPod) -> (i32, i32) {
+        let name: i32 = unsafe { read_packed!(*pin, name) };
+        let wire: i32 = unsafe { read_packed!(*pin, wire) };
+        (name, wire)
+    }
+
     #[inline]
     pub fn wire_info(&self, wire: WireId) -> &TileWireDataPod {
         self.wire_info_checked(wire)

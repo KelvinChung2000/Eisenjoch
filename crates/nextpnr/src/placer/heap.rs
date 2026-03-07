@@ -16,6 +16,7 @@ use crate::types::PlaceStrength;
 use log::{debug, info};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::common;
 use super::common::initial_placement;
 use super::PlacerError;
 
@@ -772,9 +773,9 @@ impl HeapState {
             let target_x = self.cell_x[idx];
             let target_y = self.cell_y[idx];
 
-            let (cell_type_name, cell_name) = {
+            let (cell_type_id, cell_type_name, cell_name) = {
                 let cell = ctx.cell(cell_idx);
-                (cell.cell_type().to_owned(), cell.name().to_owned())
+                (cell.cell_type_id(), cell.cell_type().to_owned(), cell.name().to_owned())
             };
 
             // Find the nearest available BEL.
@@ -782,7 +783,7 @@ impl HeapState {
             let mut best_dist = f64::MAX;
             let mut has_bucket_bel = false;
 
-            for bel in ctx.bels_for_bucket(&cell_type_name) {
+            for bel in ctx.bels_for_bucket(cell_type_id) {
                 has_bucket_bel = true;
                 if !bel.is_available() {
                     continue;
@@ -895,15 +896,7 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     }
 
     // Final validation: check all alive cells are placed.
-    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
-        if cell.bel.is_none() {
-            return Err(PlacerError::PlacementFailed(format!(
-                "Cell {} (index {}) is alive but has no BEL after placement",
-                ctx.name_of(cell.name),
-                cell_idx.slot()
-            )));
-        }
-    }
+    common::validate_all_placed(ctx)?;
 
     info!("HeAP Placer: done.");
     Ok(())

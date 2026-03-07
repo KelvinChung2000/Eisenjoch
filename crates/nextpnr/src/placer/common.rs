@@ -92,7 +92,7 @@ pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Find all BELs matching this cell type's bucket.
         let bucket_bels: Vec<_> = ctx
-            .bels_for_bucket(&cell_type_name)
+            .bels_for_bucket(cell_type)
             .map(|bel| bel.id())
             .collect();
         if bucket_bels.is_empty() {
@@ -135,5 +135,19 @@ pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
         }
     }
 
+    Ok(())
+}
+
+/// Validate that all alive cells have been placed on a BEL.
+pub(crate) fn validate_all_placed(ctx: &Context) -> Result<(), PlacerError> {
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
+        if cell.bel.is_none() {
+            return Err(PlacerError::PlacementFailed(format!(
+                "Cell {} (index {}) is alive but has no BEL after placement",
+                ctx.name_of(cell.name),
+                cell_idx.slot()
+            )));
+        }
+    }
     Ok(())
 }

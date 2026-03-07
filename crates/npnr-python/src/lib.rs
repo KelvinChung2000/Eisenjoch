@@ -6,7 +6,7 @@ use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use ::nextpnr::chipdb::ChipDb;
-use ::nextpnr::context::{Context, DeterministicRng};
+use ::nextpnr::context::Context;
 use ::nextpnr::frontend::parse_json;
 use ::nextpnr::placer::Placer;
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
@@ -108,14 +108,12 @@ impl PyContext {
             "heap" => {
                 let mut cfg = PlacerHeapCfg::default();
                 cfg.seed = seed;
-                *self.ctx.rng_mut() = DeterministicRng::new(seed);
                 PlacerHeap.place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("HeAP placer error: {}", e)))
             }
             "sa" => {
                 let mut cfg = PlacerSaCfg::default();
                 cfg.seed = seed;
-                *self.ctx.rng_mut() = DeterministicRng::new(seed);
                 PlacerSa.place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
