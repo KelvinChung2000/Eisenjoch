@@ -1,4 +1,4 @@
-use nextpnr::netlist::{CellId, Design, NetId, PortRef};
+use nextpnr::netlist::{CellId, Design, NetId};
 use nextpnr::timing::{topological_sort, ClockDomain, TimingAnalyser};
 use nextpnr::types::{ClockEdge, IdString, IdStringPool, PortType, TimingPortClass};
 use std::collections::HashSet;
@@ -50,55 +50,31 @@ fn make_comb_chain_design(pool: &IdStringPool) -> Design {
     // Create nets and wire them up.
     // net_in: input_cell.O -> lut_a.A
     let net_in_idx = d.add_net(net_in);
-    d.net_edit(net_in_idx).set_driver_raw(PortRef {
-        cell: Some(input_idx),
-        port: o_port,
-        budget: 0,
-    });
+    d.net_edit(net_in_idx).set_driver(input_idx, o_port);
     d.cell_edit(input_idx)
         .set_port_net(o_port, Some(net_in_idx), None);
 
-    let user_idx = d.net_edit(net_in_idx).add_user_raw(PortRef {
-        cell: Some(lut_a_idx),
-        port: a_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_in_idx).add_user(lut_a_idx, a_port);
     d.cell_edit(lut_a_idx)
         .set_port_net(a_port, Some(net_in_idx), Some(user_idx));
 
     // net_ab: lut_a.F -> lut_b.A
     let net_ab_idx = d.add_net(net_ab);
-    d.net_edit(net_ab_idx).set_driver_raw(PortRef {
-        cell: Some(lut_a_idx),
-        port: f_port,
-        budget: 0,
-    });
+    d.net_edit(net_ab_idx).set_driver(lut_a_idx, f_port);
     d.cell_edit(lut_a_idx)
         .set_port_net(f_port, Some(net_ab_idx), None);
 
-    let user_idx = d.net_edit(net_ab_idx).add_user_raw(PortRef {
-        cell: Some(lut_b_idx),
-        port: a_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_ab_idx).add_user(lut_b_idx, a_port);
     d.cell_edit(lut_b_idx)
         .set_port_net(a_port, Some(net_ab_idx), Some(user_idx));
 
     // net_out: lut_b.F -> output_cell.I
     let net_out_idx = d.add_net(net_out);
-    d.net_edit(net_out_idx).set_driver_raw(PortRef {
-        cell: Some(lut_b_idx),
-        port: f_port,
-        budget: 0,
-    });
+    d.net_edit(net_out_idx).set_driver(lut_b_idx, f_port);
     d.cell_edit(lut_b_idx)
         .set_port_net(f_port, Some(net_out_idx), None);
 
-    let user_idx = d.net_edit(net_out_idx).add_user_raw(PortRef {
-        cell: Some(output_idx),
-        port: i_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_out_idx).add_user(output_idx, i_port);
     d.cell_edit(output_idx)
         .set_port_net(i_port, Some(net_out_idx), Some(user_idx));
 
@@ -150,55 +126,31 @@ fn make_reg_to_reg_design(pool: &IdStringPool) -> (Design, IdString) {
     d.net_edit(clk_net_idx).set_clock_constraint(10_000); // 10ns = 100 MHz
 
     // Connect clock to FF_A.CLK and FF_B.CLK (no driver cell for clk).
-    let user_idx = d.net_edit(clk_net_idx).add_user_raw(PortRef {
-        cell: Some(ff_a_idx),
-        port: clk_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(clk_net_idx).add_user(ff_a_idx, clk_port);
     d.cell_edit(ff_a_idx)
         .set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
 
-    let user_idx = d.net_edit(clk_net_idx).add_user_raw(PortRef {
-        cell: Some(ff_b_idx),
-        port: clk_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(clk_net_idx).add_user(ff_b_idx, clk_port);
     d.cell_edit(ff_b_idx)
         .set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
 
     // net_q: FF_A.Q -> LUT.A
     let net_q_idx = d.add_net(net_q);
-    d.net_edit(net_q_idx).set_driver_raw(PortRef {
-        cell: Some(ff_a_idx),
-        port: q_port,
-        budget: 0,
-    });
+    d.net_edit(net_q_idx).set_driver(ff_a_idx, q_port);
     d.cell_edit(ff_a_idx)
         .set_port_net(q_port, Some(net_q_idx), None);
 
-    let user_idx = d.net_edit(net_q_idx).add_user_raw(PortRef {
-        cell: Some(lut_idx),
-        port: a_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_q_idx).add_user(lut_idx, a_port);
     d.cell_edit(lut_idx)
         .set_port_net(a_port, Some(net_q_idx), Some(user_idx));
 
     // net_f: LUT.F -> FF_B.D
     let net_f_idx = d.add_net(net_f);
-    d.net_edit(net_f_idx).set_driver_raw(PortRef {
-        cell: Some(lut_idx),
-        port: f_port,
-        budget: 0,
-    });
+    d.net_edit(net_f_idx).set_driver(lut_idx, f_port);
     d.cell_edit(lut_idx)
         .set_port_net(f_port, Some(net_f_idx), None);
 
-    let user_idx = d.net_edit(net_f_idx).add_user_raw(PortRef {
-        cell: Some(ff_b_idx),
-        port: d_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_f_idx).add_user(ff_b_idx, d_port);
     d.cell_edit(ff_b_idx)
         .set_port_net(d_port, Some(net_f_idx), Some(user_idx));
 
@@ -249,11 +201,7 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
     let clk1_idx = d.add_net(clk1_net_name);
     d.net_edit(clk1_idx).set_clock_constraint(10_000); // 100 MHz
 
-    let user_idx = d.net_edit(clk1_idx).add_user_raw(PortRef {
-        cell: Some(ff_a_idx),
-        port: clk_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(clk1_idx).add_user(ff_a_idx, clk_port);
     d.cell_edit(ff_a_idx)
         .set_port_net(clk_port, Some(clk1_idx), Some(user_idx));
 
@@ -261,47 +209,27 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
     let clk2_idx = d.add_net(clk2_net_name);
     d.net_edit(clk2_idx).set_clock_constraint(5_000); // 200 MHz
 
-    let user_idx = d.net_edit(clk2_idx).add_user_raw(PortRef {
-        cell: Some(ff_b_idx),
-        port: clk_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(clk2_idx).add_user(ff_b_idx, clk_port);
     d.cell_edit(ff_b_idx)
         .set_port_net(clk_port, Some(clk2_idx), Some(user_idx));
 
     // net_q: FF_A.Q -> LUT.A
     let net_q_idx = d.add_net(net_q);
-    d.net_edit(net_q_idx).set_driver_raw(PortRef {
-        cell: Some(ff_a_idx),
-        port: q_port,
-        budget: 0,
-    });
+    d.net_edit(net_q_idx).set_driver(ff_a_idx, q_port);
     d.cell_edit(ff_a_idx)
         .set_port_net(q_port, Some(net_q_idx), None);
 
-    let user_idx = d.net_edit(net_q_idx).add_user_raw(PortRef {
-        cell: Some(lut_idx),
-        port: a_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_q_idx).add_user(lut_idx, a_port);
     d.cell_edit(lut_idx)
         .set_port_net(a_port, Some(net_q_idx), Some(user_idx));
 
     // net_f: LUT.F -> FF_B.D
     let net_f_idx = d.add_net(net_f);
-    d.net_edit(net_f_idx).set_driver_raw(PortRef {
-        cell: Some(lut_idx),
-        port: f_port,
-        budget: 0,
-    });
+    d.net_edit(net_f_idx).set_driver(lut_idx, f_port);
     d.cell_edit(lut_idx)
         .set_port_net(f_port, Some(net_f_idx), None);
 
-    let user_idx = d.net_edit(net_f_idx).add_user_raw(PortRef {
-        cell: Some(ff_b_idx),
-        port: d_port,
-        budget: 0,
-    });
+    let user_idx = d.net_edit(net_f_idx).add_user(ff_b_idx, d_port);
     d.cell_edit(ff_b_idx)
         .set_port_net(d_port, Some(net_f_idx), Some(user_idx));
 
@@ -449,33 +377,17 @@ fn sort_chain_of_three() {
     // a.O -> b.I
     let n1_name = pool.intern("n1");
     let n1 = d.add_net(n1_name);
-    d.net_edit(n1).set_driver_raw(PortRef {
-        cell: Some(a_idx),
-        port: o,
-        budget: 0,
-    });
+    d.net_edit(n1).set_driver(a_idx, o);
     d.cell_edit(a_idx).set_port_net(o, Some(n1), None);
-    d.net_edit(n1).add_user_raw(PortRef {
-        cell: Some(b_idx),
-        port: i,
-        budget: 0,
-    });
+    d.net_edit(n1).add_user(b_idx, i);
     d.cell_edit(b_idx).set_port_net(i, Some(n1), None);
 
     // b.O -> c.I
     let n2_name = pool.intern("n2");
     let n2 = d.add_net(n2_name);
-    d.net_edit(n2).set_driver_raw(PortRef {
-        cell: Some(b_idx),
-        port: o,
-        budget: 0,
-    });
+    d.net_edit(n2).set_driver(b_idx, o);
     d.cell_edit(b_idx).set_port_net(o, Some(n2), None);
-    d.net_edit(n2).add_user_raw(PortRef {
-        cell: Some(c_idx),
-        port: i,
-        budget: 0,
-    });
+    d.net_edit(n2).add_user(c_idx, i);
     d.cell_edit(c_idx).set_port_net(i, Some(n2), None);
 
     let sorted = topological_sort(&d);
@@ -508,23 +420,11 @@ fn sort_fanout() {
 
     // a.O -> b.I and a.O -> c.I (fanout of 2)
     let n1 = d.add_net(pool.intern("n1"));
-    d.net_edit(n1).set_driver_raw(PortRef {
-        cell: Some(a_idx),
-        port: o,
-        budget: 0,
-    });
+    d.net_edit(n1).set_driver(a_idx, o);
     d.cell_edit(a_idx).set_port_net(o, Some(n1), None);
-    d.net_edit(n1).add_user_raw(PortRef {
-        cell: Some(b_idx),
-        port: i,
-        budget: 0,
-    });
+    d.net_edit(n1).add_user(b_idx, i);
     d.cell_edit(b_idx).set_port_net(i, Some(n1), None);
-    d.net_edit(n1).add_user_raw(PortRef {
-        cell: Some(c_idx),
-        port: i,
-        budget: 0,
-    });
+    d.net_edit(n1).add_user(c_idx, i);
     d.cell_edit(c_idx).set_port_net(i, Some(n1), None);
 
     let sorted = topological_sort(&d);

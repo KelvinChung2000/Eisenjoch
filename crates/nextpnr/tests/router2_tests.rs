@@ -1,6 +1,5 @@
 mod common;
 
-use nextpnr::netlist::PortRef;
 use nextpnr::router::router2::{route_router2, Router2Cfg};
 use nextpnr::router::{Router, Router2, RouterError};
 use nextpnr::types::{BelId, PlaceStrength, PortType};
@@ -85,11 +84,7 @@ fn route_r2_design_with_no_users() {
 
     let net_name = ctx.id("driveronly");
     let net_idx = ctx.design.add_net(net_name);
-    ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
-        cell: Some(cell_idx),
-        port,
-        budget: 0,
-    });
+    ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
 
     let cfg = Router2Cfg::default();
     let result = route_router2(&mut ctx, &cfg);
@@ -104,22 +99,16 @@ fn route_r2_same_pin_driver_and_sink() {
 
     let cell_name = ctx.id("cell_a");
     let cell_idx = ctx.design.add_cell(cell_name, lut_type);
-    ctx.design.cell_edit(cell_idx).add_port(port_name, PortType::Out);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_name, PortType::Out);
     ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
 
     let net_name = ctx.id("net_self");
     let net_idx = ctx.design.add_net(net_name);
 
-    ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
-        cell: Some(cell_idx),
-        port: port_name,
-        budget: 0,
-    });
-    ctx.design.net_edit(net_idx).add_user_raw(PortRef {
-        cell: Some(cell_idx),
-        port: port_name,
-        budget: 0,
-    });
+    ctx.design.net_edit(net_idx).set_driver(cell_idx, port_name);
+    ctx.design.net_edit(net_idx).add_user(cell_idx, port_name);
 
     let cfg = Router2Cfg::default();
     let result = route_router2(&mut ctx, &cfg);
@@ -130,5 +119,7 @@ fn route_r2_same_pin_driver_and_sink() {
 fn route_r2_via_trait() {
     let mut ctx = common::make_context();
     let cfg = Router2Cfg::default();
-    Router2.route(&mut ctx, &cfg).expect("trait dispatch should work");
+    Router2
+        .route(&mut ctx, &cfg)
+        .expect("trait dispatch should work");
 }

@@ -79,7 +79,7 @@ impl Default for PlacerHeapCfg {
 ///
 /// Represents the system A*x = b where A is a symmetric positive-definite
 /// matrix stored as diagonal elements plus off-diagonal (i, j, weight) triples.
-pub(crate) struct SparseSystem {
+pub struct SparseSystem {
     /// Number of variables.
     pub n: usize,
     /// Diagonal elements of A.
@@ -149,7 +149,7 @@ impl SparseSystem {
 /// A is represented by its diagonal and a list of upper-triangle off-diagonal
 /// entries (i, j, weight) where i < j. The matrix is symmetric, so each
 /// off-diagonal entry contributes to both (i,j) and (j,i).
-pub(crate) fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &mut [f64]) {
+pub fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &mut [f64]) {
     let n = diag.len();
     for i in 0..n {
         result[i] = diag[i] * x[i];
@@ -168,7 +168,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 /// Conjugate Gradient solver for the symmetric positive-definite system A*x = b.
 ///
 /// Returns the number of iterations performed.
-pub(crate) fn conjugate_gradient(
+pub fn conjugate_gradient(
     diag: &[f64],
     off_diag: &[(usize, usize, f64)],
     rhs: &[f64],
@@ -262,7 +262,7 @@ struct Region {
 }
 
 /// Internal state for the HeAP algorithm.
-pub(crate) struct HeapState {
+pub struct HeapState {
     pub cfg: PlacerHeapCfg,
     /// Movable cells (alive, not locked).
     pub movable_cells: Vec<CellId>,
@@ -775,7 +775,11 @@ impl HeapState {
 
             let (cell_type_id, cell_type_name, cell_name) = {
                 let cell = ctx.cell(cell_idx);
-                (cell.cell_type_id(), cell.cell_type().to_owned(), cell.name().to_owned())
+                (
+                    cell.cell_type_id(),
+                    cell.cell_type().to_owned(),
+                    cell.name().to_owned(),
+                )
             };
 
             // Find the nearest available BEL.
@@ -807,8 +811,7 @@ impl HeapState {
                     if !ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer) {
                         return Err(PlacerError::PlacementFailed(format!(
                             "Failed to bind cell {} to BEL {}",
-                            cell_name,
-                            bel,
+                            cell_name, bel,
                         )));
                     }
                     // Update analytical position to match the legal position.
@@ -819,8 +822,7 @@ impl HeapState {
                 None => {
                     return Err(PlacerError::NoBelsAvailable(format!(
                         "{} (no available BELs for cell {})",
-                        cell_type_name,
-                        cell_name,
+                        cell_type_name, cell_name,
                     )));
                 }
             }
@@ -835,8 +837,8 @@ impl HeapState {
 // ---------------------------------------------------------------------------
 
 /// Count how many BELs fall within the given rectangular region.
-#[cfg(test)]
-pub(crate) fn count_bels_in_region(ctx: &Context, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+#[cfg(feature = "test-utils")]
+pub fn count_bels_in_region(ctx: &Context, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
     let mut count = 0;
     for bel in ctx.bels() {
         let loc = bel.loc();
@@ -902,298 +904,3 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     Ok(())
 }
 
-#[cfg(test)]
-#[cfg(feature = "test-utils")]
-mod tests {
-    use super::*;
-    use crate::chipdb::testutil::make_test_chipdb;
-    use crate::context::Context;
-    use crate::netlist::PortRef;
-    use crate::types::PortType;
-
-    fn make_context() -> Context {
-        let chipdb = make_test_chipdb();
-        Context::new(chipdb)
-    }
-
-    fn make_context_with_cells(n: usize) -> Context {
-        assert!(n <= 4, "synthetic chipdb only has 4 BELs");
-        let mut ctx = make_context();
-        ctx.populate_bel_buckets();
-
-        let cell_type = ctx.id("LUT4");
-        let mut cell_names = Vec::new();
-
-        for i in 0..n {
-            let name = ctx.id(&format!("cell_{}", i));
-            ctx.design.add_cell(name, cell_type);
-            cell_names.push(name);
-        }
-
-        if n >= 2 {
-            let net_name = ctx.id("net_0");
-            let net_idx = ctx.design.add_net(net_name);
-            let q_port = ctx.id("Q");
-            let a_port = ctx.id("A");
-
-            let cell0_idx = ctx.design.cell_by_name(cell_names[0]).unwrap();
-            ctx.design.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
-            ctx.design.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
-
-            ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
-                cell: Some(cell0_idx), port: q_port, budget: 0,
-            });
-
-            for i in 1..n {
-                let cell_idx = ctx.design.cell_by_name(cell_names[i]).unwrap();
-                ctx.design.cell_edit(cell_idx).add_port(a_port, PortType::In);
-                let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
-                    cell: Some(cell_idx), port: a_port, budget: 0,
-                });
-                ctx.design.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
-            }
-        }
-
-        ctx
-    }
-
-    // SparseSystem tests
-
-    #[test]
-    fn sparse_system_new() {
-        let sys = SparseSystem::new(3);
-        assert_eq!(sys.n, 3);
-        assert_eq!(sys.diag.len(), 3);
-        assert_eq!(sys.rhs.len(), 3);
-        assert!(sys.off_diag.is_empty());
-        assert!(sys.diag.iter().all(|&d| d == 0.0));
-        assert!(sys.rhs.iter().all(|&r| r == 0.0));
-    }
-
-    #[test]
-    fn sparse_system_add_connection() {
-        let mut sys = SparseSystem::new(3);
-        sys.add_connection(0, 2, 5.0);
-        assert_eq!(sys.diag[0], 5.0);
-        assert_eq!(sys.diag[1], 0.0);
-        assert_eq!(sys.diag[2], 5.0);
-        assert_eq!(sys.off_diag.len(), 1);
-        assert_eq!(sys.off_diag[0].0, 0);
-        assert_eq!(sys.off_diag[0].1, 2);
-        assert_eq!(sys.off_diag[0].2, -5.0);
-    }
-
-    #[test]
-    fn sparse_system_add_connection_self_is_noop() {
-        let mut sys = SparseSystem::new(2);
-        sys.add_connection(1, 1, 3.0);
-        assert_eq!(sys.diag[0], 0.0);
-        assert_eq!(sys.diag[1], 0.0);
-        assert!(sys.off_diag.is_empty());
-    }
-
-    #[test]
-    fn sparse_system_add_anchor() {
-        let mut sys = SparseSystem::new(2);
-        sys.add_anchor(0, 3.0, 2.0);
-        assert_eq!(sys.diag[0], 2.0);
-        assert_eq!(sys.rhs[0], 6.0);
-        assert_eq!(sys.diag[1], 0.0);
-        assert_eq!(sys.rhs[1], 0.0);
-    }
-
-    #[test]
-    fn sparse_system_solve_identity() {
-        let mut sys = SparseSystem::new(3);
-        sys.diag[0] = 1.0;
-        sys.diag[1] = 1.0;
-        sys.diag[2] = 1.0;
-        sys.rhs[0] = 2.0;
-        sys.rhs[1] = 5.0;
-        sys.rhs[2] = -1.0;
-        let mut x = vec![0.0; 3];
-        let iters = sys.solve(&mut x, 1e-10, 100);
-        assert!((x[0] - 2.0).abs() < 1e-6);
-        assert!((x[1] - 5.0).abs() < 1e-6);
-        assert!((x[2] - (-1.0)).abs() < 1e-6);
-        assert!(iters <= 3);
-    }
-
-    #[test]
-    fn sparse_system_solve_with_connections() {
-        let mut sys = SparseSystem::new(2);
-        sys.add_connection(0, 1, 1.0);
-        sys.add_anchor(0, 0.0, 1.0);
-        sys.add_anchor(1, 4.0, 1.0);
-        let mut x = vec![0.0; 2];
-        sys.solve(&mut x, 1e-10, 100);
-        assert!((x[0] - 4.0 / 3.0).abs() < 1e-6);
-        assert!((x[1] - 8.0 / 3.0).abs() < 1e-6);
-    }
-
-    // CG solver tests
-
-    #[test]
-    fn cg_identity_system() {
-        let diag = vec![1.0, 1.0, 1.0];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let rhs = vec![3.0, 7.0, -2.0];
-        let mut x = vec![0.0, 0.0, 0.0];
-        let iters = conjugate_gradient(&diag, &off_diag, &rhs, &mut x, 1e-10, 100);
-        assert!((x[0] - 3.0).abs() < 1e-6);
-        assert!((x[1] - 7.0).abs() < 1e-6);
-        assert!((x[2] - (-2.0)).abs() < 1e-6);
-        assert!(iters <= 3);
-    }
-
-    #[test]
-    fn cg_diagonal_system() {
-        let diag = vec![2.0, 3.0, 5.0];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let rhs = vec![4.0, 9.0, 25.0];
-        let mut x = vec![0.0, 0.0, 0.0];
-        conjugate_gradient(&diag, &off_diag, &rhs, &mut x, 1e-10, 100);
-        assert!((x[0] - 2.0).abs() < 1e-6);
-        assert!((x[1] - 3.0).abs() < 1e-6);
-        assert!((x[2] - 5.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cg_empty_system() {
-        let diag: Vec<f64> = vec![];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let rhs: Vec<f64> = vec![];
-        let mut x: Vec<f64> = vec![];
-        let iters = conjugate_gradient(&diag, &off_diag, &rhs, &mut x, 1e-10, 100);
-        assert_eq!(iters, 0);
-    }
-
-    #[test]
-    fn cg_single_variable() {
-        let diag = vec![4.0];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let rhs = vec![12.0];
-        let mut x = vec![0.0];
-        conjugate_gradient(&diag, &off_diag, &rhs, &mut x, 1e-10, 100);
-        assert!((x[0] - 3.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn cg_with_off_diagonal() {
-        let diag = vec![4.0, 4.0];
-        let off_diag = vec![(0, 1, -1.0)];
-        let rhs = vec![3.0, 3.0];
-        let mut x = vec![0.0, 0.0];
-        conjugate_gradient(&diag, &off_diag, &rhs, &mut x, 1e-10, 100);
-        assert!((x[0] - 1.0).abs() < 1e-6);
-        assert!((x[1] - 1.0).abs() < 1e-6);
-    }
-
-    // SPMV tests
-
-    #[test]
-    fn spmv_identity() {
-        let diag = vec![1.0, 1.0, 1.0];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let x = vec![3.0, 5.0, 7.0];
-        let mut result = vec![0.0; 3];
-        spmv(&diag, &off_diag, &x, &mut result);
-        assert_eq!(result[0], 3.0);
-        assert_eq!(result[1], 5.0);
-        assert_eq!(result[2], 7.0);
-    }
-
-    #[test]
-    fn spmv_diagonal() {
-        let diag = vec![2.0, 3.0, 4.0];
-        let off_diag: Vec<(usize, usize, f64)> = vec![];
-        let x = vec![1.0, 2.0, 3.0];
-        let mut result = vec![0.0; 3];
-        spmv(&diag, &off_diag, &x, &mut result);
-        assert_eq!(result[0], 2.0);
-        assert_eq!(result[1], 6.0);
-        assert_eq!(result[2], 12.0);
-    }
-
-    #[test]
-    fn spmv_with_off_diagonal() {
-        let diag = vec![2.0, 3.0];
-        let off_diag = vec![(0, 1, -1.0)];
-        let x = vec![1.0, 2.0];
-        let mut result = vec![0.0; 2];
-        spmv(&diag, &off_diag, &x, &mut result);
-        assert_eq!(result[0], 0.0);
-        assert_eq!(result[1], 5.0);
-    }
-
-    #[test]
-    fn spmv_symmetric() {
-        let diag = vec![4.0, 4.0, 4.0];
-        let off_diag = vec![(0, 1, -1.0), (1, 2, -1.0)];
-        let x = vec![1.0, 2.0, 3.0];
-        let mut result = vec![0.0; 3];
-        spmv(&diag, &off_diag, &x, &mut result);
-        assert_eq!(result[0], 2.0);
-        assert_eq!(result[1], 4.0);
-        assert_eq!(result[2], 10.0);
-    }
-
-    // Spreading tests
-
-    #[test]
-    fn spreading_no_cells() {
-        let ctx = make_context();
-        let cfg = PlacerHeapCfg::default();
-        let mut state = HeapState::new(&ctx, &cfg).unwrap();
-        let quality = state.spread(&ctx).unwrap();
-        assert_eq!(quality, 1.0);
-    }
-
-    #[test]
-    fn spreading_cells_fit() {
-        let ctx = make_context_with_cells(4);
-        let cfg = PlacerHeapCfg::default();
-        let mut state = HeapState::new(&ctx, &cfg).unwrap();
-        state.cell_x = vec![0.0, 1.0, 0.0, 1.0];
-        state.cell_y = vec![0.0, 0.0, 1.0, 1.0];
-        let quality = state.spread(&ctx).unwrap();
-        assert!(quality >= 0.9, "quality should be high, got {}", quality);
-    }
-
-    #[test]
-    fn spreading_clustered_cells() {
-        let ctx = make_context_with_cells(3);
-        let cfg = PlacerHeapCfg::default();
-        let mut state = HeapState::new(&ctx, &cfg).unwrap();
-        state.cell_x = vec![0.0, 0.0, 0.0];
-        state.cell_y = vec![0.0, 0.0, 0.0];
-        let quality = state.spread(&ctx).unwrap();
-        assert!(quality > 0.0);
-    }
-
-    // count_bels_in_region tests
-
-    #[test]
-    fn count_bels_full_grid() {
-        let ctx = make_context();
-        assert_eq!(count_bels_in_region(&ctx, 0, 0, 1, 1), 4);
-    }
-
-    #[test]
-    fn count_bels_single_tile() {
-        let ctx = make_context();
-        assert_eq!(count_bels_in_region(&ctx, 0, 0, 0, 0), 1);
-    }
-
-    #[test]
-    fn count_bels_row() {
-        let ctx = make_context();
-        assert_eq!(count_bels_in_region(&ctx, 0, 0, 1, 0), 2);
-    }
-
-    #[test]
-    fn count_bels_empty_region() {
-        let ctx = make_context();
-        assert_eq!(count_bels_in_region(&ctx, 5, 5, 10, 10), 0);
-    }
-}

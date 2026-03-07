@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 /// Collect all net indices that need routing.
 ///
 /// A net needs routing if it has a connected driver and at least one user.
-pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetId> {
+pub fn collect_routable_nets(ctx: &Context) -> Vec<NetId> {
     let mut result = Vec::new();
     for net_idx in ctx.design.iter_net_indices() {
         let net = ctx.net(net_idx);
@@ -23,7 +23,7 @@ pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetId> {
 ///
 /// For each PIP in the path, binds the PIP and its destination wire to the
 /// given net, and records the routing in the net's wire map.
-pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetId, path: &[PipId]) {
+pub fn bind_route(ctx: &mut Context, net_idx: NetId, path: &[PipId]) {
     for &pip in path {
         let dst_wire = ctx.pip(pip).dst_wire().id();
         ctx.bind_pip(pip, net_idx, PlaceStrength::Strong);
@@ -35,7 +35,7 @@ pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetId, path: &[PipId]) {
 }
 
 /// Rip up (unroute) a net by unbinding all its wires and PIPs.
-pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetId) {
+pub fn unroute_net(ctx: &mut Context, net_idx: NetId) {
     let net = ctx.net(net_idx);
     let entries: Vec<(WireId, Option<PipId>)> = net
         .wires()
@@ -63,13 +63,11 @@ pub(crate) fn setup_net_source(
     let net = ctx.net(net_idx);
     let net_name = net.name_id();
 
-    let driver = net.driver();
-    let Some(driver_cell_idx) = driver.cell else {
+    let Some(driver_pin) = net.driver_cell_port() else {
         return Ok(None);
     };
-    let driver_port = driver.port;
 
-    let driver_cell = ctx.cell(driver_cell_idx);
+    let driver_cell = ctx.cell(driver_pin.cell);
     let driver_bel = match driver_cell.bel() {
         Some(bel) => bel,
         None => {
@@ -81,7 +79,7 @@ pub(crate) fn setup_net_source(
     };
 
     let src_wire = driver_bel
-        .pin_wire(driver_port)
+        .pin_wire(driver_pin.port)
         .map(|w| w.id())
         .ok_or_else(|| {
             super::RouterError::Generic(format!(
@@ -125,7 +123,7 @@ pub(crate) fn collect_sink_wires(ctx: &Context, net_idx: NetId) -> Vec<WireId> {
 }
 
 /// Find all wires that are used by more than one net (congested).
-pub(crate) fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
+pub fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
     let mut wire_usage: FxHashMap<WireId, u32> = FxHashMap::default();
 
     for net_idx in ctx.design.iter_net_indices() {

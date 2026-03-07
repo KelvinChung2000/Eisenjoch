@@ -16,4 +16,4 @@ pub use editors::{CellEditor, NetEditor};
 pub use hierarchy::{HierarchicalCell, HierarchicalNet};
 pub use indices::{CellId, FlatIndex, NetId, TimingIndex};
 pub use net::{NetInfo, PipMap};
-pub use ports::{PortInfo, PortRef};
+pub use ports::{CellPin, PortInfo, PortRef};

@@ -1,6 +1,6 @@
 use super::*;
 use crate::read_packed;
-use crate::types::{BelId, Loc, PipId, WireId};
+use crate::types::{BelId, ClockEdge, DelayPair, DelayQuad, DelayT, Loc, PipId, PortType, TimingPortClass, WireId};
 use std::ffi::CStr;
 
 impl ChipDb {
@@ -243,4 +243,276 @@ impl ChipDb {
         self.tile_inst_checked(tile)
             .expect("tile_inst: tile index out of bounds")
     }
+
+    // =====================================================================
+    // Speed grade and timing lookups
+    // =====================================================================
+
+    /// Get a speed grade by index. Returns None if index is out of range.
+    pub fn speed_grade(&self, index: usize) -> Option<&SpeedGradePod> {
+        self.chip_info().speed_grades.get().get(index)
+    }
+
+    /// Number of speed grades available.
+    pub fn num_speed_grades(&self) -> usize {
+        self.chip_info().speed_grades.get().len()
+    }
+
+    /// Get PIP timing data from a speed grade. Returns None if no timing data.
+    pub fn pip_timing<'a>(
+        &'a self,
+        speed_grade: &'a SpeedGradePod,
+        pip: PipId,
+    ) -> Option<&'a PipTimingPod> {
+        let pip_data = self.pip_info(pip);
+        let idx: i32 = unsafe { read_packed!(*pip_data, timing_idx) };
+        if idx < 0 {
+            return None;
+        }
+        let classes = speed_grade.pip_classes.get();
+        classes.get(idx as usize)
+    }
+
+    /// Get node timing data for a wire from a speed grade.
+    ///
+    /// Checks if the wire is part of a global routing node (via tile shape)
+    /// or uses its local timing index.
+    pub fn node_timing<'a>(
+        &'a self,
+        speed_grade: &'a SpeedGradePod,
+        wire: WireId,
+    ) -> Option<&'a NodeTimingPod> {
+        let idx = self.wire_timing_index(wire);
+        if idx < 0 {
+            return None;
+        }
+        let classes = speed_grade.node_classes.get();
+        classes.get(idx as usize)
+    }
+
+    /// Get the timing index for a wire, checking node shapes first.
+    fn wire_timing_index(&self, wire: WireId) -> i32 {
+        let tile = wire.tile();
+        let wire_idx = wire.index();
+        let shape = self.tile_shape(tile);
+        let wire_to_node = shape.wire_to_node.get();
+        if let Some(node_ref) = wire_to_node.get(wire_idx as usize) {
+            let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
+            if dx_mode == RelNodeRefPod::MODE_IS_ROOT {
+                // This wire is the root of a node shape; get the node shape timing.
+                let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+                let wire_field: u16 = unsafe { read_packed!(*node_ref, wire) };
+                let shape_idx = ((dy as u32) << 16) | (wire_field as u32);
+                let node_shapes = self.chip_info().node_shapes.get();
+                if let Some(ns) = node_shapes.get(shape_idx as usize) {
+                    let timing_idx: i32 = unsafe { read_packed!(*ns, timing_idx) };
+                    return timing_idx;
+                }
+            } else if dx_mode != RelNodeRefPod::MODE_TILE_WIRE {
+                // Non-root node wire: find the root tile and recurse.
+                let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+                let wire_field: u16 = unsafe { read_packed!(*node_ref, wire) };
+                let root_tile = self.rel_tile(tile, dx_mode as i32, dy as i32);
+                return self.wire_timing_index(WireId::new(root_tile, wire_field as i32));
+            }
+        }
+        // Tile-local wire: use wire's own timing_idx.
+        let wire_data = self.wire_info(wire);
+        unsafe { read_packed!(*wire_data, timing_idx) }
+    }
+
+    /// Binary search a sorted RelSlice by a key extracted from each element.
+    fn db_binary_search<T, F: Fn(&T) -> i32>(slice: &[T], key_fn: F, key: i32) -> Option<usize> {
+        if slice.len() < 7 {
+            // Linear scan for small slices (matches C++ pattern).
+            for (i, item) in slice.iter().enumerate() {
+                if key_fn(item) == key {
+                    return Some(i);
+                }
+            }
+            None
+        } else {
+            slice.binary_search_by(|item| key_fn(item).cmp(&key)).ok()
+        }
+    }
+
+    /// Find cell timing index for a given type_variant constid index.
+    pub fn cell_timing_index(&self, speed_grade: &SpeedGradePod, type_variant: i32) -> Option<usize> {
+        let cell_types = speed_grade.cell_types.get();
+        Self::db_binary_search(cell_types, |ct| unsafe { read_packed!(*ct, type_variant) }, type_variant)
+    }
+
+    /// Look up combinational delay through a cell pin.
+    pub fn cell_delay(
+        &self,
+        speed_grade: &SpeedGradePod,
+        type_idx: usize,
+        from_port: i32,
+        to_port: i32,
+    ) -> Option<DelayQuad> {
+        let ct = &speed_grade.cell_types.get()[type_idx];
+        let pins = ct.pins.get();
+        let to_pin_idx = Self::db_binary_search(
+            pins,
+            |pd| unsafe { read_packed!(*pd, pin) },
+            to_port,
+        )?;
+        let tp = &pins[to_pin_idx];
+        let comb_arcs = tp.comb_arcs.get();
+        let arc_idx = Self::db_binary_search(
+            comb_arcs,
+            |arc| unsafe { read_packed!(*arc, input) },
+            from_port,
+        )?;
+        let arc = &comb_arcs[arc_idx];
+        let delay = unsafe { read_packed!(*arc, delay) };
+        Some(DelayQuad::new(
+            DelayPair::new(delay.fast_min, delay.fast_max),
+            DelayPair::new(delay.slow_min, delay.slow_max),
+        ))
+    }
+
+    /// Look up register timing arcs (setup/hold/clk_to_q) for a cell pin.
+    pub fn cell_reg_arcs<'a>(
+        &self,
+        speed_grade: &'a SpeedGradePod,
+        type_idx: usize,
+        port: i32,
+    ) -> Option<&'a [CellPinRegArcPod]> {
+        let ct = &speed_grade.cell_types.get()[type_idx];
+        let pins = ct.pins.get();
+        let pin_idx = Self::db_binary_search(
+            pins,
+            |pd| unsafe { read_packed!(*pd, pin) },
+            port,
+        )?;
+        Some(pins[pin_idx].reg_arcs.get())
+    }
+
+    /// Look up the timing port class from the chipdb.
+    pub fn port_timing_class(
+        &self,
+        speed_grade: &SpeedGradePod,
+        type_idx: usize,
+        port: i32,
+        dir: PortType,
+    ) -> TimingPortClass {
+        let ct = &speed_grade.cell_types.get()[type_idx];
+        let pins = ct.pins.get();
+        let pin_idx = Self::db_binary_search(
+            pins,
+            |pd| unsafe { read_packed!(*pd, pin) },
+            port,
+        );
+        let Some(pin_idx) = pin_idx else {
+            return match dir {
+                PortType::Out => TimingPortClass::Ignore,
+                _ => TimingPortClass::Combinational,
+            };
+        };
+        let pin = &pins[pin_idx];
+        let flags: i32 = unsafe { read_packed!(*pin, flags) };
+        let reg_arcs = pin.reg_arcs.get();
+
+        match dir {
+            PortType::In => {
+                if flags & CellPinTimingPod::FLAG_CLK != 0 {
+                    TimingPortClass::ClockInput
+                } else if !reg_arcs.is_empty() {
+                    TimingPortClass::RegisterInput
+                } else {
+                    TimingPortClass::Combinational
+                }
+            }
+            _ => {
+                if !reg_arcs.is_empty() {
+                    TimingPortClass::RegisterOutput
+                } else {
+                    TimingPortClass::Combinational
+                }
+            }
+        }
+    }
+
+    /// Extract clocking info from a register timing arc.
+    pub fn reg_arc_info(arc: &CellPinRegArcPod) -> RegArcInfo {
+        let clock: i32 = unsafe { read_packed!(*arc, clock) };
+        let edge: i32 = unsafe { read_packed!(*arc, edge) };
+        let setup = unsafe { read_packed!(*arc, setup) };
+        let hold = unsafe { read_packed!(*arc, hold) };
+        let clk_q = unsafe { read_packed!(*arc, clk_q) };
+        RegArcInfo {
+            clock_port: clock,
+            edge: if edge == 0 { ClockEdge::Rising } else { ClockEdge::Falling },
+            setup: DelayPair::new(setup.fast_min, setup.slow_max),
+            hold: DelayPair::new(hold.fast_min, hold.slow_max),
+            clock_to_q: DelayQuad::new(
+                DelayPair::new(clk_q.fast_min, clk_q.fast_max),
+                DelayPair::new(clk_q.slow_min, clk_q.slow_max),
+            ),
+        }
+    }
+
+    /// Compute PIP delay using the RC model from C++ himbaechel.
+    ///
+    /// Formula: int_delay + in_cap * in_res / 1e6 + (out_res + node_res/2) * node_cap / 1e6
+    pub fn compute_pip_delay(
+        &self,
+        speed_grade: &SpeedGradePod,
+        pip: PipId,
+    ) -> DelayT {
+        let pip_tmg = match self.pip_timing(speed_grade, pip) {
+            Some(t) => t,
+            None => return 100, // Default notional delay (matches C++)
+        };
+
+        let int_delay = unsafe { read_packed!(*pip_tmg, int_delay) };
+        let mut total_delay = int_delay.slow_max as i64;
+
+        // Source wire node resistance
+        let src_wire = self.pip_src_wire(pip);
+        if let Some(src_tmg) = self.node_timing(speed_grade, src_wire) {
+            let src_res = unsafe { read_packed!(*src_tmg, res) };
+            total_delay += (src_res.slow_max as i64) / 2;
+        }
+
+        // Destination wire node timing
+        let dst_wire = self.pip_dst_wire(pip);
+        if let Some(dst_tmg) = self.node_timing(speed_grade, dst_wire) {
+            let out_res = unsafe { read_packed!(*pip_tmg, out_res) };
+            let dst_res = unsafe { read_packed!(*dst_tmg, res) };
+            let dst_cap = unsafe { read_packed!(*dst_tmg, cap) };
+            total_delay +=
+                ((out_res.slow_max as i64 + dst_res.slow_max as i64 / 2) * dst_cap.slow_max as i64)
+                    / 1_000_000;
+        }
+
+        total_delay as DelayT
+    }
+
+    /// Compute wire delay from node timing data.
+    pub fn compute_wire_delay(
+        &self,
+        speed_grade: &SpeedGradePod,
+        wire: WireId,
+    ) -> DelayQuad {
+        if let Some(tmg) = self.node_timing(speed_grade, wire) {
+            let delay = unsafe { read_packed!(*tmg, delay) };
+            DelayQuad::new(
+                DelayPair::new(delay.fast_min, delay.fast_max),
+                DelayPair::new(delay.slow_min, delay.slow_max),
+            )
+        } else {
+            DelayQuad::default()
+        }
+    }
+}
+
+/// Extracted register timing arc info.
+pub struct RegArcInfo {
+    pub clock_port: i32,
+    pub edge: ClockEdge,
+    pub setup: DelayPair,
+    pub hold: DelayPair,
+    pub clock_to_q: DelayQuad,
 }

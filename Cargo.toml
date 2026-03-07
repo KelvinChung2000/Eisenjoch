@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/nextpnr", "crates/npnr-python"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -8,23 +8,8 @@ serde_json = "1"
 memmap2 = "0.9"
 pyo3 = { version = "0.23", features = ["extension-module"] }
 log = "0.4"
-env_logger = "0.11"
 rustc-hash = "2"
-indexmap = "2"
-rayon = "1"
 thiserror = "2"
 anyhow = "1"
-abi_stable = "0.11"
-
-# Internal crates
-npnr-types = { path = "crates/npnr-types" }
-npnr-chipdb = { path = "crates/npnr-chipdb" }
-npnr-netlist = { path = "crates/npnr-netlist" }
-npnr-context = { path = "crates/npnr-context" }
-npnr-frontend = { path = "crates/npnr-frontend" }
-npnr-timing = { path = "crates/npnr-timing" }
-npnr-placer = { path = "crates/npnr-placer" }
-npnr-router = { path = "crates/npnr-router" }
-npnr-packer = { path = "crates/npnr-packer" }
-npnr-plugin = { path = "crates/npnr-plugin" }
-npnr-python = { path = "crates/npnr-python" }
+lasso = { version = "0.7", features = ["multi-threaded"] }
+nextpnr = { path = "crates/nextpnr" }

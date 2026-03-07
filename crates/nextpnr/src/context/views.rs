@@ -4,11 +4,11 @@ use std::ops::Deref;
 
 use super::Context;
 use crate::netlist::{
-    CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap,
+    CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap,
     PortInfo, PortRef, TimingIndex,
 };
 use crate::types::{
-    BelId, DelayQuad, DelayT, IdString, Loc, PipId, PlaceStrength, Property, WireId,
+    BelId, DelayQuad, DelayT, IdString, Loc, PipId, PlaceStrength, PortType, Property, WireId,
 };
 use rustc_hash::FxHashMap;
 
@@ -256,6 +256,12 @@ impl<'a> Net<'a> {
     pub fn driver(&self) -> &'a PortRef { &self.info().driver }
 
     #[inline]
+    pub fn driver_cell_port(&self) -> Option<CellPin> {
+        let driver = &self.info().driver;
+        driver.cell.map(|cell| CellPin::new(cell, driver.port))
+    }
+
+    #[inline]
     pub fn users(&self) -> &'a [PortRef] { &self.info().users }
 
     #[inline]
@@ -319,8 +325,10 @@ impl<'a> Wire<'a> {
 
     #[inline]
     pub fn delay(&self) -> DelayQuad {
-        // TODO: read real wire delay from chipdb once available
-        DelayQuad::default()
+        match self.ctx.speed_grade() {
+            Some(sg) => self.ctx.chipdb().compute_wire_delay(sg, self.id),
+            None => DelayQuad::default(),
+        }
     }
 }
 
@@ -365,8 +373,10 @@ impl<'a> Pip<'a> {
 
     #[inline]
     pub fn delay(&self) -> DelayQuad {
-        // TODO: read real PIP delay from chipdb once available
-        DelayQuad::default()
+        match self.ctx.speed_grade() {
+            Some(sg) => DelayQuad::uniform(self.ctx.chipdb().compute_pip_delay(sg, self.id)),
+            None => DelayQuad::default(),
+        }
     }
 }
 
@@ -411,6 +421,16 @@ impl<'a> Cell<'a> {
 
     #[inline]
     pub fn port(&self, name: IdString) -> Option<&'a PortInfo> { self.info().port(name) }
+
+    #[inline]
+    pub fn port_net(&self, name: IdString) -> Option<NetId> {
+        self.info().port(name).and_then(|p| p.net())
+    }
+
+    #[inline]
+    pub fn port_type(&self, name: IdString) -> Option<PortType> {
+        self.info().port(name).map(|p| p.port_type())
+    }
 
     #[inline]
     pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }

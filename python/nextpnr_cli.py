@@ -4,7 +4,11 @@ try:
     import typer
 except ImportError:
     import sys
-    print("Error: typer is required for the CLI. Install with: pip install typer", file=sys.stderr)
+
+    print(
+        "Error: typer is required for the CLI. Install with: pip install typer",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 from typing import Optional
@@ -21,7 +25,9 @@ app = typer.Typer(
 def main(
     device: Optional[str] = typer.Option(None, help="Target device name"),
     chipdb: Optional[Path] = typer.Option(None, help="ChipDB binary path"),
-    json: Optional[Path] = typer.Option(None, "--json", help="Input Yosys JSON netlist"),
+    json: Optional[Path] = typer.Option(
+        None, "--json", help="Input Yosys JSON netlist"
+    ),
     write: Optional[Path] = typer.Option(None, help="Output placed/routed JSON"),
     placer: str = typer.Option("heap", help="Placer algorithm [heap|sa]"),
     router: str = typer.Option("router1", help="Router algorithm [router1|router2]"),
@@ -30,24 +36,43 @@ def main(
     package: Optional[str] = typer.Option(None, help="Package name"),
     speed: Optional[str] = typer.Option(None, help="Speed grade"),
     sdc: Optional[Path] = typer.Option(None, help="SDC constraints file"),
-    report: Optional[Path] = typer.Option(None, help="Timing/utilization report (JSON)"),
+    report: Optional[Path] = typer.Option(
+        None, help="Timing/utilization report (JSON)"
+    ),
     sdf: Optional[Path] = typer.Option(None, help="SDF timing output"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
     debug: bool = typer.Option(False, "--debug", help="Debug output"),
     force: bool = typer.Option(False, "--force", help="Force continue on errors"),
-    timing_driven: bool = typer.Option(True, "--timing-driven/--no-timing-driven", help="Timing-driven P&R"),
-    timing_allow_fail: bool = typer.Option(False, "--timing-allow-fail", help="Allow timing violations"),
-    vopt: Optional[list[str]] = typer.Option(None, "-o", "--vopt", help="Arch-specific options (key=value)"),
-    packer_plugin: Optional[Path] = typer.Option(None, "--packer-plugin", help="Packer plugin (.so/.dll or .py)"),
-    placer_plugin: Optional[Path] = typer.Option(None, "--placer-plugin", help="Placer plugin"),
-    router_plugin: Optional[Path] = typer.Option(None, "--router-plugin", help="Router plugin"),
-    script: Optional[Path] = typer.Option(None, "--script", help="Run Python script with pre-loaded ctx"),
+    timing_driven: bool = typer.Option(
+        True, "--timing-driven/--no-timing-driven", help="Timing-driven P&R"
+    ),
+    timing_allow_fail: bool = typer.Option(
+        False, "--timing-allow-fail", help="Allow timing violations"
+    ),
+    vopt: Optional[list[str]] = typer.Option(
+        None, "-o", "--vopt", help="Arch-specific options (key=value)"
+    ),
+    packer_plugin: Optional[Path] = typer.Option(
+        None, "--packer-plugin", help="Packer plugin (.so/.dll or .py)"
+    ),
+    placer_plugin: Optional[Path] = typer.Option(
+        None, "--placer-plugin", help="Placer plugin"
+    ),
+    router_plugin: Optional[Path] = typer.Option(
+        None, "--router-plugin", help="Router plugin"
+    ),
+    script: Optional[Path] = typer.Option(
+        None, "--script", help="Run Python script with pre-loaded ctx"
+    ),
 ) -> None:
     """Run the nextpnr-himbaechel FPGA place-and-route flow."""
     try:
         import nextpnr
     except ImportError:
-        typer.echo("Error: nextpnr module not found. Install with: pip install nextpnr", err=True)
+        typer.echo(
+            "Error: nextpnr module not found. Install with: pip install nextpnr",
+            err=True,
+        )
         raise typer.Exit(1)
 
     # Validate inputs
@@ -90,7 +115,27 @@ def main(
             raise typer.Exit(1)
 
     if verbose:
-        typer.echo(f"Loaded design: {ctx.width}x{ctx.height} grid, {len(ctx.cells)} cells, {len(ctx.nets)} nets")
+        typer.echo(
+            f"Loaded design: {ctx.width}x{ctx.height} grid, {len(ctx.cells)} cells, {len(ctx.nets)} nets"
+        )
+
+    # Apply SDC constraints
+    if sdc is not None:
+        from nextpnr.sdc import parse_sdc
+
+        try:
+            constraints = parse_sdc(str(sdc))
+            if verbose:
+                typer.echo(
+                    f"Loaded SDC: {len(constraints.clocks)} clocks, "
+                    f"{len(constraints.input_delays)} input delays, "
+                    f"{len(constraints.output_delays)} output delays"
+                )
+            ctx.apply_sdc(constraints.to_dict())
+        except Exception as e:
+            typer.echo(f"Error loading SDC constraints: {e}", err=True)
+            if not force:
+                raise typer.Exit(1)
 
     # Set frequency constraint
     if freq is not None:
@@ -120,10 +165,13 @@ def main(
         if verbose or report is not None:
             typer.echo(f"Fmax: {timing.fmax:.2f} MHz")
             typer.echo(f"Worst slack: {timing.worst_slack} ps")
-            typer.echo(f"Failing endpoints: {timing.num_failing}/{timing.num_endpoints}")
+            typer.echo(
+                f"Failing endpoints: {timing.num_failing}/{timing.num_endpoints}"
+            )
 
         if report is not None:
             import json as json_mod
+
             report_data = {
                 "fmax_mhz": timing.fmax,
                 "worst_slack_ps": timing.worst_slack,

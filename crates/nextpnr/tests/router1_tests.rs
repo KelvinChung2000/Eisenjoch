@@ -1,6 +1,5 @@
 mod common;
 
-use nextpnr::netlist::PortRef;
 use nextpnr::router::router1::{route_router1, Router1Cfg};
 use nextpnr::router::{Router, Router1, RouterError};
 use nextpnr::types::{BelId, PlaceStrength, PortType};
@@ -80,11 +79,7 @@ fn route_design_with_no_users() {
 
     let net_name = ctx.id("driveronly");
     let net_idx = ctx.design.add_net(net_name);
-    ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
-        cell: Some(cell_idx),
-        port,
-        budget: 0,
-    });
+    ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
 
     let cfg = Router1Cfg::default();
     let result = route_router1(&mut ctx, &cfg);
@@ -95,5 +90,7 @@ fn route_design_with_no_users() {
 fn route_via_trait() {
     let mut ctx = common::make_context();
     let cfg = Router1Cfg::default();
-    Router1.route(&mut ctx, &cfg).expect("trait dispatch should work");
+    Router1
+        .route(&mut ctx, &cfg)
+        .expect("trait dispatch should work");
 }

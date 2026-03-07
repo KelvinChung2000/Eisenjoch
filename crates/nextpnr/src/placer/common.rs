@@ -22,7 +22,7 @@ pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellId>> {
 ///
 /// HPWL = (max_x - min_x) + (max_y - min_y) across all connected cell locations.
 /// Returns 0.0 for nets with no driver, no users, or dead nets.
-pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
+pub fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
     let net = ctx.net(net_idx);
     if !net.is_alive() || !net.driver().is_connected() || net.users().is_empty() {
         return 0.0;
@@ -34,8 +34,8 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
     let mut max_y = i32::MIN;
 
     // Include driver location.
-    let driver_cell_idx = match net.driver().cell {
-        Some(cell_idx) => cell_idx,
+    let driver_cell_idx = match net.driver_cell_port() {
+        Some(pin) => pin.cell,
         None => return 0.0,
     };
     let driver_cell = ctx.cell(driver_cell_idx);
@@ -70,7 +70,7 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
 }
 
 /// Compute total HPWL cost across all alive nets.
-pub(crate) fn total_hpwl(ctx: &Context) -> f64 {
+pub fn total_hpwl(ctx: &Context) -> f64 {
     let mut total = 0.0;
     for (net_idx, _) in ctx.design.iter_alive_nets() {
         total += net_hpwl(ctx, net_idx);
@@ -82,7 +82,7 @@ pub(crate) fn total_hpwl(ctx: &Context) -> f64 {
 ///
 /// Groups cells by type/bucket, collects available BELs of the matching bucket,
 /// shuffles the BELs, and assigns cells sequentially.
-pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
+pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
     ctx.populate_bel_buckets();
 
     let grouped = cells_by_type(ctx);
@@ -91,10 +91,7 @@ pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
         let cell_type_name = ctx.name_of(cell_type).to_owned();
 
         // Find all BELs matching this cell type's bucket.
-        let bucket_bels: Vec<_> = ctx
-            .bels_for_bucket(cell_type)
-            .map(|bel| bel.id())
-            .collect();
+        let bucket_bels: Vec<_> = ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect();
         if bucket_bels.is_empty() {
             return Err(PlacerError::NoBelsAvailable(cell_type_name));
         }

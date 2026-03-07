@@ -204,14 +204,14 @@ fn test_blinky_lut_ports() {
     // Check port A exists and is input
     let port_a = pool.intern("A");
     let pa = cell.port(port_a).unwrap();
-    assert_eq!(pa.port_type, PortType::In);
-    assert!(pa.net.is_some()); // connected to signal net 2
+    assert_eq!(pa.port_type(), PortType::In);
+    assert!(pa.net().is_some()); // connected to signal net 2
 
     // Check port Z exists and is output
     let port_z = pool.intern("Z");
     let pz = cell.port(port_z).unwrap();
-    assert_eq!(pz.port_type, PortType::Out);
-    assert!(pz.net.is_some()); // connected to signal net 3
+    assert_eq!(pz.port_type(), PortType::Out);
+    assert!(pz.net().is_some()); // connected to signal net 3
 }
 
 #[test]
@@ -257,15 +257,15 @@ fn test_blinky_constant_connections() {
 
     let port_b = pool.intern("B");
     let pb = cell.port(port_b).unwrap();
-    assert_eq!(pb.net, Some(gnd_net_idx));
+    assert_eq!(pb.net(), Some(gnd_net_idx));
 
     let port_c = pool.intern("C");
     let pc = cell.port(port_c).unwrap();
-    assert_eq!(pc.net, Some(gnd_net_idx));
+    assert_eq!(pc.net(), Some(gnd_net_idx));
 
     let port_d = pool.intern("D");
     let pd = cell.port(port_d).unwrap();
-    assert_eq!(pd.net, Some(gnd_net_idx));
+    assert_eq!(pd.net(), Some(gnd_net_idx));
 }
 
 #[test]
@@ -386,14 +386,14 @@ fn test_multibit_port_names() {
     for i in 0..4 {
         let pname = pool.intern(&format!("I[{}]", i));
         assert!(cell.port(pname).is_some(), "Missing port I[{}]", i);
-        assert_eq!(cell.port(pname).unwrap().port_type, PortType::In);
+        assert_eq!(cell.port(pname).unwrap().port_type(), PortType::In);
     }
 
     // Multi-bit port O should become O[0], O[1], O[2], O[3]
     for i in 0..4 {
         let pname = pool.intern(&format!("O[{}]", i));
         assert!(cell.port(pname).is_some(), "Missing port O[{}]", i);
-        assert_eq!(cell.port(pname).unwrap().port_type, PortType::Out);
+        assert_eq!(cell.port(pname).unwrap().port_type(), PortType::Out);
     }
 }
 
@@ -441,14 +441,14 @@ fn test_multibit_net_connections() {
     for i in 0..4 {
         let port_name = pool.intern(&format!("I[{}]", i));
         let port = design.cell(buf0_idx).port(port_name).unwrap();
-        assert!(port.net.is_some(), "buf0 I[{}] should be connected", i);
+        assert!(port.net().is_some(), "buf0 I[{}] should be connected", i);
     }
 
     // Each output bit of buf0 should drive a net
     for i in 0..4 {
         let port_name = pool.intern(&format!("O[{}]", i));
         let port = design.cell(buf0_idx).port(port_name).unwrap();
-        assert!(port.net.is_some(), "buf0 O[{}] should be connected", i);
+        assert!(port.net().is_some(), "buf0 O[{}] should be connected", i);
     }
 }
 
@@ -504,7 +504,7 @@ fn test_constant_one_connection() {
     // Should be connected to VCC net
     let vcc_net_id = pool.intern("$PACKER_VCC_NET");
     let vcc_net_idx = design.net_by_name(vcc_net_id).unwrap();
-    assert_eq!(pi.net, Some(vcc_net_idx));
+    assert_eq!(pi.net(), Some(vcc_net_idx));
 }
 
 #[test]
@@ -519,7 +519,7 @@ fn test_constant_x_unconnected() {
     // "x" means unconnected
     let port_i = pool.intern("I");
     let pi = cell.port(port_i).unwrap();
-    assert!(pi.net.is_none());
+    assert!(pi.net().is_none());
 }
 
 // =========================================================================

@@ -22,17 +22,22 @@ impl<'a> CellEditor<'a> {
         self
     }
 
-    pub fn set_port_net(&mut self, port: IdString, net: Option<NetId>, user_idx: Option<u32>) -> &mut Self {
+    pub fn set_port_net(
+        &mut self,
+        port: IdString,
+        net: Option<NetId>,
+        user_idx: Option<u32>,
+    ) -> &mut Self {
         if let Some(p) = self.cell.port_mut(port) {
-            p.net = net;
-            p.user_idx = user_idx;
+            p.set_net(net);
+            p.set_user_idx(user_idx);
         }
         self
     }
 
     pub fn rename_port(&mut self, old: IdString, new: IdString) -> &mut Self {
         if let Some(mut port_info) = self.cell.ports.remove(&old) {
-            port_info.name = new;
+            port_info.set_name(new);
             self.cell.ports.insert(new, port_info);
         }
         self
@@ -93,6 +98,11 @@ impl<'a> NetEditor<'a> {
         self
     }
 
+    pub fn set_driver(&mut self, cell: CellId, port: IdString) -> &mut Self {
+        self.net.driver = PortRef::connected(cell, port, 0);
+        self
+    }
+
     pub fn clear_driver(&mut self) -> &mut Self {
         self.net.driver = PortRef::unconnected();
         self
@@ -117,7 +127,12 @@ impl<'a> NetEditor<'a> {
         self
     }
 
-    pub fn add_wire(&mut self, wire: WireId, pip: Option<PipId>, strength: PlaceStrength) -> &mut Self {
+    pub fn add_wire(
+        &mut self,
+        wire: WireId,
+        pip: Option<PipId>,
+        strength: PlaceStrength,
+    ) -> &mut Self {
         self.net.wires.insert(wire, PipMap { pip, strength });
         self
     }

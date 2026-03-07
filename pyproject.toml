@@ -7,6 +7,7 @@ name = "nextpnr"
 requires-python = ">=3.8"
 dynamic = ["version"]
 description = "Rust reimplementation of nextpnr FPGA place-and-route"
+dependencies = ["lark>=1.1"]
 
 [tool.maturin]
 manifest-path = "crates/npnr-python/Cargo.toml"
@@ -15,7 +16,7 @@ python-source = "python"
 module-name = "nextpnr"
 
 [project.scripts]
-nextpnr-himbaechel = "nextpnr_cli:main"
+nextpnr-himbaechel = "nextpnr_cli:cli"
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]

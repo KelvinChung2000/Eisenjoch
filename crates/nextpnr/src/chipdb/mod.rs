@@ -5,6 +5,7 @@ mod load;
 mod pod;
 mod relptr;
 
+pub use access::RegArcInfo;
 pub use pod::*;
 pub use relptr::{RelPtr, RelSlice};
 

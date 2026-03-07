@@ -52,6 +52,8 @@ pub struct Context {
     // -- Settings and flags --
     /// Arbitrary key-value settings (e.g. from command-line options).
     settings: FxHashMap<IdString, Property>,
+    /// Active speed grade index for timing lookups.
+    speed_grade_idx: usize,
     /// Deterministic RNG for reproducible results.
     rng: DeterministicRng,
     /// Enable verbose output.
@@ -139,6 +141,7 @@ impl Context {
             pip_to_net,
             bucket_bels: FxHashMap::default(),
             settings: FxHashMap::default(),
+            speed_grade_idx: 0,
             rng: DeterministicRng::new(1),
             verbose: false,
             debug: false,
@@ -435,6 +438,25 @@ impl Context {
             let bucket_id = self.id_pool.intern(self.chipdb.bel_type(bel));
             self.bucket_bels.entry(bucket_id).or_default().push(bel);
         }
+    }
+
+    // =====================================================================
+    // Speed grade / timing
+    // =====================================================================
+
+    /// Set the active speed grade index.
+    pub fn set_speed_grade(&mut self, index: usize) {
+        self.speed_grade_idx = index;
+    }
+
+    /// Get the active speed grade index.
+    pub fn speed_grade_idx(&self) -> usize {
+        self.speed_grade_idx
+    }
+
+    /// Get the active speed grade POD, if available.
+    pub fn speed_grade(&self) -> Option<&crate::chipdb::SpeedGradePod> {
+        self.chipdb.speed_grade(self.speed_grade_idx)
     }
 
     /// Get all unique bel bucket names (sorted by IdString index for determinism).

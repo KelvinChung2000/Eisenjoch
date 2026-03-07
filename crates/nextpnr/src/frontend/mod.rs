@@ -4,7 +4,7 @@
 //! populates a [`Design`](crate::netlist::Design) with cells, nets, ports, parameters,
 //! and attributes.
 
-use crate::netlist::{CellId, Design, NetId, PortRef};
+use crate::netlist::{CellId, Design, NetId};
 use crate::types::{IdString, IdStringPool, PortType, Property};
 use anyhow::{bail, Context, Result};
 use rustc_hash::FxHashMap;
@@ -290,9 +290,7 @@ fn create_constant_driver(
     design
         .cell_edit(cell_idx)
         .set_port_net(port_id, Some(net_idx), None);
-    design
-        .net_edit(net_idx)
-        .set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
+    design.net_edit(net_idx).set_driver(cell_idx, port_id);
 
     Ok(())
 }
@@ -405,9 +403,7 @@ fn connect_port_to_net(
             design
                 .cell_edit(cell_idx)
                 .set_port_net(port_id, Some(net_idx), None);
-            design
-                .net_edit(net_idx)
-                .set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
+            design.net_edit(net_idx).set_driver(cell_idx, port_id);
         }
         PortType::In | PortType::InOut => {
             // Input or bidirectional port: this port is a user of the net.

@@ -11,7 +11,7 @@ use crate::types::PortType;
 /// Creates `$PACKER_GND` and `$PACKER_VCC` cells with output port "Y", and
 /// `$PACKER_GND_NET` and `$PACKER_VCC_NET` nets, connecting the drivers.
 /// Idempotent: safe to call multiple times.
-pub(crate) fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
+pub fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
     let gnd_name = ctx.id("$PACKER_GND");
     let vcc_name = ctx.id("$PACKER_VCC");
     let gnd_net_name = ctx.id("$PACKER_GND_NET");
@@ -51,7 +51,7 @@ pub(crate) fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
 ///
 /// Cells of type `$nextpnr_IBUF`, `$nextpnr_OBUF`, or `$nextpnr_IOBUF` are
 /// changed to type `IOB`.
-pub(crate) fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
+pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     let ibuf_type = ctx.id("$nextpnr_IBUF");
     let obuf_type = ctx.id("$nextpnr_OBUF");
     let iobuf_type = ctx.id("$nextpnr_IOBUF");
@@ -81,7 +81,7 @@ pub(crate) fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
 /// A LUT4 whose output port "O" drives exactly one DFF's input port "D"
 /// (single-fanout net) will be merged: the LUT becomes the cluster root and
 /// the FF becomes a cluster member in `Design::clusters`.
-pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
+pub fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
     let lut4_type = ctx.id("LUT4");
     let dff_type = ctx.id("DFF");
     let o_port = ctx.id("O");
@@ -97,7 +97,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
         }
 
         // Check if "O" port drives exactly one FF "D" port.
-        let net_idx = match cell.port(o_port).and_then(|p| p.net) {
+        let net_idx = match ctx.cell(cell_idx).port_net(o_port) {
             Some(net_idx) => net_idx,
             None => continue,
         };
@@ -141,7 +141,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
         cluster.add_member(ff_idx);
 
         // Copy FF Q port output to LUT as QF port, if the FF has a Q port.
-        let ff_q_net = ctx.design.cell(ff_idx).port(q_port).and_then(|p| p.net);
+        let ff_q_net = ctx.cell(ff_idx).port_net(q_port);
         if let Some(net_idx) = ff_q_net {
             let qf_port = ctx.id("QF");
             ctx.design
@@ -161,7 +161,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
 /// Identifies chain heads (CARRY4 cells whose CI is not driven by another
 /// CARRY4) and walks the chain forward through CO -> CI connections,
 /// linking cells via explicit cluster membership.
-pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
+pub fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
     let carry_type = ctx.id("CARRY4");
     let co_port = ctx.id("CO");
     let ci_port = ctx.id("CI");
@@ -174,14 +174,13 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
             continue;
         }
 
-        let driven_by_carry = cell
-            .port(ci_port)
-            .and_then(|p| p.net)
-            .and_then(|net_idx| ctx.design.net(net_idx).driver.cell)
+        let driven_by_carry = ctx
+            .cell(cell_idx)
+            .port_net(ci_port)
+            .and_then(|net_idx| ctx.net(net_idx).driver_cell_port().map(|pin| pin.cell))
             .is_some_and(|driver| ctx.design.cell(driver).cell_type == carry_type);
-        let is_head = !driven_by_carry;
 
-        if is_head {
+        if !driven_by_carry {
             chain_heads.push(cell_idx);
         }
     }
@@ -198,7 +197,7 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
         cluster.add_member(head);
 
         loop {
-            let co_net = ctx.design.cell(current).port(co_port).and_then(|p| p.net);
+            let co_net = ctx.cell(current).port_net(co_port);
 
             let next = co_net.and_then(|net_idx| {
                 let net = ctx.design.net(net_idx);
@@ -238,6 +237,6 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
 ///
 /// Currently a no-op since remaining cells are already valid and need no
 /// transformation.
-pub(crate) fn pack_remaining(_ctx: &mut Context) -> Result<(), PackerError> {
+pub fn pack_remaining(_ctx: &mut Context) -> Result<(), PackerError> {
     Ok(())
 }
