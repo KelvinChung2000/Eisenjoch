@@ -20,36 +20,36 @@ fn make_context_with_cells(n: usize) -> Context {
 
     for i in 0..n {
         let name = ctx.id(&format!("cell_{}", i));
-        ctx.add_cell(name, cell_type);
+        ctx.design.add_cell(name, cell_type);
         cell_names.push(name);
     }
 
     if n >= 2 {
         let net_name = ctx.id("net_0");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let q_port = ctx.id("Q");
         let a_port = ctx.id("A");
 
-        let cell0_idx = ctx.design_view().cell_by_name(cell_names[0]).unwrap();
-        ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
-        ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
+        let cell0_idx = ctx.design.cell_by_name(cell_names[0]).unwrap();
+        ctx.design.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
+        ctx.design.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
 
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
             cell: Some(cell0_idx),
             port: q_port,
             budget: 0,
         });
 
         for i in 1..n {
-            let cell_idx = ctx.design_view().cell_by_name(cell_names[i]).unwrap();
-            ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
+            let cell_idx = ctx.design.cell_by_name(cell_names[i]).unwrap();
+            ctx.design.cell_edit(cell_idx).add_port(a_port, PortType::In);
 
-            let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
+            let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
                 cell: Some(cell_idx),
                 port: a_port,
                 budget: 0,
             });
-            ctx.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
+            ctx.design.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
         }
     }
 
@@ -118,7 +118,7 @@ fn full_heap_placement_single_cell() {
     };
     place_heap(&mut ctx, &cfg).expect("HeAP placement should succeed");
     let cell_name = ctx.id("cell_0");
-    let cell_idx = ctx.design_view().cell_by_name(cell_name).unwrap();
+    let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
     assert!(ctx.cell(cell_idx).bel_id().is_some());
 }
 

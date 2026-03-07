@@ -1,6 +1,6 @@
 use crate::types::{BelId, DelayT, IdString, PipId, PlaceStrength, PortType, Property, WireId};
 
-use super::{CellIdx, CellInfo, FlatIndex, NetIdx, NetInfo, PipMap, PortInfo, PortRef, TimingIndex};
+use super::{CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap, PortInfo, PortRef, TimingIndex};
 
 pub struct CellEditor<'a> {
     cell: &'a mut CellInfo,
@@ -20,7 +20,7 @@ impl<'a> CellEditor<'a> {
         self.cell.add_port(name, port_type)
     }
 
-    pub fn set_port_net(&mut self, port: IdString, net: Option<NetIdx>, user_idx: Option<u32>) {
+    pub fn set_port_net(&mut self, port: IdString, net: Option<NetId>, user_idx: Option<u32>) {
         if let Some(p) = self.cell.port_mut(port) {
             p.net = net;
             p.user_idx = user_idx;
@@ -46,7 +46,7 @@ impl<'a> CellEditor<'a> {
         self.cell.params.insert(key, value);
     }
 
-    pub fn set_cluster(&mut self, root: Option<CellIdx>) {
+    pub fn set_cluster(&mut self, root: Option<CellId>) {
         self.cell.cluster = root;
     }
 
@@ -84,7 +84,7 @@ impl<'a> NetEditor<'a> {
         self.net.driver = PortRef::unconnected();
     }
 
-    pub fn add_user(&mut self, cell: CellIdx, port: IdString) -> u32 {
+    pub fn add_user(&mut self, cell: CellId, port: IdString) -> u32 {
         let idx = self.net.users.len() as u32;
         self.net.users.push(PortRef::connected(cell, port, 0));
         idx

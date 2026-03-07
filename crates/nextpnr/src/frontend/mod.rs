@@ -4,9 +4,9 @@
 //! populates a [`Design`](crate::netlist::Design) with cells, nets, ports, parameters,
 //! and attributes.
 
-use anyhow::{bail, Context, Result};
-use crate::netlist::{CellIdx, Design, NetIdx, PortRef};
+use crate::netlist::{CellId, Design, NetId, PortRef};
 use crate::types::{IdString, IdStringPool, PortType, Property};
+use anyhow::{bail, Context, Result};
 use rustc_hash::FxHashMap;
 use serde_json::Value;
 
@@ -163,7 +163,7 @@ pub fn parse_json(json_str: &str, pool: &IdStringPool) -> Result<Design> {
 /// Parse a single Yosys JSON module into the design.
 fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Result<()> {
     // Step 1: Scan all bit indices across cells and ports, create nets for each.
-    let mut bit_to_net: FxHashMap<i64, NetIdx> = FxHashMap::default();
+    let mut bit_to_net: FxHashMap<i64, NetId> = FxHashMap::default();
     collect_bit_indices(module, &mut bit_to_net, design, pool)?;
 
     // Step 2: Create constant driver nets and cells.
@@ -176,7 +176,13 @@ fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Res
     if let Some(cells) = module.get("cells").and_then(|c| c.as_object()) {
         for (cell_name, cell_json) in cells {
             parse_cell(
-                cell_name, cell_json, design, pool, &bit_to_net, gnd_net, vcc_net,
+                cell_name,
+                cell_json,
+                design,
+                pool,
+                &bit_to_net,
+                gnd_net,
+                vcc_net,
             )
             .with_context(|| format!("Failed to parse cell '{}'", cell_name))?;
         }
@@ -186,7 +192,13 @@ fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Res
     if let Some(ports) = module.get("ports").and_then(|p| p.as_object()) {
         for (port_name, port_json) in ports {
             parse_top_port(
-                port_name, port_json, design, pool, &bit_to_net, gnd_net, vcc_net,
+                port_name,
+                port_json,
+                design,
+                pool,
+                &bit_to_net,
+                gnd_net,
+                vcc_net,
             )
             .with_context(|| format!("Failed to parse top-level port '{}'", port_name))?;
         }
@@ -204,7 +216,7 @@ fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Res
 /// net for each one. Returns a mapping from bit index to `NetIdx`.
 fn collect_bit_indices(
     module: &Value,
-    bit_to_net: &mut FxHashMap<i64, NetIdx>,
+    bit_to_net: &mut FxHashMap<i64, NetId>,
     design: &mut Design,
     pool: &IdStringPool,
 ) -> Result<()> {
@@ -251,7 +263,7 @@ fn collect_bit_indices(
 }
 
 /// Create a constant net (GND or VCC).
-fn create_constant_net(design: &mut Design, pool: &IdStringPool, name: &str) -> NetIdx {
+fn create_constant_net(design: &mut Design, pool: &IdStringPool, name: &str) -> NetId {
     design.add_net(pool.intern(name))
 }
 
@@ -263,7 +275,7 @@ fn create_constant_driver(
     cell_name: &str,
     cell_type: &str,
     output_port: &str,
-    net_idx: NetIdx,
+    net_idx: NetId,
 ) -> Result<()> {
     let name_id = pool.intern(cell_name);
     let type_id = pool.intern(cell_type);
@@ -275,8 +287,12 @@ fn create_constant_driver(
     design.cell_edit(cell_idx).add_port(port_id, PortType::Out);
 
     // Connect: set the port's net and set the net's driver
-    design.cell_edit(cell_idx).set_port_net(port_id, Some(net_idx), None);
-    design.net_edit(net_idx).set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
+    design
+        .cell_edit(cell_idx)
+        .set_port_net(port_id, Some(net_idx), None);
+    design
+        .net_edit(net_idx)
+        .set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
 
     Ok(())
 }
@@ -287,9 +303,9 @@ fn parse_cell(
     cell_json: &Value,
     design: &mut Design,
     pool: &IdStringPool,
-    bit_to_net: &FxHashMap<i64, NetIdx>,
-    gnd_net: NetIdx,
-    vcc_net: NetIdx,
+    bit_to_net: &FxHashMap<i64, NetId>,
+    gnd_net: NetId,
+    vcc_net: NetId,
 ) -> Result<()> {
     let cell_type_str = cell_json
         .get("type")
@@ -336,9 +352,11 @@ fn parse_cell(
 
                 // Determine which net this bit connects to
                 let net_idx = match &bit_val {
-                    BitValue::Signal(idx) => {
-                        Some(*bit_to_net.get(idx).context("Signal bit index not found in net map")?)
-                    }
+                    BitValue::Signal(idx) => Some(
+                        *bit_to_net
+                            .get(idx)
+                            .context("Signal bit index not found in net map")?,
+                    ),
                     BitValue::Zero => Some(gnd_net),
                     BitValue::One => Some(vcc_net),
                     BitValue::Undef => None,
@@ -376,21 +394,27 @@ fn parse_cell(
 /// (driver or user reference).
 fn connect_port_to_net(
     design: &mut Design,
-    cell_idx: CellIdx,
+    cell_idx: CellId,
     port_id: IdString,
     port_type: PortType,
-    net_idx: NetIdx,
+    net_idx: NetId,
 ) -> Result<()> {
     match port_type {
         PortType::Out => {
             // Output port: this port drives the net.
-            design.cell_edit(cell_idx).set_port_net(port_id, Some(net_idx), None);
-            design.net_edit(net_idx).set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
+            design
+                .cell_edit(cell_idx)
+                .set_port_net(port_id, Some(net_idx), None);
+            design
+                .net_edit(net_idx)
+                .set_driver_raw(PortRef::connected(cell_idx, port_id, 0));
         }
         PortType::In | PortType::InOut => {
             // Input or bidirectional port: this port is a user of the net.
             let user_idx = design.net_edit(net_idx).add_user(cell_idx, port_id);
-            design.cell_edit(cell_idx).set_port_net(port_id, Some(net_idx), Some(user_idx));
+            design
+                .cell_edit(cell_idx)
+                .set_port_net(port_id, Some(net_idx), Some(user_idx));
         }
     }
 
@@ -407,9 +431,9 @@ fn parse_top_port(
     port_json: &Value,
     design: &mut Design,
     pool: &IdStringPool,
-    bit_to_net: &FxHashMap<i64, NetIdx>,
-    gnd_net: NetIdx,
-    vcc_net: NetIdx,
+    bit_to_net: &FxHashMap<i64, NetId>,
+    gnd_net: NetId,
+    vcc_net: NetId,
 ) -> Result<()> {
     let dir_str = port_json
         .get("direction")
@@ -443,20 +467,30 @@ fn parse_top_port(
         let cell_idx = design.add_cell(cell_name_id, cell_type_id);
 
         // Add the internal port to the pseudo-cell
-        design.cell_edit(cell_idx).add_port(internal_port_id, internal_port_type);
+        design
+            .cell_edit(cell_idx)
+            .add_port(internal_port_id, internal_port_type);
 
         // Connect to the corresponding net
         let net_idx = match &bit_val {
-            BitValue::Signal(idx) => {
-                Some(*bit_to_net.get(idx).context("Signal bit index not found in net map")?)
-            }
+            BitValue::Signal(idx) => Some(
+                *bit_to_net
+                    .get(idx)
+                    .context("Signal bit index not found in net map")?,
+            ),
             BitValue::Zero => Some(gnd_net),
             BitValue::One => Some(vcc_net),
             BitValue::Undef => None,
         };
 
         if let Some(net_idx) = net_idx {
-            connect_port_to_net(design, cell_idx, internal_port_id, internal_port_type, net_idx)?;
+            connect_port_to_net(
+                design,
+                cell_idx,
+                internal_port_id,
+                internal_port_type,
+                net_idx,
+            )?;
         }
     }
 
@@ -472,7 +506,7 @@ fn apply_net_names(
     netnames: &serde_json::Map<String, Value>,
     design: &mut Design,
     pool: &IdStringPool,
-    bit_to_net: &FxHashMap<i64, NetIdx>,
+    bit_to_net: &FxHashMap<i64, NetId>,
 ) -> Result<()> {
     for (net_name, nn_json) in netnames {
         let hide_name = nn_json

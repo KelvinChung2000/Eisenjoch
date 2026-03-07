@@ -11,12 +11,12 @@
 //! toward their current spread positions, growing stronger each iteration.
 
 use crate::context::Context;
-use crate::netlist::CellIdx;
-use crate::types::{BelId, PlaceStrength};
+use crate::netlist::CellId;
+use crate::types::PlaceStrength;
 use log::{debug, info};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::common::cells_by_type;
+use super::common::initial_placement;
 use super::PlacerError;
 
 /// HeAP analytical placer.
@@ -264,9 +264,9 @@ struct Region {
 pub(crate) struct HeapState {
     pub cfg: PlacerHeapCfg,
     /// Movable cells (alive, not locked).
-    pub movable_cells: Vec<CellIdx>,
+    pub movable_cells: Vec<CellId>,
     /// Map from CellIdx to index in movable_cells.
-    pub cell_to_idx: FxHashMap<CellIdx, usize>,
+    pub cell_to_idx: FxHashMap<CellId, usize>,
     /// Current X positions (continuous).
     pub cell_x: Vec<f64>,
     /// Current Y positions (continuous).
@@ -286,8 +286,8 @@ struct BelPrefixGrid {
 
 impl BelPrefixGrid {
     fn build(ctx: &Context) -> Self {
-        let width = ctx.width().max(0);
-        let height = ctx.height().max(0);
+        let width = ctx.chipdb().width().max(0);
+        let height = ctx.chipdb().height().max(0);
         let stride = (width + 1) as usize;
         let mut prefix = vec![0usize; ((height + 1) as usize) * stride];
 
@@ -352,7 +352,7 @@ impl HeapState {
         let mut movable_cells = Vec::new();
         let mut cell_to_idx = FxHashMap::default();
 
-        for (ci, cell) in ctx.design().iter_alive_cells() {
+        for (ci, cell) in ctx.design.iter_alive_cells() {
             if !cell.bel_strength.is_locked() {
                 let idx = movable_cells.len();
                 cell_to_idx.insert(ci, idx);
@@ -361,8 +361,8 @@ impl HeapState {
         }
 
         let n = movable_cells.len();
-        let grid_w = ctx.width();
-        let grid_h = ctx.height();
+        let grid_w = ctx.chipdb().width();
+        let grid_h = ctx.chipdb().height();
 
         // Initialize cell positions to the center of the grid.
         let cx = (grid_w as f64 - 1.0) / 2.0;
@@ -382,55 +382,10 @@ impl HeapState {
         })
     }
 
-    /// Perform initial random placement of all unplaced cells.
-    fn initial_placement(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
-        ctx.populate_bel_buckets();
-
-        let grouped = cells_by_type(ctx);
-
-        for (&cell_type, cell_indices) in &grouped {
-            let cell_type_name = ctx.name_of(cell_type).to_owned();
-            let bucket_bels: Vec<_> = ctx
-                .bels_for_bucket(&cell_type_name)
-                .map(|bel| bel.id())
-                .collect();
-            if bucket_bels.is_empty() {
-                return Err(PlacerError::NoBelsAvailable(cell_type_name));
-            }
-
-            let mut available: Vec<BelId> = bucket_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.is_bel_available(*b))
-                .collect();
-
-            ctx.rng_mut().shuffle(&mut available);
-
-            let unplaced: Vec<CellIdx> = cell_indices
-                .iter()
-                .copied()
-                .filter(|&ci| ctx.cell(ci).bel().is_none())
-                .collect();
-
-            if unplaced.len() > available.len() {
-                return Err(PlacerError::NoBelsAvailable(format!(
-                    "{} (need {} BELs but only {} available)",
-                    cell_type_name,
-                    unplaced.len(),
-                    available.len()
-                )));
-            }
-
-            for (i, &cell_idx) in unplaced.iter().enumerate() {
-                let bel = available[i];
-                if !ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer) {
-                    let cell_name = ctx.cell(cell_idx).name_id();
-                    return Err(PlacerError::InitialPlacementFailed(
-                        ctx.name_of(cell_name).to_owned(),
-                    ));
-                }
-            }
-        }
+    /// Perform initial random placement of all unplaced cells, then sync
+    /// analytical positions from the placed BEL locations.
+    fn do_initial_placement(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
+        initial_placement(ctx)?;
 
         // Initialize analytical positions from the initial placement.
         for (idx, &cell_idx) in self.movable_cells.iter().enumerate() {
@@ -462,7 +417,7 @@ impl HeapState {
         let weight = self.cfg.beta;
 
         // Process each net.
-        for (_net_idx, net) in ctx.design().iter_alive_nets() {
+        for (_net_idx, net) in ctx.design.iter_alive_nets() {
             if !net.driver.is_connected() || net.users.is_empty() {
                 continue;
             }
@@ -915,7 +870,7 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     }
     info!("HeAP Placer: {} moveable cells.", num_cells);
 
-    state.initial_placement(ctx)?;
+    state.do_initial_placement(ctx)?;
     info!("HeAP Placer: initial placement done.");
 
     for iter in 0..cfg.max_iterations {
@@ -940,7 +895,7 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     }
 
     // Final validation: check all alive cells are placed.
-    for (cell_idx, cell) in ctx.design().iter_alive_cells() {
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
         if cell.bel.is_none() {
             return Err(PlacerError::PlacementFailed(format!(
                 "Cell {} (index {}) is alive but has no BEL after placement",
@@ -978,31 +933,31 @@ mod tests {
 
         for i in 0..n {
             let name = ctx.id(&format!("cell_{}", i));
-            ctx.add_cell(name, cell_type);
+            ctx.design.add_cell(name, cell_type);
             cell_names.push(name);
         }
 
         if n >= 2 {
             let net_name = ctx.id("net_0");
-            let net_idx = ctx.add_net(net_name);
+            let net_idx = ctx.design.add_net(net_name);
             let q_port = ctx.id("Q");
             let a_port = ctx.id("A");
 
-            let cell0_idx = ctx.design().cell_by_name(cell_names[0]).unwrap();
-            ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
-            ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
+            let cell0_idx = ctx.design.cell_by_name(cell_names[0]).unwrap();
+            ctx.design.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
+            ctx.design.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
 
-            ctx.net_edit(net_idx).set_driver_raw(PortRef {
+            ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
                 cell: Some(cell0_idx), port: q_port, budget: 0,
             });
 
             for i in 1..n {
-                let cell_idx = ctx.design().cell_by_name(cell_names[i]).unwrap();
-                ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
-                let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
+                let cell_idx = ctx.design.cell_by_name(cell_names[i]).unwrap();
+                ctx.design.cell_edit(cell_idx).add_port(a_port, PortType::In);
+                let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
                     cell: Some(cell_idx), port: a_port, budget: 0,
                 });
-                ctx.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
+                ctx.design.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
             }
         }
 

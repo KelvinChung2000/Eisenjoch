@@ -7,7 +7,7 @@
 //! weighting via net criticality.
 
 use crate::context::Context;
-use crate::netlist::{CellIdx, NetIdx};
+use crate::netlist::{CellId, NetId};
 use crate::types::{BelId, PlaceStrength};
 use log::{debug, info};
 
@@ -61,13 +61,12 @@ impl Default for PlacerSaCfg {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 /// Collect all nets that are touched by a given cell (both as driver and as user).
-fn nets_for_cell(ctx: &Context, cell_idx: CellIdx) -> Vec<NetIdx> {
+fn nets_for_cell(ctx: &Context, cell_idx: CellId) -> Vec<NetId> {
     let cell = ctx.cell(cell_idx);
     let mut nets = Vec::new();
     for port_info in cell.ports().values() {
@@ -81,18 +80,14 @@ fn nets_for_cell(ctx: &Context, cell_idx: CellIdx) -> Vec<NetIdx> {
 }
 
 /// Compute HPWL for a set of nets (used for incremental delta computation).
-fn hpwl_for_nets(ctx: &Context, net_indices: &[NetIdx]) -> f64 {
-    let mut total = 0.0;
-    for &net_idx in net_indices {
-        total += net_hpwl(ctx, net_idx);
-    }
-    total
+fn hpwl_for_nets(ctx: &Context, net_indices: &[NetId]) -> f64 {
+    net_indices.iter().map(|&idx| net_hpwl(ctx, idx)).sum()
 }
 
 /// Collect all live cell indices that are not locked.
-fn moveable_cells(ctx: &Context) -> Vec<CellIdx> {
+fn moveable_cells(ctx: &Context) -> Vec<CellId> {
     let mut result = Vec::new();
-    for (cell_idx, cell) in ctx.design().iter_alive_cells() {
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
         if !cell.bel_strength.is_locked() {
             result.push(cell_idx);
         }
@@ -120,7 +115,7 @@ pub(crate) struct SwapResult {
 ///
 /// The move is always performed (bind/unbind) so the caller can decide whether
 /// to accept or revert. If the caller rejects, it must call `revert_swap`.
-pub(crate) fn try_swap(ctx: &mut Context, cell_idx: CellIdx, target_bel: BelId) -> SwapResult {
+pub(crate) fn try_swap(ctx: &mut Context, cell_idx: CellId, target_bel: BelId) -> SwapResult {
     let cell = ctx.cell(cell_idx);
     let old_bel = cell.bel().map(|b| b.id());
 
@@ -143,7 +138,7 @@ pub(crate) fn try_swap(ctx: &mut Context, cell_idx: CellIdx, target_bel: BelId) 
     };
 
     // Determine if there is a cell at the target bel.
-    let other_cell_idx = ctx.bound_bel_cell(target_bel).map(|cell| cell.id());
+    let other_cell_idx = ctx.bel(target_bel).bound_cell().map(|c| c.id());
 
     // Check that the other cell (if any) is moveable.
     if let Some(oci) = other_cell_idx {
@@ -194,9 +189,9 @@ pub(crate) fn try_swap(ctx: &mut Context, cell_idx: CellIdx, target_bel: BelId) 
 /// Revert a swap move (undo the last try_swap that was performed).
 pub(crate) fn revert_swap(
     ctx: &mut Context,
-    cell_idx: CellIdx,
+    cell_idx: CellId,
     old_bel: BelId,
-    other_cell_idx: Option<CellIdx>,
+    other_cell_idx: Option<CellId>,
     current_bel: BelId,
 ) {
     // Unbind current positions.
@@ -287,12 +282,15 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
             let target_bel = bucket_bels[rand_idx];
 
             // Determine the other cell (if any) for potential revert.
-            let other_cell_idx = ctx.bound_bel_cell(target_bel).map(|cell| cell.id());
+            let other_cell_idx = ctx.bel(target_bel).bound_cell().map(|c| c.id());
 
             // Check that the other cell type is compatible with old_bel.
             if let Some(oci) = other_cell_idx {
                 let other_cell = ctx.cell(oci);
-                if !ctx.is_valid_bel_for_cell(old_bel, other_cell.cell_type_id()) {
+                if !ctx
+                    .bel(old_bel)
+                    .is_valid_for_cell_type(other_cell.cell_type_id())
+                {
                     continue;
                 }
             }
@@ -357,7 +355,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
     info!("SA Placer: final HPWL cost = {:.2}", current_cost);
 
     // Step 4: final validation -- check all alive cells are placed.
-    for (cell_idx, cell) in ctx.design().iter_alive_cells() {
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
         if cell.bel.is_none() {
             return Err(PlacerError::PlacementFailed(format!(
                 "Cell {} (index {}) is alive but has no BEL after placement",
@@ -376,7 +374,7 @@ mod tests {
     use super::*;
     use crate::chipdb::testutil::make_test_chipdb;
     use crate::context::Context;
-    use crate::netlist::{CellIdx, PortRef};
+    use crate::netlist::{CellId, PortRef};
     use crate::types::{BelId, IdString, PlaceStrength, PortType};
 
     fn make_context() -> Context {
@@ -394,31 +392,43 @@ mod tests {
 
         for i in 0..n {
             let name = ctx.id(&format!("cell_{}", i));
-            ctx.add_cell(name, cell_type);
+            ctx.design.add_cell(name, cell_type);
             cell_names.push(name);
         }
 
         if n >= 2 {
             let net_name = ctx.id("net_0");
-            let net_idx = ctx.add_net(net_name);
+            let net_idx = ctx.design.add_net(net_name);
             let q_port = ctx.id("Q");
             let a_port = ctx.id("A");
 
-            let cell0_idx = ctx.design().cell_by_name(cell_names[0]).unwrap();
-            ctx.cell_edit(cell0_idx).add_port(q_port, PortType::Out);
-            ctx.cell_edit(cell0_idx).set_port_net(q_port, Some(net_idx), None);
+            let cell0_idx = ctx.design.cell_by_name(cell_names[0]).unwrap();
+            ctx.design
+                .cell_edit(cell0_idx)
+                .add_port(q_port, PortType::Out);
+            ctx.design
+                .cell_edit(cell0_idx)
+                .set_port_net(q_port, Some(net_idx), None);
 
-            ctx.net_edit(net_idx).set_driver_raw(PortRef {
-                cell: Some(cell0_idx), port: q_port, budget: 0,
+            ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+                cell: Some(cell0_idx),
+                port: q_port,
+                budget: 0,
             });
 
             for i in 1..n {
-                let cell_idx = ctx.design().cell_by_name(cell_names[i]).unwrap();
-                ctx.cell_edit(cell_idx).add_port(a_port, PortType::In);
-                let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
-                    cell: Some(cell_idx), port: a_port, budget: 0,
+                let cell_idx = ctx.design.cell_by_name(cell_names[i]).unwrap();
+                ctx.design
+                    .cell_edit(cell_idx)
+                    .add_port(a_port, PortType::In);
+                let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
+                    cell: Some(cell_idx),
+                    port: a_port,
+                    budget: 0,
                 });
-                ctx.cell_edit(cell_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
+                ctx.design
+                    .cell_edit(cell_idx)
+                    .set_port_net(a_port, Some(net_idx), Some(user_idx));
             }
         }
 
@@ -431,7 +441,7 @@ mod tests {
     fn hpwl_no_driver_is_zero() {
         let mut ctx = make_context();
         let net_name = ctx.id("floating");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         assert_eq!(net_hpwl(&ctx, net_idx), 0.0);
     }
 
@@ -440,13 +450,17 @@ mod tests {
         let mut ctx = make_context();
         let cell_type = ctx.id("LUT4");
         let cell_name = ctx.id("drv");
-        let cell_idx = ctx.add_cell(cell_name, cell_type);
+        let cell_idx = ctx.design.add_cell(cell_name, cell_type);
         let net_name = ctx.id("n0");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let q_port = ctx.id("Q");
-        ctx.cell_edit(cell_idx).add_port(q_port, PortType::Out);
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
-            cell: Some(cell_idx), port: q_port, budget: 0,
+        ctx.design
+            .cell_edit(cell_idx)
+            .add_port(q_port, PortType::Out);
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+            cell: Some(cell_idx),
+            port: q_port,
+            budget: 0,
         });
         assert_eq!(net_hpwl(&ctx, net_idx), 0.0);
     }
@@ -458,24 +472,34 @@ mod tests {
         let cell_type = ctx.id("LUT4");
         let drv_name = ctx.id("drv");
         let usr_name = ctx.id("usr");
-        let drv_idx = ctx.add_cell(drv_name, cell_type);
-        let usr_idx = ctx.add_cell(usr_name, cell_type);
+        let drv_idx = ctx.design.add_cell(drv_name, cell_type);
+        let usr_idx = ctx.design.add_cell(usr_name, cell_type);
         ctx.bind_bel(BelId::new(0, 0), drv_idx, PlaceStrength::Placer);
         ctx.bind_bel(BelId::new(1, 0), usr_idx, PlaceStrength::Placer);
         let net_name = ctx.id("n");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let q_port = ctx.id("Q");
         let a_port = ctx.id("A");
-        ctx.cell_edit(drv_idx).add_port(q_port, PortType::Out);
-        ctx.cell_edit(drv_idx).set_port_net(q_port, Some(net_idx), None);
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
-            cell: Some(drv_idx), port: q_port, budget: 0,
+        ctx.design
+            .cell_edit(drv_idx)
+            .add_port(q_port, PortType::Out);
+        ctx.design
+            .cell_edit(drv_idx)
+            .set_port_net(q_port, Some(net_idx), None);
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+            cell: Some(drv_idx),
+            port: q_port,
+            budget: 0,
         });
-        ctx.cell_edit(usr_idx).add_port(a_port, PortType::In);
-        let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
-            cell: Some(usr_idx), port: a_port, budget: 0,
+        ctx.design.cell_edit(usr_idx).add_port(a_port, PortType::In);
+        let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
+            cell: Some(usr_idx),
+            port: a_port,
+            budget: 0,
         });
-        ctx.cell_edit(usr_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
+        ctx.design
+            .cell_edit(usr_idx)
+            .set_port_net(a_port, Some(net_idx), Some(user_idx));
         assert_eq!(net_hpwl(&ctx, net_idx), 1.0);
     }
 
@@ -486,24 +510,34 @@ mod tests {
         let cell_type = ctx.id("LUT4");
         let drv_name = ctx.id("drv");
         let usr_name = ctx.id("usr");
-        let drv_idx = ctx.add_cell(drv_name, cell_type);
-        let usr_idx = ctx.add_cell(usr_name, cell_type);
+        let drv_idx = ctx.design.add_cell(drv_name, cell_type);
+        let usr_idx = ctx.design.add_cell(usr_name, cell_type);
         ctx.bind_bel(BelId::new(0, 0), drv_idx, PlaceStrength::Placer);
         ctx.bind_bel(BelId::new(3, 0), usr_idx, PlaceStrength::Placer);
         let net_name = ctx.id("n");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let q_port = ctx.id("Q");
         let a_port = ctx.id("A");
-        ctx.cell_edit(drv_idx).add_port(q_port, PortType::Out);
-        ctx.cell_edit(drv_idx).set_port_net(q_port, Some(net_idx), None);
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
-            cell: Some(drv_idx), port: q_port, budget: 0,
+        ctx.design
+            .cell_edit(drv_idx)
+            .add_port(q_port, PortType::Out);
+        ctx.design
+            .cell_edit(drv_idx)
+            .set_port_net(q_port, Some(net_idx), None);
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+            cell: Some(drv_idx),
+            port: q_port,
+            budget: 0,
         });
-        ctx.cell_edit(usr_idx).add_port(a_port, PortType::In);
-        let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef {
-            cell: Some(usr_idx), port: a_port, budget: 0,
+        ctx.design.cell_edit(usr_idx).add_port(a_port, PortType::In);
+        let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
+            cell: Some(usr_idx),
+            port: a_port,
+            budget: 0,
         });
-        ctx.cell_edit(usr_idx).set_port_net(a_port, Some(net_idx), Some(user_idx));
+        ctx.design
+            .cell_edit(usr_idx)
+            .set_port_net(a_port, Some(net_idx), Some(user_idx));
         assert_eq!(net_hpwl(&ctx, net_idx), 2.0);
     }
 
@@ -513,7 +547,10 @@ mod tests {
         ctx.populate_bel_buckets();
         let cell_type = ctx.id("LUT4");
         let names: Vec<IdString> = (0..4).map(|i| ctx.id(&format!("c{}", i))).collect();
-        let cell_indices: Vec<CellIdx> = names.iter().map(|&n| ctx.add_cell(n, cell_type)).collect();
+        let cell_indices: Vec<CellId> = names
+            .iter()
+            .map(|&n| ctx.design.add_cell(n, cell_type))
+            .collect();
         for (i, &ci) in cell_indices.iter().enumerate() {
             ctx.bind_bel(BelId::new(i as i32, 0), ci, PlaceStrength::Placer);
         }
@@ -521,25 +558,61 @@ mod tests {
         let a_port = ctx.id("A");
         {
             let net_name = ctx.id("net_a");
-            let net_idx = ctx.add_net(net_name);
-            ctx.cell_edit(cell_indices[0]).add_port(q_port, PortType::Out);
-            ctx.cell_edit(cell_indices[0]).set_port_net(q_port, Some(net_idx), None);
-            ctx.net_edit(net_idx).set_driver_raw(PortRef { cell: Some(cell_indices[0]), port: q_port, budget: 0 });
-            ctx.cell_edit(cell_indices[3]).add_port(a_port, PortType::In);
-            let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef { cell: Some(cell_indices[3]), port: a_port, budget: 0 });
-            ctx.cell_edit(cell_indices[3]).set_port_net(a_port, Some(net_idx), Some(user_idx));
+            let net_idx = ctx.design.add_net(net_name);
+            ctx.design
+                .cell_edit(cell_indices[0])
+                .add_port(q_port, PortType::Out);
+            ctx.design
+                .cell_edit(cell_indices[0])
+                .set_port_net(q_port, Some(net_idx), None);
+            ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+                cell: Some(cell_indices[0]),
+                port: q_port,
+                budget: 0,
+            });
+            ctx.design
+                .cell_edit(cell_indices[3])
+                .add_port(a_port, PortType::In);
+            let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
+                cell: Some(cell_indices[3]),
+                port: a_port,
+                budget: 0,
+            });
+            ctx.design.cell_edit(cell_indices[3]).set_port_net(
+                a_port,
+                Some(net_idx),
+                Some(user_idx),
+            );
         }
         {
             let b_port = ctx.id("B");
             let net_name = ctx.id("net_b");
-            let net_idx = ctx.add_net(net_name);
-            ctx.cell_edit(cell_indices[1]).add_port(b_port, PortType::Out);
-            ctx.cell_edit(cell_indices[1]).set_port_net(b_port, Some(net_idx), None);
-            ctx.net_edit(net_idx).set_driver_raw(PortRef { cell: Some(cell_indices[1]), port: b_port, budget: 0 });
+            let net_idx = ctx.design.add_net(net_name);
+            ctx.design
+                .cell_edit(cell_indices[1])
+                .add_port(b_port, PortType::Out);
+            ctx.design
+                .cell_edit(cell_indices[1])
+                .set_port_net(b_port, Some(net_idx), None);
+            ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+                cell: Some(cell_indices[1]),
+                port: b_port,
+                budget: 0,
+            });
             let c_port = ctx.id("C");
-            ctx.cell_edit(cell_indices[2]).add_port(c_port, PortType::In);
-            let user_idx = ctx.net_edit(net_idx).add_user_raw(PortRef { cell: Some(cell_indices[2]), port: c_port, budget: 0 });
-            ctx.cell_edit(cell_indices[2]).set_port_net(c_port, Some(net_idx), Some(user_idx));
+            ctx.design
+                .cell_edit(cell_indices[2])
+                .add_port(c_port, PortType::In);
+            let user_idx = ctx.design.net_edit(net_idx).add_user_raw(PortRef {
+                cell: Some(cell_indices[2]),
+                port: c_port,
+                budget: 0,
+            });
+            ctx.design.cell_edit(cell_indices[2]).set_port_net(
+                c_port,
+                Some(net_idx),
+                Some(user_idx),
+            );
         }
         assert_eq!(total_hpwl(&ctx), 4.0);
     }
@@ -550,8 +623,12 @@ mod tests {
     fn initial_placement_places_all_cells() {
         let mut ctx = make_context_with_cells(3);
         initial_placement(&mut ctx).expect("should succeed");
-        for (cell_idx, cell) in ctx.design().iter_alive_cells() {
-            assert!(cell.bel.is_some(), "cell {} should be placed", cell_idx.raw());
+        for (cell_idx, cell) in ctx.design.iter_alive_cells() {
+            assert!(
+                cell.bel.is_some(),
+                "cell {} should be placed",
+                cell_idx.raw()
+            );
         }
     }
 
@@ -560,7 +637,7 @@ mod tests {
         let mut ctx = make_context_with_cells(4);
         initial_placement(&mut ctx).expect("should succeed");
         let mut used_bels = std::collections::HashSet::new();
-        for (_cell_idx, cell) in ctx.design().iter_alive_cells() {
+        for (_cell_idx, cell) in ctx.design.iter_alive_cells() {
             let bel = cell.bel.expect("alive cell should be placed");
             assert!(used_bels.insert(bel));
         }
@@ -573,7 +650,7 @@ mod tests {
         let cell_type = ctx.id("LUT4");
         for i in 0..5 {
             let name = ctx.id(&format!("cell_{}", i));
-            ctx.add_cell(name, cell_type);
+            ctx.design.add_cell(name, cell_type);
         }
         assert!(initial_placement(&mut ctx).is_err());
     }
@@ -582,15 +659,15 @@ mod tests {
     fn initial_placement_skips_already_placed() {
         let mut ctx = make_context_with_cells(2);
         let cell_name = ctx.id("cell_0");
-        let cell_idx = ctx.design().cell_by_name(cell_name).unwrap();
+        let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
         let bel = BelId::new(0, 0);
         ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer);
         initial_placement(&mut ctx).expect("should succeed");
-        assert_eq!(ctx.design().cell(cell_idx).bel, Some(bel));
+        assert_eq!(ctx.design.cell(cell_idx).bel, Some(bel));
         let cell_name_1 = ctx.id("cell_1");
-        let cell_idx_1 = ctx.design().cell_by_name(cell_name_1).unwrap();
-        assert!(ctx.design().cell(cell_idx_1).bel.is_some());
-        assert_ne!(ctx.design().cell(cell_idx_1).bel, Some(bel));
+        let cell_idx_1 = ctx.design.cell_by_name(cell_name_1).unwrap();
+        assert!(ctx.design.cell(cell_idx_1).bel.is_some());
+        assert_ne!(ctx.design.cell(cell_idx_1).bel, Some(bel));
     }
 
     // Swap mechanics tests
@@ -600,13 +677,13 @@ mod tests {
         let mut ctx = make_context_with_cells(1);
         initial_placement(&mut ctx).expect("should succeed");
         let cell_name = ctx.id("cell_0");
-        let cell_idx = ctx.design().cell_by_name(cell_name).unwrap();
-        let old_bel = ctx.design().cell(cell_idx).bel.unwrap();
+        let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
+        let old_bel = ctx.design.cell(cell_idx).bel.unwrap();
         let bels: Vec<BelId> = ctx.bels().map(|b| b.id()).collect();
         let empty_bel = bels.iter().find(|&&b| b != old_bel).copied().unwrap();
         let result = try_swap(&mut ctx, cell_idx, empty_bel);
         assert!(result.performed);
-        assert_eq!(ctx.design().cell(cell_idx).bel, Some(empty_bel));
+        assert_eq!(ctx.design.cell(cell_idx).bel, Some(empty_bel));
         assert!(ctx.bel(old_bel).is_available());
     }
 
@@ -616,14 +693,14 @@ mod tests {
         initial_placement(&mut ctx).expect("should succeed");
         let cell0_name = ctx.id("cell_0");
         let cell1_name = ctx.id("cell_1");
-        let cell0_idx = ctx.design().cell_by_name(cell0_name).unwrap();
-        let cell1_idx = ctx.design().cell_by_name(cell1_name).unwrap();
-        let bel0 = ctx.design().cell(cell0_idx).bel.unwrap();
-        let bel1 = ctx.design().cell(cell1_idx).bel.unwrap();
+        let cell0_idx = ctx.design.cell_by_name(cell0_name).unwrap();
+        let cell1_idx = ctx.design.cell_by_name(cell1_name).unwrap();
+        let bel0 = ctx.design.cell(cell0_idx).bel.unwrap();
+        let bel1 = ctx.design.cell(cell1_idx).bel.unwrap();
         let result = try_swap(&mut ctx, cell0_idx, bel1);
         assert!(result.performed);
-        assert_eq!(ctx.design().cell(cell0_idx).bel, Some(bel1));
-        assert_eq!(ctx.design().cell(cell1_idx).bel, Some(bel0));
+        assert_eq!(ctx.design.cell(cell0_idx).bel, Some(bel1));
+        assert_eq!(ctx.design.cell(cell1_idx).bel, Some(bel0));
     }
 
     #[test]
@@ -631,8 +708,8 @@ mod tests {
         let mut ctx = make_context_with_cells(1);
         initial_placement(&mut ctx).expect("should succeed");
         let cell_name = ctx.id("cell_0");
-        let cell_idx = ctx.design().cell_by_name(cell_name).unwrap();
-        let bel = ctx.design().cell(cell_idx).bel.unwrap();
+        let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
+        let bel = ctx.design.cell(cell_idx).bel.unwrap();
         let result = try_swap(&mut ctx, cell_idx, bel);
         assert!(!result.performed);
         assert_eq!(result.delta_cost, 0.0);
@@ -644,13 +721,13 @@ mod tests {
         initial_placement(&mut ctx).expect("should succeed");
         let cell0_name = ctx.id("cell_0");
         let cell1_name = ctx.id("cell_1");
-        let cell0_idx = ctx.design().cell_by_name(cell0_name).unwrap();
-        let cell1_idx = ctx.design().cell_by_name(cell1_name).unwrap();
-        let bel0 = ctx.design().cell(cell0_idx).bel.unwrap();
-        let bel1 = ctx.design().cell(cell1_idx).bel.unwrap();
+        let cell0_idx = ctx.design.cell_by_name(cell0_name).unwrap();
+        let cell1_idx = ctx.design.cell_by_name(cell1_name).unwrap();
+        let bel0 = ctx.design.cell(cell0_idx).bel.unwrap();
+        let bel1 = ctx.design.cell(cell1_idx).bel.unwrap();
         let _result = try_swap(&mut ctx, cell0_idx, bel1);
         revert_swap(&mut ctx, cell0_idx, bel0, Some(cell1_idx), bel1);
-        assert_eq!(ctx.design().cell(cell0_idx).bel, Some(bel0));
-        assert_eq!(ctx.design().cell(cell1_idx).bel, Some(bel1));
+        assert_eq!(ctx.design.cell(cell0_idx).bel, Some(bel0));
+        assert_eq!(ctx.design.cell(cell1_idx).bel, Some(bel1));
     }
 }

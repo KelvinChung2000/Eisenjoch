@@ -8,13 +8,13 @@ use nextpnr::netlist::*;
 use nextpnr::types::*;
 
 #[allow(non_snake_case)]
-fn CellIdx(raw: u32) -> nextpnr::netlist::CellIdx {
-    nextpnr::netlist::CellIdx::from_raw(raw)
+fn CellIdx(raw: u32) -> nextpnr::netlist::CellId {
+    nextpnr::netlist::CellId::from_raw(raw)
 }
 
 #[allow(non_snake_case)]
-fn NetIdx(raw: u32) -> nextpnr::netlist::NetIdx {
-    nextpnr::netlist::NetIdx::from_raw(raw)
+fn NetIdx(raw: u32) -> nextpnr::netlist::NetId {
+    nextpnr::netlist::NetId::from_raw(raw)
 }
 
 /// Helper: create a pool and intern some names.
@@ -28,28 +28,28 @@ fn make_pool() -> IdStringPool {
 
 #[test]
 fn cell_idx_none_is_max() {
-    assert_eq!(CellIdx::NONE.raw(), u32::MAX);
-    assert!(CellIdx::NONE.is_none());
-    assert!(!CellIdx::NONE.is_some());
+    assert_eq!(CellId::NONE.raw(), u32::MAX);
+    assert!(CellId::NONE.is_none());
+    assert!(!CellId::NONE.is_some());
 }
 
 #[test]
 fn net_idx_none_is_max() {
-    assert_eq!(NetIdx::NONE.raw(), u32::MAX);
-    assert!(NetIdx::NONE.is_none());
-    assert!(!NetIdx::NONE.is_some());
+    assert_eq!(NetId::NONE.raw(), u32::MAX);
+    assert!(NetId::NONE.is_none());
+    assert!(!NetId::NONE.is_some());
 }
 
 #[test]
 fn cell_idx_zero_is_some() {
-    let idx = CellIdx(0);
+    let idx = CellId(0);
     assert!(idx.is_some());
     assert!(!idx.is_none());
 }
 
 #[test]
 fn net_idx_zero_is_some() {
-    let idx = NetIdx(0);
+    let idx = NetId(0);
     assert!(idx.is_some());
     assert!(!idx.is_none());
 }
@@ -57,9 +57,9 @@ fn net_idx_zero_is_some() {
 #[test]
 fn cell_idx_equality_and_hashing() {
     use std::collections::HashSet;
-    let a = CellIdx(1);
-    let b = CellIdx(1);
-    let c = CellIdx(2);
+    let a = CellId(1);
+    let b = CellId(1);
+    let c = CellId(2);
     assert_eq!(a, b);
     assert_ne!(a, c);
 
@@ -73,9 +73,9 @@ fn cell_idx_equality_and_hashing() {
 #[test]
 fn net_idx_equality_and_hashing() {
     use std::collections::HashSet;
-    let a = NetIdx(10);
-    let b = NetIdx(10);
-    let c = NetIdx(20);
+    let a = NetId(10);
+    let b = NetId(10);
+    let c = NetId(20);
     assert_eq!(a, b);
     assert_ne!(a, c);
 
@@ -88,21 +88,21 @@ fn net_idx_equality_and_hashing() {
 
 #[test]
 fn cell_idx_copy_semantics() {
-    let a = CellIdx(5);
+    let a = CellId(5);
     let b = a;
     assert_eq!(a, b);
 }
 
 #[test]
 fn net_idx_copy_semantics() {
-    let a = NetIdx(5);
+    let a = NetId(5);
     let b = a;
     assert_eq!(a, b);
 }
 
 #[test]
 fn cell_idx_debug() {
-    let idx = CellIdx(42);
+    let idx = CellId(42);
     let s = format!("{:?}", idx);
     assert!(s.contains("CellIdx"));
     assert!(s.contains("42"));
@@ -110,7 +110,7 @@ fn cell_idx_debug() {
 
 #[test]
 fn net_idx_debug() {
-    let idx = NetIdx(99);
+    let idx = NetId(99);
     let s = format!("{:?}", idx);
     assert!(s.contains("NetIdx"));
     assert!(s.contains("99"));
@@ -133,7 +133,7 @@ fn port_ref_connected() {
     let pool = make_pool();
     let port_name = pool.intern("A");
     let pr = PortRef {
-        cell: Some(CellIdx(0)),
+        cell: Some(CellId(0)),
         port: port_name,
         budget: 100,
     };
@@ -227,7 +227,7 @@ fn cell_info_port_mut() {
 
     // Mutate via port_mut
     let pi = ci.port_mut(port_name).unwrap();
-    pi.net = Some(NetIdx(7));
+    pi.net = Some(NetId(7));
     pi.user_idx = Some(3);
 
     assert_eq!(ci.port(port_name).unwrap().net, Some(NetIdx(7)));
@@ -282,7 +282,7 @@ fn net_info_set_driver() {
 
     let port_name = pool.intern("Q");
     ni.driver = PortRef {
-        cell: Some(CellIdx(0)),
+        cell: Some(CellId(0)),
         port: port_name,
         budget: 0,
     };
@@ -300,12 +300,12 @@ fn net_info_add_users() {
     let port_b = pool.intern("B");
 
     ni.users.push(PortRef {
-        cell: Some(CellIdx(1)),
+        cell: Some(CellId(1)),
         port: port_a,
         budget: 50,
     });
     ni.users.push(PortRef {
-        cell: Some(CellIdx(2)),
+        cell: Some(CellId(2)),
         port: port_b,
         budget: 75,
     });
@@ -507,7 +507,8 @@ fn design_cell_mut() {
     let idx = d.add_cell(name, pool.intern("LUT4"));
 
     // Mutate cell
-    d.cell_edit(idx).set_bel(Some(BelId::new(1, 2)), PlaceStrength::Fixed);
+    d.cell_edit(idx)
+        .set_bel(Some(BelId::new(1, 2)), PlaceStrength::Fixed);
 
     assert_eq!(d.cell(idx).bel, Some(BelId::new(1, 2)));
     assert_eq!(d.cell(idx).bel_strength, PlaceStrength::Fixed);
@@ -713,7 +714,8 @@ fn design_wire_driver_and_user() {
         port: q_port,
         budget: 0,
     });
-    d.cell_edit(drv_idx).set_port_net(q_port, Some(net_idx), None);
+    d.cell_edit(drv_idx)
+        .set_port_net(q_port, Some(net_idx), None);
 
     // Wire user
     let user_idx_in_net = d.net_edit(net_idx).add_user_raw(PortRef {
@@ -721,7 +723,8 @@ fn design_wire_driver_and_user() {
         port: a_port,
         budget: 200,
     });
-    d.cell_edit(usr_idx).set_port_net(a_port, Some(net_idx), Some(user_idx_in_net));
+    d.cell_edit(usr_idx)
+        .set_port_net(a_port, Some(net_idx), Some(user_idx_in_net));
 
     // Verify
     assert!(d.net(net_idx).has_driver());
@@ -745,7 +748,8 @@ fn design_routing_tree_multiple_wires() {
     for i in 0..5 {
         let wire = WireId::new(0, i);
         let pip = PipId::new(0, i + 100);
-        d.net_edit(net_idx).add_wire(wire, Some(pip), PlaceStrength::Placer);
+        d.net_edit(net_idx)
+            .add_wire(wire, Some(pip), PlaceStrength::Placer);
     }
 
     assert_eq!(d.net(net_idx).wires.len(), 5);
@@ -827,8 +831,8 @@ fn none_indices_are_not_confused_with_valid() {
     assert!(idx.is_some());
 
     // NONE should never equal a valid index
-    assert_ne!(CellIdx::NONE, idx);
-    assert_ne!(NetIdx::NONE, NetIdx(0));
+    assert_ne!(CellId::NONE, idx);
+    assert_ne!(NetId::NONE, NetIdx(0));
 }
 
 #[test]
@@ -847,7 +851,7 @@ fn net_unconnect_driver() {
 
     // Connect a driver
     d.net_edit(idx).set_driver_raw(PortRef {
-        cell: Some(CellIdx(0)),
+        cell: Some(CellId(0)),
         port: pool.intern("Q"),
         budget: 0,
     });
@@ -891,7 +895,8 @@ fn cell_placement() {
     assert_eq!(d.cell(idx).bel_strength, PlaceStrength::None);
 
     // Place it
-    d.cell_edit(idx).set_bel(Some(BelId::new(3, 7)), PlaceStrength::User);
+    d.cell_edit(idx)
+        .set_bel(Some(BelId::new(3, 7)), PlaceStrength::User);
 
     assert!(d.cell(idx).bel.is_some());
     assert_eq!(d.cell(idx).bel.unwrap().tile(), 3);
@@ -935,12 +940,10 @@ fn net_attrs() {
     let idx = d.add_net(pool.intern("n"));
 
     let key = pool.intern("SRC");
-    d.net_edit(idx).set_attr(key, Property::string("module.v:42"));
+    d.net_edit(idx)
+        .set_attr(key, Property::string("module.v:42"));
 
-    assert_eq!(
-        d.net(idx).attrs.get(&key).unwrap().as_str(),
-        "module.v:42"
-    );
+    assert_eq!(d.net(idx).attrs.get(&key).unwrap().as_str(), "module.v:42");
 }
 
 #[test]
@@ -976,7 +979,8 @@ fn net_multiple_wire_routing() {
     ];
 
     for (wire, pip) in &entries {
-        d.net_edit(idx).add_wire(*wire, Some(*pip), PlaceStrength::Placer);
+        d.net_edit(idx)
+            .add_wire(*wire, Some(*pip), PlaceStrength::Placer);
     }
 
     assert_eq!(d.net(idx).wires.len(), 5);
@@ -1025,7 +1029,7 @@ fn remove_net_then_add_with_same_name() {
 fn port_ref_clone() {
     let pool = make_pool();
     let pr = PortRef {
-        cell: Some(CellIdx(5)),
+        cell: Some(CellId(5)),
         port: pool.intern("D"),
         budget: 123,
     };
@@ -1040,7 +1044,7 @@ fn port_info_clone() {
     let pi = PortInfo {
         name: pool.intern("CLK"),
         port_type: PortType::In,
-        net: Some(NetIdx(3)),
+        net: Some(NetId(3)),
         user_idx: Some(1),
     };
     let pi2 = pi.clone();

@@ -20,8 +20,8 @@ fn make_context() -> Context {
 #[test]
 fn context_creation() {
     let ctx = make_context();
-    assert_eq!(ctx.width(), 2);
-    assert_eq!(ctx.height(), 2);
+    assert_eq!(ctx.chipdb().width(), 2);
+    assert_eq!(ctx.chipdb().height(), 2);
     assert!(!ctx.verbose());
     assert!(!ctx.debug());
     assert!(!ctx.force());
@@ -112,7 +112,7 @@ fn bind_bel_success() {
     let bel = BelId::new(0, 0);
     let cell_name = ctx.id("my_lut");
     let cell_type = ctx.id("LUT4");
-    let cell_idx = ctx.add_cell(cell_name, cell_type);
+    let cell_idx = ctx.design.add_cell(cell_name, cell_type);
     assert!(ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer));
     assert!(!ctx.bel(bel).is_available());
     assert_eq!(ctx.bel(bel).bound_cell().map(|c| c.name_id()), Some(cell_name));
@@ -124,7 +124,7 @@ fn bind_bel_updates_cell_info() {
     let bel = BelId::new(1, 0);
     let cell_type = ctx.id("LUT4");
     let cell_name = ctx.id("my_lut");
-    let cell_idx = ctx.add_cell(cell_name, cell_type);
+    let cell_idx = ctx.design.add_cell(cell_name, cell_type);
 
     assert!(ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer));
 
@@ -140,8 +140,8 @@ fn bind_bel_duplicate_fails() {
     let cell_type = ctx.id("LUT4");
     let name1 = ctx.id("cell1");
     let name2 = ctx.id("cell2");
-    let idx1 = ctx.add_cell(name1, cell_type);
-    let idx2 = ctx.add_cell(name2, cell_type);
+    let idx1 = ctx.design.add_cell(name1, cell_type);
+    let idx2 = ctx.design.add_cell(name2, cell_type);
     assert!(ctx.bind_bel(bel, idx1, PlaceStrength::Placer));
     assert!(!ctx.bind_bel(bel, idx2, PlaceStrength::Placer));
     assert_eq!(ctx.bel(bel).bound_cell().map(|c| c.name_id()), Some(name1));
@@ -153,7 +153,7 @@ fn unbind_bel() {
     let bel = BelId::new(2, 0);
     let cell_type = ctx.id("LUT4");
     let cell_name = ctx.id("my_lut");
-    let cell_idx = ctx.add_cell(cell_name, cell_type);
+    let cell_idx = ctx.design.add_cell(cell_name, cell_type);
 
     ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer);
     assert!(!ctx.bel(bel).is_available());
@@ -182,8 +182,8 @@ fn bind_rebind_bel() {
     let cell_type = ctx.id("LUT4");
     let name1 = ctx.id("cell_a");
     let name2 = ctx.id("cell_b");
-    let idx1 = ctx.add_cell(name1, cell_type);
-    let idx2 = ctx.add_cell(name2, cell_type);
+    let idx1 = ctx.design.add_cell(name1, cell_type);
+    let idx2 = ctx.design.add_cell(name2, cell_type);
 
     ctx.bind_bel(bel, idx1, PlaceStrength::Placer);
     ctx.unbind_bel(bel);
@@ -208,7 +208,7 @@ fn bind_wire() {
     let mut ctx = make_context();
     let wire = WireId::new(0, 0);
     let net_name = ctx.id("net_a");
-    let net_idx = ctx.add_net(net_name);
+    let net_idx = ctx.design.add_net(net_name);
     ctx.bind_wire(wire, net_idx, PlaceStrength::Placer);
     assert!(!ctx.wire(wire).is_available());
     assert_eq!(ctx.wire(wire).bound_net().map(|n| n.name_id()), Some(net_name));
@@ -219,7 +219,7 @@ fn unbind_wire() {
     let mut ctx = make_context();
     let wire = WireId::new(0, 1);
     let net_name = ctx.id("net_b");
-    let net_idx = ctx.add_net(net_name);
+    let net_idx = ctx.design.add_net(net_name);
     ctx.bind_wire(wire, net_idx, PlaceStrength::Placer);
     ctx.unbind_wire(wire);
     assert!(ctx.wire(wire).is_available());
@@ -232,8 +232,8 @@ fn rebind_wire() {
     let wire = WireId::new(1, 0);
     let net1 = ctx.id("net_1");
     let net2 = ctx.id("net_2");
-    let idx1 = ctx.add_net(net1);
-    let idx2 = ctx.add_net(net2);
+    let idx1 = ctx.design.add_net(net1);
+    let idx2 = ctx.design.add_net(net2);
     ctx.bind_wire(wire, idx1, PlaceStrength::Placer);
     ctx.bind_wire(wire, idx2, PlaceStrength::Strong);
     assert_eq!(ctx.wire(wire).bound_net().map(|n| n.name_id()), Some(net2));
@@ -255,7 +255,7 @@ fn bind_pip() {
     let mut ctx = make_context();
     let pip = PipId::new(0, 0);
     let net_name = ctx.id("net_x");
-    let net_idx = ctx.add_net(net_name);
+    let net_idx = ctx.design.add_net(net_name);
     ctx.bind_pip(pip, net_idx, PlaceStrength::Placer);
     assert!(!ctx.pip(pip).is_available());
 }
@@ -265,7 +265,7 @@ fn unbind_pip() {
     let mut ctx = make_context();
     let pip = PipId::new(1, 0);
     let net_name = ctx.id("net_y");
-    let net_idx = ctx.add_net(net_name);
+    let net_idx = ctx.design.add_net(net_name);
     ctx.bind_pip(pip, net_idx, PlaceStrength::Placer);
     ctx.unbind_pip(pip);
     assert!(ctx.pip(pip).is_available());
@@ -415,7 +415,7 @@ fn full_placement_flow() {
 
     let cell_type_id = ctx.id("LUT4");
     let cell_name = ctx.id("top/lut_0");
-    let cell_idx = ctx.add_cell(cell_name, cell_type_id);
+    let cell_idx = ctx.design.add_cell(cell_name, cell_type_id);
 
     let lut_bels: Vec<BelId> = ctx.bels_for_bucket("LUT4").map(|b| b.id()).collect();
     assert!(!lut_bels.is_empty());
@@ -438,7 +438,7 @@ fn full_routing_flow() {
     let mut ctx = make_context();
 
     let net_name = ctx.id("net_clk");
-    let net_idx = ctx.add_net(net_name);
+    let net_idx = ctx.design.add_net(net_name);
 
     let pip = PipId::new(0, 0);
     ctx.bind_pip(pip, net_idx, PlaceStrength::Placer);

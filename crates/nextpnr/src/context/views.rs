@@ -1,6 +1,9 @@
+use std::hash::{Hash, Hasher};
+use std::ops::Deref;
+
 use super::Context;
 use crate::netlist::{
-    CellIdx, CellInfo, Cluster, Design, FlatIndex, HierarchicalCell, NetIdx, NetInfo, PipMap,
+    CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap,
     PortInfo, PortRef, TimingIndex,
 };
 use crate::types::{
@@ -93,21 +96,61 @@ impl TileView {
     }
 }
 
-pub struct BelView<'a> {
-    ctx: &'a Context,
-    id: BelId,
+macro_rules! define_view {
+    ($name:ident, $id_type:ty) => {
+        #[derive(Clone, Copy)]
+        pub struct $name<'a> {
+            ctx: &'a Context,
+            id: $id_type,
+        }
+
+        impl<'a> $name<'a> {
+            pub(crate) fn new(ctx: &'a Context, id: $id_type) -> Self {
+                Self { ctx, id }
+            }
+
+            #[inline]
+            pub fn id(&self) -> $id_type { self.id }
+        }
+
+        impl Deref for $name<'_> {
+            type Target = $id_type;
+            #[inline]
+            fn deref(&self) -> &$id_type { &self.id }
+        }
+
+        impl PartialEq for $name<'_> {
+            fn eq(&self, other: &Self) -> bool { self.id == other.id }
+        }
+        impl Eq for $name<'_> {}
+
+        impl Hash for $name<'_> {
+            fn hash<H: Hasher>(&self, state: &mut H) { self.id.hash(state); }
+        }
+
+        impl PartialEq<$id_type> for $name<'_> {
+            fn eq(&self, other: &$id_type) -> bool { self.id == *other }
+        }
+        impl PartialEq<$name<'_>> for $id_type {
+            fn eq(&self, other: &$name<'_>) -> bool { *self == other.id }
+        }
+
+        impl From<$name<'_>> for $id_type {
+            fn from(v: $name<'_>) -> $id_type { v.id }
+        }
+        impl From<&$name<'_>> for $id_type {
+            fn from(v: &$name<'_>) -> $id_type { v.id }
+        }
+    };
 }
 
-impl<'a> BelView<'a> {
-    pub(crate) fn new(ctx: &'a Context, id: BelId) -> Self {
-        Self { ctx, id }
-    }
+define_view!(Bel, BelId);
+define_view!(Wire, WireId);
+define_view!(Pip, PipId);
+define_view!(Cell, CellId);
+define_view!(Net, NetId);
 
-    #[inline]
-    pub fn id(&self) -> BelId {
-        self.id
-    }
-
+impl<'a> Bel<'a> {
     #[inline]
     pub fn name(&self) -> &'a str {
         self.ctx.chipdb().bel_name(self.id)
@@ -136,42 +179,31 @@ impl<'a> BelView<'a> {
 
     #[inline]
     pub fn is_available(&self) -> bool {
-        self.ctx.is_bel_available(self.id)
+        self.ctx.bel_slot(self.id).is_some_and(Option::is_none)
     }
 
     #[inline]
-    pub fn bound_cell(&self) -> Option<CellView<'a>> {
-        self.ctx.bound_bel_cell(self.id)
+    pub fn bound_cell(&self) -> Option<Cell<'a>> {
+        self.ctx.bel_slot(self.id)
+            .copied()
+            .flatten()
+            .map(|cell_idx| Cell::new(self.ctx, cell_idx))
     }
 
     #[inline]
-    pub fn pin_wire(&self, port: IdString) -> Option<WireView<'a>> {
-        self.ctx
-            .bel_pin_wire(self.id, port)
-            .map(|w| WireView::new(self.ctx, w))
+    pub fn pin_wire(&self, port: IdString) -> Option<Wire<'a>> {
+        self.ctx.bel_pin_wire(BelPin::new(self.id, port))
     }
 
     #[inline]
     pub fn is_valid_for_cell_type(&self, cell_type: IdString) -> bool {
-        self.ctx.is_valid_bel_for_cell(self.id, cell_type)
+        let bucket = self.ctx.chipdb().bel_type(self.id);
+        let cell_type_str = self.ctx.name_of(cell_type);
+        bucket == cell_type_str
     }
 }
 
-pub struct NetView<'a> {
-    ctx: &'a Context,
-    id: NetIdx,
-}
-
-impl<'a> NetView<'a> {
-    pub(crate) fn new(ctx: &'a Context, id: NetIdx) -> Self {
-        Self { ctx, id }
-    }
-
-    #[inline]
-    pub fn id(&self) -> NetIdx {
-        self.id
-    }
-
+impl<'a> Net<'a> {
     #[inline]
     pub fn name(&self) -> &'a str {
         self.ctx.name_of(self.info().name)
@@ -179,12 +211,7 @@ impl<'a> NetView<'a> {
 
     #[inline]
     pub(crate) fn info(&self) -> &'a NetInfo {
-        self.ctx.design().net(self.id)
-    }
-
-    #[inline]
-    pub fn has_wire(&self, wire: &WireView<'_>) -> bool {
-        self.info().wires.contains_key(&wire.id())
+        self.ctx.design.net(self.id)
     }
 
     #[inline]
@@ -193,8 +220,8 @@ impl<'a> NetView<'a> {
     }
 
     #[inline]
-    pub fn wire_views(&self) -> impl Iterator<Item = WireView<'a>> + 'a {
-        self.wire_ids().map(|wire| WireView::new(self.ctx, wire))
+    pub fn wire_views(&self) -> impl Iterator<Item = Wire<'a>> + 'a {
+        self.wire_ids().map(|wire| Wire::new(self.ctx, wire))
     }
 
     #[inline]
@@ -228,31 +255,17 @@ impl<'a> NetView<'a> {
     pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }
 }
 
-pub struct WireView<'a> {
-    ctx: &'a Context,
-    id: WireId,
-}
-
-impl<'a> WireView<'a> {
-    pub(crate) fn new(ctx: &'a Context, id: WireId) -> Self {
-        Self { ctx, id }
-    }
-
-    #[inline]
-    pub fn id(&self) -> WireId {
-        self.id
-    }
-
+impl<'a> Wire<'a> {
     #[inline]
     pub fn tile(&self) -> TileView {
         TileView::new(self.ctx, self.id.tile())
     }
 
     #[inline]
-    pub fn bound_net(&self) -> Option<NetView<'a>> {
+    pub fn bound_net(&self) -> Option<Net<'a>> {
         self.ctx
-            .bound_wire_net_idx(self.id)
-            .map(|net_idx| NetView::new(self.ctx, net_idx))
+            .wire_slot(self.id)
+            .and_then(|slot| slot.map(|(net_idx, _)| Net::new(self.ctx, net_idx)))
     }
 
     #[inline]
@@ -266,52 +279,39 @@ impl<'a> WireView<'a> {
 
     #[inline]
     pub fn is_available(&self) -> bool {
-        self.ctx.is_wire_available(self.id)
+        self.ctx.wire_slot(self.id).is_some_and(Option::is_none)
     }
 
     #[inline]
     pub fn delay(&self) -> DelayQuad {
-        self.ctx.wire_delay(self.id)
+        // TODO: read real wire delay from chipdb once available
+        DelayQuad::default()
     }
 }
 
-pub struct PipView<'a> {
-    ctx: &'a Context,
-    id: PipId,
-}
-
-impl<'a> PipView<'a> {
-    pub(crate) fn new(ctx: &'a Context, id: PipId) -> Self {
-        Self { ctx, id }
-    }
-
-    #[inline]
-    pub fn id(&self) -> PipId {
-        self.id
-    }
-
+impl<'a> Pip<'a> {
     #[inline]
     pub fn tile(&self) -> TileView {
         TileView::new(self.ctx, self.id.tile())
     }
 
     #[inline]
-    pub fn src_wire(&self) -> WireView<'a> {
-        WireView::new(self.ctx, self.ctx.chipdb().pip_src_wire(self.id))
+    pub fn src_wire(&self) -> Wire<'a> {
+        Wire::new(self.ctx, self.ctx.chipdb().pip_src_wire(self.id))
     }
 
     #[inline]
-    pub fn dst_wire(&self) -> WireView<'a> {
-        WireView::new(self.ctx, self.ctx.chipdb().pip_dst_wire(self.id))
+    pub fn dst_wire(&self) -> Wire<'a> {
+        Wire::new(self.ctx, self.ctx.chipdb().pip_dst_wire(self.id))
     }
 
     #[inline]
-    pub fn bound_net(&self) -> Option<NetView<'a>> {
+    pub fn bound_net(&self) -> Option<Net<'a>> {
         self.ctx
             .pip_slot(self.id)
             .copied()
             .flatten()
-            .map(|(net_idx, _)| NetView::new(self.ctx, net_idx))
+            .map(|(net_idx, _)| Net::new(self.ctx, net_idx))
     }
 
     #[inline]
@@ -325,30 +325,17 @@ impl<'a> PipView<'a> {
 
     #[inline]
     pub fn is_available(&self) -> bool {
-        self.ctx.is_pip_available(self.id)
+        self.ctx.pip_slot(self.id).is_some_and(Option::is_none)
     }
 
     #[inline]
     pub fn delay(&self) -> DelayQuad {
-        self.ctx.pip_delay(self.id)
+        // TODO: read real PIP delay from chipdb once available
+        DelayQuad::default()
     }
 }
 
-pub struct CellView<'a> {
-    ctx: &'a Context,
-    id: CellIdx,
-}
-
-impl<'a> CellView<'a> {
-    pub(crate) fn new(ctx: &'a Context, id: CellIdx) -> Self {
-        Self { ctx, id }
-    }
-
-    #[inline]
-    pub fn id(&self) -> CellIdx {
-        self.id
-    }
-
+impl<'a> Cell<'a> {
     #[inline]
     pub fn name(&self) -> &'a str {
         self.ctx.name_of(self.info().name)
@@ -361,12 +348,12 @@ impl<'a> CellView<'a> {
 
     #[inline]
     pub(crate) fn info(&self) -> &'a CellInfo {
-        self.ctx.design().cell(self.id)
+        self.ctx.design.cell(self.id)
     }
 
     #[inline]
-    pub fn bel(&self) -> Option<BelView<'a>> {
-        self.info().bel.map(|bel| BelView::new(self.ctx, bel))
+    pub fn bel(&self) -> Option<Bel<'a>> {
+        self.info().bel.map(|bel| Bel::new(self.ctx, bel))
     }
 
     #[inline]
@@ -397,7 +384,7 @@ impl<'a> CellView<'a> {
     pub fn params(&self) -> &'a FxHashMap<IdString, Property> { &self.info().params }
 
     #[inline]
-    pub fn cluster(&self) -> Option<CellIdx> { self.info().cluster }
+    pub fn cluster(&self) -> Option<CellId> { self.info().cluster }
 
     #[inline]
     pub fn region(&self) -> Option<u32> { self.info().region }
@@ -409,98 +396,3 @@ impl<'a> CellView<'a> {
     pub fn timing_index(&self) -> Option<TimingIndex> { self.info().timing_index }
 }
 
-impl From<BelView<'_>> for BelId {
-    fn from(v: BelView<'_>) -> BelId { v.id }
-}
-
-impl From<&BelView<'_>> for BelId {
-    fn from(v: &BelView<'_>) -> BelId { v.id }
-}
-
-impl From<WireView<'_>> for WireId {
-    fn from(v: WireView<'_>) -> WireId { v.id }
-}
-
-impl From<&WireView<'_>> for WireId {
-    fn from(v: &WireView<'_>) -> WireId { v.id }
-}
-
-impl From<PipView<'_>> for PipId {
-    fn from(v: PipView<'_>) -> PipId { v.id }
-}
-
-impl From<&PipView<'_>> for PipId {
-    fn from(v: &PipView<'_>) -> PipId { v.id }
-}
-
-impl From<CellView<'_>> for CellIdx {
-    fn from(v: CellView<'_>) -> CellIdx { v.id }
-}
-
-impl From<&CellView<'_>> for CellIdx {
-    fn from(v: &CellView<'_>) -> CellIdx { v.id }
-}
-
-impl From<NetView<'_>> for NetIdx {
-    fn from(v: NetView<'_>) -> NetIdx { v.id }
-}
-
-impl From<&NetView<'_>> for NetIdx {
-    fn from(v: &NetView<'_>) -> NetIdx { v.id }
-}
-
-pub struct DesignView<'a> {
-    design: &'a Design,
-}
-
-impl<'a> DesignView<'a> {
-    pub(crate) fn new(design: &'a Design) -> Self {
-        Self { design }
-    }
-
-    #[inline]
-    pub fn num_cells(&self) -> usize { self.design.num_cells() }
-
-    #[inline]
-    pub fn num_nets(&self) -> usize { self.design.num_nets() }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool { self.design.is_empty() }
-
-    #[inline]
-    pub fn cell_by_name(&self, name: IdString) -> Option<CellIdx> { self.design.cell_by_name(name) }
-
-    #[inline]
-    pub fn net_by_name(&self, name: IdString) -> Option<NetIdx> { self.design.net_by_name(name) }
-
-    #[inline]
-    pub fn iter_cell_indices(&self) -> impl Iterator<Item = CellIdx> + '_ {
-        self.design.iter_cell_indices()
-    }
-
-    #[inline]
-    pub fn iter_net_indices(&self) -> impl Iterator<Item = NetIdx> + '_ {
-        self.design.iter_net_indices()
-    }
-
-    #[inline]
-    pub fn cell_slots_len(&self) -> usize { self.design.cell_slots_len() }
-
-    #[inline]
-    pub fn net_slots_len(&self) -> usize { self.design.net_slots_len() }
-
-    #[inline]
-    pub fn cell_idx_at_slot(&self, slot: usize) -> Option<CellIdx> { self.design.cell_idx_at_slot(slot) }
-
-    #[inline]
-    pub fn net_idx_at_slot(&self, slot: usize) -> Option<NetIdx> { self.design.net_idx_at_slot(slot) }
-
-    #[inline]
-    pub fn top_module(&self) -> IdString { self.design.top_module }
-
-    #[inline]
-    pub fn hierarchy(&self) -> &'a FxHashMap<IdString, HierarchicalCell> { &self.design.hierarchy }
-
-    #[inline]
-    pub fn clusters(&self) -> &'a FxHashMap<CellIdx, Cluster> { &self.design.clusters }
-}

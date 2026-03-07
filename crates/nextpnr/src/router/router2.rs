@@ -15,14 +15,14 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::context::{BelPinWireMap, Context};
-use crate::netlist::NetIdx;
-use crate::types::{PipId, PlaceStrength, WireId};
+use crate::context::Context;
+use crate::netlist::NetId;
+use crate::types::{PipId, WireId};
 use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
-    bind_route, collect_routable_nets, find_bel_pin_wire_preindexed, unroute_net,
+    bind_route, collect_routable_nets, collect_sink_wires, setup_net_source, unroute_net,
 };
 use super::RouterError;
 
@@ -89,42 +89,24 @@ impl BoundingBox {
 ///
 /// The box is expanded by `margin` tiles in each direction and clamped to the
 /// chip grid boundaries.
-pub(crate) fn compute_bbox(ctx: &Context, net_idx: NetIdx, margin: i32) -> BoundingBox {
+pub(crate) fn compute_bbox(ctx: &Context, net_idx: NetId, margin: i32) -> BoundingBox {
     let net = ctx.net(net_idx);
 
     let mut x0 = i32::MAX;
     let mut y0 = i32::MAX;
     let mut x1 = i32::MIN;
     let mut y1 = i32::MIN;
-
     let mut found_any = false;
 
-    // Include driver cell location.
-    if net.driver().is_connected() {
-        if let Some(driver_cell_idx) = net.driver().cell {
-            let cell = ctx.cell(driver_cell_idx);
-            if let Some(bel) = cell.bel() {
-                let loc = bel.loc();
-                x0 = x0.min(loc.x);
-                y0 = y0.min(loc.y);
-                x1 = x1.max(loc.x);
-                y1 = y1.max(loc.y);
-                found_any = true;
-            }
-        }
-    }
+    // Collect all connected cell indices (driver + users).
+    let cell_indices = net
+        .driver()
+        .cell
+        .into_iter()
+        .chain(net.users().iter().filter_map(|u| u.cell));
 
-    // Include all user cell locations.
-    for user in net.users() {
-        if !user.is_connected() {
-            continue;
-        }
-        let user_cell_idx = match user.cell {
-            Some(cell_idx) => cell_idx,
-            None => continue,
-        };
-        let cell = ctx.cell(user_cell_idx);
-        if let Some(bel) = cell.bel() {
+    for cell_idx in cell_indices {
+        if let Some(bel) = ctx.cell(cell_idx).bel() {
             let loc = bel.loc();
             x0 = x0.min(loc.x);
             y0 = y0.min(loc.y);
@@ -135,21 +117,19 @@ pub(crate) fn compute_bbox(ctx: &Context, net_idx: NetIdx, margin: i32) -> Bound
     }
 
     if !found_any {
-        // No placed cells; return a box covering the entire chip.
         return BoundingBox {
             x0: 0,
             y0: 0,
-            x1: ctx.width() - 1,
-            y1: ctx.height() - 1,
+            x1: ctx.chipdb().width() - 1,
+            y1: ctx.chipdb().height() - 1,
         };
     }
 
-    // Expand by margin and clamp to grid.
     BoundingBox {
         x0: (x0 - margin).max(0),
         y0: (y0 - margin).max(0),
-        x1: (x1 + margin).min(ctx.width() - 1),
-        y1: (y1 + margin).min(ctx.height() - 1),
+        x1: (x1 + margin).min(ctx.chipdb().width() - 1),
+        y1: (y1 + margin).min(ctx.chipdb().height() - 1),
     }
 }
 
@@ -213,7 +193,7 @@ pub(crate) struct Router2State {
     /// Per-wire owner: last net that claimed the wire. When exactly one net
     /// uses a wire, this identifies the owner (no present-cost penalty for
     /// the owner).
-    pub wire_owner: FxHashMap<WireId, NetIdx>,
+    pub wire_owner: FxHashMap<WireId, NetId>,
 }
 
 impl Router2State {
@@ -237,7 +217,7 @@ impl Router2State {
     ///    currently using the wire, scaled by the present cost factor.
     /// 3. Historical penalty: accumulated from prior iterations where the wire
     ///    was congested.
-    pub fn wire_cost(&self, wire: WireId, net_idx: NetIdx) -> f64 {
+    pub fn wire_cost(&self, wire: WireId, net_idx: NetId) -> f64 {
         let usage = self.wire_usage.get(&wire).copied().unwrap_or(0);
         let is_own = self.wire_owner.get(&wire) == Some(&net_idx);
         let present_penalty = if is_own { 0.0 } else { usage as f64 };
@@ -277,7 +257,7 @@ impl Router2State {
     }
 
     /// Increment usage/owner state from one net's currently routed wires.
-    pub fn add_net_usage(&mut self, design: &crate::netlist::Design, net_idx: NetIdx) {
+    pub fn add_net_usage(&mut self, design: &crate::netlist::Design, net_idx: NetId) {
         let net = design.net(net_idx);
         if !net.alive {
             return;
@@ -290,7 +270,7 @@ impl Router2State {
     }
 
     /// Decrement usage/owner state for one net's currently routed wires.
-    pub fn remove_net_usage(&mut self, design: &crate::netlist::Design, net_idx: NetIdx) {
+    pub fn remove_net_usage(&mut self, design: &crate::netlist::Design, net_idx: NetId) {
         let net = design.net(net_idx);
         if !net.alive {
             return;
@@ -304,15 +284,11 @@ impl Router2State {
                     self.wire_owner.remove(&wire);
                 }
             }
-
-            if self.wire_owner.get(&wire) == Some(&net_idx) {
-                self.wire_owner.remove(&wire);
-            }
         }
     }
 
     /// Find all nets that touch at least one congested wire (usage > 1).
-    pub fn find_congested_nets(&self, design: &crate::netlist::Design) -> Vec<NetIdx> {
+    pub fn find_congested_nets(&self, design: &crate::netlist::Design) -> Vec<NetId> {
         let congested_wires: FxHashSet<WireId> = self
             .wire_usage
             .iter()
@@ -357,7 +333,7 @@ pub(crate) fn astar_route_r2(
     ctx: &Context,
     src_wires: &[WireId],
     dst_wire: WireId,
-    net_idx: NetIdx,
+    net_idx: NetId,
     state: &Router2State,
     bbox: &BoundingBox,
 ) -> Option<Vec<PipId>> {
@@ -408,7 +384,7 @@ pub(crate) fn astar_route_r2(
                     break;
                 }
                 pips.push(pip);
-                current = ctx.pip_src_wire(pip);
+                current = ctx.pip(pip).src_wire().id();
             }
             pips.reverse();
             return Some(pips);
@@ -422,7 +398,7 @@ pub(crate) fn astar_route_r2(
             // PIPs are tile-local: same tile as the wire.
             let pip = PipId::new(entry.wire.tile(), pip_index);
 
-            let next_wire = ctx.pip_dst_wire(pip);
+            let next_wire = ctx.pip(pip).dst_wire().id();
 
             // Bounding box pruning: skip wires outside the net's bounding box.
             let (wx, wy) = ctx.chipdb().tile_xy(next_wire.tile());
@@ -431,7 +407,7 @@ pub(crate) fn astar_route_r2(
             }
 
             // Negotiation-based cost.
-            let pip_delay = ctx.pip_delay(pip).max_delay() as f64;
+            let pip_delay = ctx.pip(pip).delay().max_delay() as f64;
             let wire_neg_cost = state.wire_cost(next_wire, net_idx);
             let new_cost = entry.cost + pip_delay + wire_neg_cost;
 
@@ -467,80 +443,16 @@ pub(crate) fn astar_route_r2(
 /// pruning.
 fn route_net_r2(
     ctx: &mut Context,
-    net_idx: NetIdx,
+    net_idx: NetId,
     state: &Router2State,
-    bel_pin_map: &BelPinWireMap,
 ) -> Result<(), RouterError> {
-    let net = ctx.net(net_idx);
-    let net_name = net.name_id();
-
-    // Determine the driver wire.
-    let driver = net.driver();
-    if !driver.is_connected() {
+    if setup_net_source(ctx, net_idx)?.is_none() {
         return Ok(());
     }
-    let driver_cell_idx = match driver.cell {
-        Some(cell_idx) => cell_idx,
-        None => {
-            return Err(RouterError::Generic(format!(
-                "Driver cell for net {} is missing",
-                ctx.name_of(net_name)
-            )));
-        }
-    };
-    let driver_port = driver.port;
 
-    let driver_cell = ctx.cell(driver_cell_idx);
-    let driver_bel = match driver_cell.bel() {
-        Some(bel) => bel.id(),
-        None => {
-            return Err(RouterError::Generic(format!(
-                "Driver cell for net {} is not placed",
-                ctx.name_of(net_name)
-            )));
-        }
-    };
-
-    let src_wire =
-        find_bel_pin_wire_preindexed(bel_pin_map, driver_bel, driver_port).ok_or_else(|| {
-            RouterError::Generic(format!(
-                "Cannot find driver wire for net {}",
-                ctx.name_of(net_name)
-            ))
-        })?;
-
-    // Bind the source wire to this net if not already bound.
-    if ctx.is_wire_available(src_wire) {
-        ctx.bind_wire(src_wire, net_idx, PlaceStrength::Strong);
-        ctx.net_edit(net_idx)
-            .add_wire(src_wire, None, PlaceStrength::Strong);
-    }
-
-    // Compute the bounding box for this net.
+    let net_name = ctx.net(net_idx).name_id();
     let bbox = compute_bbox(ctx, net_idx, state.cfg.bb_margin);
-
-    // Collect sink wires before mutating ctx.
-    let num_users = ctx.net(net_idx).num_users();
-    let mut sink_wires = Vec::with_capacity(num_users);
-    for user_idx in 0..num_users {
-        let user = &ctx.net(net_idx).users()[user_idx];
-        if !user.is_connected() {
-            continue;
-        }
-        let user_cell_idx = match user.cell {
-            Some(cell_idx) => cell_idx,
-            None => continue,
-        };
-        let user_port = user.port;
-        let user_cell = ctx.cell(user_cell_idx);
-        let user_bel = match user_cell.bel() {
-            Some(bel) => bel.id(),
-            None => continue,
-        };
-        if let Some(sink_wire) = find_bel_pin_wire_preindexed(bel_pin_map, user_bel, user_port) {
-            sink_wires.push(sink_wire);
-        }
-    }
+    let sink_wires = collect_sink_wires(ctx, net_idx);
 
     // Route to each sink.
     for sink_wire in sink_wires {
@@ -550,8 +462,7 @@ fn route_net_r2(
         }
 
         // Collect current routing tree wires as potential A* start points.
-        let existing_wires: Vec<WireId> =
-            ctx.net(net_idx).wires().keys().copied().collect();
+        let existing_wires: Vec<WireId> = ctx.net(net_idx).wire_ids().collect();
 
         let path = astar_route_r2(ctx, &existing_wires, sink_wire, net_idx, state, &bbox);
 
@@ -593,7 +504,6 @@ impl super::Router for Router2 {
 /// 4. Repeat until no congestion remains or `max_iterations` is reached.
 pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterError> {
     let mut state = Router2State::new(cfg);
-    let bel_pin_map = ctx.bel_pin_wire_map();
     let nets = collect_routable_nets(ctx);
 
     if state.cfg.verbose {
@@ -603,13 +513,13 @@ pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterEr
     // Initial route (greedy). Failures are tolerated here because the
     // negotiation loop will resolve congestion.
     for &net_idx in &nets {
-        let _ = route_net_r2(ctx, net_idx, &state, &bel_pin_map);
-        state.add_net_usage(ctx.design(), net_idx);
+        let _ = route_net_r2(ctx, net_idx, &state);
+        state.add_net_usage(&ctx.design, net_idx);
     }
 
     // Negotiation loop.
     for iter in 0..state.cfg.max_iterations {
-        let congested = state.find_congested_nets(ctx.design());
+        let congested = state.find_congested_nets(&ctx.design);
         if congested.is_empty() {
             if state.cfg.verbose {
                 info!("Router2: converged after {} iterations", iter);
@@ -628,7 +538,7 @@ pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterEr
 
         // Rip up all congested nets.
         for &net_idx in &congested {
-            state.remove_net_usage(ctx.design(), net_idx);
+            state.remove_net_usage(&ctx.design, net_idx);
             unroute_net(ctx, net_idx);
         }
 
@@ -637,8 +547,8 @@ pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterEr
 
         // Reroute congested nets with updated costs.
         for &net_idx in &congested {
-            let _ = route_net_r2(ctx, net_idx, &state, &bel_pin_map);
-            state.add_net_usage(ctx.design(), net_idx);
+            let _ = route_net_r2(ctx, net_idx, &state);
+            state.add_net_usage(&ctx.design, net_idx);
         }
 
         // Increase present-congestion cost for next iteration.
@@ -649,10 +559,7 @@ pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterEr
     if remaining == 0 {
         Ok(())
     } else {
-        Err(RouterError::Congestion(
-            state.cfg.max_iterations,
-            remaining,
-        ))
+        Err(RouterError::Congestion(state.cfg.max_iterations, remaining))
     }
 }
 
@@ -662,7 +569,7 @@ mod tests {
     use super::*;
     use crate::chipdb::testutil::make_test_chipdb;
     use crate::context::Context;
-    use crate::netlist::{NetIdx, PortRef};
+    use crate::netlist::{NetId, PortRef};
     use crate::types::{BelId, PipId, PlaceStrength, PortType, WireId};
     use rustc_hash::FxHashSet;
     use std::collections::BinaryHeap;
@@ -676,7 +583,12 @@ mod tests {
 
     #[test]
     fn bbox_contains_within() {
-        let bb = BoundingBox { x0: 0, y0: 0, x1: 3, y1: 3 };
+        let bb = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 3,
+            y1: 3,
+        };
         assert!(bb.contains(0, 0));
         assert!(bb.contains(1, 2));
         assert!(bb.contains(3, 3));
@@ -684,7 +596,12 @@ mod tests {
 
     #[test]
     fn bbox_contains_boundary() {
-        let bb = BoundingBox { x0: 1, y0: 1, x1: 5, y1: 5 };
+        let bb = BoundingBox {
+            x0: 1,
+            y0: 1,
+            x1: 5,
+            y1: 5,
+        };
         assert!(bb.contains(1, 1));
         assert!(bb.contains(5, 1));
         assert!(bb.contains(1, 5));
@@ -697,7 +614,12 @@ mod tests {
 
     #[test]
     fn bbox_excludes_outside() {
-        let bb = BoundingBox { x0: 1, y0: 1, x1: 3, y1: 3 };
+        let bb = BoundingBox {
+            x0: 1,
+            y0: 1,
+            x1: 3,
+            y1: 3,
+        };
         assert!(!bb.contains(0, 0));
         assert!(!bb.contains(4, 2));
         assert!(!bb.contains(2, 4));
@@ -707,7 +629,12 @@ mod tests {
 
     #[test]
     fn bbox_single_point() {
-        let bb = BoundingBox { x0: 2, y0: 3, x1: 2, y1: 3 };
+        let bb = BoundingBox {
+            x0: 2,
+            y0: 3,
+            x1: 2,
+            y1: 3,
+        };
         assert!(bb.contains(2, 3));
         assert!(!bb.contains(1, 3));
         assert!(!bb.contains(3, 3));
@@ -721,12 +648,12 @@ mod tests {
     fn compute_bbox_no_placed_cells() {
         let mut ctx = make_context();
         let net_name = ctx.id("unplaced_net");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let bb = compute_bbox(&ctx, net_idx, 0);
         assert_eq!(bb.x0, 0);
         assert_eq!(bb.y0, 0);
-        assert_eq!(bb.x1, ctx.width() - 1);
-        assert_eq!(bb.y1, ctx.height() - 1);
+        assert_eq!(bb.x1, ctx.chipdb().width() - 1);
+        assert_eq!(bb.y1, ctx.chipdb().height() - 1);
     }
 
     #[test]
@@ -735,13 +662,15 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let cell_name = ctx.id("driver");
-        let cell_idx = ctx.add_cell(cell_name, lut_type);
-        ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
+        let cell_idx = ctx.design.add_cell(cell_name, lut_type);
+        ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
         let net_name = ctx.id("test_net");
-        let net_idx = ctx.add_net(net_name);
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
-            cell: Some(cell_idx), port, budget: 0,
+        let net_idx = ctx.design.add_net(net_name);
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+            cell: Some(cell_idx),
+            port,
+            budget: 0,
         });
         let bb = compute_bbox(&ctx, net_idx, 0);
         assert_eq!(bb.x0, 0);
@@ -756,13 +685,15 @@ mod tests {
         let lut_type = ctx.id("LUT4");
         let port = ctx.id("I0");
         let cell_name = ctx.id("driver");
-        let cell_idx = ctx.add_cell(cell_name, lut_type);
-        ctx.cell_edit(cell_idx).add_port(port, PortType::Out);
+        let cell_idx = ctx.design.add_cell(cell_name, lut_type);
+        ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
         ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
         let net_name = ctx.id("test_net");
-        let net_idx = ctx.add_net(net_name);
-        ctx.net_edit(net_idx).set_driver_raw(PortRef {
-            cell: Some(cell_idx), port, budget: 0,
+        let net_idx = ctx.design.add_net(net_name);
+        ctx.design.net_edit(net_idx).set_driver_raw(PortRef {
+            cell: Some(cell_idx),
+            port,
+            budget: 0,
         });
         let bb = compute_bbox(&ctx, net_idx, 1);
         assert_eq!(bb.x0, 0);
@@ -778,7 +709,7 @@ mod tests {
         let cfg = Router2Cfg::default();
         let state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
-        let net = NetIdx::from_raw(0);
+        let net = NetId::from_raw(0);
         let cost = state.wire_cost(wire, net);
         assert!((cost - 1.0).abs() < f64::EPSILON);
     }
@@ -794,8 +725,8 @@ mod tests {
         };
         let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
-        let net_a = NetIdx::from_raw(0);
-        let net_b = NetIdx::from_raw(1);
+        let net_a = NetId::from_raw(0);
+        let net_b = NetId::from_raw(1);
         state.wire_usage.insert(wire, 1);
         state.wire_owner.insert(wire, net_a);
         let cost_owner = state.wire_cost(wire, net_a);
@@ -815,7 +746,7 @@ mod tests {
         };
         let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
-        let net = NetIdx::from_raw(0);
+        let net = NetId::from_raw(0);
         state.wire_history.insert(wire, 5.0);
         let cost = state.wire_cost(wire, net);
         assert!((cost - 16.0).abs() < f64::EPSILON);
@@ -832,8 +763,8 @@ mod tests {
         };
         let mut state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
-        let net_a = NetIdx::from_raw(0);
-        let net_b = NetIdx::from_raw(1);
+        let net_a = NetId::from_raw(0);
+        let net_b = NetId::from_raw(1);
         state.wire_usage.insert(wire, 2);
         state.wire_owner.insert(wire, net_a);
         state.wire_history.insert(wire, 1.0);
@@ -882,7 +813,7 @@ mod tests {
         let ctx = make_context();
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
-        state.update_usage(ctx.design());
+        state.update_usage(&ctx.design);
         assert!(state.wire_usage.is_empty());
         assert!(state.wire_owner.is_empty());
     }
@@ -891,12 +822,14 @@ mod tests {
     fn update_usage_single_net() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_a");
-        let net_idx = ctx.add_net(net_name);
+        let net_idx = ctx.design.add_net(net_name);
         let wire = WireId::new(0, 0);
-        ctx.net_edit(net_idx).add_wire(wire, None, PlaceStrength::Strong);
+        ctx.design
+            .net_edit(net_idx)
+            .add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
-        state.update_usage(ctx.design());
+        state.update_usage(&ctx.design);
         assert_eq!(state.wire_usage[&wire], 1);
         assert_eq!(state.wire_owner[&wire], net_idx);
     }
@@ -906,14 +839,18 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.add_net(net_a_name);
-        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
+        let net_a_idx = ctx.design.add_net(net_a_name);
+        ctx.design
+            .net_edit(net_a_idx)
+            .add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.add_net(net_b_name);
-        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
+        let net_b_idx = ctx.design.add_net(net_b_name);
+        ctx.design
+            .net_edit(net_b_idx)
+            .add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
-        state.update_usage(ctx.design());
+        state.update_usage(&ctx.design);
         assert_eq!(state.wire_usage[&wire], 2);
         let owner = state.wire_owner[&wire];
         assert!(owner == net_a_idx || owner == net_b_idx);
@@ -925,12 +862,14 @@ mod tests {
     fn find_congested_nets_none() {
         let mut ctx = make_context();
         let net_name = ctx.id("net_a");
-        let net_idx = ctx.add_net(net_name);
-        ctx.net_edit(net_idx).add_wire(WireId::new(0, 0), None, PlaceStrength::Strong);
+        let net_idx = ctx.design.add_net(net_name);
+        ctx.design
+            .net_edit(net_idx)
+            .add_wire(WireId::new(0, 0), None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
-        state.update_usage(ctx.design());
-        let congested = state.find_congested_nets(ctx.design());
+        state.update_usage(&ctx.design);
+        let congested = state.find_congested_nets(&ctx.design);
         assert!(congested.is_empty());
     }
 
@@ -939,17 +878,21 @@ mod tests {
         let mut ctx = make_context();
         let wire = WireId::new(0, 0);
         let net_a_name = ctx.id("net_a");
-        let net_a_idx = ctx.add_net(net_a_name);
-        ctx.net_edit(net_a_idx).add_wire(wire, None, PlaceStrength::Strong);
+        let net_a_idx = ctx.design.add_net(net_a_name);
+        ctx.design
+            .net_edit(net_a_idx)
+            .add_wire(wire, None, PlaceStrength::Strong);
         let net_b_name = ctx.id("net_b");
-        let net_b_idx = ctx.add_net(net_b_name);
-        ctx.net_edit(net_b_idx).add_wire(wire, None, PlaceStrength::Strong);
+        let net_b_idx = ctx.design.add_net(net_b_name);
+        ctx.design
+            .net_edit(net_b_idx)
+            .add_wire(wire, None, PlaceStrength::Strong);
         let cfg = Router2Cfg::default();
         let mut state = Router2State::new(&cfg);
-        state.update_usage(ctx.design());
-        let congested = state.find_congested_nets(ctx.design());
+        state.update_usage(&ctx.design);
+        let congested = state.find_congested_nets(&ctx.design);
         assert_eq!(congested.len(), 2);
-        let net_set: FxHashSet<NetIdx> = congested.into_iter().collect();
+        let net_set: FxHashSet<NetId> = congested.into_iter().collect();
         assert!(net_set.contains(&net_a_idx));
         assert!(net_set.contains(&net_b_idx));
     }
@@ -959,9 +902,21 @@ mod tests {
     #[test]
     fn r2_queue_min_heap_ordering() {
         let mut heap = BinaryHeap::new();
-        heap.push(R2QueueEntry { wire: WireId::new(0, 0), cost: 10.0, estimate: 50.0 });
-        heap.push(R2QueueEntry { wire: WireId::new(0, 1), cost: 5.0, estimate: 20.0 });
-        heap.push(R2QueueEntry { wire: WireId::new(1, 0), cost: 8.0, estimate: 35.0 });
+        heap.push(R2QueueEntry {
+            wire: WireId::new(0, 0),
+            cost: 10.0,
+            estimate: 50.0,
+        });
+        heap.push(R2QueueEntry {
+            wire: WireId::new(0, 1),
+            cost: 5.0,
+            estimate: 20.0,
+        });
+        heap.push(R2QueueEntry {
+            wire: WireId::new(1, 0),
+            cost: 8.0,
+            estimate: 35.0,
+        });
         let first = heap.pop().unwrap();
         assert!((first.estimate - 20.0).abs() < f64::EPSILON);
         let second = heap.pop().unwrap();
@@ -973,8 +928,16 @@ mod tests {
     #[test]
     fn r2_queue_tiebreak_by_cost() {
         let mut heap = BinaryHeap::new();
-        heap.push(R2QueueEntry { wire: WireId::new(0, 0), cost: 30.0, estimate: 50.0 });
-        heap.push(R2QueueEntry { wire: WireId::new(0, 1), cost: 10.0, estimate: 50.0 });
+        heap.push(R2QueueEntry {
+            wire: WireId::new(0, 0),
+            cost: 30.0,
+            estimate: 50.0,
+        });
+        heap.push(R2QueueEntry {
+            wire: WireId::new(0, 1),
+            cost: 10.0,
+            estimate: 50.0,
+        });
         let first = heap.pop().unwrap();
         assert!((first.cost - 10.0).abs() < f64::EPSILON);
     }
@@ -987,8 +950,13 @@ mod tests {
         let cfg = Router2Cfg::default();
         let state = Router2State::new(&cfg);
         let wire = WireId::new(0, 0);
-        let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
-        let path = astar_route_r2(&ctx, &[wire], wire, NetIdx::from_raw(0), &state, &bbox);
+        let bbox = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        let path = astar_route_r2(&ctx, &[wire], wire, NetId::from_raw(0), &state, &bbox);
         assert!(path.is_some());
         assert!(path.unwrap().is_empty());
     }
@@ -1000,8 +968,13 @@ mod tests {
         let state = Router2State::new(&cfg);
         let src = WireId::new(0, 0);
         let dst = WireId::new(0, 1);
-        let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
-        let path = astar_route_r2(&ctx, &[src], dst, NetIdx::from_raw(0), &state, &bbox);
+        let bbox = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        let path = astar_route_r2(&ctx, &[src], dst, NetId::from_raw(0), &state, &bbox);
         assert!(path.is_some());
         let pips = path.unwrap();
         assert_eq!(pips.len(), 1);
@@ -1015,8 +988,13 @@ mod tests {
         let state = Router2State::new(&cfg);
         let src = WireId::new(0, 1);
         let dst = WireId::new(0, 0);
-        let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
-        let path = astar_route_r2(&ctx, &[src], dst, NetIdx::from_raw(0), &state, &bbox);
+        let bbox = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        let path = astar_route_r2(&ctx, &[src], dst, NetId::from_raw(0), &state, &bbox);
         assert!(path.is_none());
     }
 
@@ -1027,8 +1005,13 @@ mod tests {
         let state = Router2State::new(&cfg);
         let src = WireId::new(0, 0);
         let dst = WireId::new(1, 0);
-        let bbox = BoundingBox { x0: 0, y0: 0, x1: 0, y1: 0 };
-        let path = astar_route_r2(&ctx, &[src], dst, NetIdx::from_raw(0), &state, &bbox);
+        let bbox = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 0,
+            y1: 0,
+        };
+        let path = astar_route_r2(&ctx, &[src], dst, NetId::from_raw(0), &state, &bbox);
         assert!(path.is_none());
     }
 
@@ -1038,8 +1021,13 @@ mod tests {
         let cfg = Router2Cfg::default();
         let state = Router2State::new(&cfg);
         let dst = WireId::new(0, 1);
-        let bbox = BoundingBox { x0: 0, y0: 0, x1: 1, y1: 1 };
-        let path = astar_route_r2(&ctx, &[], dst, NetIdx::from_raw(0), &state, &bbox);
+        let bbox = BoundingBox {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        let path = astar_route_r2(&ctx, &[], dst, NetId::from_raw(0), &state, &bbox);
         assert!(path.is_none());
     }
 

@@ -1,0 +1,77 @@
+[package]
+name = "nextpnr"
+version = "0.1.0"
+edition = "2021"
+description = "Rust reimplementation of nextpnr FPGA place-and-route"
+
+[features]
+test-utils = []
+
+[dependencies]
+rustc-hash = { workspace = true }
+memmap2 = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+lasso = { workspace = true }
+
+[dev-dependencies]
+petgraph = "0.6"
+
+[[test]]
+name = "chipdb"
+path = "tests/chipdb.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "context"
+path = "tests/context.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "sa_tests"
+path = "tests/sa_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "heap_tests"
+path = "tests/heap_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "router1_tests"
+path = "tests/router1_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "router2_tests"
+path = "tests/router2_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "packer_tests"
+path = "tests/packer_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "plugin_tests"
+path = "tests/plugin_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "timing_tests"
+path = "tests/timing_tests.rs"
+
+[[test]]
+name = "netlist_tests"
+path = "tests/netlist_tests.rs"
+
+[[test]]
+name = "types_tests"
+path = "tests/types_tests.rs"
+
+[[test]]
+name = "frontend_tests"
+path = "tests/frontend_tests.rs"

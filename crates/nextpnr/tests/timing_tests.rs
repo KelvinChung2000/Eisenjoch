@@ -1,5 +1,5 @@
-use nextpnr::timing::{ClockDomain, TimingAnalyser, topological_sort};
-use nextpnr::netlist::{CellIdx, Design, NetIdx, PortRef};
+use nextpnr::netlist::{CellId, Design, NetId, PortRef};
+use nextpnr::timing::{topological_sort, ClockDomain, TimingAnalyser};
 use nextpnr::types::{ClockEdge, IdString, IdStringPool, PortType, TimingPortClass};
 use std::collections::HashSet;
 
@@ -55,14 +55,16 @@ fn make_comb_chain_design(pool: &IdStringPool) -> Design {
         port: o_port,
         budget: 0,
     });
-    d.cell_edit(input_idx).set_port_net(o_port, Some(net_in_idx), None);
+    d.cell_edit(input_idx)
+        .set_port_net(o_port, Some(net_in_idx), None);
 
     let user_idx = d.net_edit(net_in_idx).add_user_raw(PortRef {
         cell: Some(lut_a_idx),
         port: a_port,
         budget: 0,
     });
-    d.cell_edit(lut_a_idx).set_port_net(a_port, Some(net_in_idx), Some(user_idx));
+    d.cell_edit(lut_a_idx)
+        .set_port_net(a_port, Some(net_in_idx), Some(user_idx));
 
     // net_ab: lut_a.F -> lut_b.A
     let net_ab_idx = d.add_net(net_ab);
@@ -71,14 +73,16 @@ fn make_comb_chain_design(pool: &IdStringPool) -> Design {
         port: f_port,
         budget: 0,
     });
-    d.cell_edit(lut_a_idx).set_port_net(f_port, Some(net_ab_idx), None);
+    d.cell_edit(lut_a_idx)
+        .set_port_net(f_port, Some(net_ab_idx), None);
 
     let user_idx = d.net_edit(net_ab_idx).add_user_raw(PortRef {
         cell: Some(lut_b_idx),
         port: a_port,
         budget: 0,
     });
-    d.cell_edit(lut_b_idx).set_port_net(a_port, Some(net_ab_idx), Some(user_idx));
+    d.cell_edit(lut_b_idx)
+        .set_port_net(a_port, Some(net_ab_idx), Some(user_idx));
 
     // net_out: lut_b.F -> output_cell.I
     let net_out_idx = d.add_net(net_out);
@@ -87,14 +91,16 @@ fn make_comb_chain_design(pool: &IdStringPool) -> Design {
         port: f_port,
         budget: 0,
     });
-    d.cell_edit(lut_b_idx).set_port_net(f_port, Some(net_out_idx), None);
+    d.cell_edit(lut_b_idx)
+        .set_port_net(f_port, Some(net_out_idx), None);
 
     let user_idx = d.net_edit(net_out_idx).add_user_raw(PortRef {
         cell: Some(output_idx),
         port: i_port,
         budget: 0,
     });
-    d.cell_edit(output_idx).set_port_net(i_port, Some(net_out_idx), Some(user_idx));
+    d.cell_edit(output_idx)
+        .set_port_net(i_port, Some(net_out_idx), Some(user_idx));
 
     d
 }
@@ -149,14 +155,16 @@ fn make_reg_to_reg_design(pool: &IdStringPool) -> (Design, IdString) {
         port: clk_port,
         budget: 0,
     });
-    d.cell_edit(ff_a_idx).set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
+    d.cell_edit(ff_a_idx)
+        .set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
 
     let user_idx = d.net_edit(clk_net_idx).add_user_raw(PortRef {
         cell: Some(ff_b_idx),
         port: clk_port,
         budget: 0,
     });
-    d.cell_edit(ff_b_idx).set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
+    d.cell_edit(ff_b_idx)
+        .set_port_net(clk_port, Some(clk_net_idx), Some(user_idx));
 
     // net_q: FF_A.Q -> LUT.A
     let net_q_idx = d.add_net(net_q);
@@ -165,14 +173,16 @@ fn make_reg_to_reg_design(pool: &IdStringPool) -> (Design, IdString) {
         port: q_port,
         budget: 0,
     });
-    d.cell_edit(ff_a_idx).set_port_net(q_port, Some(net_q_idx), None);
+    d.cell_edit(ff_a_idx)
+        .set_port_net(q_port, Some(net_q_idx), None);
 
     let user_idx = d.net_edit(net_q_idx).add_user_raw(PortRef {
         cell: Some(lut_idx),
         port: a_port,
         budget: 0,
     });
-    d.cell_edit(lut_idx).set_port_net(a_port, Some(net_q_idx), Some(user_idx));
+    d.cell_edit(lut_idx)
+        .set_port_net(a_port, Some(net_q_idx), Some(user_idx));
 
     // net_f: LUT.F -> FF_B.D
     let net_f_idx = d.add_net(net_f);
@@ -181,14 +191,16 @@ fn make_reg_to_reg_design(pool: &IdStringPool) -> (Design, IdString) {
         port: f_port,
         budget: 0,
     });
-    d.cell_edit(lut_idx).set_port_net(f_port, Some(net_f_idx), None);
+    d.cell_edit(lut_idx)
+        .set_port_net(f_port, Some(net_f_idx), None);
 
     let user_idx = d.net_edit(net_f_idx).add_user_raw(PortRef {
         cell: Some(ff_b_idx),
         port: d_port,
         budget: 0,
     });
-    d.cell_edit(ff_b_idx).set_port_net(d_port, Some(net_f_idx), Some(user_idx));
+    d.cell_edit(ff_b_idx)
+        .set_port_net(d_port, Some(net_f_idx), Some(user_idx));
 
     (d, clk_net_name)
 }
@@ -242,7 +254,8 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
         port: clk_port,
         budget: 0,
     });
-    d.cell_edit(ff_a_idx).set_port_net(clk_port, Some(clk1_idx), Some(user_idx));
+    d.cell_edit(ff_a_idx)
+        .set_port_net(clk_port, Some(clk1_idx), Some(user_idx));
 
     // Clock 2 net
     let clk2_idx = d.add_net(clk2_net_name);
@@ -253,7 +266,8 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
         port: clk_port,
         budget: 0,
     });
-    d.cell_edit(ff_b_idx).set_port_net(clk_port, Some(clk2_idx), Some(user_idx));
+    d.cell_edit(ff_b_idx)
+        .set_port_net(clk_port, Some(clk2_idx), Some(user_idx));
 
     // net_q: FF_A.Q -> LUT.A
     let net_q_idx = d.add_net(net_q);
@@ -262,14 +276,16 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
         port: q_port,
         budget: 0,
     });
-    d.cell_edit(ff_a_idx).set_port_net(q_port, Some(net_q_idx), None);
+    d.cell_edit(ff_a_idx)
+        .set_port_net(q_port, Some(net_q_idx), None);
 
     let user_idx = d.net_edit(net_q_idx).add_user_raw(PortRef {
         cell: Some(lut_idx),
         port: a_port,
         budget: 0,
     });
-    d.cell_edit(lut_idx).set_port_net(a_port, Some(net_q_idx), Some(user_idx));
+    d.cell_edit(lut_idx)
+        .set_port_net(a_port, Some(net_q_idx), Some(user_idx));
 
     // net_f: LUT.F -> FF_B.D
     let net_f_idx = d.add_net(net_f);
@@ -278,14 +294,16 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
         port: f_port,
         budget: 0,
     });
-    d.cell_edit(lut_idx).set_port_net(f_port, Some(net_f_idx), None);
+    d.cell_edit(lut_idx)
+        .set_port_net(f_port, Some(net_f_idx), None);
 
     let user_idx = d.net_edit(net_f_idx).add_user_raw(PortRef {
         cell: Some(ff_b_idx),
         port: d_port,
         budget: 0,
     });
-    d.cell_edit(ff_b_idx).set_port_net(d_port, Some(net_f_idx), Some(user_idx));
+    d.cell_edit(ff_b_idx)
+        .set_port_net(d_port, Some(net_f_idx), Some(user_idx));
 
     d
 }
@@ -537,7 +555,7 @@ fn sort_dead_cells_excluded() {
 
     let sorted = topological_sort(&d);
     assert_eq!(sorted.len(), 1);
-    assert_eq!(sorted[0], CellIdx::from_raw(0));
+    assert_eq!(sorted[0], CellId::from_raw(0));
 }
 
 // =========================================================================
@@ -549,7 +567,7 @@ fn test_analyser_new() {
     let ta = TimingAnalyser::new();
     assert!(!ta.is_valid());
     assert_eq!(ta.worst_slack(), 0);
-    assert_eq!(ta.net_criticality(NetIdx::from_raw(0)), 0.0);
+    assert_eq!(ta.net_criticality(NetId::from_raw(0)), 0.0);
 }
 
 #[test]
@@ -592,9 +610,9 @@ fn test_comb_chain_forward_propagation() {
     let o_port = pool.intern("O");
     let f_port = pool.intern("F");
 
-    let input_idx = CellIdx::from_raw(0);
-    let lut_a_idx = CellIdx::from_raw(1);
-    let lut_b_idx = CellIdx::from_raw(2);
+    let input_idx = CellId::from_raw(0);
+    let lut_a_idx = CellId::from_raw(1);
+    let lut_b_idx = CellId::from_raw(2);
 
     // Check arrival times.
     // input.O is a pure source cell with no inputs: arrival = 0.
@@ -636,9 +654,9 @@ fn test_reg_to_reg_timing() {
     let a_port = pool.intern("A");
     let f_port = pool.intern("F");
 
-    let ff_a_idx = CellIdx::from_raw(0);
-    let lut_idx = CellIdx::from_raw(1);
-    let ff_b_idx = CellIdx::from_raw(2);
+    let ff_a_idx = CellId::from_raw(0);
+    let lut_idx = CellId::from_raw(1);
+    let ff_b_idx = CellId::from_raw(2);
 
     // FF_A.Q is a register output: arrival = DEFAULT_COMB_DELAY = 100
     let ff_a_q_arrival = ta.arrival_time(ff_a_idx, q_port);
@@ -703,8 +721,8 @@ fn test_two_clock_domains() {
     assert!(ta.is_valid());
 
     let clk_port = pool.intern("CLK");
-    let ff_a_idx = CellIdx::from_raw(0);
-    let ff_b_idx = CellIdx::from_raw(2);
+    let ff_a_idx = CellId::from_raw(0);
+    let ff_b_idx = CellId::from_raw(2);
 
     // Check that FF_A's clock port is classified as ClockInput.
     let ff_a_clk_class = ta.port_class(ff_a_idx, clk_port);
@@ -739,7 +757,8 @@ fn test_criticality_all_met() {
     for (net_idx, _net) in design.iter_nets() {
         let crit = ta.net_criticality(net_idx);
         assert_eq!(
-            crit, 0.0,
+            crit,
+            0.0,
             "Net {} should have criticality 0 when timing is met",
             net_idx.raw()
         );
@@ -773,7 +792,10 @@ fn test_criticality_failing() {
             crit
         );
     }
-    assert!(has_nonzero_crit, "Should have at least one net with non-zero criticality");
+    assert!(
+        has_nonzero_crit,
+        "Should have at least one net with non-zero criticality"
+    );
 }
 
 #[test]
@@ -790,19 +812,19 @@ fn test_topological_sort_basic() {
     // which should come before Output.
     let input_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(0))
+        .position(|&c| c == CellId::from_raw(0))
         .unwrap();
     let lut_a_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(1))
+        .position(|&c| c == CellId::from_raw(1))
         .unwrap();
     let lut_b_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(2))
+        .position(|&c| c == CellId::from_raw(2))
         .unwrap();
     let output_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(3))
+        .position(|&c| c == CellId::from_raw(3))
         .unwrap();
 
     assert!(
@@ -833,15 +855,15 @@ fn test_topological_sort_with_registers() {
     // LUT should come before FF_B (LUT.F drives FF_B.D).
     let ff_a_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(0))
+        .position(|&c| c == CellId::from_raw(0))
         .unwrap();
     let lut_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(1))
+        .position(|&c| c == CellId::from_raw(1))
         .unwrap();
     let ff_b_pos = sorted
         .iter()
-        .position(|&c| c == CellIdx::from_raw(2))
+        .position(|&c| c == CellId::from_raw(2))
         .unwrap();
 
     assert!(
@@ -880,7 +902,10 @@ fn test_fmax_with_constraint() {
     let fmax = ta.fmax_mhz();
     assert!(fmax > 0.0, "fmax should be positive");
     // With slack > 0, fmax should equal or exceed the constraint frequency.
-    assert!(fmax >= 100.0, "fmax should be at least 100 MHz with 10ns period");
+    assert!(
+        fmax >= 100.0,
+        "fmax should be at least 100 MHz with 10ns period"
+    );
 }
 
 #[test]
@@ -923,7 +948,7 @@ fn test_port_criticality() {
     ta.analyse(&design, &pool);
 
     let d_port = pool.intern("D");
-    let ff_b_idx = CellIdx::from_raw(2);
+    let ff_b_idx = CellId::from_raw(2);
 
     // FF_B.D is a timing endpoint with failing slack.
     let crit = ta.port_criticality(ff_b_idx, d_port);

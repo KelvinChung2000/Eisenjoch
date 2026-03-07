@@ -1,26 +1,16 @@
 //! Shared helper functions used by both Router1 and Router2.
 
-use crate::context::{BelPinWireMap, Context};
-use crate::netlist::NetIdx;
-use crate::types::{BelId, IdString, PipId, PlaceStrength, WireId};
+use crate::context::Context;
+use crate::netlist::NetId;
+use crate::types::{PipId, PlaceStrength, WireId};
 use rustc_hash::FxHashMap;
-
-/// Look up a BEL pin wire using a pre-built map.
-#[inline]
-pub(crate) fn find_bel_pin_wire_preindexed(
-    bel_pin_map: &BelPinWireMap,
-    bel: BelId,
-    port_name: IdString,
-) -> Option<WireId> {
-    bel_pin_map.get(&(bel, port_name)).copied()
-}
 
 /// Collect all net indices that need routing.
 ///
 /// A net needs routing if it has a connected driver and at least one user.
-pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetIdx> {
+pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetId> {
     let mut result = Vec::new();
-    for net_idx in ctx.design().iter_net_indices() {
+    for net_idx in ctx.design.iter_net_indices() {
         let net = ctx.net(net_idx);
         if net.is_alive() && net.has_driver() && net.num_users() > 0 {
             result.push(net_idx);
@@ -33,18 +23,19 @@ pub(crate) fn collect_routable_nets(ctx: &Context) -> Vec<NetIdx> {
 ///
 /// For each PIP in the path, binds the PIP and its destination wire to the
 /// given net, and records the routing in the net's wire map.
-pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetIdx, path: &[PipId]) {
+pub(crate) fn bind_route(ctx: &mut Context, net_idx: NetId, path: &[PipId]) {
     for &pip in path {
-        let dst_wire = ctx.pip_dst_wire(pip);
+        let dst_wire = ctx.pip(pip).dst_wire().id();
         ctx.bind_pip(pip, net_idx, PlaceStrength::Strong);
         ctx.bind_wire(dst_wire, net_idx, PlaceStrength::Strong);
-        ctx.net_edit(net_idx)
+        ctx.design
+            .net_edit(net_idx)
             .add_wire(dst_wire, Some(pip), PlaceStrength::Strong);
     }
 }
 
 /// Rip up (unroute) a net by unbinding all its wires and PIPs.
-pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
+pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetId) {
     let net = ctx.net(net_idx);
     let entries: Vec<(WireId, Option<PipId>)> = net
         .wires()
@@ -59,14 +50,85 @@ pub(crate) fn unroute_net(ctx: &mut Context, net_idx: NetIdx) {
         }
     }
 
-    ctx.net_edit(net_idx).clear_wires();
+    ctx.design.net_edit(net_idx).clear_wires();
+}
+
+/// Resolve the driver wire for a net and bind it if not already bound.
+///
+/// Returns the source wire, or `Ok(None)` if the net has no connected driver.
+pub(crate) fn setup_net_source(
+    ctx: &mut Context,
+    net_idx: NetId,
+) -> Result<Option<WireId>, super::RouterError> {
+    let net = ctx.net(net_idx);
+    let net_name = net.name_id();
+
+    let driver = net.driver();
+    let Some(driver_cell_idx) = driver.cell else {
+        return Ok(None);
+    };
+    let driver_port = driver.port;
+
+    let driver_cell = ctx.cell(driver_cell_idx);
+    let driver_bel = match driver_cell.bel() {
+        Some(bel) => bel,
+        None => {
+            return Err(super::RouterError::Generic(format!(
+                "Driver cell for net {} is not placed",
+                ctx.name_of(net_name)
+            )));
+        }
+    };
+
+    let src_wire = driver_bel
+        .pin_wire(driver_port)
+        .map(|w| w.id())
+        .ok_or_else(|| {
+            super::RouterError::Generic(format!(
+                "Cannot find driver wire for net {}",
+                ctx.name_of(net_name)
+            ))
+        })?;
+
+    // Bind the source wire to this net if not already bound.
+    if ctx.wire(src_wire).is_available() {
+        ctx.bind_wire(src_wire, net_idx, PlaceStrength::Strong);
+        ctx.design
+            .net_edit(net_idx)
+            .add_wire(src_wire, None, PlaceStrength::Strong);
+    }
+
+    Ok(Some(src_wire))
+}
+
+/// Collect the sink wires for all users of a net.
+///
+/// Resolves each user's BEL pin to a wire via the view API.
+/// Skips unconnected or unplaced users.
+pub(crate) fn collect_sink_wires(ctx: &Context, net_idx: NetId) -> Vec<WireId> {
+    let net = ctx.net(net_idx);
+    let mut sink_wires = Vec::with_capacity(net.num_users());
+    for user in net.users() {
+        let Some(user_cell_idx) = user.cell else {
+            continue;
+        };
+        let user_cell = ctx.cell(user_cell_idx);
+        let user_bel = match user_cell.bel() {
+            Some(bel) => bel,
+            None => continue,
+        };
+        if let Some(sink_wire) = user_bel.pin_wire(user.port) {
+            sink_wires.push(sink_wire.id());
+        }
+    }
+    sink_wires
 }
 
 /// Find all wires that are used by more than one net (congested).
 pub(crate) fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
     let mut wire_usage: FxHashMap<WireId, u32> = FxHashMap::default();
 
-    for net_idx in ctx.design().iter_net_indices() {
+    for net_idx in ctx.design.iter_net_indices() {
         let net = ctx.net(net_idx);
         if !net.is_alive() {
             continue;

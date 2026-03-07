@@ -1,7 +1,7 @@
 //! Shared helper functions used by multiple placer implementations.
 
 use crate::context::Context;
-use crate::netlist::{CellIdx, NetIdx};
+use crate::netlist::{CellId, NetId};
 use crate::types::{BelId, IdString, PlaceStrength};
 use rustc_hash::FxHashMap;
 
@@ -10,9 +10,9 @@ use super::PlacerError;
 /// Collect all live, placeable cell indices grouped by their cell type.
 ///
 /// Returns a map from cell type IdString to the list of CellIdx values.
-pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellIdx>> {
-    let mut map: FxHashMap<IdString, Vec<CellIdx>> = FxHashMap::default();
-    for (cell_idx, cell) in ctx.design().iter_alive_cells() {
+pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellId>> {
+    let mut map: FxHashMap<IdString, Vec<CellId>> = FxHashMap::default();
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
         map.entry(cell.cell_type).or_default().push(cell_idx);
     }
     map
@@ -22,7 +22,7 @@ pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellIdx>> 
 ///
 /// HPWL = (max_x - min_x) + (max_y - min_y) across all connected cell locations.
 /// Returns 0.0 for nets with no driver, no users, or dead nets.
-pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
+pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
     let net = ctx.net(net_idx);
     if !net.is_alive() || !net.driver().is_connected() || net.users().is_empty() {
         return 0.0;
@@ -49,12 +49,8 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
 
     // Include all user locations.
     for user in net.users() {
-        if !user.is_connected() {
+        let Some(user_cell_idx) = user.cell else {
             continue;
-        }
-        let user_cell_idx = match user.cell {
-            Some(cell_idx) => cell_idx,
-            None => continue,
         };
         let user_cell = ctx.cell(user_cell_idx);
         if let Some(bel) = user_cell.bel() {
@@ -76,7 +72,7 @@ pub(crate) fn net_hpwl(ctx: &Context, net_idx: NetIdx) -> f64 {
 /// Compute total HPWL cost across all alive nets.
 pub(crate) fn total_hpwl(ctx: &Context) -> f64 {
     let mut total = 0.0;
-    for (net_idx, _) in ctx.design().iter_alive_nets() {
+    for (net_idx, _) in ctx.design.iter_alive_nets() {
         total += net_hpwl(ctx, net_idx);
     }
     total
@@ -107,13 +103,13 @@ pub(crate) fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
         let mut available: Vec<BelId> = bucket_bels
             .iter()
             .copied()
-            .filter(|b| ctx.is_bel_available(*b))
+            .filter(|b| ctx.bel(*b).is_available())
             .collect();
 
         ctx.rng_mut().shuffle(&mut available);
 
         // Filter to only unplaced cells.
-        let unplaced: Vec<CellIdx> = cell_indices
+        let unplaced: Vec<CellId> = cell_indices
             .iter()
             .copied()
             .filter(|&ci| ctx.cell(ci).bel().is_none())

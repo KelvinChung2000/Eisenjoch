@@ -75,10 +75,10 @@ impl PyContext {
         let json_str = std::fs::read_to_string(path).map_err(|e| {
             PyFileNotFoundError::new_err(format!("Failed to read {}: {}", path, e))
         })?;
-        let design = parse_json(&json_str, self.ctx.id_pool()).map_err(|e| {
+        let design = parse_json(&json_str, &self.ctx.id_pool).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to parse JSON: {}", e))
         })?;
-        self.ctx.set_design(design);
+        self.ctx.design = design;
         Ok(())
     }
 
@@ -156,12 +156,12 @@ impl PyContext {
     ///     net_name: Name of the clock net.
     ///     freq_mhz: Clock frequency in MHz.
     fn add_clock(&mut self, net_name: &str, freq_mhz: f64) -> PyResult<()> {
-        let id = self.ctx.id_pool().intern(net_name);
+        let id = self.ctx.id_pool.intern(net_name);
         self.timing.add_clock_constraint(id, freq_mhz);
         // Also set clock_constraint on the net if it exists in the design.
-        if let Some(net_idx) = self.ctx.design_view().net_by_name(id) {
+        if let Some(net_idx) = self.ctx.design.net_by_name(id) {
             let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
-            self.ctx.net_edit(net_idx).set_clock_constraint(period_ps);
+            self.ctx.design.net_edit(net_idx).set_clock_constraint(period_ps);
         }
         Ok(())
     }
@@ -171,7 +171,7 @@ impl PyContext {
     /// Returns:
     ///     A TimingReport with fmax, worst slack, and endpoint counts.
     fn timing_report(&mut self) -> PyResult<PyTimingReport> {
-        self.ctx.analyse_timing(&mut self.timing);
+        self.timing.analyse(&self.ctx.design, &self.ctx.id_pool);
         let report = self.timing.report();
         Ok(PyTimingReport {
             fmax: report.fmax,
@@ -189,13 +189,13 @@ impl PyContext {
     /// Grid width in tiles.
     #[getter]
     fn width(&self) -> i32 {
-        self.ctx.width()
+        self.ctx.chipdb().width()
     }
 
     /// Grid height in tiles.
     #[getter]
     fn height(&self) -> i32 {
-        self.ctx.height()
+        self.ctx.chipdb().height()
     }
 
     /// List of all cell names in the design.
@@ -221,10 +221,10 @@ impl PyContext {
     fn __repr__(&self) -> String {
         format!(
             "Context(width={}, height={}, cells={}, nets={})",
-            self.ctx.width(),
-            self.ctx.height(),
-            self.ctx.design_view().num_cells(),
-            self.ctx.design_view().num_nets()
+            self.ctx.chipdb().width(),
+            self.ctx.chipdb().height(),
+            self.ctx.design.num_cells(),
+            self.ctx.design.num_nets()
         )
     }
 }

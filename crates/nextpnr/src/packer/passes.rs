@@ -3,7 +3,7 @@
 use super::helpers::connect_port;
 use super::PackerError;
 use crate::context::Context;
-use crate::netlist::{CellIdx, Cluster};
+use crate::netlist::{CellId, Cluster};
 use crate::types::PortType;
 
 /// Ensure GND/VCC constant-driver cells and nets exist.
@@ -20,27 +20,27 @@ pub(crate) fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
 
     // Ensure nets exist.
     let gnd_net_idx = ctx
-        .design()
+        .design
         .net_by_name(gnd_net_name)
-        .unwrap_or_else(|| ctx.add_net(gnd_net_name));
+        .unwrap_or_else(|| ctx.design.add_net(gnd_net_name));
     let vcc_net_idx = ctx
-        .design()
+        .design
         .net_by_name(vcc_net_name)
-        .unwrap_or_else(|| ctx.add_net(vcc_net_name));
+        .unwrap_or_else(|| ctx.design.add_net(vcc_net_name));
 
     // Ensure GND driver cell exists and is connected.
-    if ctx.design().cell_by_name(gnd_name).is_none() {
+    if ctx.design.cell_by_name(gnd_name).is_none() {
         let gnd_type = ctx.id("GND");
-        let idx = ctx.add_cell(gnd_name, gnd_type);
-        ctx.cell_edit(idx).add_port(y_port, PortType::Out);
+        let idx = ctx.design.add_cell(gnd_name, gnd_type);
+        ctx.design.cell_edit(idx).add_port(y_port, PortType::Out);
         connect_port(ctx, idx, y_port, gnd_net_idx);
     }
 
     // Ensure VCC driver cell exists and is connected.
-    if ctx.design().cell_by_name(vcc_name).is_none() {
+    if ctx.design.cell_by_name(vcc_name).is_none() {
         let vcc_type = ctx.id("VCC");
-        let idx = ctx.add_cell(vcc_name, vcc_type);
-        ctx.cell_edit(idx).add_port(y_port, PortType::Out);
+        let idx = ctx.design.add_cell(vcc_name, vcc_type);
+        ctx.design.cell_edit(idx).add_port(y_port, PortType::Out);
         connect_port(ctx, idx, y_port, vcc_net_idx);
     }
 
@@ -57,11 +57,11 @@ pub(crate) fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     let iobuf_type = ctx.id("$nextpnr_IOBUF");
     let iob_type = ctx.id("IOB");
 
-    let cells_to_remap: Vec<CellIdx> = ctx
-        .design()
+    let cells_to_remap: Vec<CellId> = ctx
+        .design
         .iter_cell_indices()
         .filter(|&idx| {
-            let cell = ctx.design().cell(idx);
+            let cell = ctx.design.cell(idx);
             cell.alive
                 && (cell.cell_type == ibuf_type
                     || cell.cell_type == obuf_type
@@ -70,7 +70,7 @@ pub(crate) fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
         .collect();
 
     for idx in cells_to_remap {
-        ctx.cell_edit(idx).set_type(iob_type);
+        ctx.design.cell_edit(idx).set_type(iob_type);
     }
 
     Ok(())
@@ -89,9 +89,9 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
     let q_port = ctx.id("Q");
 
     // Collect LUT -> FF merge pairs.
-    let mut merges: Vec<(CellIdx, CellIdx)> = Vec::new();
+    let mut merges: Vec<(CellId, CellId)> = Vec::new();
 
-    for (cell_idx, cell) in ctx.design().iter_cells() {
+    for (cell_idx, cell) in ctx.design.iter_cells() {
         if !cell.alive || cell.cell_type != lut4_type {
             continue;
         }
@@ -101,7 +101,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
             Some(net_idx) => net_idx,
             None => continue,
         };
-        let net = ctx.design().net(net_idx);
+        let net = ctx.design.net(net_idx);
         if net.users.len() != 1 {
             continue;
         }
@@ -113,7 +113,7 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
             Some(cell_idx) => cell_idx,
             None => continue,
         };
-        let ff_cell = ctx.design().cell(ff_cell_idx);
+        let ff_cell = ctx.design.cell(ff_cell_idx);
         if ff_cell.alive && ff_cell.cell_type == dff_type {
             merges.push((cell_idx, ff_cell_idx));
         }
@@ -121,34 +121,35 @@ pub(crate) fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
 
     // Apply merges.
     for (lut_idx, ff_idx) in merges {
-        let lut = ctx.design().cell(lut_idx);
+        let lut = ctx.design.cell(lut_idx);
         if lut.cluster.is_some() && lut.cluster != Some(lut_idx) {
             continue; // Already part of another cluster.
         }
 
         // LUT is cluster root.
-        ctx.cell_edit(lut_idx).set_cluster(Some(lut_idx));
+        ctx.design.cell_edit(lut_idx).set_cluster(Some(lut_idx));
 
         // FF belongs to LUT's cluster.
-        ctx.cell_edit(ff_idx).set_cluster(Some(lut_idx));
+        ctx.design.cell_edit(ff_idx).set_cluster(Some(lut_idx));
 
         // Record explicit cluster membership.
         let cluster = ctx
-            .clusters_mut()
+            .design
+            .clusters
             .entry(lut_idx)
             .or_insert_with(|| Cluster::new(lut_idx));
         cluster.add_member(ff_idx);
 
         // Copy FF Q port output to LUT as QF port, if the FF has a Q port.
-        let ff_q_net = ctx
-            .design()
-            .cell(ff_idx)
-            .port(q_port)
-            .and_then(|p| p.net);
+        let ff_q_net = ctx.design.cell(ff_idx).port(q_port).and_then(|p| p.net);
         if let Some(net_idx) = ff_q_net {
             let qf_port = ctx.id("QF");
-            ctx.cell_edit(lut_idx).add_port(qf_port, PortType::Out);
-            ctx.cell_edit(lut_idx).set_port_net(qf_port, Some(net_idx), None);
+            ctx.design
+                .cell_edit(lut_idx)
+                .add_port(qf_port, PortType::Out);
+            ctx.design
+                .cell_edit(lut_idx)
+                .set_port_net(qf_port, Some(net_idx), None);
         }
     }
 
@@ -166,9 +167,9 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
     let ci_port = ctx.id("CI");
 
     // Find carry chain heads: CARRY4 cells whose CI is not driven by another CARRY4.
-    let mut chain_heads: Vec<CellIdx> = Vec::new();
+    let mut chain_heads: Vec<CellId> = Vec::new();
 
-    for (cell_idx, cell) in ctx.design().iter_cells() {
+    for (cell_idx, cell) in ctx.design.iter_cells() {
         if !cell.alive || cell.cell_type != carry_type {
             continue;
         }
@@ -176,12 +177,12 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
         let is_head = match cell.port(ci_port).and_then(|p| p.net) {
             None => true,
             Some(net_idx) => {
-                let net = ctx.design().net(net_idx);
+                let net = ctx.design.net(net_idx);
                 if !net.driver.is_connected() {
                     true
                 } else {
                     match net.driver.cell {
-                        Some(driver_cell) => ctx.design().cell(driver_cell).cell_type != carry_type,
+                        Some(driver_cell) => ctx.design.cell(driver_cell).cell_type != carry_type,
                         None => true,
                     }
                 }
@@ -196,22 +197,19 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
     // Build chains from heads.
     for head in chain_heads {
         let mut current = head;
-        ctx.cell_edit(current).set_cluster(Some(head));
+        ctx.design.cell_edit(current).set_cluster(Some(head));
         let cluster = ctx
-            .clusters_mut()
+            .design
+            .clusters
             .entry(head)
             .or_insert_with(|| Cluster::new(head));
         cluster.add_member(head);
 
         loop {
-            let co_net = ctx
-                .design()
-                .cell(current)
-                .port(co_port)
-                .and_then(|p| p.net);
+            let co_net = ctx.design.cell(current).port(co_port).and_then(|p| p.net);
 
             let next = co_net.and_then(|net_idx| {
-                let net = ctx.design().net(net_idx);
+                let net = ctx.design.net(net_idx);
                 net.users
                     .iter()
                     .find(|u| {
@@ -222,16 +220,16 @@ pub(crate) fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
                             Some(cell_idx) => cell_idx,
                             None => return false,
                         };
-                        ctx.design().cell(user_cell).alive
-                            && ctx.design().cell(user_cell).cell_type == carry_type
+                        ctx.design.cell(user_cell).alive
+                            && ctx.design.cell(user_cell).cell_type == carry_type
                     })
                     .and_then(|u| u.cell)
             });
 
             match next {
                 Some(next_idx) => {
-                    ctx.cell_edit(next_idx).set_cluster(Some(head));
-                    if let Some(cluster) = ctx.clusters_mut().get_mut(&head) {
+                    ctx.design.cell_edit(next_idx).set_cluster(Some(head));
+                    if let Some(cluster) = &mut ctx.design.clusters.get_mut(&head) {
                         cluster.add_member(next_idx);
                     }
                     current = next_idx;
