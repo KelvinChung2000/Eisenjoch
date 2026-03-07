@@ -429,10 +429,7 @@ impl HeapState {
             let mut fixed_positions: Vec<(f64, f64)> = Vec::new();
 
             // Driver cell.
-            let drv_cell_idx = match net.driver.cell {
-                Some(cell_idx) => cell_idx,
-                None => continue,
-            };
+            let drv_cell_idx = net.driver.cell;
             if let Some(&idx) = self.cell_to_idx.get(&drv_cell_idx) {
                 if movable_seen.insert(idx) {
                     movable_on_net.push(idx);
@@ -451,10 +448,7 @@ impl HeapState {
                 if !user.is_connected() {
                     continue;
                 }
-                let user_cell_idx = match user.cell {
-                    Some(cell_idx) => cell_idx,
-                    None => continue,
-                };
+                let user_cell_idx = user.cell;
                 if let Some(&idx) = self.cell_to_idx.get(&user_cell_idx) {
                     if movable_seen.insert(idx) {
                         movable_on_net.push(idx);

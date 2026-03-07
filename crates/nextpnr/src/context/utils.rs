@@ -26,18 +26,20 @@ impl Context {
     /// from driver to any user as a rough estimate.
     pub fn estimate_delay_for_net(&self, net_idx: NetId) -> DelayT {
         let net = self.design.net(net_idx);
-        let Some(driver_cell) = net.driver.cell else {
+        if !net.driver.is_valid() {
             return 0;
-        };
+        }
+        let driver_cell = net.driver.cell;
         let Some(driver_bel) = self.design.cell(driver_cell).bel else {
             return 0;
         };
         let driver_loc = self.chipdb.tile_xy(driver_bel.tile());
         let mut max_delay: DelayT = 0;
         for user in &net.users {
-            let Some(user_cell) = user.cell else {
+            if !user.is_valid() {
                 continue;
-            };
+            }
+            let user_cell = user.cell;
             let Some(user_bel) = self.design.cell(user_cell).bel else {
                 continue;
             };

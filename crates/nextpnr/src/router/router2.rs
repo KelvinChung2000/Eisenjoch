@@ -101,9 +101,9 @@ pub fn compute_bbox(ctx: &Context, net_idx: NetId, margin: i32) -> BoundingBox {
     // Collect all connected cell indices (driver + users).
     let cell_indices = net
         .driver()
-        .cell
         .into_iter()
-        .chain(net.users().iter().filter_map(|u| u.cell));
+        .map(|pin| pin.cell)
+        .chain(net.users().iter().filter(|u| u.is_valid()).map(|u| u.cell));
 
     for cell_idx in cell_indices {
         if let Some(bel) = ctx.cell(cell_idx).bel() {

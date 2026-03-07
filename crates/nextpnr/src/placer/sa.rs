@@ -70,8 +70,8 @@ impl Default for PlacerSaCfg {
 fn nets_for_cell(ctx: &Context, cell_idx: CellId) -> Vec<NetId> {
     let cell = ctx.cell(cell_idx);
     let mut nets = Vec::new();
-    for port_info in cell.ports().values() {
-        if let Some(net_idx) = port_info.net {
+    for pin in cell.ports() {
+        if let Some(net_idx) = pin.view(ctx).net_id() {
             nets.push(net_idx);
         }
     }

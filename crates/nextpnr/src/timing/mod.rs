@@ -422,16 +422,15 @@ impl TimingAnalyser {
             if !net.driver.is_connected() {
                 continue;
             }
-            let Some(driver_cell) = net.driver.cell else {
-                continue;
-            };
+            let driver_cell = net.driver.cell;
             if ctx.design.cell(driver_cell).bel.is_none() {
                 continue;
             }
             for user in &net.users {
-                let Some(user_cell) = user.cell else {
+                if !user.is_valid() {
                     continue;
-                };
+                }
+                let user_cell = user.cell;
                 if ctx.design.cell(user_cell).bel.is_none() {
                     continue;
                 }
@@ -717,9 +716,10 @@ impl TimingAnalyser {
                     if let Some(net_idx) = pi.net() {
                         let net = design.net(net_idx);
                         for user in &net.users {
-                            let Some(user_cell) = user.cell else {
+                            if !user.is_valid() {
                                 continue;
-                            };
+                            }
+                            let user_cell = user.cell;
                             let target = CellPin::new(user_cell, user.port);
                             if self.port_data.contains_key(&target) {
                                 edges.entry(pin).or_default().push(target);
@@ -827,9 +827,10 @@ impl TimingAnalyser {
                         if let Some(net_idx) = pi.net() {
                             let net = ctx.design.net(net_idx);
                             for user in &net.users {
-                                let Some(user_cell) = user.cell else {
+                                if !user.is_valid() {
                                     continue;
-                                };
+                                }
+                                let user_cell = user.cell;
                                 let target = CellPin::new(user_cell, user.port);
                                 if !self.port_data.contains_key(&target) {
                                     continue;
@@ -935,7 +936,8 @@ impl TimingAnalyser {
                     if let Some(pi) = cell.ports.get(&port.port) {
                         if let Some(net_idx) = pi.net() {
                             let net = ctx.design.net(net_idx);
-                            if let Some(driver_cell) = net.driver.cell {
+                            if net.driver.is_valid() {
+                                let driver_cell = net.driver.cell;
                                 let target = CellPin::new(driver_cell, net.driver.port);
                                 if self.port_data.contains_key(&target) {
                                     if let Some(src_domains) =
@@ -1105,10 +1107,7 @@ impl TimingAnalyser {
         if !net.driver.is_connected() {
             return;
         }
-        let driver_cell_idx = match net.driver.cell {
-            Some(c) => c,
-            None => return,
-        };
+        let driver_cell_idx = net.driver.cell;
 
         // Cycle detection.
         if visited.contains(&net.name) {
@@ -1234,9 +1233,10 @@ impl TimingAnalyser {
                 };
                 let net = design.net(net_idx);
                 for user in &net.users {
-                    let Some(user_cell) = user.cell else {
+                    if !user.is_valid() {
                         continue;
-                    };
+                    }
+                    let user_cell = user.cell;
                     let target = CellPin::new(user_cell, user.port);
                     let route_delay = self
                         .port_data
@@ -1337,7 +1337,8 @@ impl TimingAnalyser {
                     continue;
                 };
                 let net = design.net(net_idx);
-                if let Some(driver_cell) = net.driver.cell {
+                if net.driver.is_valid() {
+                    let driver_cell = net.driver.cell;
                     let target = CellPin::new(driver_cell, net.driver.port);
                     let route_delay = pd.route_delay.max_delay;
                     let req_at_driver = required - route_delay;
@@ -1415,9 +1416,10 @@ impl TimingAnalyser {
                     continue;
                 };
                 let net = design.net(net_idx);
-                let Some(driver_cell) = net.driver.cell else {
+                if !net.driver.is_valid() {
                     continue;
-                };
+                }
+                let driver_cell = net.driver.cell;
                 let driver_pin = CellPin::new(driver_cell, net.driver.port);
                 if let Some(&driver_arrival) = self.arrival_times.get(&driver_pin) {
                     self.arrival_times
@@ -1504,9 +1506,10 @@ impl TimingAnalyser {
                 };
                 let net = design.net(net_idx);
                 for user in &net.users {
-                    let Some(user_cell) = user.cell else {
+                    if !user.is_valid() {
                         continue;
-                    };
+                    }
+                    let user_cell = user.cell;
                     let user_pin = CellPin::new(user_cell, user.port);
                     if let Some(&user_required) = self.required_times.get(&user_pin) {
                         self.required_times
@@ -1653,9 +1656,10 @@ impl TimingAnalyser {
         for (net_idx, net) in design.iter_alive_nets() {
             let mut max_crit: f32 = 0.0;
             for user in &net.users {
-                let Some(user_cell) = user.cell else {
+                if !user.is_valid() {
                     continue;
-                };
+                }
+                let user_cell = user.cell;
                 let user_pin = CellPin::new(user_cell, user.port);
                 let arrival = self.arrival_times.get(&user_pin).copied().unwrap_or(0);
                 let required = self.required_times.get(&user_pin).copied().unwrap_or(0);

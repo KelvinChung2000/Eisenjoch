@@ -4,8 +4,7 @@ use std::ops::Deref;
 
 use super::Context;
 use crate::netlist::{
-    CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap,
-    PortInfo, PortRef, TimingIndex,
+    CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap, TimingIndex,
 };
 use crate::types::{
     BelId, DelayQuad, DelayT, IdString, Loc, PipId, PlaceStrength, PortType, Property, WireId,
@@ -62,6 +61,118 @@ impl BelPin {
     #[inline]
     pub fn port(&self) -> IdString {
         self.port
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct BelPinView<'a> {
+    ctx: &'a Context,
+    pin: BelPin,
+}
+
+impl<'a> BelPinView<'a> {
+    pub(crate) fn new(ctx: &'a Context, pin: BelPin) -> Self {
+        Self { ctx, pin }
+    }
+
+    #[inline]
+    pub fn id(&self) -> BelPin {
+        self.pin
+    }
+
+    #[inline]
+    pub fn bel(&self) -> Bel<'a> {
+        Bel::new(self.ctx, self.pin.bel())
+    }
+
+    #[inline]
+    pub fn port(&self) -> IdStringView<'a> {
+        IdStringView::new(self.ctx, self.pin.port())
+    }
+
+    #[inline]
+    pub fn wire(&self) -> Option<Wire<'a>> {
+        self.ctx.bel_pin_wire(self.pin)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct CellPinView<'a> {
+    ctx: &'a Context,
+    pin: CellPin,
+}
+
+impl<'a> CellPinView<'a> {
+    pub(crate) fn new(ctx: &'a Context, pin: CellPin) -> Self {
+        Self { ctx, pin }
+    }
+
+    #[inline]
+    pub fn id(&self) -> CellPin {
+        self.pin
+    }
+
+    #[inline]
+    pub fn cell(&self) -> Cell<'a> {
+        Cell::new(self.ctx, self.pin.cell)
+    }
+
+    #[inline]
+    pub fn port(&self) -> IdStringView<'a> {
+        IdStringView::new(self.ctx, self.pin.port)
+    }
+
+    #[inline]
+    fn data(&self) -> &'a crate::netlist::PortData {
+        self.ctx
+            .design
+            .cell(self.pin.cell)
+            .port_data(self.pin.port)
+            .expect("invalid CellPin")
+    }
+
+    #[inline]
+    pub fn port_type(&self) -> PortType {
+        self.data().port_type()
+    }
+
+    #[inline]
+    pub fn net_id(&self) -> Option<NetId> {
+        self.data().net()
+    }
+
+    #[inline]
+    pub fn net(&self) -> Option<Net<'a>> {
+        self.net_id().map(|net| Net::new(self.ctx, net))
+    }
+
+    #[inline]
+    pub fn user_idx(&self) -> Option<u32> {
+        self.data().user_idx()
+    }
+
+    #[inline]
+    pub fn budget(&self) -> DelayT {
+        self.data().budget()
+    }
+
+    #[inline]
+    pub fn is_connected(&self) -> bool {
+        self.data().is_connected()
+    }
+}
+
+impl CellPin {
+    #[inline]
+    pub fn view<'a>(self, ctx: &'a Context) -> CellPinView<'a> {
+        CellPinView::new(ctx, self)
+    }
+}
+
+impl BelPin {
+    #[inline]
+    pub fn view<'a>(self, ctx: &'a Context) -> BelPinView<'a> {
+        BelPinView::new(ctx, self)
     }
 }
 
@@ -253,16 +364,18 @@ impl<'a> Net<'a> {
     pub fn name_id(&self) -> IdString { self.info().name }
 
     #[inline]
-    pub fn driver(&self) -> &'a PortRef { &self.info().driver }
+    pub fn driver(&self) -> Option<CellPin> { self.info().driver() }
 
     #[inline]
-    pub fn driver_cell_port(&self) -> Option<CellPin> {
-        let driver = &self.info().driver;
-        driver.cell.map(|cell| CellPin::new(cell, driver.port))
+    pub fn driver_view(&self) -> Option<CellPinView<'a>> {
+        self.driver().map(|pin| pin.view(self.ctx))
     }
 
     #[inline]
-    pub fn users(&self) -> &'a [PortRef] { &self.info().users }
+    pub fn driver_cell_port(&self) -> Option<CellPin> { self.driver() }
+
+    #[inline]
+    pub fn users(&self) -> &'a [CellPin] { self.info().users() }
 
     #[inline]
     pub fn wires(&self) -> &'a FxHashMap<WireId, PipMap> { &self.info().wires }
@@ -277,8 +390,8 @@ impl<'a> Net<'a> {
     pub fn num_users(&self) -> usize { self.info().num_users() }
 
     #[inline]
-    pub fn connected_users(&self) -> impl Iterator<Item = &'a PortRef> {
-        self.info().users.iter().filter(|u| u.is_connected())
+    pub fn connected_users(&self) -> impl Iterator<Item = CellPin> + 'a {
+        self.info().users().iter().copied().filter(|u| u.is_valid())
     }
 
     #[inline]
@@ -417,19 +530,32 @@ impl<'a> Cell<'a> {
     pub fn is_alive(&self) -> bool { self.info().alive }
 
     #[inline]
-    pub fn ports(&self) -> &'a FxHashMap<IdString, PortInfo> { &self.info().ports }
+    pub fn ports(&self) -> impl Iterator<Item = CellPin> + '_ {
+        self.info()
+            .ports
+            .keys()
+            .copied()
+            .map(move |port| CellPin::new(self.id, port))
+    }
 
     #[inline]
-    pub fn port(&self, name: IdString) -> Option<&'a PortInfo> { self.info().port(name) }
+    pub fn port(&self, name: IdString) -> Option<CellPin> {
+        self.info().port_data(name).map(|_| CellPin::new(self.id, name))
+    }
+
+    #[inline]
+    pub fn port_view(&self, name: IdString) -> Option<CellPinView<'a>> {
+        self.port(name).map(|pin| pin.view(self.ctx))
+    }
 
     #[inline]
     pub fn port_net(&self, name: IdString) -> Option<NetId> {
-        self.info().port(name).and_then(|p| p.net())
+        self.info().port_data(name).and_then(|p| p.net())
     }
 
     #[inline]
     pub fn port_type(&self, name: IdString) -> Option<PortType> {
-        self.info().port(name).map(|p| p.port_type())
+        self.info().port_data(name).map(|p| p.port_type())
     }
 
     #[inline]

@@ -12,14 +12,10 @@ use crate::types::{IdString, PortType};
 #[cfg(feature = "test-utils")]
 pub fn disconnect_port(ctx: &mut Context, cell: CellId, port: IdString) {
     let cell_info = ctx.design.cell(cell);
-    let (net_idx, user_idx) = match cell_info.port(port) {
-        Some(port_info) if port_info.is_connected() => (port_info.net(), port_info.user_idx()),
-        _ => return,
+    let Some(net_idx) = cell_info.port_net(port) else {
+        return;
     };
-    let net_idx = match net_idx {
-        Some(net_idx) => net_idx,
-        None => return,
-    };
+    let user_idx = cell_info.port_user_idx(port);
 
     if let Some(user_idx) = user_idx {
         // This port was a user (sink) of the net.
@@ -43,8 +39,7 @@ pub fn connect_port(ctx: &mut Context, cell: CellId, port: IdString, net: NetId)
     let port_type = ctx
         .design
         .cell(cell)
-        .port(port)
-        .map(|p| p.port_type())
+        .port_type(port)
         .unwrap_or(PortType::In);
 
     if port_type == PortType::Out || port_type == PortType::InOut {
@@ -65,12 +60,12 @@ pub fn connect_port(ctx: &mut Context, cell: CellId, port: IdString, net: NetId)
 /// Get the net connected to a cell port, if any.
 #[cfg(feature = "test-utils")]
 pub fn get_net_for_port(ctx: &Context, cell: CellId, port: IdString) -> Option<NetId> {
-    ctx.design.cell(cell).port(port).and_then(|p| p.net())
+    ctx.design.cell(cell).port_net(port)
 }
 
 /// Check if a net has exactly one connected user.
 #[cfg(feature = "test-utils")]
 pub fn is_single_fanout(ctx: &Context, net: NetId) -> bool {
     let net_info = ctx.design.net(net);
-    net_info.users.iter().filter(|u| u.is_connected()).count() == 1
+    net_info.users().iter().filter(|u| u.is_connected()).count() == 1
 }

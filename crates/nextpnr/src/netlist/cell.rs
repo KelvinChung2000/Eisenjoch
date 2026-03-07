@@ -1,12 +1,12 @@
 use crate::types::{BelId, IdString, PlaceStrength, PortType, Property};
 use rustc_hash::FxHashMap;
 
-use super::{CellId, FlatIndex, PortInfo, TimingIndex};
+use super::{CellId, CellPin, FlatIndex, PortData, TimingIndex};
 
 pub struct CellInfo {
     pub name: IdString,
     pub cell_type: IdString,
-    pub ports: FxHashMap<IdString, PortInfo>,
+    pub(crate) ports: FxHashMap<IdString, PortData>,
     pub attrs: FxHashMap<IdString, Property>,
     pub params: FxHashMap<IdString, Property>,
 
@@ -40,17 +40,75 @@ impl CellInfo {
         }
     }
 
-    pub fn add_port(&mut self, name: IdString, port_type: PortType) -> &mut PortInfo {
+    pub fn add_port(&mut self, name: IdString, port_type: PortType) {
         self.ports
             .entry(name)
-            .or_insert_with(|| PortInfo::new(name, port_type))
+            .or_insert_with(|| PortData::new(port_type));
     }
 
-    pub fn port(&self, name: IdString) -> Option<&PortInfo> {
+    #[inline]
+    pub fn has_port(&self, name: IdString) -> bool {
+        self.ports.contains_key(&name)
+    }
+
+    #[inline]
+    pub fn num_ports(&self) -> usize {
+        self.ports.len()
+    }
+
+    #[inline]
+    pub fn port(&self, name: IdString) -> Option<CellPin> {
+        self.ports.contains_key(&name).then(|| CellPin::new(CellId::NONE, name))
+    }
+
+    #[inline]
+    pub fn port_net(&self, name: IdString) -> Option<super::NetId> {
+        self.port_data(name).and_then(|port| port.net())
+    }
+
+    #[inline]
+    pub fn port_type(&self, name: IdString) -> Option<PortType> {
+        self.port_data(name).map(|port| port.port_type())
+    }
+
+    #[inline]
+    pub fn port_user_idx(&self, name: IdString) -> Option<u32> {
+        self.port_data(name).and_then(|port| port.user_idx())
+    }
+
+    #[inline]
+    pub fn port_budget(&self, name: IdString) -> Option<crate::types::DelayT> {
+        self.port_data(name).map(|port| port.budget())
+    }
+
+    #[inline]
+    pub fn set_port_net(&mut self, name: IdString, net: Option<super::NetId>) {
+        if let Some(port) = self.port_data_mut(name) {
+            port.set_net(net);
+        }
+    }
+
+    #[inline]
+    pub fn set_port_user_idx(&mut self, name: IdString, user_idx: Option<u32>) {
+        if let Some(port) = self.port_data_mut(name) {
+            port.set_user_idx(user_idx);
+        }
+    }
+
+    #[inline]
+    pub fn set_port_budget(&mut self, name: IdString, budget: crate::types::DelayT) {
+        if let Some(port) = self.port_data_mut(name) {
+            port.set_budget(budget);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn port_data(&self, name: IdString) -> Option<&PortData> {
         self.ports.get(&name)
     }
 
-    pub fn port_mut(&mut self, name: IdString) -> Option<&mut PortInfo> {
+    #[inline]
+    pub(crate) fn port_data_mut(&mut self, name: IdString) -> Option<&mut PortData> {
         self.ports.get_mut(&name)
     }
 }

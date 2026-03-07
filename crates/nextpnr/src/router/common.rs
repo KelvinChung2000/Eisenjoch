@@ -107,9 +107,10 @@ pub(crate) fn collect_sink_wires(ctx: &Context, net_idx: NetId) -> Vec<WireId> {
     let net = ctx.net(net_idx);
     let mut sink_wires = Vec::with_capacity(net.num_users());
     for user in net.users() {
-        let Some(user_cell_idx) = user.cell else {
+        if !user.is_valid() {
             continue;
-        };
+        }
+        let user_cell_idx = user.cell;
         let user_cell = ctx.cell(user_cell_idx);
         let user_bel = match user_cell.bel() {
             Some(bel) => bel,

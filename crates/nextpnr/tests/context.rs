@@ -5,7 +5,8 @@
 
 mod common;
 
-use nextpnr::types::{BelId, DelayQuad, PlaceStrength, PipId, WireId};
+use nextpnr::context::BelPin;
+use nextpnr::types::{BelId, DelayQuad, PipId, PlaceStrength, PortType, WireId};
 
 // =========================================================================
 // Construction and basic queries
@@ -109,7 +110,10 @@ fn bind_bel_success() {
     let cell_idx = ctx.design.add_cell(cell_name, cell_type);
     assert!(ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer));
     assert!(!ctx.bel(bel).is_available());
-    assert_eq!(ctx.bel(bel).bound_cell().map(|c| c.name_id()), Some(cell_name));
+    assert_eq!(
+        ctx.bel(bel).bound_cell().map(|c| c.name_id()),
+        Some(cell_name)
+    );
 }
 
 #[test]
@@ -185,6 +189,46 @@ fn bind_rebind_bel() {
     assert_eq!(ctx.bel(bel).bound_cell().map(|c| c.name_id()), Some(name2));
 }
 
+#[test]
+fn bel_pin_view_exposes_associated_wire() {
+    let ctx = common::make_context();
+    let pin = BelPin::new(BelId::new(0, 0), ctx.id("I0"));
+
+    assert_eq!(
+        pin.view(&ctx).wire().map(|wire| wire.id()),
+        Some(WireId::new(0, 0))
+    );
+}
+
+#[test]
+fn cell_pin_view_exposes_port_properties() {
+    let mut ctx = common::make_context();
+    let cell_name = ctx.id("sink");
+    let cell_type = ctx.id("LUT4");
+    let port_name = ctx.id("A");
+    let net_name = ctx.id("net_a");
+
+    let cell_idx = ctx.design.add_cell(cell_name, cell_type);
+    let net_idx = ctx.design.add_net(net_name);
+
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_name, PortType::In);
+    ctx.design
+        .cell_edit(cell_idx)
+        .set_port_net(port_name, Some(net_idx), Some(3));
+
+    let pin = ctx.cell(cell_idx).port(port_name).unwrap();
+    let pin_view = pin.view(&ctx);
+
+    assert_eq!(pin.cell, cell_idx);
+    assert_eq!(pin.port, port_name);
+    assert_eq!(pin_view.port_type(), PortType::In);
+    assert_eq!(pin_view.net().map(|net| net.id()), Some(net_idx));
+    assert_eq!(pin_view.user_idx(), Some(3));
+    assert!(pin_view.is_connected());
+}
+
 // =========================================================================
 // Wire operations
 // =========================================================================
@@ -205,7 +249,10 @@ fn bind_wire() {
     let net_idx = ctx.design.add_net(net_name);
     ctx.bind_wire(wire, net_idx, PlaceStrength::Placer);
     assert!(!ctx.wire(wire).is_available());
-    assert_eq!(ctx.wire(wire).bound_net().map(|n| n.name_id()), Some(net_name));
+    assert_eq!(
+        ctx.wire(wire).bound_net().map(|n| n.name_id()),
+        Some(net_name)
+    );
 }
 
 #[test]
@@ -423,7 +470,10 @@ fn full_placement_flow() {
     assert!(ctx.bind_bel(target_bel, cell_idx, PlaceStrength::Placer));
 
     assert!(!ctx.bel(target_bel).is_available());
-    assert_eq!(ctx.bel(target_bel).bound_cell().map(|c| c.name_id()), Some(cell_name));
+    assert_eq!(
+        ctx.bel(target_bel).bound_cell().map(|c| c.name_id()),
+        Some(cell_name)
+    );
 
     let cell = ctx.cell(cell_idx);
     assert_eq!(cell.bel_id(), Some(target_bel));
@@ -444,7 +494,10 @@ fn full_routing_flow() {
 
     assert!(!ctx.pip(pip).is_available());
     assert!(!ctx.wire(dst_wire).is_available());
-    assert_eq!(ctx.wire(dst_wire).bound_net().map(|n| n.name_id()), Some(net_name));
+    assert_eq!(
+        ctx.wire(dst_wire).bound_net().map(|n| n.name_id()),
+        Some(net_name)
+    );
 
     ctx.unbind_pip(pip);
     ctx.unbind_wire(dst_wire);
@@ -462,10 +515,7 @@ fn settings_operations() {
     let key = ctx.id("opt_level");
     ctx.settings_mut()
         .insert(key, nextpnr::types::Property::int(2));
-    assert_eq!(
-        ctx.settings().get(&key).and_then(|p| p.as_int()),
-        Some(2)
-    );
+    assert_eq!(ctx.settings().get(&key).and_then(|p| p.as_int()), Some(2));
 }
 
 #[test]

@@ -55,10 +55,7 @@ pub fn topological_sort(design: &Design) -> Vec<CellId> {
                 continue;
             }
 
-            let driver_cell = match net.driver.cell {
-                Some(cell_idx) => cell_idx,
-                None => continue,
-            };
+            let driver_cell = net.driver.cell;
 
             // Skip self-loops and already-counted drivers.
             if driver_cell == cell_idx {

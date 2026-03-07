@@ -1,6 +1,6 @@
 use crate::types::{BelId, DelayT, IdString, PipId, PlaceStrength, PortType, Property, WireId};
 
-use super::{CellId, CellInfo, FlatIndex, NetId, NetInfo, PipMap, PortRef, TimingIndex};
+use super::{CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap, TimingIndex};
 
 pub struct CellEditor<'a> {
     cell: &'a mut CellInfo,
@@ -28,16 +28,22 @@ impl<'a> CellEditor<'a> {
         net: Option<NetId>,
         user_idx: Option<u32>,
     ) -> &mut Self {
-        if let Some(p) = self.cell.port_mut(port) {
+        if let Some(p) = self.cell.port_data_mut(port) {
             p.set_net(net);
             p.set_user_idx(user_idx);
         }
         self
     }
 
+    pub fn set_port_budget(&mut self, port: IdString, budget: DelayT) -> &mut Self {
+        if let Some(p) = self.cell.port_data_mut(port) {
+            p.set_budget(budget);
+        }
+        self
+    }
+
     pub fn rename_port(&mut self, old: IdString, new: IdString) -> &mut Self {
-        if let Some(mut port_info) = self.cell.ports.remove(&old) {
-            port_info.set_name(new);
+        if let Some(port_info) = self.cell.ports.remove(&old) {
             self.cell.ports.insert(new, port_info);
         }
         self
@@ -93,28 +99,28 @@ impl<'a> NetEditor<'a> {
         Self { net }
     }
 
-    pub fn set_driver_raw(&mut self, driver: PortRef) -> &mut Self {
+    pub fn set_driver_raw(&mut self, driver: CellPin) -> &mut Self {
         self.net.driver = driver;
         self
     }
 
     pub fn set_driver(&mut self, cell: CellId, port: IdString) -> &mut Self {
-        self.net.driver = PortRef::connected(cell, port, 0);
+        self.net.driver = CellPin::new(cell, port);
         self
     }
 
     pub fn clear_driver(&mut self) -> &mut Self {
-        self.net.driver = PortRef::unconnected();
+        self.net.driver = CellPin::INVALID;
         self
     }
 
     pub fn add_user(&mut self, cell: CellId, port: IdString) -> u32 {
         let idx = self.net.users.len() as u32;
-        self.net.users.push(PortRef::connected(cell, port, 0));
+        self.net.users.push(CellPin::new(cell, port));
         idx
     }
 
-    pub fn add_user_raw(&mut self, user: PortRef) -> u32 {
+    pub fn add_user_raw(&mut self, user: CellPin) -> u32 {
         let idx = self.net.users.len() as u32;
         self.net.users.push(user);
         idx
@@ -122,7 +128,7 @@ impl<'a> NetEditor<'a> {
 
     pub fn disconnect_user(&mut self, user_idx: usize) -> &mut Self {
         if user_idx < self.net.users.len() {
-            self.net.users[user_idx] = PortRef::unconnected();
+            self.net.users[user_idx] = CellPin::INVALID;
         }
         self
     }

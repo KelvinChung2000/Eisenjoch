@@ -24,7 +24,7 @@ pub(crate) fn cells_by_type(ctx: &Context) -> FxHashMap<IdString, Vec<CellId>> {
 /// Returns 0.0 for nets with no driver, no users, or dead nets.
 pub fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
     let net = ctx.net(net_idx);
-    if !net.is_alive() || !net.driver().is_connected() || net.users().is_empty() {
+    if !net.is_alive() || net.driver().is_none() || net.users().is_empty() {
         return 0.0;
     }
 
@@ -49,9 +49,10 @@ pub fn net_hpwl(ctx: &Context, net_idx: NetId) -> f64 {
 
     // Include all user locations.
     for user in net.users() {
-        let Some(user_cell_idx) = user.cell else {
+        if !user.is_valid() {
             continue;
-        };
+        }
+        let user_cell_idx = user.cell;
         let user_cell = ctx.cell(user_cell_idx);
         if let Some(bel) = user_cell.bel() {
             let loc = bel.loc();

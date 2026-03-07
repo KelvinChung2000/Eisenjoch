@@ -13,97 +13,82 @@ pub struct CellPin {
 }
 
 impl CellPin {
+    pub const INVALID: Self = Self {
+        cell: CellId::NONE,
+        port: IdString::EMPTY,
+    };
+
     #[inline]
     pub const fn new(cell: CellId, port: IdString) -> Self {
         Self { cell, port }
     }
+
+    #[inline]
+    pub const fn is_valid(self) -> bool {
+        self.cell.is_some() && !self.port.is_empty()
+    }
+
+    #[inline]
+    pub const fn is_connected(self) -> bool {
+        self.is_valid()
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct PortRef {
-    pub cell: Option<CellId>,
-    pub port: IdString,
-    pub budget: DelayT,
+pub(crate) struct PortData {
+    pub(crate) port_type: PortType,
+    pub(crate) net: Option<NetId>,
+    pub(crate) user_idx: Option<u32>,
+    pub(crate) budget: DelayT,
 }
 
-impl PortRef {
-    pub fn connected(cell: CellId, port: IdString, budget: DelayT) -> Self {
+impl PortData {
+    pub(crate) fn new(port_type: PortType) -> Self {
         Self {
-            cell: Some(cell),
-            port,
-            budget,
-        }
-    }
-
-    pub fn unconnected() -> Self {
-        Self {
-            cell: None,
-            port: IdString::EMPTY,
+            port_type,
+            net: None,
+            user_idx: None,
             budget: 0,
         }
     }
 
     #[inline]
-    pub fn is_connected(&self) -> bool {
-        self.cell.is_some()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct PortInfo {
-    pub(crate) name: IdString,
-    pub(crate) port_type: PortType,
-    pub(crate) net: Option<NetId>,
-    pub(crate) user_idx: Option<u32>,
-}
-
-impl PortInfo {
-    pub fn new(name: IdString, port_type: PortType) -> Self {
-        Self {
-            name,
-            port_type,
-            net: None,
-            user_idx: None,
-        }
-    }
-
-    #[inline]
-    pub fn is_connected(&self) -> bool {
+    pub(crate) fn is_connected(&self) -> bool {
         self.net.is_some()
     }
 
     #[inline]
-    pub fn net(&self) -> Option<NetId> {
+    pub(crate) fn net(&self) -> Option<NetId> {
         self.net
     }
 
     #[inline]
-    pub fn port_type(&self) -> PortType {
+    pub(crate) fn port_type(&self) -> PortType {
         self.port_type
     }
 
     #[inline]
-    pub fn name(&self) -> IdString {
-        self.name
-    }
-
-    #[inline]
-    pub fn user_idx(&self) -> Option<u32> {
+    pub(crate) fn user_idx(&self) -> Option<u32> {
         self.user_idx
     }
 
     #[inline]
-    pub fn set_net(&mut self, net: Option<NetId>) {
+    pub(crate) fn budget(&self) -> DelayT {
+        self.budget
+    }
+
+    #[inline]
+    pub(crate) fn set_net(&mut self, net: Option<NetId>) {
         self.net = net;
     }
 
     #[inline]
-    pub fn set_user_idx(&mut self, user_idx: Option<u32>) {
+    pub(crate) fn set_user_idx(&mut self, user_idx: Option<u32>) {
         self.user_idx = user_idx;
     }
 
     #[inline]
-    pub fn set_name(&mut self, name: IdString) {
-        self.name = name;
+    pub(crate) fn set_budget(&mut self, budget: DelayT) {
+        self.budget = budget;
     }
 }

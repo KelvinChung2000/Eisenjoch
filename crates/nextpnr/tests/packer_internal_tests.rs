@@ -81,9 +81,9 @@ fn connect_port_as_driver() {
     ctx.design.cell_edit(cell_idx).add_port(port_o, PortType::Out);
     connect_port(&mut ctx, cell_idx, port_o, net_idx);
     let net = ctx.design.net(net_idx);
-    assert!(net.driver.is_connected());
-    assert_eq!(net.driver.cell, Some(cell_idx));
-    assert_eq!(net.driver.port, port_o);
+    assert!(net.driver().is_some());
+    assert_eq!(net.driver().map(|pin| pin.cell), Some(cell_idx));
+    assert_eq!(net.driver().map(|pin| pin.port), Some(port_o));
 }
 
 #[test]
@@ -158,8 +158,8 @@ fn pack_constants_creates_gnd_vcc() {
     assert!(ctx.design.cell_by_name(ctx.id("$PACKER_VCC")).is_some());
     let gnd_net_idx = ctx.design.net_by_name(ctx.id("$PACKER_GND_NET")).unwrap();
     let vcc_net_idx = ctx.design.net_by_name(ctx.id("$PACKER_VCC_NET")).unwrap();
-    assert!(ctx.design.net(gnd_net_idx).driver.is_connected());
-    assert!(ctx.design.net(vcc_net_idx).driver.is_connected());
+    assert!(ctx.design.net(gnd_net_idx).driver().is_some());
+    assert!(ctx.design.net(vcc_net_idx).driver().is_some());
 }
 
 #[test]

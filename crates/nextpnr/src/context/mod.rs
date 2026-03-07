@@ -14,10 +14,10 @@ mod utils;
 mod views;
 
 pub use rng::DeterministicRng;
-pub use views::{Bel, BelPin, Cell, IdStringView, Net, Pip, TileView, Wire};
+pub use views::{Bel, BelPin, BelPinView, Cell, CellPinView, IdStringView, Net, Pip, TileView, Wire};
 
 use crate::chipdb::ChipDb;
-use crate::netlist::{CellId, Design, NetId};
+use crate::netlist::{CellId, CellPin, Design, NetId};
 use crate::types::{BelId, IdString, IdStringPool, IntoIdString, PipId, PlaceStrength, Property, WireId};
 use log::warn;
 use rustc_hash::FxHashMap;
@@ -237,6 +237,11 @@ impl Context {
     }
 
     #[inline]
+    pub fn bel_pin(&self, pin: BelPin) -> BelPinView<'_> {
+        pin.view(self)
+    }
+
+    #[inline]
     pub fn bels(&self) -> impl Iterator<Item = Bel<'_>> {
         self.chipdb.bels().map(|bel| self.bel(bel))
     }
@@ -283,6 +288,11 @@ impl Context {
     #[inline]
     pub fn cell(&self, cell_idx: CellId) -> Cell<'_> {
         Cell::new(self, cell_idx)
+    }
+
+    #[inline]
+    pub fn cell_pin(&self, pin: CellPin) -> CellPinView<'_> {
+        pin.view(self)
     }
 
     #[inline]

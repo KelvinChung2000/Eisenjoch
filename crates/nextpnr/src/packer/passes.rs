@@ -109,10 +109,7 @@ pub fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
         if !user.is_connected() || user.port != d_port {
             continue;
         }
-        let ff_cell_idx = match user.cell {
-            Some(cell_idx) => cell_idx,
-            None => continue,
-        };
+        let ff_cell_idx = user.cell;
         let ff_cell = ctx.design.cell(ff_cell_idx);
         if ff_cell.alive && ff_cell.cell_type == dff_type {
             merges.push((cell_idx, ff_cell_idx));
@@ -207,14 +204,11 @@ pub fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
                         if !u.is_connected() || u.port != ci_port {
                             return false;
                         }
-                        let user_cell = match u.cell {
-                            Some(cell_idx) => cell_idx,
-                            None => return false,
-                        };
+                        let user_cell = u.cell;
                         ctx.design.cell(user_cell).alive
                             && ctx.design.cell(user_cell).cell_type == carry_type
                     })
-                    .and_then(|u| u.cell)
+                    .map(|u| u.cell)
             });
 
             match next {

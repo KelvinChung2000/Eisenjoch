@@ -1,6 +1,6 @@
 //! Integration tests for the netlist module.
 //!
-//! Tests cover CellIdx/NetIdx sentinels, PortRef/PortInfo/CellInfo/NetInfo
+//! Tests cover CellIdx/NetIdx sentinels, CellPin/CellInfo/NetInfo
 //! construction and mutation, Design arena operations (add/remove/lookup),
 //! wiring, hierarchy, clustering, and edge cases.
 
@@ -117,43 +117,23 @@ fn net_idx_debug() {
 }
 
 // =====================================================================
-// PortRef
+// CellPin
 // =====================================================================
 
 #[test]
-fn port_ref_unconnected() {
-    let pr = PortRef::unconnected();
-    assert!(!pr.is_connected());
-    assert!(pr.cell.is_none());
-    assert_eq!(pr.budget, 0);
+fn cell_pin_invalid_defaults() {
+    let pin = CellPin::INVALID;
+    assert!(!pin.is_connected());
+    assert!(pin.cell.is_none());
+    assert!(pin.port.is_empty());
 }
 
 #[test]
-fn port_ref_connected() {
+fn cell_pin_connected() {
     let pool = make_pool();
-    let port_name = pool.intern("A");
-    let pr = PortRef {
-        cell: Some(CellId::from_raw(0)),
-        port: port_name,
-        budget: 100,
-    };
-    assert!(pr.is_connected());
-    assert_eq!(pr.budget, 100);
-}
-
-// =====================================================================
-// PortInfo
-// =====================================================================
-
-#[test]
-fn port_info_new_defaults() {
-    let pool = make_pool();
-    let name = pool.intern("clk");
-    let pi = PortInfo::new(name, PortType::In);
-    assert_eq!(pi.name(), name);
-    assert_eq!(pi.port_type(), PortType::In);
-    assert!(pi.net().is_none());
-    assert_eq!(pi.user_idx(), None);
+    let pin = CellPin::new(CellId::from_raw(0), pool.intern("A"));
+    assert!(pin.is_connected());
+    assert_eq!(pin.cell, CellIdx(0));
 }
 
 // =====================================================================
@@ -169,7 +149,7 @@ fn cell_info_new_defaults() {
 
     assert_eq!(ci.name, name);
     assert_eq!(ci.cell_type, ctype);
-    assert!(ci.ports.is_empty());
+    assert_eq!(ci.num_ports(), 0);
     assert!(ci.attrs.is_empty());
     assert!(ci.params.is_empty());
     assert!(ci.bel.is_none());
@@ -194,9 +174,9 @@ fn cell_info_add_port() {
     ci.add_port(d_name, PortType::In);
     ci.add_port(q_name, PortType::Out);
 
-    assert_eq!(ci.ports.len(), 2);
-    assert_eq!(ci.port(d_name).unwrap().port_type(), PortType::In);
-    assert_eq!(ci.port(q_name).unwrap().port_type(), PortType::Out);
+    assert_eq!(ci.num_ports(), 2);
+    assert_eq!(ci.port_type(d_name), Some(PortType::In));
+    assert_eq!(ci.port_type(q_name), Some(PortType::Out));
 }
 
 #[test]
@@ -211,8 +191,8 @@ fn cell_info_add_port_idempotent() {
     // Adding same port again should not overwrite
     ci.add_port(port_name, PortType::Out);
     // Should still be In (first insert wins with or_insert_with)
-    assert_eq!(ci.port(port_name).unwrap().port_type(), PortType::In);
-    assert_eq!(ci.ports.len(), 1);
+    assert_eq!(ci.port_type(port_name), Some(PortType::In));
+    assert_eq!(ci.num_ports(), 1);
 }
 
 #[test]
@@ -225,13 +205,11 @@ fn cell_info_port_mut() {
     let port_name = pool.intern("A");
     ci.add_port(port_name, PortType::In);
 
-    // Mutate via port_mut
-    let pi = ci.port_mut(port_name).unwrap();
-    pi.set_net(Some(NetId::from_raw(7)));
-    pi.set_user_idx(Some(3));
+    ci.set_port_net(port_name, Some(NetId::from_raw(7)));
+    ci.set_port_user_idx(port_name, Some(3));
 
-    assert_eq!(ci.port(port_name).unwrap().net(), Some(NetIdx(7)));
-    assert_eq!(ci.port(port_name).unwrap().user_idx(), Some(3));
+    assert_eq!(ci.port_net(port_name), Some(NetIdx(7)));
+    assert_eq!(ci.port_user_idx(port_name), Some(3));
 }
 
 #[test]
@@ -281,14 +259,10 @@ fn net_info_set_driver() {
     let mut ni = NetInfo::new(pool.intern("n"));
 
     let port_name = pool.intern("Q");
-    ni.driver = PortRef {
-        cell: Some(CellId::from_raw(0)),
-        port: port_name,
-        budget: 0,
-    };
+    ni.set_driver_raw(CellPin::new(CellId::from_raw(0), port_name));
     assert!(ni.has_driver());
-    assert_eq!(ni.driver.cell, Some(CellIdx(0)));
-    assert_eq!(ni.driver.port, port_name);
+    assert_eq!(ni.driver().unwrap().cell, CellIdx(0));
+    assert_eq!(ni.driver().unwrap().port, port_name);
 }
 
 #[test]
@@ -299,22 +273,12 @@ fn net_info_add_users() {
     let port_a = pool.intern("A");
     let port_b = pool.intern("B");
 
-    ni.users.push(PortRef {
-        cell: Some(CellId::from_raw(1)),
-        port: port_a,
-        budget: 50,
-    });
-    ni.users.push(PortRef {
-        cell: Some(CellId::from_raw(2)),
-        port: port_b,
-        budget: 75,
-    });
+    ni.add_user_raw(CellPin::new(CellId::from_raw(1), port_a));
+    ni.add_user_raw(CellPin::new(CellId::from_raw(2), port_b));
 
     assert_eq!(ni.num_users(), 2);
-    assert_eq!(ni.users[0].cell, Some(CellIdx(1)));
-    assert_eq!(ni.users[0].budget, 50);
-    assert_eq!(ni.users[1].cell, Some(CellIdx(2)));
-    assert_eq!(ni.users[1].budget, 75);
+    assert_eq!(ni.users()[0].cell, CellIdx(1));
+    assert_eq!(ni.users()[1].cell, CellIdx(2));
 }
 
 #[test]
@@ -714,23 +678,22 @@ fn design_wire_driver_and_user() {
         .set_port_net(q_port, Some(net_idx), None);
 
     // Wire user
-    let user_idx_in_net = d.net_edit(net_idx).add_user_raw(PortRef {
-        cell: Some(usr_idx),
-        port: a_port,
-        budget: 200,
-    });
+    let user_idx_in_net = d
+        .net_edit(net_idx)
+        .add_user_raw(CellPin::new(usr_idx, a_port));
     d.cell_edit(usr_idx)
-        .set_port_net(a_port, Some(net_idx), Some(user_idx_in_net));
+        .set_port_net(a_port, Some(net_idx), Some(user_idx_in_net))
+        .set_port_budget(a_port, 200);
 
     // Verify
     assert!(d.net(net_idx).has_driver());
-    assert_eq!(d.net(net_idx).driver.cell, Some(drv_idx));
+    assert_eq!(d.net(net_idx).driver().unwrap().cell, drv_idx);
     assert_eq!(d.net(net_idx).num_users(), 1);
-    assert_eq!(d.net(net_idx).users[0].cell, Some(usr_idx));
-    assert_eq!(d.net(net_idx).users[0].budget, 200);
-    assert_eq!(d.cell(drv_idx).port(q_port).unwrap().net(), Some(net_idx));
-    assert_eq!(d.cell(usr_idx).port(a_port).unwrap().net(), Some(net_idx));
-    assert_eq!(d.cell(usr_idx).port(a_port).unwrap().user_idx(), Some(0));
+    assert_eq!(d.net(net_idx).users()[0].cell, usr_idx);
+    assert_eq!(d.cell(drv_idx).port_net(q_port), Some(net_idx));
+    assert_eq!(d.cell(usr_idx).port_net(a_port), Some(net_idx));
+    assert_eq!(d.cell(usr_idx).port_user_idx(a_port), Some(0));
+    assert_eq!(d.cell(usr_idx).port_budget(a_port), Some(200));
 }
 
 #[test]
@@ -1019,27 +982,10 @@ fn remove_net_then_add_with_same_name() {
 }
 
 #[test]
-fn port_ref_clone() {
+fn cell_pin_clone() {
     let pool = make_pool();
-    let pr = PortRef {
-        cell: Some(CellId::from_raw(5)),
-        port: pool.intern("D"),
-        budget: 123,
-    };
-    let pr2 = pr.clone();
-    assert_eq!(pr2.cell, Some(CellIdx(5)));
-    assert_eq!(pr2.budget, 123);
-}
-
-#[test]
-fn port_info_clone() {
-    let pool = make_pool();
-    let mut pi = PortInfo::new(pool.intern("CLK"), PortType::In);
-    pi.set_net(Some(NetId::from_raw(3)));
-    pi.set_user_idx(Some(1));
-    let pi2 = pi.clone();
-    assert_eq!(pi2.name(), pool.intern("CLK"));
-    assert_eq!(pi2.port_type(), PortType::In);
-    assert_eq!(pi2.net(), Some(NetIdx(3)));
-    assert_eq!(pi2.user_idx(), Some(1));
+    let pin = CellPin::new(CellId::from_raw(5), pool.intern("D"));
+    let pin2 = pin;
+    assert_eq!(pin2.cell, CellIdx(5));
+    assert_eq!(pin2.port, pool.intern("D"));
 }
