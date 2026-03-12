@@ -1,0 +1,31 @@
+# Yosys synthesis script for nextpnr-rust example architecture.
+# Maps a Verilog design to LUT4 + DFF + IOB primitives.
+
+# Read the design
+read_verilog blinky.v
+
+# Generic synthesis
+synth -top top -flatten -noalumacc
+
+# Technology mapping
+# Map FFs to DFF cells
+dfflibmap -liberty cells.lib
+
+# Map LUTs to LUT4 (4-input LUTs)
+abc -lut 4
+
+# Map to our cell library
+techmap -map cells_map.v
+
+# IO buffers are handled by the nextpnr frontend + packer
+# (frontend creates $nextpnr_IBUF/$nextpnr_OBUF, packer maps to IOB)
+
+# Clean up
+clean -purge
+opt_clean
+
+# Rename internal signals for clarity
+autoname
+
+# Write JSON output
+write_json blinky.json

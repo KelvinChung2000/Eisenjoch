@@ -1,0 +1,23 @@
+/* Simple Liberty library for DFF and latch mapping */
+library(example) {
+  cell(DFF) {
+    area: 1;
+    ff(IQ, IQN) {
+      clocked_on: "CLK";
+      next_state: "D";
+    }
+    pin(CLK) { direction: input; clock: true; }
+    pin(D)   { direction: input; }
+    pin(Q)   { direction: output; function: "IQ"; }
+  }
+  cell(DLATCH) {
+    area: 1;
+    latch(IQ, IQN) {
+      enable: "G";
+      data_in: "D";
+    }
+    pin(G) { direction: input; }
+    pin(D) { direction: input; }
+    pin(Q) { direction: output; function: "IQ"; }
+  }
+}
