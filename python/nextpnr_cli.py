@@ -61,6 +61,15 @@ def main(
     router_plugin: Optional[Path] = typer.Option(
         None, "--router-plugin", help="Router plugin"
     ),
+    constraints: Optional[Path] = typer.Option(
+        None, "--constraints", help="Region constraints JSON file"
+    ),
+    checkpoint: Optional[Path] = typer.Option(
+        None, "--checkpoint", help="Load reference checkpoint for incremental P&R"
+    ),
+    save_checkpoint: Optional[Path] = typer.Option(
+        None, "--save-checkpoint", help="Save checkpoint after P&R"
+    ),
     script: Optional[Path] = typer.Option(
         None, "--script", help="Run Python script with pre-loaded ctx"
     ),
@@ -124,16 +133,49 @@ def main(
         from nextpnr.sdc import parse_sdc
 
         try:
-            constraints = parse_sdc(str(sdc))
+            sdc_data = parse_sdc(str(sdc))
             if verbose:
                 typer.echo(
-                    f"Loaded SDC: {len(constraints.clocks)} clocks, "
-                    f"{len(constraints.input_delays)} input delays, "
-                    f"{len(constraints.output_delays)} output delays"
+                    f"Loaded SDC: {len(sdc_data.clocks)} clocks, "
+                    f"{len(sdc_data.input_delays)} input delays, "
+                    f"{len(sdc_data.output_delays)} output delays"
                 )
-            ctx.apply_sdc(constraints.to_dict())
+            ctx.apply_sdc(sdc_data.to_dict())
         except Exception as e:
             typer.echo(f"Error loading SDC constraints: {e}", err=True)
+            if not force:
+                raise typer.Exit(1)
+
+    # Apply region constraints
+    if constraints is not None:
+        import json as json_mod
+
+        try:
+            constraint_data = json_mod.loads(constraints.read_text())
+            for region_def in constraint_data.get("regions", []):
+                rects = [
+                    [r["x0"], r["y0"], r["x1"], r["y1"]] for r in region_def["rects"]
+                ]
+                region_idx = ctx.add_region(region_def["name"], rects)
+                for cell_name in region_def.get("cells", []):
+                    ctx.constrain_cell_to_region(cell_name, region_idx)
+            if verbose:
+                typer.echo(
+                    f"Loaded {len(constraint_data.get('regions', []))} region constraints"
+                )
+        except Exception as e:
+            typer.echo(f"Error loading constraints: {e}", err=True)
+            if not force:
+                raise typer.Exit(1)
+
+    # Load checkpoint for incremental flow
+    if checkpoint is not None:
+        try:
+            ctx.load_checkpoint(str(checkpoint))
+            if verbose:
+                typer.echo("Loaded checkpoint for incremental P&R")
+        except Exception as e:
+            typer.echo(f"Error loading checkpoint: {e}", err=True)
             if not force:
                 raise typer.Exit(1)
 
@@ -158,6 +200,15 @@ def main(
         typer.echo(f"P&R error: {e}", err=True)
         if not force:
             raise typer.Exit(1)
+
+    # Save checkpoint
+    if save_checkpoint is not None:
+        try:
+            ctx.save_checkpoint(str(save_checkpoint))
+            if verbose:
+                typer.echo(f"Saved checkpoint to {save_checkpoint}")
+        except Exception as e:
+            typer.echo(f"Error saving checkpoint: {e}", err=True)
 
     # Timing report
     try:
