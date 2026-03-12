@@ -15,6 +15,10 @@ pub struct CellInfo {
     pub bel_strength: PlaceStrength,
 
     pub cluster: Option<CellId>,
+    pub constr_x: i32,
+    pub constr_y: i32,
+    pub constr_z: i32,
+    pub constr_abs_z: bool,
     pub region: Option<u32>,
 
     pub flat_index: Option<FlatIndex>,
@@ -34,6 +38,10 @@ impl CellInfo {
             bel: None,
             bel_strength: PlaceStrength::None,
             cluster: None,
+            constr_x: 0,
+            constr_y: 0,
+            constr_z: 0,
+            constr_abs_z: false,
             region: None,
             flat_index: None,
             timing_index: None,

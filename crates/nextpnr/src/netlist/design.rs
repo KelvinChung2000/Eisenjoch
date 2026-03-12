@@ -1,7 +1,10 @@
 use crate::common::IdString;
 use rustc_hash::FxHashMap;
 
-use super::{CellEditor, CellId, CellInfo, Cluster, HierarchicalCell, NetEditor, NetId, NetInfo};
+use super::{
+    CellEditor, CellId, CellInfo, Cluster, HierarchicalCell, NetEditor, NetId, NetInfo,
+    RegionConstraint,
+};
 
 pub struct Design {
     cells: FxHashMap<IdString, CellId>,
@@ -19,6 +22,9 @@ pub struct Design {
     pub clusters: FxHashMap<CellId, Cluster>,
 
     pub top_module: IdString,
+
+    /// Region constraints for floorplanning.
+    pub regions: Vec<RegionConstraint>,
 }
 
 impl Design {
@@ -35,6 +41,7 @@ impl Design {
             hierarchy: FxHashMap::default(),
             clusters: FxHashMap::default(),
             top_module: IdString::EMPTY,
+            regions: Vec::new(),
         }
     }
 
@@ -255,6 +262,33 @@ impl Design {
             self.net_generation[slot] = self.net_generation[slot].wrapping_add(1);
             self.free_net_slots.push(slot as u32);
         }
+    }
+
+    // -- Region management --
+
+    /// Add a new empty region and return its index.
+    pub fn add_region(&mut self, name: IdString) -> u32 {
+        let idx = self.regions.len() as u32;
+        self.regions.push(RegionConstraint::new(name));
+        idx
+    }
+
+    /// Get a reference to a region by index.
+    pub fn region(&self, idx: u32) -> &RegionConstraint {
+        &self.regions[idx as usize]
+    }
+
+    /// Get a mutable reference to a region by index.
+    pub fn region_mut(&mut self, idx: u32) -> &mut RegionConstraint {
+        &mut self.regions[idx as usize]
+    }
+
+    /// Find a region by name.
+    pub fn region_by_name(&self, name: IdString) -> Option<u32> {
+        self.regions
+            .iter()
+            .position(|r| r.name == name)
+            .map(|i| i as u32)
     }
 }
 

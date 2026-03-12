@@ -379,15 +379,14 @@ pub struct SpeedGradePod {
 
 /// Constant ID string lookup table.
 ///
-/// Maps integer constid indices to strings. Indices < `known_id_count` are
-/// pre-defined "known" IDs. Indices >= `known_id_count` are looked up in
-/// `bba_ids[index - known_id_count]`.
+/// Maps integer constid indices to strings via `bba_ids`.
+/// `known_id_count` must be 0 (all strings embedded in the binary).
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
 pub struct ConstIdDataPod {
-    /// Number of pre-defined known IDs.
+    /// Must be 0; loading rejects chipdb files with non-zero values.
     pub known_id_count: i32,
-    /// Extra ID strings (RelPtr<char> for each).
+    /// ID strings, one RelPtr per constid index.
     pub bba_ids: RelSlice<RelPtr<u8>>,
 }
 
@@ -432,6 +431,48 @@ pub struct ChipInfoPod {
     pub extra_constids: RelPtr<ConstIdDataPod>,
     /// Optional extra data pointer.
     pub extra_data: RelPtr<u8>,
+}
+
+// =============================================================================
+// Packing rule POD types (upstream-compatible with nextpnr C++)
+// =============================================================================
+
+/// Cell type + port pair in a packing rule (matches C++ Cell_port_POD).
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct CellPortPod {
+    /// Cell type (constid index).
+    pub cell_type: i32,
+    /// Port name (constid index).
+    pub port: i32,
+}
+
+/// A packing rule stored in chipdb extra_data (matches C++ Packing_rule_POD).
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct PackingRulePod {
+    pub driver: CellPortPod,
+    pub user: CellPortPod,
+    pub width: i32,
+    pub base_z: i32,
+    pub rel_x: i32,
+    pub rel_y: i32,
+    pub rel_z: i32,
+    pub flag: i32,
+}
+
+impl PackingRulePod {
+    pub const FLAG_BASE_RULE: i32 = 0x01;
+    pub const FLAG_ABS_RULE: i32 = 0x02;
+}
+
+/// Chip-level extra data containing packing rules (matches C++ Chip_extra_data_POD).
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct ChipExtraDataPod {
+    pub context: i32,
+    pub real_bel_count: i32,
+    pub packing_rules: RelSlice<PackingRulePod>,
 }
 
 // =============================================================================
@@ -490,4 +531,11 @@ const _: () = {
     assert!(std::mem::size_of::<ConstIdDataPod>() == 12);
     // ChipInfoPod: 4+4+4+4+4+4+4+8+8+8+8+8+8+4+4 = 84
     assert!(std::mem::size_of::<ChipInfoPod>() == 84);
+
+    // CellPortPod: 4+4 = 8
+    assert!(std::mem::size_of::<CellPortPod>() == 8);
+    // PackingRulePod: 8+8+4+4+4+4+4+4 = 40
+    assert!(std::mem::size_of::<PackingRulePod>() == 40);
+    // ChipExtraDataPod: 4+4+8 = 16
+    assert!(std::mem::size_of::<ChipExtraDataPod>() == 16);
 };

@@ -10,6 +10,7 @@ mod net;
 mod port_kind;
 mod ports;
 mod property;
+mod region;
 
 pub use cell::CellInfo;
 pub use cluster::Cluster;
@@ -22,3 +23,4 @@ pub use port_kind::PortType;
 pub(crate) use ports::PortData;
 pub use ports::CellPin;
 pub use property::Property;
+pub use region::{Rect, RegionConstraint};

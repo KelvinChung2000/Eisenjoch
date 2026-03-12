@@ -1,10 +1,15 @@
-//! Packing passes that transform the netlist into architecture-specific cells.
+//! Architecture-generic packing passes.
+//!
+//! These passes handle constant drivers and IO buffer remapping, which are
+//! universal across all architectures. Architecture-specific packing (clustering
+//! cells based on shared wires, carry chains, etc.) is handled by the
+//! database-driven rule engine in the parent module.
 
 use super::helpers::connect_port;
 use super::PackerError;
+use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::{CellId, Cluster};
-use crate::netlist::PortType;
+use crate::netlist::{CellId, PortType};
 
 /// Ensure GND/VCC constant-driver cells and nets exist.
 ///
@@ -12,39 +17,67 @@ use crate::netlist::PortType;
 /// `$PACKER_GND_NET` and `$PACKER_VCC_NET` nets, connecting the drivers.
 /// Idempotent: safe to call multiple times.
 pub fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
-    let gnd_name = ctx.id("$PACKER_GND");
-    let vcc_name = ctx.id("$PACKER_VCC");
-    let gnd_net_name = ctx.id("$PACKER_GND_NET");
-    let vcc_net_name = ctx.id("$PACKER_VCC_NET");
     let y_port = ctx.id("Y");
 
-    // Ensure nets exist.
-    let gnd_net_idx = ctx
-        .design
-        .net_by_name(gnd_net_name)
-        .unwrap_or_else(|| ctx.design.add_net(gnd_net_name));
-    let vcc_net_idx = ctx
-        .design
-        .net_by_name(vcc_net_name)
-        .unwrap_or_else(|| ctx.design.add_net(vcc_net_name));
+    // Detect architecture-specific constant driver types from the chipdb.
+    // Himbaechel architectures typically use GND_DRV/VCC_DRV; fall back to GND/VCC.
+    let gnd_drv = ctx.id("GND_DRV");
+    let vcc_drv = ctx.id("VCC_DRV");
+    let gnd_type = if ctx.has_bel_type(gnd_drv) { gnd_drv } else { ctx.id("GND") };
+    let vcc_type = if ctx.has_bel_type(vcc_drv) { vcc_drv } else { ctx.id("VCC") };
 
-    // Ensure GND driver cell exists and is connected.
-    if ctx.design.cell_by_name(gnd_name).is_none() {
-        let gnd_type = ctx.id("GND");
-        let idx = ctx.design.add_cell(gnd_name, gnd_type);
-        ctx.design.cell_edit(idx).add_port(y_port, PortType::Out);
-        connect_port(ctx, idx, y_port, gnd_net_idx);
-    }
+    // Output pin name: GND_DRV uses "GND", VCC_DRV uses "VCC", generic uses "Y".
+    let gnd_port = if gnd_type == gnd_drv { ctx.id("GND") } else { y_port };
+    let vcc_port = if vcc_type == vcc_drv { ctx.id("VCC") } else { y_port };
 
-    // Ensure VCC driver cell exists and is connected.
-    if ctx.design.cell_by_name(vcc_name).is_none() {
-        let vcc_type = ctx.id("VCC");
-        let idx = ctx.design.add_cell(vcc_name, vcc_type);
-        ctx.design.cell_edit(idx).add_port(y_port, PortType::Out);
-        connect_port(ctx, idx, y_port, vcc_net_idx);
-    }
+    let gnd_idx = ensure_const_driver(
+        ctx, "$PACKER_GND", "$PACKER_GND_NET", gnd_type, gnd_port, y_port,
+    );
+    let vcc_idx = ensure_const_driver(
+        ctx, "$PACKER_VCC", "$PACKER_VCC_NET", vcc_type, vcc_port, y_port,
+    );
+
+    // Bind constant driver cells to BELs so the router can resolve their output wires.
+    bind_to_first_available_bel(ctx, gnd_idx, gnd_type);
+    bind_to_first_available_bel(ctx, vcc_idx, vcc_type);
 
     Ok(())
+}
+
+/// Create or update a constant driver cell and its net.
+///
+/// If the cell already exists, updates its type and renames its output port if
+/// needed. Otherwise creates the cell, adds the output port, and connects it to
+/// the net.
+fn ensure_const_driver(
+    ctx: &mut Context,
+    cell_name: &str,
+    net_name: &str,
+    cell_type: IdString,
+    out_port: IdString,
+    y_port: IdString,
+) -> CellId {
+    let cell_name_id = ctx.id(cell_name);
+    let net_name_id = ctx.id(net_name);
+
+    let net_idx = ctx
+        .design
+        .net_by_name(net_name_id)
+        .unwrap_or_else(|| ctx.design.add_net(net_name_id));
+
+    if let Some(idx) = ctx.design.cell_by_name(cell_name_id) {
+        ctx.design.cell_edit(idx).set_type(cell_type);
+        if out_port != y_port {
+            ctx.design.cell_edit(idx).rename_port(y_port, out_port);
+            ctx.design.net_edit(net_idx).set_driver(idx, out_port);
+        }
+        idx
+    } else {
+        let idx = ctx.design.add_cell(cell_name_id, cell_type);
+        ctx.design.cell_edit(idx).add_port(out_port, PortType::Out);
+        connect_port(ctx, idx, out_port, net_idx);
+        idx
+    }
 }
 
 /// Remap IO pseudo-cells to the architecture-specific IOB type.
@@ -57,7 +90,7 @@ pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     let iobuf_type = ctx.id("$nextpnr_IOBUF");
     let iob_type = ctx.id("IOB");
 
-    let cells_to_remap: Vec<CellId> = ctx
+    let cells_to_remap: Vec<_> = ctx
         .design
         .iter_cell_indices()
         .filter(|&idx| {
@@ -76,161 +109,29 @@ pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     Ok(())
 }
 
-/// Merge LUT4 cells with directly-connected DFF cells into clusters.
-///
-/// A LUT4 whose output port "O" drives exactly one DFF's input port "D"
-/// (single-fanout net) will be merged: the LUT becomes the cluster root and
-/// the FF becomes a cluster member in `Design::clusters`.
-pub fn pack_lut_ff(ctx: &mut Context) -> Result<(), PackerError> {
-    let lut4_type = ctx.id("LUT4");
-    let dff_type = ctx.id("DFF");
-    let o_port = ctx.id("O");
-    let d_port = ctx.id("D");
-    let q_port = ctx.id("Q");
-
-    // Collect LUT -> FF merge pairs.
-    let mut merges: Vec<(CellId, CellId)> = Vec::new();
-
-    for (cell_idx, cell) in ctx.design.iter_cells() {
-        if !cell.alive || cell.cell_type != lut4_type {
-            continue;
-        }
-
-        // Check if "O" port drives exactly one FF "D" port.
-        let net_idx = match ctx.cell(cell_idx).port_net(o_port) {
-            Some(net_idx) => net_idx,
-            None => continue,
-        };
-        let net = ctx.design.net(net_idx);
-        if net.users.iter().filter(|u| u.is_connected()).count() != 1 {
-            continue;
-        }
-        let user = &net.users[0];
-        if !user.is_connected() || user.port != d_port {
-            continue;
-        }
-        let ff_cell_idx = user.cell;
-        let ff_cell = ctx.design.cell(ff_cell_idx);
-        if ff_cell.alive && ff_cell.cell_type == dff_type {
-            merges.push((cell_idx, ff_cell_idx));
-        }
-    }
-
-    // Apply merges.
-    for (lut_idx, ff_idx) in merges {
-        let lut = ctx.design.cell(lut_idx);
-        if lut.cluster.is_some() && lut.cluster != Some(lut_idx) {
-            continue; // Already part of another cluster.
-        }
-
-        // LUT is cluster root.
-        ctx.design.cell_edit(lut_idx).set_cluster(Some(lut_idx));
-
-        // FF belongs to LUT's cluster.
-        ctx.design.cell_edit(ff_idx).set_cluster(Some(lut_idx));
-
-        // Record explicit cluster membership.
-        let cluster = ctx
-            .design
-            .clusters
-            .entry(lut_idx)
-            .or_insert_with(|| Cluster::new(lut_idx));
-        cluster.add_member(ff_idx);
-
-        // Copy FF Q port output to LUT as QF port, if the FF has a Q port.
-        let ff_q_net = ctx.cell(ff_idx).port_net(q_port);
-        if let Some(net_idx) = ff_q_net {
-            let qf_port = ctx.id("QF");
-            ctx.design
-                .cell_edit(lut_idx)
-                .add_port(qf_port, PortType::Out);
-            ctx.design
-                .cell_edit(lut_idx)
-                .set_port_net(qf_port, Some(net_idx), None);
-        }
-    }
-
-    Ok(())
-}
-
-/// Pack carry chains by linking CARRY4 cells via CO/CI ports.
-///
-/// Identifies chain heads (CARRY4 cells whose CI is not driven by another
-/// CARRY4) and walks the chain forward through CO -> CI connections,
-/// linking cells via explicit cluster membership.
-pub fn pack_carry(ctx: &mut Context) -> Result<(), PackerError> {
-    let carry_type = ctx.id("CARRY4");
-    let co_port = ctx.id("CO");
-    let ci_port = ctx.id("CI");
-
-    // Find carry chain heads: CARRY4 cells whose CI is not driven by another CARRY4.
-    let mut chain_heads: Vec<CellId> = Vec::new();
-
-    for (cell_idx, cell) in ctx.design.iter_cells() {
-        if !cell.alive || cell.cell_type != carry_type {
-            continue;
-        }
-
-        let driven_by_carry = ctx
-            .cell(cell_idx)
-            .port_net(ci_port)
-            .and_then(|net_idx| ctx.net(net_idx).driver_cell_port().map(|pin| pin.cell))
-            .is_some_and(|driver| ctx.design.cell(driver).cell_type == carry_type);
-
-        if !driven_by_carry {
-            chain_heads.push(cell_idx);
-        }
-    }
-
-    // Build chains from heads.
-    for head in chain_heads {
-        let mut current = head;
-        ctx.design.cell_edit(current).set_cluster(Some(head));
-        let cluster = ctx
-            .design
-            .clusters
-            .entry(head)
-            .or_insert_with(|| Cluster::new(head));
-        cluster.add_member(head);
-
-        loop {
-            let co_net = ctx.cell(current).port_net(co_port);
-
-            let next = co_net.and_then(|net_idx| {
-                let net = ctx.design.net(net_idx);
-                net.users
-                    .iter()
-                    .find(|u| {
-                        if !u.is_connected() || u.port != ci_port {
-                            return false;
-                        }
-                        let user_cell = u.cell;
-                        ctx.design.cell(user_cell).alive
-                            && ctx.design.cell(user_cell).cell_type == carry_type
-                    })
-                    .map(|u| u.cell)
-            });
-
-            match next {
-                Some(next_idx) => {
-                    ctx.design.cell_edit(next_idx).set_cluster(Some(head));
-                    if let Some(cluster) = &mut ctx.design.clusters.get_mut(&head) {
-                        cluster.add_member(next_idx);
-                    }
-                    current = next_idx;
-                }
-                None => break,
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Pass-through for remaining cells.
 ///
 /// Currently a no-op since remaining cells are already valid and need no
 /// transformation.
 pub fn pack_remaining(_ctx: &mut Context) -> Result<(), PackerError> {
     Ok(())
+}
+
+/// Bind a cell to the first available BEL of the given type.
+/// If no BEL is available (e.g. minimal/synthetic chipdb), silently skips.
+fn bind_to_first_available_bel(
+    ctx: &mut Context,
+    cell_idx: CellId,
+    bel_type: IdString,
+) {
+    if ctx.design.cell(cell_idx).bel.is_some() {
+        return;
+    }
+    let bel = ctx
+        .bels_for_bucket(bel_type)
+        .find(|b| b.is_available())
+        .map(|b| b.id());
+    if let Some(bel) = bel {
+        ctx.bind_bel(bel, cell_idx, PlaceStrength::Locked);
+    }
 }

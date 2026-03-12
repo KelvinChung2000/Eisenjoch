@@ -32,6 +32,11 @@ pub enum ChipDbError {
     InvalidRootPointer { offset: i32, size: usize },
     #[error("chip database contains null required string pointer: {field}")]
     NullRequiredStringPointer { field: &'static str },
+    #[error(
+        "chip database has {count} known constids without embedded strings; \
+         regenerate with known_id_count=0 to embed all strings in the binary"
+    )]
+    MissingKnownConstids { count: i32 },
 }
 
 #[macro_export]
@@ -45,7 +50,6 @@ pub struct ChipDb {
     _mmap: Mmap,
     chip_info: *const ChipInfoPod,
     constid_strs: Vec<Option<*const u8>>,
-    known_id_count: i32,
 }
 
 impl std::fmt::Debug for ChipDb {
@@ -93,21 +97,23 @@ fn validate_and_follow_root_relptr(
     Ok(target_addr as *const ChipInfoPod)
 }
 
-unsafe fn build_constid_table(chip_info: *const ChipInfoPod) -> (Vec<Option<*const u8>>, i32) {
+unsafe fn build_constid_table(
+    chip_info: *const ChipInfoPod,
+) -> Result<Vec<Option<*const u8>>, ChipDbError> {
     let extra_constids_ptr = (*chip_info).extra_constids.get();
     if extra_constids_ptr.is_null() || (*chip_info).extra_constids.is_null() {
-        return (Vec::new(), 0);
+        return Ok(Vec::new());
     }
 
     let known_id_count: i32 = read_packed!(*extra_constids_ptr, known_id_count);
-    let bba_ids = (*extra_constids_ptr).bba_ids.get();
-
-    let total_count = known_id_count as usize + bba_ids.len();
-    let mut table = Vec::with_capacity(total_count);
-
-    for _ in 0..known_id_count {
-        table.push(None);
+    if known_id_count > 0 {
+        return Err(ChipDbError::MissingKnownConstids {
+            count: known_id_count,
+        });
     }
+
+    let bba_ids = (*extra_constids_ptr).bba_ids.get();
+    let mut table = Vec::with_capacity(bba_ids.len());
 
     for relptr in bba_ids {
         if relptr.is_null() {
@@ -117,7 +123,7 @@ unsafe fn build_constid_table(chip_info: *const ChipInfoPod) -> (Vec<Option<*con
         }
     }
 
-    (table, known_id_count)
+    Ok(table)
 }
 
 #[cfg(feature = "test-utils")]

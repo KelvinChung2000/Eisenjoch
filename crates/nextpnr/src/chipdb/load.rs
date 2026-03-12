@@ -40,13 +40,12 @@ impl ChipDb {
             return Err(ChipDbError::NullRequiredStringPointer { field: "uarch" });
         }
 
-        let (constid_strs, known_id_count) = unsafe { build_constid_table(chip_info) };
+        let constid_strs = unsafe { build_constid_table(chip_info)? };
 
         Ok(Self {
             _mmap: mmap,
             chip_info,
             constid_strs,
-            known_id_count,
         })
     }
 
@@ -101,13 +100,12 @@ impl ChipDb {
             return Err(ChipDbError::NullRequiredStringPointer { field: "uarch" });
         }
 
-        let (constid_strs, known_id_count) = build_constid_table(chip_info);
+        let constid_strs = build_constid_table(chip_info)?;
 
         Ok(Self {
             _mmap: mmap,
             chip_info,
             constid_strs,
-            known_id_count,
         })
     }
 }

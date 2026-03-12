@@ -16,6 +16,7 @@ mod storage;
 mod timing;
 mod views;
 
+pub use crate::metrics::{ResourceRow, UtilizationReport};
 pub use rng::DeterministicRng;
 pub use views::{Bel, BelPin, BelPinView, Cell, CellPinView, IdStringView, Net, Pip, TileView, Wire};
 
@@ -50,6 +51,8 @@ pub struct Context {
     // -- Caches (populated on demand) --
     /// For each bucket (bel type), the list of all BelIds belonging to it.
     bucket_bels: FxHashMap<IdString, Vec<BelId>>,
+    /// Cache of BELs per (region_idx, bucket). Populated on demand.
+    region_bel_cache: FxHashMap<(u32, IdString), Vec<BelId>>,
 
     // -- Settings and flags --
     /// Arbitrary key-value settings (e.g. from command-line options).
@@ -94,6 +97,7 @@ impl Context {
             wire_to_net,
             pip_to_net,
             bucket_bels: FxHashMap::default(),
+            region_bel_cache: FxHashMap::default(),
             settings: FxHashMap::default(),
             speed_grade_idx: 0,
             rng: DeterministicRng::new(1),

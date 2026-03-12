@@ -16,6 +16,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 lasso = { workspace = true }
+rayon = { workspace = true }
+rustfft = "6"
 
 [dev-dependencies]
 petgraph = "0.6"
@@ -75,3 +77,33 @@ path = "tests/types_tests.rs"
 [[test]]
 name = "frontend_tests"
 path = "tests/frontend_tests.rs"
+
+[[test]]
+name = "region_tests"
+path = "tests/region_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "checkpoint_tests"
+path = "tests/checkpoint_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "incremental_tests"
+path = "tests/incremental_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "hydraulic_tests"
+path = "tests/hydraulic_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "hydraulic_internal_tests"
+path = "tests/hydraulic_internal_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "electro_place_tests"
+path = "tests/electro_place_tests.rs"
+required-features = ["test-utils"]

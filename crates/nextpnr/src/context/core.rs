@@ -148,12 +148,27 @@ impl Context {
         self.design.cell_by_name(cell_name).map(|cell_idx| self.cell(cell_idx))
     }
 
+    /// Generate a resource utilization report.
+    pub fn utilization_report(&self) -> crate::metrics::UtilizationReport {
+        crate::metrics::utilization_report(self)
+    }
+
+    /// Compute spatial placement density using a sliding window.
+    pub fn placement_density(&self, window: i32) -> crate::metrics::DensityReport {
+        crate::metrics::placement_density(self, window)
+    }
+
+    /// Estimate routing congestion using edge-based demand.
+    pub fn estimate_congestion(&self, threshold: f64) -> crate::metrics::CongestionReport {
+        crate::metrics::estimate_congestion(self, threshold)
+    }
+
     /// Find the wire connected to a specific BEL pin.
     pub fn bel_pin_wire(&self, bp: BelPin) -> Option<Wire<'_>> {
         let port_name = self.name_of(bp.port());
         let bel_info = self.chipdb.bel_info(bp.bel());
         bel_info.pins.get().iter().find_map(|pin| {
-            let (name_constid, wire_idx) = self.chipdb.bel_pin_fields(pin);
+            let (name_constid, wire_idx, _dir) = self.chipdb.bel_pin_fields(pin);
             let pin_name = self.chipdb.constid_str(name_constid).unwrap_or("");
             (pin_name == port_name)
                 .then(|| Wire::new(self, crate::chipdb::WireId::new(bp.bel().tile(), wire_idx)))

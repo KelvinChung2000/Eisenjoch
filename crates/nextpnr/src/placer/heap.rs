@@ -14,10 +14,14 @@ use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
 use log::{debug, info};
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+
+use crate::metrics::{accumulate_edge_crossings, bresenham_line};
 
 use super::common;
 use super::common::initial_placement;
+use super::solver::{Solver, SparseSystem};
 use super::PlacerError;
 
 /// HeAP analytical placer.
@@ -28,6 +32,16 @@ impl super::Placer for PlacerHeap {
 
     fn place(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::PlacerError> {
         place_heap(ctx, cfg)
+    }
+
+    fn place_cells(
+        &self,
+        ctx: &mut Context,
+        cfg: &Self::Config,
+        cells: &[crate::netlist::CellId],
+    ) -> Result<(), super::PlacerError> {
+        let cells_set: FxHashSet<CellId> = cells.iter().copied().collect();
+        common::with_locked_others(ctx, &cells_set, |ctx| place_heap(ctx, cfg))
     }
 }
 
@@ -54,6 +68,8 @@ pub struct PlacerHeapCfg {
     pub solver_tolerance: f64,
     /// Maximum CG solver iterations.
     pub max_solver_iters: usize,
+    /// Weight for congestion-aware forces (0.0 = no congestion awareness).
+    pub congestion_weight: f64,
 }
 
 impl Default for PlacerHeapCfg {
@@ -67,182 +83,9 @@ impl Default for PlacerHeapCfg {
             spreading_threshold: 0.95,
             solver_tolerance: 1e-5,
             max_solver_iters: 100,
+            congestion_weight: 0.5,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Sparse linear system
-// ---------------------------------------------------------------------------
-
-/// Sparse linear system for analytical placement.
-///
-/// Represents the system A*x = b where A is a symmetric positive-definite
-/// matrix stored as diagonal elements plus off-diagonal (i, j, weight) triples.
-pub struct SparseSystem {
-    /// Number of variables.
-    pub n: usize,
-    /// Diagonal elements of A.
-    pub diag: Vec<f64>,
-    /// Off-diagonal entries: (row, col, weight). Only upper triangle stored
-    /// (row < col), but the matrix is treated as symmetric.
-    pub off_diag: Vec<(usize, usize, f64)>,
-    /// Right-hand side vector b.
-    pub rhs: Vec<f64>,
-}
-
-impl SparseSystem {
-    /// Create a new empty system of size n.
-    pub fn new(n: usize) -> Self {
-        Self {
-            n,
-            diag: vec![0.0; n],
-            off_diag: Vec::new(),
-            rhs: vec![0.0; n],
-        }
-    }
-
-    /// Add a connection between movable cells i and j with the given weight.
-    ///
-    /// This adds weight to A[i,i] and A[j,j], and -weight to A[i,j] and A[j,i].
-    pub fn add_connection(&mut self, i: usize, j: usize, weight: f64) {
-        debug_assert!(i < self.n && j < self.n);
-        if i == j {
-            return;
-        }
-        self.diag[i] += weight;
-        self.diag[j] += weight;
-        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-        self.off_diag.push((lo, hi, -weight));
-    }
-
-    /// Add an anchor force pulling cell i toward position pos with the given weight.
-    ///
-    /// Adds weight to A[i,i] and weight*pos to rhs[i].
-    pub fn add_anchor(&mut self, i: usize, pos: f64, weight: f64) {
-        debug_assert!(i < self.n);
-        self.diag[i] += weight;
-        self.rhs[i] += weight * pos;
-    }
-
-    /// Solve the system using conjugate gradient. Returns the number of
-    /// iterations used.
-    pub fn solve(&self, x: &mut [f64], tolerance: f64, max_iters: usize) -> usize {
-        debug_assert_eq!(x.len(), self.n);
-        conjugate_gradient(
-            &self.diag,
-            &self.off_diag,
-            &self.rhs,
-            x,
-            tolerance,
-            max_iters,
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Conjugate Gradient solver
-// ---------------------------------------------------------------------------
-
-/// Symmetric sparse matrix-vector product: result = A * x.
-///
-/// A is represented by its diagonal and a list of upper-triangle off-diagonal
-/// entries (i, j, weight) where i < j. The matrix is symmetric, so each
-/// off-diagonal entry contributes to both (i,j) and (j,i).
-pub fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &mut [f64]) {
-    let n = diag.len();
-    for i in 0..n {
-        result[i] = diag[i] * x[i];
-    }
-    for &(i, j, w) in off_diag {
-        result[i] += w * x[j];
-        result[j] += w * x[i];
-    }
-}
-
-/// Dot product of two vectors.
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(ai, bi)| ai * bi).sum()
-}
-
-/// Conjugate Gradient solver for the symmetric positive-definite system A*x = b.
-///
-/// Returns the number of iterations performed.
-pub fn conjugate_gradient(
-    diag: &[f64],
-    off_diag: &[(usize, usize, f64)],
-    rhs: &[f64],
-    x: &mut [f64],
-    tol: f64,
-    max_iters: usize,
-) -> usize {
-    let n = diag.len();
-    if n == 0 {
-        return 0;
-    }
-
-    // r = b - A*x
-    let mut ax = vec![0.0; n];
-    spmv(diag, off_diag, x, &mut ax);
-    let mut r: Vec<f64> = rhs
-        .iter()
-        .zip(ax.iter())
-        .map(|(bi, axi)| bi - axi)
-        .collect();
-
-    // p = r
-    let mut p = r.clone();
-
-    let mut rs_old = dot(&r, &r);
-
-    // If initial residual is already tiny, return immediately.
-    let rhs_norm_sq = dot(rhs, rhs);
-    let tol_sq = tol * tol * rhs_norm_sq.max(1e-30);
-
-    if rs_old < tol_sq {
-        return 0;
-    }
-
-    let mut ap = vec![0.0; n];
-
-    for iter in 0..max_iters {
-        // ap = A*p
-        spmv(diag, off_diag, &p, &mut ap);
-
-        let p_ap = dot(&p, &ap);
-        if p_ap.abs() < 1e-30 {
-            return iter + 1;
-        }
-
-        let alpha = rs_old / p_ap;
-
-        // x = x + alpha * p
-        for i in 0..n {
-            x[i] += alpha * p[i];
-        }
-
-        // r = r - alpha * A*p
-        for i in 0..n {
-            r[i] -= alpha * ap[i];
-        }
-
-        let rs_new = dot(&r, &r);
-
-        if rs_new < tol_sq {
-            return iter + 1;
-        }
-
-        let beta = rs_new / rs_old;
-
-        // p = r + beta * p
-        for i in 0..n {
-            p[i] = r[i] + beta * p[i];
-        }
-
-        rs_old = rs_new;
-    }
-
-    max_iters
 }
 
 // ---------------------------------------------------------------------------
@@ -272,11 +115,15 @@ pub struct HeapState {
     pub cell_x: Vec<f64>,
     /// Current Y positions (continuous).
     pub cell_y: Vec<f64>,
+    /// Region constraint for each movable cell (parallel to movable_cells).
+    pub cell_region: Vec<Option<u32>>,
     /// Current spreading force multiplier.
     pub alpha: f64,
     /// Grid dimensions.
     pub grid_w: i32,
     pub grid_h: i32,
+    /// Congestion-aware displacement targets (target_x, target_y, force_weight).
+    pub congestion_targets: Option<Vec<(f64, f64, f64)>>,
 }
 
 struct BelPrefixGrid {
@@ -352,12 +199,14 @@ impl HeapState {
     pub fn new(ctx: &Context, cfg: &PlacerHeapCfg) -> Result<Self, PlacerError> {
         let mut movable_cells = Vec::new();
         let mut cell_to_idx = FxHashMap::default();
+        let mut cell_region = Vec::new();
 
         for (ci, cell) in ctx.design.iter_alive_cells() {
             if !cell.bel_strength.is_locked() {
                 let idx = movable_cells.len();
                 cell_to_idx.insert(ci, idx);
                 movable_cells.push(ci);
+                cell_region.push(cell.region);
             }
         }
 
@@ -365,11 +214,21 @@ impl HeapState {
         let grid_w = ctx.chipdb().width();
         let grid_h = ctx.chipdb().height();
 
-        // Initialize cell positions to the center of the grid.
+        // Initialize cell positions: region-constrained cells start at region center,
+        // unconstrained cells at grid center.
         let cx = (grid_w as f64 - 1.0) / 2.0;
         let cy = (grid_h as f64 - 1.0) / 2.0;
-        let cell_x = vec![cx; n];
-        let cell_y = vec![cy; n];
+        let mut cell_x = vec![cx; n];
+        let mut cell_y = vec![cy; n];
+
+        for i in 0..n {
+            if let Some(region_idx) = cell_region[i] {
+                if let Some(bbox) = ctx.design.region(region_idx).bounding_box() {
+                    cell_x[i] = (bbox.x0 as f64 + bbox.x1 as f64) / 2.0;
+                    cell_y[i] = (bbox.y0 as f64 + bbox.y1 as f64) / 2.0;
+                }
+            }
+        }
 
         Ok(Self {
             cfg: cfg.clone(),
@@ -377,9 +236,11 @@ impl HeapState {
             cell_to_idx,
             cell_x,
             cell_y,
+            cell_region,
             alpha: cfg.alpha,
             grid_w,
             grid_h,
+            congestion_targets: None,
         })
     }
 
@@ -511,16 +372,26 @@ impl HeapState {
             sys_y.add_anchor(i, self.cell_y[i], self.alpha);
         }
 
-        // Solve the two systems.
-        let iters_x = sys_x.solve(
-            &mut self.cell_x,
-            self.cfg.solver_tolerance,
-            self.cfg.max_solver_iters,
-        );
-        let iters_y = sys_y.solve(
-            &mut self.cell_y,
-            self.cfg.solver_tolerance,
-            self.cfg.max_solver_iters,
+        // Add congestion-aware forces.
+        if let Some(ref targets) = self.congestion_targets {
+            for i in 0..n {
+                let (tx, ty, w) = targets[i];
+                if w > 0.0 {
+                    sys_x.add_anchor(i, tx, w);
+                    sys_y.add_anchor(i, ty, w);
+                }
+            }
+        }
+
+        // Solve X and Y systems in parallel using rayon::join.
+        // Split borrows so each closure gets its own &mut slice.
+        let tol = self.cfg.solver_tolerance;
+        let max_si = self.cfg.max_solver_iters;
+        let cell_x = &mut self.cell_x;
+        let cell_y = &mut self.cell_y;
+        let (iters_x, iters_y) = rayon::join(
+            || sys_x.solve(cell_x, tol, max_si),
+            || sys_y.solve(cell_y, tol, max_si),
         );
 
         debug!(
@@ -528,12 +399,19 @@ impl HeapState {
             iters_x, iters_y
         );
 
-        // Clamp positions to grid bounds.
+        // Clamp positions to grid bounds, and region-constrained cells to their region bbox.
         let max_x = (self.grid_w - 1) as f64;
         let max_y = (self.grid_h - 1) as f64;
         for i in 0..n {
             self.cell_x[i] = self.cell_x[i].clamp(0.0, max_x);
             self.cell_y[i] = self.cell_y[i].clamp(0.0, max_y);
+
+            if let Some(region_idx) = self.cell_region[i] {
+                if let Some(bbox) = ctx.design.region(region_idx).bounding_box() {
+                    self.cell_x[i] = self.cell_x[i].clamp(bbox.x0 as f64, bbox.x1 as f64);
+                    self.cell_y[i] = self.cell_y[i].clamp(bbox.y0 as f64, bbox.y1 as f64);
+                }
+            }
         }
 
         Ok(())
@@ -550,21 +428,17 @@ impl HeapState {
 
         let bel_grid = BelPrefixGrid::build(ctx);
 
-        // Count total BELs in the whole grid.
-        let total_bels: usize = bel_grid.count_in_region(0, 0, self.grid_w - 1, self.grid_h - 1);
+        let total_bels = bel_grid.count_in_region(0, 0, self.grid_w - 1, self.grid_h - 1);
 
-        // Build initial region covering the whole grid.
-        let all_indices: Vec<usize> = (0..n).collect();
         let initial_region = Region {
             x0: 0,
             y0: 0,
             x1: self.grid_w - 1,
             y1: self.grid_h - 1,
-            cells: all_indices,
+            cells: (0..n).collect(),
             bel_count: total_bels,
         };
 
-        // Recursively bisect.
         let mut leaf_regions: Vec<Region> = Vec::new();
         let mut stack: Vec<Region> = vec![initial_region];
 
@@ -573,162 +447,135 @@ impl HeapState {
                 continue;
             }
 
-            // If cells fit in the region, this is a leaf.
             if region.cells.len() <= region.bel_count {
                 leaf_regions.push(region);
                 continue;
             }
 
-            // Decide split direction: split along the longer dimension.
             let width = region.x1 - region.x0;
             let height = region.y1 - region.y0;
 
             if width <= 0 && height <= 0 {
-                // Can't split further; treat as leaf.
                 leaf_regions.push(region);
                 continue;
             }
 
             let split_horizontal = width >= height;
 
-            if split_horizontal {
-                let mid = (region.x0 + region.x1) / 2;
-                if mid == region.x0 && region.x1 > region.x0 {
-                    // Cannot split meaningfully, treat as leaf.
-                    leaf_regions.push(region);
-                    continue;
-                }
-
-                // Partition cells.
-                let mut left_cells = Vec::new();
-                let mut right_cells = Vec::new();
-
-                // Sort cells by x position for balanced splitting.
-                let mut sorted_cells = region.cells.clone();
-                sorted_cells.sort_by(|&a, &b| {
-                    self.cell_x[a]
-                        .partial_cmp(&self.cell_x[b])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                // Count BELs in each sub-region.
-                let left_bels = bel_grid.count_in_region(region.x0, region.y0, mid, region.y1);
-                let right_bels = bel_grid.count_in_region(mid + 1, region.y0, region.x1, region.y1);
-
-                // Split cells proportionally to BEL counts.
-                let total_bels_here = left_bels + right_bels;
-                let left_capacity = if total_bels_here > 0 {
-                    (sorted_cells.len() * left_bels) / total_bels_here
-                } else {
-                    sorted_cells.len() / 2
-                };
-                let left_capacity = left_capacity.max(0).min(sorted_cells.len());
-
-                for (i, &cell_idx) in sorted_cells.iter().enumerate() {
-                    if i < left_capacity {
-                        left_cells.push(cell_idx);
-                    } else {
-                        right_cells.push(cell_idx);
-                    }
-                }
-
-                // Move cells toward their assigned sub-region center.
-                for &idx in &left_cells {
-                    self.cell_x[idx] = self.cell_x[idx].clamp(region.x0 as f64, mid as f64);
-                }
-                for &idx in &right_cells {
-                    self.cell_x[idx] = self.cell_x[idx].clamp((mid + 1) as f64, region.x1 as f64);
-                }
-
-                stack.push(Region {
-                    x0: region.x0,
-                    y0: region.y0,
-                    x1: mid,
-                    y1: region.y1,
-                    cells: left_cells,
-                    bel_count: left_bels,
-                });
-                stack.push(Region {
-                    x0: mid + 1,
-                    y0: region.y0,
-                    x1: region.x1,
-                    y1: region.y1,
-                    cells: right_cells,
-                    bel_count: right_bels,
-                });
+            // Compute the split midpoint along the chosen axis.
+            let (lo, hi) = if split_horizontal {
+                (region.x0, region.x1)
             } else {
-                // Split vertically.
-                let mid = (region.y0 + region.y1) / 2;
-                if mid == region.y0 && region.y1 > region.y0 {
-                    leaf_regions.push(region);
-                    continue;
-                }
+                (region.y0, region.y1)
+            };
+            let mid = (lo + hi) / 2;
 
-                let mut bottom_cells = Vec::new();
-                let mut top_cells = Vec::new();
-
-                let mut sorted_cells = region.cells.clone();
-                sorted_cells.sort_by(|&a, &b| {
-                    self.cell_y[a]
-                        .partial_cmp(&self.cell_y[b])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-                let bottom_bels = bel_grid.count_in_region(region.x0, region.y0, region.x1, mid);
-                let top_bels = bel_grid.count_in_region(region.x0, mid + 1, region.x1, region.y1);
-
-                let total_bels_here = bottom_bels + top_bels;
-                let bottom_capacity = if total_bels_here > 0 {
-                    (sorted_cells.len() * bottom_bels) / total_bels_here
-                } else {
-                    sorted_cells.len() / 2
-                };
-                let bottom_capacity = bottom_capacity.max(0).min(sorted_cells.len());
-
-                for (i, &cell_idx) in sorted_cells.iter().enumerate() {
-                    if i < bottom_capacity {
-                        bottom_cells.push(cell_idx);
-                    } else {
-                        top_cells.push(cell_idx);
-                    }
-                }
-
-                for &idx in &bottom_cells {
-                    self.cell_y[idx] = self.cell_y[idx].clamp(region.y0 as f64, mid as f64);
-                }
-                for &idx in &top_cells {
-                    self.cell_y[idx] = self.cell_y[idx].clamp((mid + 1) as f64, region.y1 as f64);
-                }
-
-                stack.push(Region {
-                    x0: region.x0,
-                    y0: region.y0,
-                    x1: region.x1,
-                    y1: mid,
-                    cells: bottom_cells,
-                    bel_count: bottom_bels,
-                });
-                stack.push(Region {
-                    x0: region.x0,
-                    y0: mid + 1,
-                    x1: region.x1,
-                    y1: region.y1,
-                    cells: top_cells,
-                    bel_count: top_bels,
-                });
+            if mid == lo && hi > lo {
+                leaf_regions.push(region);
+                continue;
             }
+
+            // Sort cells along the split axis.
+            let positions = if split_horizontal {
+                &self.cell_x
+            } else {
+                &self.cell_y
+            };
+            let mut sorted_cells = region.cells.clone();
+            sorted_cells.sort_by(|&a, &b| {
+                positions[a]
+                    .partial_cmp(&positions[b])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Count BELs in each sub-region.
+            let (lo_bels, hi_bels) = if split_horizontal {
+                (
+                    bel_grid.count_in_region(region.x0, region.y0, mid, region.y1),
+                    bel_grid.count_in_region(mid + 1, region.y0, region.x1, region.y1),
+                )
+            } else {
+                (
+                    bel_grid.count_in_region(region.x0, region.y0, region.x1, mid),
+                    bel_grid.count_in_region(region.x0, mid + 1, region.x1, region.y1),
+                )
+            };
+
+            // Split cells proportionally to BEL counts.
+            let total_bels_here = lo_bels + hi_bels;
+            let lo_capacity = if total_bels_here > 0 {
+                (sorted_cells.len() * lo_bels) / total_bels_here
+            } else {
+                sorted_cells.len() / 2
+            };
+            let lo_capacity = lo_capacity.min(sorted_cells.len());
+
+            let hi_cells = sorted_cells.split_off(lo_capacity);
+            let lo_cells = sorted_cells;
+
+            // Clamp cell positions into their assigned sub-region.
+            let positions = if split_horizontal {
+                &mut self.cell_x
+            } else {
+                &mut self.cell_y
+            };
+            for &idx in &lo_cells {
+                positions[idx] = positions[idx].clamp(lo as f64, mid as f64);
+            }
+            for &idx in &hi_cells {
+                positions[idx] = positions[idx].clamp((mid + 1) as f64, hi as f64);
+            }
+
+            // Push the two sub-regions.
+            let (lo_region, hi_region) = if split_horizontal {
+                (
+                    Region {
+                        x0: region.x0,
+                        y0: region.y0,
+                        x1: mid,
+                        y1: region.y1,
+                        cells: lo_cells,
+                        bel_count: lo_bels,
+                    },
+                    Region {
+                        x0: mid + 1,
+                        y0: region.y0,
+                        x1: region.x1,
+                        y1: region.y1,
+                        cells: hi_cells,
+                        bel_count: hi_bels,
+                    },
+                )
+            } else {
+                (
+                    Region {
+                        x0: region.x0,
+                        y0: region.y0,
+                        x1: region.x1,
+                        y1: mid,
+                        cells: lo_cells,
+                        bel_count: lo_bels,
+                    },
+                    Region {
+                        x0: region.x0,
+                        y0: mid + 1,
+                        x1: region.x1,
+                        y1: region.y1,
+                        cells: hi_cells,
+                        bel_count: hi_bels,
+                    },
+                )
+            };
+            stack.push(lo_region);
+            stack.push(hi_region);
         }
 
-        // Compute quality: ratio of cells that fit into their leaf regions.
-        let mut cells_fitting = 0usize;
-        for region in &leaf_regions {
-            cells_fitting += region.cells.len().min(region.bel_count);
-        }
-        let quality = if n > 0 {
-            cells_fitting as f64 / n as f64
-        } else {
-            1.0
-        };
+        // Quality: ratio of cells that fit into their leaf regions.
+        let cells_fitting: usize = leaf_regions
+            .iter()
+            .map(|r| r.cells.len().min(r.bel_count))
+            .sum();
+        let quality = cells_fitting as f64 / n as f64;
 
         debug!("HeAP: spreading quality = {:.4}", quality);
         Ok(quality)
@@ -736,7 +583,14 @@ impl HeapState {
 
     /// Legalize the placement: assign each movable cell to the nearest
     /// available BEL of matching bucket type.
+    ///
+    /// Two-phase approach:
+    ///   Phase A (parallel): compute distance-sorted BEL candidate lists per cell
+    ///   Phase B (sequential): assign cells to BELs, skipping already-taken ones
     fn legalize(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
+        use crate::chipdb::BelId;
+        use crate::common::IdString;
+
         let n = self.movable_cells.len();
         if n == 0 {
             return Ok(());
@@ -744,15 +598,27 @@ impl HeapState {
 
         // First, unbind all movable cells.
         for &cell_idx in &self.movable_cells {
-            let cell = ctx.cell(cell_idx);
-            if let Some(bel) = cell.bel() {
-                let bel = bel.id();
-                ctx.unbind_bel(bel);
+            if let Some(bel_id) = ctx.cell(cell_idx).bel().map(|b| b.id()) {
+                ctx.unbind_bel(bel_id);
             }
         }
 
-        // Sort movable cells by distance from center (place outer cells first
-        // to give them priority for their preferred positions).
+        // Pre-collect BEL data per cell type into plain data (BelId, x, y)
+        // so we can share across rayon threads without lifetime issues.
+        let mut bel_data_cache: FxHashMap<IdString, Vec<(BelId, i32, i32)>> = FxHashMap::default();
+        for &cell_idx in &self.movable_cells {
+            let cell_type_id = ctx.cell(cell_idx).cell_type_id();
+            bel_data_cache.entry(cell_type_id).or_insert_with(|| {
+                ctx.bels_for_bucket(cell_type_id)
+                    .map(|bel| {
+                        let loc = bel.loc();
+                        (bel.id(), loc.x, loc.y)
+                    })
+                    .collect()
+            });
+        }
+
+        // Sort movable cells by distance from center (place outer cells first).
         let cx = (self.grid_w as f64 - 1.0) / 2.0;
         let cy = (self.grid_h as f64 - 1.0) / 2.0;
         let mut order: Vec<usize> = (0..n).collect();
@@ -762,67 +628,251 @@ impl HeapState {
             db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        for &idx in &order {
-            let cell_idx = self.movable_cells[idx];
-            let target_x = self.cell_x[idx];
-            let target_y = self.cell_y[idx];
+        // Gather per-cell info for parallel phase.
+        struct CellLegalizeInfo {
+            idx: usize,
+            cell_idx: CellId,
+            cell_type_id: IdString,
+            cell_type_name: String,
+            cell_name: String,
+            cell_region: Option<u32>,
+            target_x: f64,
+            target_y: f64,
+        }
 
-            let (cell_type_id, cell_type_name, cell_name) = {
+        let cell_infos: Vec<CellLegalizeInfo> = order
+            .iter()
+            .map(|&idx| {
+                let cell_idx = self.movable_cells[idx];
                 let cell = ctx.cell(cell_idx);
-                (
-                    cell.cell_type_id(),
-                    cell.cell_type().to_owned(),
-                    cell.name().to_owned(),
-                )
-            };
-
-            // Find the nearest available BEL.
-            let mut best_bel = None;
-            let mut best_dist = f64::MAX;
-            let mut has_bucket_bel = false;
-
-            for bel in ctx.bels_for_bucket(cell_type_id) {
-                has_bucket_bel = true;
-                if !bel.is_available() {
-                    continue;
+                CellLegalizeInfo {
+                    idx,
+                    cell_idx,
+                    cell_type_id: cell.cell_type_id(),
+                    cell_type_name: cell.cell_type().to_owned(),
+                    cell_name: cell.name().to_owned(),
+                    cell_region: self.cell_region[idx],
+                    target_x: self.cell_x[idx],
+                    target_y: self.cell_y[idx],
                 }
-                let loc = bel.loc();
-                let dx = loc.x as f64 - target_x;
-                let dy = loc.y as f64 - target_y;
-                let dist = dx * dx + dy * dy;
-                if dist < best_dist {
-                    best_dist = dist;
-                    best_bel = Some(bel.id());
+            })
+            .collect();
+
+        // Phase A (parallel): compute distance-sorted BEL candidate lists.
+        // Each candidate list is sorted by distance to the cell's target position.
+        // Region filtering is applied here using precomputed region data.
+        let region_bel_sets: FxHashMap<u32, FxHashSet<BelId>> = {
+            let mut map = FxHashMap::default();
+            for info in &cell_infos {
+                if let Some(rid) = info.cell_region {
+                    map.entry(rid).or_insert_with(|| {
+                        let region = ctx.design.region(rid);
+                        let mut set = FxHashSet::default();
+                        if let Some(bbox) = region.bounding_box() {
+                            // Collect all BELs in the region.
+                            for bel in ctx.bels() {
+                                let loc = bel.loc();
+                                if region.contains(loc.x, loc.y)
+                                    && loc.x >= bbox.x0
+                                    && loc.x <= bbox.x1
+                                    && loc.y >= bbox.y0
+                                    && loc.y <= bbox.y1
+                                {
+                                    set.insert(bel.id());
+                                }
+                            }
+                        }
+                        set
+                    });
                 }
             }
+            map
+        };
 
-            if !has_bucket_bel {
-                return Err(PlacerError::NoBelsAvailable(cell_type_name));
+        let sorted_candidates: Vec<Vec<BelId>> = cell_infos
+            .par_iter()
+            .map(|info| {
+                let bels = match bel_data_cache.get(&info.cell_type_id) {
+                    Some(b) => b,
+                    None => return Vec::new(),
+                };
+
+                // Filter by region if needed, then sort by distance.
+                let mut candidates: Vec<(BelId, f64)> = bels
+                    .iter()
+                    .filter(|&&(bel_id, _, _)| {
+                        if let Some(rid) = info.cell_region {
+                            region_bel_sets
+                                .get(&rid)
+                                .map_or(false, |s| s.contains(&bel_id))
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|&(bel_id, bx, by)| {
+                        let dx = bx as f64 - info.target_x;
+                        let dy = by as f64 - info.target_y;
+                        (bel_id, dx * dx + dy * dy)
+                    })
+                    .collect();
+
+                candidates.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                candidates.into_iter().map(|(id, _)| id).collect()
+            })
+            .collect();
+
+        // Phase B (sequential): assign cells to nearest available BEL.
+        for (i, info) in cell_infos.iter().enumerate() {
+            let candidates = &sorted_candidates[i];
+
+            if candidates.is_empty() {
+                return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
             }
 
-            match best_bel {
-                Some(bel) => {
-                    if !ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer) {
+            let mut bound = false;
+            for &bel in candidates {
+                if ctx.bel(bel).is_available() {
+                    if !ctx.bind_bel(bel, info.cell_idx, PlaceStrength::Placer) {
                         return Err(PlacerError::PlacementFailed(format!(
                             "Failed to bind cell {} to BEL {}",
-                            cell_name, bel,
+                            info.cell_name, bel,
                         )));
                     }
-                    // Update analytical position to match the legal position.
                     let loc = ctx.bel(bel).loc();
-                    self.cell_x[idx] = loc.x as f64;
-                    self.cell_y[idx] = loc.y as f64;
+                    self.cell_x[info.idx] = loc.x as f64;
+                    self.cell_y[info.idx] = loc.y as f64;
+                    bound = true;
+                    break;
                 }
-                None => {
-                    return Err(PlacerError::NoBelsAvailable(format!(
-                        "{} (no available BELs for cell {})",
-                        cell_type_name, cell_name,
-                    )));
-                }
+            }
+
+            if !bound {
+                return Err(PlacerError::NoBelsAvailable(format!(
+                    "{} (no available BELs for cell {})",
+                    info.cell_type_name, info.cell_name,
+                )));
             }
         }
 
         Ok(())
+    }
+
+    /// Compute congestion-aware displacement targets for each movable cell.
+    ///
+    /// For each cell, estimates the local congestion gradient from the edge-demand
+    /// grid and computes a target position shifted away from congested edges.
+    /// Returns (target_x, target_y, force_weight) for each movable cell.
+    fn compute_congestion_targets(&self, ctx: &Context) -> Vec<(f64, f64, f64)> {
+        let n = self.movable_cells.len();
+        let grid_w = self.grid_w;
+        let grid_h = self.grid_h;
+        let wu = grid_w as usize;
+        let hu = grid_h as usize;
+        let congestion_weight = self.cfg.congestion_weight;
+
+        // Build capacity grids (total_wires / 4 per direction).
+        let mut h_capacity = vec![vec![1.0f64; wu]; hu];
+        let mut v_capacity = vec![vec![1.0f64; wu]; hu];
+        for ty in 0..grid_h {
+            for tx in 0..grid_w {
+                let tile_idx = ty * grid_w + tx;
+                let tt = ctx.chipdb().tile_type(tile_idx);
+                let nwires = tt.wires.get().len() as f64;
+                let cap = (nwires / 4.0).max(1.0);
+                h_capacity[ty as usize][tx as usize] = cap;
+                v_capacity[ty as usize][tx as usize] = cap;
+            }
+        }
+
+        // Build demand grids by iterating all alive nets and tracing Bresenham lines.
+        let mut h_demand = vec![vec![0.0f64; wu]; hu];
+        let mut v_demand = vec![vec![0.0f64; wu]; hu];
+
+        for (_net_idx, net) in ctx.design.iter_alive_nets() {
+            if !net.driver.is_connected() || net.users.is_empty() {
+                continue;
+            }
+
+            let drv_cell = ctx.cell(net.driver.cell);
+            let Some(drv_bel) = drv_cell.bel() else {
+                continue;
+            };
+            let drv_loc = drv_bel.loc();
+
+            for user in &net.users {
+                if !user.is_connected() {
+                    continue;
+                }
+                let user_cell = ctx.cell(user.cell);
+                let Some(user_bel) = user_cell.bel() else {
+                    continue;
+                };
+                let user_loc = user_bel.loc();
+
+                let points = bresenham_line(drv_loc.x, drv_loc.y, user_loc.x, user_loc.y);
+                accumulate_edge_crossings(&points, grid_w, grid_h, &mut h_demand, &mut v_demand, 1.0);
+            }
+        }
+
+        // Compute per-cell congestion displacement targets.
+        let max_x = (grid_w - 1) as f64;
+        let max_y = (grid_h - 1) as f64;
+
+        (0..n)
+            .map(|i| {
+                let cx = self.cell_x[i];
+                let cy = self.cell_y[i];
+                let ix = cx.round() as i32;
+                let iy = cy.round() as i32;
+
+                // Get congestion at surrounding edges (0.0 if at boundary).
+                let east_c =
+                    if ix >= 0 && (ix as usize) + 1 < wu && iy >= 0 && (iy as usize) < hu {
+                        h_demand[iy as usize][ix as usize]
+                            / h_capacity[iy as usize][ix as usize]
+                    } else {
+                        0.0
+                    };
+                let west_c =
+                    if ix > 0 && (ix as usize) < wu && iy >= 0 && (iy as usize) < hu {
+                        h_demand[iy as usize][(ix - 1) as usize]
+                            / h_capacity[iy as usize][(ix - 1) as usize]
+                    } else {
+                        0.0
+                    };
+                let south_c =
+                    if iy >= 0 && (iy as usize) + 1 < hu && ix >= 0 && (ix as usize) < wu {
+                        v_demand[iy as usize][ix as usize]
+                            / v_capacity[iy as usize][ix as usize]
+                    } else {
+                        0.0
+                    };
+                let north_c =
+                    if iy > 0 && (iy as usize) < hu && ix >= 0 && (ix as usize) < wu {
+                        v_demand[(iy - 1) as usize][ix as usize]
+                            / v_capacity[(iy - 1) as usize][ix as usize]
+                    } else {
+                        0.0
+                    };
+
+                // Displacement: push away from congested edges.
+                let dx = west_c - east_c; // positive = push east (away from west congestion)
+                let dy = north_c - south_c; // positive = push south (away from north congestion)
+                let max_c = east_c.max(west_c).max(south_c).max(north_c);
+
+                // Only apply force if congestion is above 1.0 (over-capacity).
+                if max_c > 1.0 {
+                    let target_x = (cx + dx).clamp(0.0, max_x);
+                    let target_y = (cy + dy).clamp(0.0, max_y);
+                    let force = self.alpha * congestion_weight * (max_c - 1.0);
+                    (target_x, target_y, force)
+                } else {
+                    (cx, cy, 0.0)
+                }
+            })
+            .collect()
     }
 }
 
@@ -870,10 +920,23 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     state.do_initial_placement(ctx)?;
     info!("HeAP Placer: initial placement done.");
 
+    // Track whether the solver has run with congestion targets at least once.
+    // When convergence is reached before congestion forces have been applied,
+    // we force one additional iteration so that congestion-aware placement is
+    // reflected in the final result.
+    let mut solver_used_congestion = false;
+
     for iter in 0..cfg.max_iterations {
+        solver_used_congestion |= state.congestion_targets.is_some();
         state.solve_analytical(ctx)?;
+
         let quality = state.spread(ctx)?;
         state.legalize(ctx)?;
+
+        // Compute congestion forces for the next iteration.
+        if cfg.congestion_weight > 0.0 {
+            state.congestion_targets = Some(state.compute_congestion_targets(ctx));
+        }
 
         debug!(
             "HeAP Placer: iter={}, quality={:.4}, alpha={:.4}",
@@ -881,6 +944,11 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
         );
 
         if quality > cfg.spreading_threshold {
+            if cfg.congestion_weight > 0.0 && !solver_used_congestion {
+                // Force one more iteration so congestion targets are applied.
+                state.alpha *= 1.5;
+                continue;
+            }
             info!(
                 "HeAP Placer: converged at iteration {} (quality={:.4}).",
                 iter, quality
@@ -891,8 +959,9 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
         state.alpha *= 1.5;
     }
 
-    // Final validation: check all alive cells are placed.
+    // Final validation: check all alive cells are placed and region constraints hold.
     common::validate_all_placed(ctx)?;
+    common::validate_region_constraints(ctx)?;
 
     info!("HeAP Placer: done.");
     Ok(())

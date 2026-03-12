@@ -42,6 +42,16 @@ impl ChipDb {
         unsafe { &*self.chip_info }
     }
 
+    #[inline]
+    pub fn chip_magic(&self) -> i32 {
+        unsafe { read_packed!(*self.chip_info(), magic) }
+    }
+
+    #[inline]
+    pub fn chip_db_version(&self) -> i32 {
+        unsafe { read_packed!(*self.chip_info(), version) }
+    }
+
     pub fn constid_str(&self, index: i32) -> Option<&str> {
         if index < 0 || (index as usize) >= self.constid_strs.len() {
             return None;
@@ -50,11 +60,6 @@ impl ChipDb {
             let cstr = CStr::from_ptr(ptr as *const std::ffi::c_char);
             cstr.to_str().unwrap_or("<invalid utf8>")
         })
-    }
-
-    #[inline]
-    pub fn known_id_count(&self) -> i32 {
-        self.known_id_count
     }
 
     pub fn extra_constids(&self) -> &[RelPtr<u8>] {
@@ -86,12 +91,18 @@ impl ChipDb {
             .expect("bel_info: BEL index out of bounds")
     }
 
-    /// Extract (name_constid, wire_index) from a BEL pin, encapsulating unsafe access.
+    /// Extract (name_constid, wire_index, dir) from a BEL pin, encapsulating unsafe access.
     #[inline]
-    pub fn bel_pin_fields(&self, pin: &BelPinPod) -> (i32, i32) {
+    pub fn bel_pin_fields(&self, pin: &BelPinPod) -> (i32, i32, i32) {
         let name: i32 = unsafe { read_packed!(*pin, name) };
         let wire: i32 = unsafe { read_packed!(*pin, wire) };
-        (name, wire)
+        let dir: i32 = unsafe { read_packed!(*pin, dir) };
+        (name, wire, dir)
+    }
+
+    #[inline]
+    pub fn bel_pin_ref_bel(&self, pin_ref: &BelPinRefPod) -> i32 {
+        unsafe { read_packed!(*pin_ref, bel) }
     }
 
     #[inline]
@@ -163,11 +174,21 @@ impl ChipDb {
     }
 
     #[inline]
+    pub fn tile_shape_index(&self, tile: i32) -> i32 {
+        let inst = self.tile_inst(tile);
+        unsafe { read_packed!(*inst, shape) }
+    }
+
+    #[inline]
+    pub fn tile_shape_timing_index(&self, tile: i32) -> i32 {
+        let shape = self.tile_shape(tile);
+        unsafe { read_packed!(*shape, timing_index) }
+    }
+
+    #[inline]
     pub fn tile_shape(&self, tile: i32) -> &TileRoutingShapePod {
-        let ci = self.chip_info();
-        let inst = &ci.tile_insts.get()[tile as usize];
-        let shape_idx: i32 = unsafe { read_packed!(*inst, shape) };
-        &ci.tile_shapes.get()[shape_idx as usize]
+        let shape_idx = self.tile_shape_index(tile);
+        &self.chip_info().tile_shapes.get()[shape_idx as usize]
     }
 
     #[inline]
@@ -227,6 +248,11 @@ impl ChipDb {
         Loc::new(x, y, z as i32)
     }
 
+    pub fn pip_timing_index(&self, pip: PipId) -> i32 {
+        let info = self.pip_info(pip);
+        unsafe { read_packed!(*info, timing_idx) }
+    }
+
     pub fn pip_src_wire(&self, pip: PipId) -> WireId {
         let info = self.pip_info(pip);
         let src_wire: i32 = unsafe { read_packed!(*info, src_wire) };
@@ -243,6 +269,100 @@ impl ChipDb {
     pub fn tile_inst(&self, tile: i32) -> &TileInstPod {
         self.tile_inst_checked(tile)
             .expect("tile_inst: tile index out of bounds")
+    }
+
+    pub fn wire_flags(&self, wire: WireId) -> i32 {
+        let info = self.wire_info(wire);
+        unsafe { read_packed!(*info, flags) }
+    }
+
+    pub fn wire_name(&self, wire: WireId) -> &str {
+        let info = self.wire_info(wire);
+        let name_id: i32 = unsafe { read_packed!(*info, name) };
+        self.constid_str(name_id).unwrap_or("<unknown>")
+    }
+
+    pub fn tile_name(&self, tile: i32) -> String {
+        let inst = self.tile_inst(tile);
+        let prefix = unsafe { read_packed!(*inst, name_prefix) };
+        let prefix_str = self.constid_str(prefix).unwrap_or("TILE");
+        let (x, y) = self.tile_xy(tile);
+        format!("{prefix_str}_X{x}Y{y}")
+    }
+
+    pub fn tile_type_name(&self, tile: i32) -> &str {
+        let tt = self.tile_type(tile);
+        let type_name_id: i32 = unsafe { read_packed!(*tt, type_name) };
+        self.constid_str(type_name_id).unwrap_or("<unknown>")
+    }
+
+    // =====================================================================
+    // Packer query methods
+    // =====================================================================
+
+    /// Find all wires in a tile type that connect to multiple BEL pins.
+    /// Returns: Vec<(wire_index, Vec<(bel_index, pin_constid)>)>
+    pub fn shared_wires_in_tile_type(&self, tile_type_idx: i32) -> Vec<(i32, Vec<(i32, i32)>)> {
+        let tt = &self.chip_info().tile_types.get()[tile_type_idx as usize];
+        tt.wires
+            .get()
+            .iter()
+            .enumerate()
+            .filter_map(|(wi, wire)| {
+                let bel_pins = wire.bel_pins.get();
+                if bel_pins.len() > 1 {
+                    let pins: Vec<(i32, i32)> = bel_pins
+                        .iter()
+                        .map(|bp| unsafe {
+                            (read_packed!(*bp, bel), read_packed!(*bp, pin))
+                        })
+                        .collect();
+                    Some((wi as i32, pins))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Find tile type indices that contain BELs of the given type.
+    pub fn compatible_tile_types_for_bel_type(&self, bel_type: &str) -> Vec<i32> {
+        self.chip_info()
+            .tile_types
+            .get()
+            .iter()
+            .enumerate()
+            .filter(|(_, tt)| {
+                tt.bels.get().iter().any(|bel| {
+                    let bt: i32 = unsafe { read_packed!(*bel, bel_type) };
+                    self.constid_str(bt).is_some_and(|s| s == bel_type)
+                })
+            })
+            .map(|(i, _)| i as i32)
+            .collect()
+    }
+
+    /// Count BELs of a given type in a tile type.
+    pub fn bel_count_in_tile_type(&self, tile_type_idx: i32, bel_type: &str) -> usize {
+        let tt = &self.chip_info().tile_types.get()[tile_type_idx as usize];
+        tt.bels
+            .get()
+            .iter()
+            .filter(|bel| {
+                let bt: i32 = unsafe { read_packed!(**bel, bel_type) };
+                self.constid_str(bt).is_some_and(|s| s == bel_type)
+            })
+            .count()
+    }
+
+    /// Get a tile type by its tile type index (not tile instance index).
+    pub fn tile_type_by_index(&self, tt_idx: i32) -> &TileTypePod {
+        &self.chip_info().tile_types.get()[tt_idx as usize]
+    }
+
+    /// Get the number of tile types.
+    pub fn num_tile_types(&self) -> usize {
+        self.chip_info().tile_types.get().len()
     }
 
     // =====================================================================
@@ -265,13 +385,11 @@ impl ChipDb {
         speed_grade: &'a SpeedGradePod,
         pip: PipId,
     ) -> Option<&'a PipTimingPod> {
-        let pip_data = self.pip_info(pip);
-        let idx: i32 = unsafe { read_packed!(*pip_data, timing_idx) };
+        let idx = self.pip_timing_index(pip);
         if idx < 0 {
             return None;
         }
-        let classes = speed_grade.pip_classes.get();
-        classes.get(idx as usize)
+        speed_grade.pip_classes.get().get(idx as usize)
     }
 
     /// Get node timing data for a wire from a speed grade.
@@ -291,6 +409,15 @@ impl ChipDb {
         classes.get(idx as usize)
     }
 
+    /// Compute the node shape index from a root node ref.
+    ///
+    /// Matches C++: `uint16_t(dy) | (uint32_t(wire) << 16)`
+    fn node_shape_idx(node_ref: &RelNodeRefPod) -> u32 {
+        let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+        let wire: u16 = unsafe { read_packed!(*node_ref, wire) };
+        (dy as u16 as u32) | ((wire as u32) << 16)
+    }
+
     /// Get the timing index for a wire, checking node shapes first.
     fn wire_timing_index(&self, wire: WireId) -> i32 {
         let tile = wire.tile();
@@ -300,17 +427,13 @@ impl ChipDb {
         if let Some(node_ref) = wire_to_node.get(wire_idx as usize) {
             let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
             if dx_mode == RelNodeRefPod::MODE_IS_ROOT {
-                // This wire is the root of a node shape; get the node shape timing.
-                let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
-                let wire_field: u16 = unsafe { read_packed!(*node_ref, wire) };
-                let shape_idx = ((dy as u32) << 16) | (wire_field as u32);
+                let shape_idx = Self::node_shape_idx(node_ref);
                 let node_shapes = self.chip_info().node_shapes.get();
                 if let Some(ns) = node_shapes.get(shape_idx as usize) {
                     let timing_idx: i32 = unsafe { read_packed!(*ns, timing_idx) };
                     return timing_idx;
                 }
             } else if dx_mode != RelNodeRefPod::MODE_TILE_WIRE {
-                // Non-root node wire: find the root tile and recurse.
                 let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
                 let wire_field: u16 = unsafe { read_packed!(*node_ref, wire) };
                 let root_tile = self.rel_tile(tile, dx_mode as i32, dy as i32);
@@ -320,6 +443,57 @@ impl ChipDb {
         // Tile-local wire: use wire's own timing_idx.
         let wire_data = self.wire_info(wire);
         unsafe { read_packed!(*wire_data, timing_idx) }
+    }
+
+    /// Get all wires that belong to the same routing node as the given wire.
+    ///
+    /// Returns an empty Vec if the wire is tile-local (not part of a node).
+    /// Otherwise returns all wires in the node, including the input wire itself.
+    pub fn node_wires(&self, wire: WireId) -> Vec<WireId> {
+        let tile = wire.tile();
+        let wire_idx = wire.index();
+        let shape = self.tile_shape(tile);
+        let wire_to_node = shape.wire_to_node.get();
+
+        let Some(node_ref) = wire_to_node.get(wire_idx as usize) else {
+            return Vec::new();
+        };
+        let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
+
+        if dx_mode == RelNodeRefPod::MODE_TILE_WIRE {
+            return Vec::new();
+        }
+
+        let (root_tile, shape_idx) = if dx_mode == RelNodeRefPod::MODE_IS_ROOT {
+            (tile, Self::node_shape_idx(node_ref))
+        } else {
+            let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+            let w: u16 = unsafe { read_packed!(*node_ref, wire) };
+            let root_tile = self.rel_tile(tile, dx_mode as i32, dy as i32);
+            let root_shape = self.tile_shape(root_tile);
+            let root_w2n = root_shape.wire_to_node.get();
+            if let Some(root_ref) = root_w2n.get(w as usize) {
+                (root_tile, Self::node_shape_idx(root_ref))
+            } else {
+                return Vec::new();
+            }
+        };
+
+        let node_shapes = self.chip_info().node_shapes.get();
+        let Some(ns) = node_shapes.get(shape_idx as usize) else {
+            return Vec::new();
+        };
+
+        let tile_wires = ns.tile_wires.get();
+        let mut result = Vec::with_capacity(tile_wires.len());
+        for tw in tile_wires {
+            let dx: i16 = unsafe { read_packed!(*tw, dx) };
+            let dy: i16 = unsafe { read_packed!(*tw, dy) };
+            let w: i16 = unsafe { read_packed!(*tw, wire) };
+            let dest_tile = self.rel_tile(root_tile, dx as i32, dy as i32);
+            result.push(WireId::new(dest_tile, w as i32));
+        }
+        result
     }
 
     /// Binary search a sorted RelSlice by a key extracted from each element.

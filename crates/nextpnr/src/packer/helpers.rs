@@ -1,9 +1,8 @@
 //! Utility functions for netlist manipulation during packing.
 
-use crate::context::Context;
 use crate::common::IdString;
-use crate::netlist::{CellId, NetId};
-use crate::netlist::PortType;
+use crate::context::Context;
+use crate::netlist::{CellId, NetId, PortType};
 
 /// Disconnect a port from its net.
 ///
@@ -19,16 +18,13 @@ pub fn disconnect_port(ctx: &mut Context, cell: CellId, port: IdString) {
     let user_idx = cell_info.port_user_idx(port);
 
     if let Some(user_idx) = user_idx {
-        // This port was a user (sink) of the net.
         ctx.design
             .net_edit(net_idx)
             .disconnect_user(user_idx as usize);
     } else {
-        // This port was the driver of the net.
         ctx.design.net_edit(net_idx).clear_driver();
     }
 
-    // Clear the port's net reference.
     ctx.design.cell_edit(cell).set_port_net(port, None, None);
 }
 
@@ -43,14 +39,12 @@ pub fn connect_port(ctx: &mut Context, cell: CellId, port: IdString, net: NetId)
         .port_type(port)
         .unwrap_or(PortType::In);
 
-    if port_type == PortType::Out || port_type == PortType::InOut {
-        // Set as driver.
+    if matches!(port_type, PortType::Out | PortType::InOut) {
         ctx.design.net_edit(net).set_driver(cell, port);
         ctx.design
             .cell_edit(cell)
             .set_port_net(port, Some(net), None);
     } else {
-        // Add as user.
         let idx = ctx.design.net_edit(net).add_user(cell, port);
         ctx.design
             .cell_edit(cell)

@@ -71,6 +71,14 @@ impl<'a> CellEditor<'a> {
         self
     }
 
+    pub fn set_constraints(&mut self, x: i32, y: i32, z: i32, abs_z: bool) -> &mut Self {
+        self.cell.constr_x = x;
+        self.cell.constr_y = y;
+        self.cell.constr_z = z;
+        self.cell.constr_abs_z = abs_z;
+        self
+    }
+
     pub fn set_region(&mut self, region: Option<u32>) -> &mut Self {
         self.cell.region = region;
         self

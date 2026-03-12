@@ -17,12 +17,13 @@ use std::collections::BinaryHeap;
 
 use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
+use crate::metrics::{BoundingBox, compute_bbox};
 use crate::netlist::NetId;
-use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
-    bind_route, collect_routable_nets, collect_sink_wires, setup_net_source, unroute_net,
+    apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
+    resolve_source_wire, source_wire_const_value, unroute_net, RoutePlan, SinkRoute,
 };
 use super::RouterError;
 
@@ -63,73 +64,6 @@ impl Default for Router2Cfg {
             bb_margin: 3,
             verbose: false,
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Bounding box
-// ---------------------------------------------------------------------------
-
-/// Axis-aligned bounding box in tile coordinates.
-pub struct BoundingBox {
-    pub x0: i32,
-    pub y0: i32,
-    pub x1: i32,
-    pub y1: i32,
-}
-
-impl BoundingBox {
-    /// Check whether a tile coordinate (x, y) falls within this bounding box.
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x0 && x <= self.x1 && y >= self.y0 && y <= self.y1
-    }
-}
-
-/// Compute a bounding box for a net based on its connected cells' BEL locations.
-///
-/// The box is expanded by `margin` tiles in each direction and clamped to the
-/// chip grid boundaries.
-pub fn compute_bbox(ctx: &Context, net_idx: NetId, margin: i32) -> BoundingBox {
-    let net = ctx.net(net_idx);
-
-    let mut x0 = i32::MAX;
-    let mut y0 = i32::MAX;
-    let mut x1 = i32::MIN;
-    let mut y1 = i32::MIN;
-    let mut found_any = false;
-
-    // Collect all connected cell indices (driver + users).
-    let cell_indices = net
-        .driver()
-        .into_iter()
-        .map(|pin| pin.cell)
-        .chain(net.users().iter().filter(|u| u.is_valid()).map(|u| u.cell));
-
-    for cell_idx in cell_indices {
-        if let Some(bel) = ctx.cell(cell_idx).bel() {
-            let loc = bel.loc();
-            x0 = x0.min(loc.x);
-            y0 = y0.min(loc.y);
-            x1 = x1.max(loc.x);
-            y1 = y1.max(loc.y);
-            found_any = true;
-        }
-    }
-
-    if !found_any {
-        return BoundingBox {
-            x0: 0,
-            y0: 0,
-            x1: ctx.chipdb().width() - 1,
-            y1: ctx.chipdb().height() - 1,
-        };
-    }
-
-    BoundingBox {
-        x0: (x0 - margin).max(0),
-        y0: (y0 - margin).max(0),
-        x1: (x1 + margin).min(ctx.chipdb().width() - 1),
-        y1: (y1 + margin).min(ctx.chipdb().height() - 1),
     }
 }
 
@@ -346,11 +280,10 @@ pub fn astar_route_r2(
 
     let init_capacity = src_wires.len().saturating_mul(8).max(16);
     let mut heap = BinaryHeap::with_capacity(init_capacity);
-    // visited: wire -> (best cost so far, pip used to reach it)
-    let mut visited: FxHashMap<WireId, (f64, Option<PipId>)> =
+    // visited: wire -> (best cost, Option<pip>, came_from wire)
+    let mut visited: FxHashMap<WireId, (f64, Option<PipId>, WireId)> =
         FxHashMap::with_capacity_and_hasher(init_capacity, Default::default());
 
-    // Seed the search with all source wires.
     for &src in src_wires {
         let h = ctx.estimate_delay(src, dst_wire) as f64;
         heap.push(R2QueueEntry {
@@ -358,73 +291,88 @@ pub fn astar_route_r2(
             cost: 0.0,
             estimate: h,
         });
-        visited.insert(src, (0.0, None));
+        visited.insert(src, (0.0, None, src));
     }
 
     while let Some(entry) = heap.pop() {
-        // Skip if we already found a cheaper path to this wire.
-        if let Some(&(prev_cost, _)) = visited.get(&entry.wire) {
+        if let Some(&(prev_cost, _, _)) = visited.get(&entry.wire) {
             if entry.cost > prev_cost {
                 continue;
             }
         }
 
-        // Check if we reached the destination.
         if entry.wire == dst_wire {
-            // Trace back the path through visited.
             let mut pips = Vec::new();
             let mut current = dst_wire;
-            while let Some(&(_, pip)) = visited.get(&current) {
-                let pip = match pip {
-                    Some(pip) => pip,
-                    None => break,
-                };
-                if !pip.is_valid() {
-                    // Reached a source wire.
+            loop {
+                let Some(&(_, pip, from)) = visited.get(&current) else {
                     break;
+                };
+                match pip {
+                    Some(p) => {
+                        pips.push(p);
+                        current = ctx.pip(p).src_wire().id();
+                    }
+                    None => {
+                        if from == current {
+                            break;
+                        }
+                        current = from;
+                    }
                 }
-                pips.push(pip);
-                current = ctx.pip(pip).src_wire().id();
             }
             pips.reverse();
             return Some(pips);
         }
 
-        // Expand: iterate all downhill pips from this wire.
         let wire_info = ctx.chipdb().wire_info(entry.wire);
         let downhill_indices = wire_info.pips_downhill.get();
 
         for &pip_index in downhill_indices {
-            // PIPs are tile-local: same tile as the wire.
             let pip = PipId::new(entry.wire.tile(), pip_index);
-
             let next_wire = ctx.pip(pip).dst_wire().id();
 
-            // Bounding box pruning: skip wires outside the net's bounding box.
             let (wx, wy) = ctx.chipdb().tile_xy(next_wire.tile());
             if !bbox.contains(wx, wy) {
                 continue;
             }
 
-            // Negotiation-based cost.
             let pip_delay = ctx.pip(pip).delay().max_delay() as f64;
             let wire_neg_cost = state.wire_cost(next_wire, net_idx);
             let new_cost = entry.cost + pip_delay + wire_neg_cost;
 
-            // Skip if we already have a cheaper or equal path to next_wire.
-            if let Some(&(prev_cost, _)) = visited.get(&next_wire) {
+            if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
                 if new_cost >= prev_cost {
                     continue;
                 }
             }
 
-            visited.insert(next_wire, (new_cost, Some(pip)));
+            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
 
             let h = ctx.estimate_delay(next_wire, dst_wire) as f64;
             heap.push(R2QueueEntry {
                 wire: next_wire,
                 cost: new_cost,
                 estimate: new_cost + h,
+            });
+        }
+
+        // Node expansion for inter-tile routing nodes.
+        for nw in ctx.chipdb().node_wires(entry.wire) {
+            if nw == entry.wire {
+                continue;
+            }
+            if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
+                if entry.cost >= prev_cost {
+                    continue;
+                }
+            }
+            visited.insert(nw, (entry.cost, None, entry.wire));
+            let h = ctx.estimate_delay(nw, dst_wire) as f64;
+            heap.push(R2QueueEntry {
+                wire: nw,
+                cost: entry.cost,
+                estimate: entry.cost + h,
             });
         }
     }
@@ -436,46 +384,86 @@ pub fn astar_route_r2(
 // Single-net routing (Router2 variant)
 // ---------------------------------------------------------------------------
 
-/// Route a single net using Router2's negotiation-based A* search.
+/// Pure computation: plan a route for a single net without mutating Context.
 ///
-/// This follows the same structure as Router1's `route_net`, but uses
-/// `astar_route_r2` which incorporates negotiation costs and bounding box
-/// pruning.
-fn route_net_r2(
-    ctx: &mut Context,
-    net_idx: NetId,
+/// Returns a `RoutePlan` that can later be applied via `apply_route_plan`.
+/// The function resolves the source wire, computes a bounding box, collects
+/// sink wires, and runs A* search for each sink using the negotiation cost
+/// model in `state`.
+pub fn compute_route_r2(
+    ctx: &Context,
+    net: NetId,
     state: &Router2State,
-) -> Result<(), RouterError> {
-    if setup_net_source(ctx, net_idx)?.is_none() {
-        return Ok(());
+    bb_margin: i32,
+) -> Result<RoutePlan, RouterError> {
+    let source_wire = match resolve_source_wire(ctx, net)? {
+        Some(w) => w,
+        None => {
+            return Ok(RoutePlan {
+                net,
+                source_wire: WireId::INVALID,
+                sink_routes: vec![],
+            });
+        }
+    };
+
+    let bbox = compute_bbox(ctx, net, bb_margin);
+    let sink_wires = collect_sink_wires(ctx, net);
+
+    // Track routing tree locally (no Context mutation).
+    // Start with source wire plus any already-routed wires on the net.
+    let mut tree_wires: Vec<WireId> = vec![source_wire];
+    tree_wires.extend(ctx.net(net).wire_ids());
+
+    // For constant nets, add all matching constant wires as additional sources.
+    let const_val = source_wire_const_value(ctx, source_wire);
+    if const_val != 0 {
+        tree_wires.extend(collect_constant_source_wires(ctx, const_val));
     }
 
-    let net_name = ctx.net(net_idx).name_id();
-    let bbox = compute_bbox(ctx, net_idx, state.cfg.bb_margin);
-    let sink_wires = collect_sink_wires(ctx, net_idx);
-
-    // Route to each sink.
+    let mut sink_routes = Vec::new();
     for sink_wire in sink_wires {
-        // Check if this sink is already routed.
-        if ctx.net(net_idx).wires().contains_key(&sink_wire) {
+        if tree_wires.contains(&sink_wire) {
+            sink_routes.push(SinkRoute {
+                sink_wire,
+                pips: vec![],
+            });
             continue;
         }
-
-        // Collect current routing tree wires as potential A* start points.
-        let existing_wires: Vec<WireId> = ctx.net(net_idx).wire_ids().collect();
-
-        let path = astar_route_r2(ctx, &existing_wires, sink_wire, net_idx, state, &bbox);
-
-        match path {
+        match astar_route_r2(ctx, &tree_wires, sink_wire, net, state, &bbox) {
             Some(pips) => {
-                bind_route(ctx, net_idx, &pips);
+                // Extend the local tree with newly reached wires.
+                for &pip in &pips {
+                    tree_wires.push(ctx.pip(pip).dst_wire().id());
+                }
+                sink_routes.push(SinkRoute { sink_wire, pips });
             }
             None => {
+                let net_name = ctx.net(net).name_id();
                 return Err(RouterError::NoPath(ctx.name_of(net_name).to_owned()));
             }
         }
     }
 
+    Ok(RoutePlan {
+        net,
+        source_wire,
+        sink_routes,
+    })
+}
+
+/// Route a single net using Router2's negotiation-based A* search.
+///
+/// Computes a route plan via `compute_route_r2` and applies it to the context.
+fn route_net_r2(
+    ctx: &mut Context,
+    net_idx: NetId,
+    state: &Router2State,
+) -> Result<(), RouterError> {
+    let plan = compute_route_r2(ctx, net_idx, state, state.cfg.bb_margin)?;
+    if plan.source_wire.is_valid() {
+        apply_route_plan(ctx, &plan);
+    }
     Ok(())
 }
 
@@ -490,75 +478,85 @@ impl super::Router for Router2 {
     type Config = Router2Cfg;
 
     fn route(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), super::RouterError> {
-        route_router2(ctx, cfg)
-    }
-}
-
-/// Route all nets in the design using negotiation-based (PathFinder) routing.
-///
-/// The algorithm:
-/// 1. Collect all nets that need routing.
-/// 2. Perform an initial greedy route for every net (failures are tolerated).
-/// 3. Iteratively detect congested wires, rip up the involved nets, update
-///    historical costs, and reroute with increased present-congestion costs.
-/// 4. Repeat until no congestion remains or `max_iterations` is reached.
-pub fn route_router2(ctx: &mut Context, cfg: &Router2Cfg) -> Result<(), RouterError> {
-    let mut state = Router2State::new(cfg);
-    let nets = collect_routable_nets(ctx);
-
-    if state.cfg.verbose {
-        info!("Router2: {} nets to route", nets.len());
+        let nets = collect_routable_nets(ctx);
+        self.route_nets(ctx, cfg, &nets)
     }
 
-    // Initial route (greedy). Failures are tolerated here because the
-    // negotiation loop will resolve congestion.
-    for &net_idx in &nets {
-        let _ = route_net_r2(ctx, net_idx, &state);
-        state.add_net_usage(&ctx.design, net_idx);
+    fn route_net(
+        &self,
+        ctx: &mut Context,
+        cfg: &Self::Config,
+        net: crate::netlist::NetId,
+    ) -> Result<(), super::RouterError> {
+        let state = Router2State::new(cfg);
+        route_net_r2(ctx, net, &state)
     }
 
-    // Negotiation loop.
-    for iter in 0..state.cfg.max_iterations {
-        let congested = state.find_congested_nets(&ctx.design);
-        if congested.is_empty() {
-            if state.cfg.verbose {
-                info!("Router2: converged after {} iterations", iter);
+    fn route_nets(
+        &self,
+        ctx: &mut Context,
+        cfg: &Self::Config,
+        nets: &[crate::netlist::NetId],
+    ) -> Result<(), super::RouterError> {
+        use rayon::prelude::*;
+
+        let mut state = Router2State::new(cfg);
+
+        // Phase 1: Parallel initial route computation
+        let plans: Vec<Result<RoutePlan, RouterError>> = nets
+            .par_iter()
+            .map(|&net| compute_route_r2(ctx, net, &state, cfg.bb_margin))
+            .collect();
+
+        // Serial apply
+        for plan in plans {
+            let plan = plan?;
+            if plan.source_wire.is_valid() {
+                apply_route_plan(ctx, &plan);
             }
-            return Ok(());
+            state.add_net_usage(&ctx.design, plan.net);
         }
 
-        if state.cfg.verbose {
-            info!(
-                "Router2: iteration {}, {} congested nets, {} congested wires",
-                iter,
-                congested.len(),
-                state.count_congested_wires()
-            );
+        // Phase 2: Negotiation loop with parallel reroute phases
+        let net_set: FxHashSet<crate::netlist::NetId> = nets.iter().copied().collect();
+        for _iter in 0..state.cfg.max_iterations {
+            let congested: Vec<_> = state
+                .find_congested_nets(&ctx.design)
+                .into_iter()
+                .filter(|n| net_set.contains(n))
+                .collect();
+            if congested.is_empty() {
+                return Ok(());
+            }
+
+            for &net_idx in &congested {
+                state.remove_net_usage(&ctx.design, net_idx);
+                unroute_net(ctx, net_idx);
+            }
+            state.update_history();
+
+            // Parallel reroute
+            let plans: Vec<Result<RoutePlan, RouterError>> = congested
+                .par_iter()
+                .map(|&net| compute_route_r2(ctx, net, &state, cfg.bb_margin))
+                .collect();
+
+            for plan in plans {
+                let plan = plan?;
+                if plan.source_wire.is_valid() {
+                    apply_route_plan(ctx, &plan);
+                }
+                state.add_net_usage(&ctx.design, plan.net);
+            }
+            state.present_cost *= state.cfg.present_cost_growth;
         }
 
-        // Rip up all congested nets.
-        for &net_idx in &congested {
-            state.remove_net_usage(&ctx.design, net_idx);
-            unroute_net(ctx, net_idx);
+        let remaining = state.count_congested_wires();
+        if remaining == 0 {
+            Ok(())
+        } else {
+            Err(RouterError::Congestion(state.cfg.max_iterations, remaining))
         }
-
-        // Update history before rerouting so costs reflect past congestion.
-        state.update_history();
-
-        // Reroute congested nets with updated costs.
-        for &net_idx in &congested {
-            let _ = route_net_r2(ctx, net_idx, &state);
-            state.add_net_usage(&ctx.design, net_idx);
-        }
-
-        // Increase present-congestion cost for next iteration.
-        state.present_cost *= state.cfg.present_cost_growth;
-    }
-
-    let remaining = state.count_congested_wires();
-    if remaining == 0 {
-        Ok(())
-    } else {
-        Err(RouterError::Congestion(state.cfg.max_iterations, remaining))
     }
 }
+
