@@ -41,6 +41,7 @@ fn default_config_values() {
     assert_eq!(cfg.min_temp, 1e-6);
     assert_eq!(cfg.timing_weight, 0.5);
     assert!(cfg.slack_redistribution);
+    assert_eq!(cfg.congestion_weight, 0.0);
 }
 
 // =====================================================================

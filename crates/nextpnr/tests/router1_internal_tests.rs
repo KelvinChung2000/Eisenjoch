@@ -5,10 +5,12 @@ use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
 use nextpnr::router::common::{
-    bind_route, collect_routable_nets, find_congested_wires, unroute_net,
+    apply_route_plan, bind_route, collect_routable_nets, find_congested_wires, unroute_net,
+    RoutePlan, SinkRoute,
 };
 use nextpnr::router::router1::{
-    astar_route, find_congested_nets, route_net, QueueEntry, Router1Cfg, Router1State,
+    astar_route, compute_route_r1, find_congested_nets, route_net, QueueEntry, Router1Cfg,
+    Router1State,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BinaryHeap;
@@ -384,4 +386,94 @@ fn collect_routable_nets_finds_valid_net() {
     ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
     ctx.design.net_edit(net_idx).add_user(cell_idx, port);
     assert_eq!(collect_routable_nets(&ctx), vec![net_idx]);
+}
+
+#[test]
+fn compute_route_produces_valid_plan() {
+    let mut ctx = common::make_context();
+    let lut_type = ctx.id("LUT4");
+    let port = ctx.id("I0");
+    let cell_idx = ctx.design.add_cell(ctx.id("cell_a"), lut_type);
+    ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
+    ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
+    let net_idx = ctx.design.add_net(ctx.id("test_net"));
+    ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
+    ctx.design.net_edit(net_idx).add_user(cell_idx, port);
+
+    let penalty = FxHashMap::default();
+    let plan = compute_route_r1(&ctx, net_idx, &penalty).unwrap();
+    assert_eq!(plan.net, net_idx);
+    assert!(plan.source_wire.is_valid());
+    // Driver and sink use the same wire, so sink_routes should have empty pips
+    assert!(!plan.sink_routes.is_empty());
+    for sr in &plan.sink_routes {
+        assert!(sr.pips.is_empty(), "same-pin route should have no PIPs");
+    }
+}
+
+#[test]
+fn apply_route_plan_binds_wires() {
+    let mut ctx = common::make_context();
+    let net_idx = ctx.design.add_net(ctx.id("net_plan"));
+    let src_wire = WireId::new(0, 0);
+    let pip = PipId::new(0, 0);
+    let dst_wire = ctx.pip(pip).dst_wire().id();
+
+    let plan = RoutePlan {
+        net: net_idx,
+        source_wire: src_wire,
+        sink_routes: vec![SinkRoute {
+            sink_wire: dst_wire,
+            pips: vec![pip],
+        }],
+    };
+
+    apply_route_plan(&mut ctx, &plan);
+
+    // Source wire should be bound
+    assert!(!ctx.wire(src_wire).is_available());
+    // Destination wire should be bound
+    assert!(!ctx.wire(dst_wire).is_available());
+    // PIP should be bound
+    assert!(!ctx.pip(pip).is_available());
+    // Net should have both wires
+    assert!(ctx.net(net_idx).wires().contains_key(&src_wire));
+    assert!(ctx.net(net_idx).wires().contains_key(&dst_wire));
+}
+
+#[test]
+fn compute_then_apply_matches_route_net() {
+    // Compare compute+apply vs route_net for the same setup
+    let mut ctx1 = common::make_context();
+    let mut ctx2 = common::make_context();
+
+    // Setup: driver BEL(0,0), sink BEL(0,0) same pin
+    for ctx in [&mut ctx1, &mut ctx2] {
+        let lut_type = ctx.id("LUT4");
+        let port = ctx.id("I0");
+        let cell_idx = ctx.design.add_cell(ctx.id("cell_a"), lut_type);
+        ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
+        ctx.bind_bel(BelId::new(0, 0), cell_idx, PlaceStrength::Placer);
+        let net_idx = ctx.design.add_net(ctx.id("test_net"));
+        ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
+        ctx.design.net_edit(net_idx).add_user(cell_idx, port);
+    }
+
+    let penalty = FxHashMap::default();
+    let net_idx = ctx1.design.net_by_name(ctx1.id("test_net")).unwrap();
+
+    // Method 1: compute + apply
+    let plan = compute_route_r1(&ctx1, net_idx, &penalty).unwrap();
+    if plan.source_wire.is_valid() {
+        apply_route_plan(&mut ctx1, &plan);
+    }
+
+    // Method 2: route_net
+    let net_idx2 = ctx2.design.net_by_name(ctx2.id("test_net")).unwrap();
+    route_net(&mut ctx2, net_idx2, &penalty).unwrap();
+
+    // Both should have the same wires on the net
+    let wires1: FxHashSet<WireId> = ctx1.net(net_idx).wire_ids().collect();
+    let wires2: FxHashSet<WireId> = ctx2.net(net_idx2).wire_ids().collect();
+    assert_eq!(wires1, wires2);
 }

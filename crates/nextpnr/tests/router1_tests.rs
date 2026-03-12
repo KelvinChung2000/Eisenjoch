@@ -3,7 +3,7 @@ mod common;
 use nextpnr::chipdb::BelId;
 use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::PortType;
-use nextpnr::router::router1::{route_router1, Router1Cfg};
+use nextpnr::router::router1::Router1Cfg;
 use nextpnr::router::{Router, Router1, RouterError};
 
 // =====================================================================
@@ -46,14 +46,14 @@ fn router_error_generic() {
 }
 
 // =====================================================================
-// Integration: route_router1
+// Integration: Router1.route()
 // =====================================================================
 
 #[test]
 fn route_empty_design() {
     let mut ctx = common::make_context();
     let cfg = Router1Cfg::default();
-    let result = route_router1(&mut ctx, &cfg);
+    let result = Router1.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -64,7 +64,7 @@ fn route_design_with_no_routable_nets() {
     ctx.design.add_net(net_name);
 
     let cfg = Router1Cfg::default();
-    let result = route_router1(&mut ctx, &cfg);
+    let result = Router1.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -84,7 +84,7 @@ fn route_design_with_no_users() {
     ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
 
     let cfg = Router1Cfg::default();
-    let result = route_router1(&mut ctx, &cfg);
+    let result = Router1.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 

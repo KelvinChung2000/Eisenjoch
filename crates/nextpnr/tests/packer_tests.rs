@@ -94,3 +94,19 @@ fn pack_without_plugin_uses_default() {
     let result = pack(&mut ctx, None);
     assert!(result.is_ok());
 }
+
+// =====================================================================
+// Full pack integration tests
+// =====================================================================
+
+#[test]
+fn full_pack_default_on_empty_design() {
+    let mut ctx = common::make_context();
+    assert!(nextpnr::packer::pack_default(&mut ctx).is_ok());
+}
+
+#[test]
+fn full_pack_default_on_example_chipdb() {
+    let mut ctx = common::make_example_context();
+    assert!(nextpnr::packer::pack_default(&mut ctx).is_ok());
+}

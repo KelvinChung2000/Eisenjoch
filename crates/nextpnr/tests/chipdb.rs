@@ -7,7 +7,6 @@ use std::mem;
 
 use nextpnr::chipdb::testutil::{make_test_chipdb, SyntheticChipDbBuilder};
 use nextpnr::chipdb::*;
-use nextpnr::read_packed;
 
 // =============================================================================
 // Struct size tests
@@ -50,11 +49,8 @@ fn pod_struct_sizes() {
 #[test]
 fn load_synthetic_chipdb() {
     let db = make_test_chipdb();
-    assert_eq!(unsafe { read_packed!(*db.chip_info(), magic) }, CHIPDB_MAGIC);
-    assert_eq!(
-        unsafe { read_packed!(*db.chip_info(), version) },
-        CHIPDB_VERSION
-    );
+    assert_eq!(db.chip_magic(), CHIPDB_MAGIC);
+    assert_eq!(db.chip_db_version(), CHIPDB_VERSION);
 }
 
 #[test]
@@ -139,9 +135,8 @@ fn pip_iteration() {
 fn bel_info_access() {
     let db = make_test_chipdb();
     let bel = BelId::new(0, 0);
-    let info = db.bel_info(bel);
-    let z: i16 = unsafe { read_packed!(*info, z) };
-    assert_eq!(z, 0);
+    let loc = db.bel_loc(bel);
+    assert_eq!(loc.z, 0);
 }
 
 #[test]
@@ -172,13 +167,11 @@ fn bel_loc_access() {
 fn pip_info_access() {
     let db = make_test_chipdb();
     let pip = PipId::new(0, 0);
-    let info = db.pip_info(pip);
-    let src_wire: i32 = unsafe { read_packed!(*info, src_wire) };
-    let dst_wire: i32 = unsafe { read_packed!(*info, dst_wire) };
-    let timing_idx: i32 = unsafe { read_packed!(*info, timing_idx) };
-    assert_eq!(src_wire, 0);
-    assert_eq!(dst_wire, 1);
-    assert_eq!(timing_idx, -1);
+    let src = db.pip_src_wire(pip);
+    let dst = db.pip_dst_wire(pip);
+    assert_eq!(src.index(), 0);
+    assert_eq!(dst.index(), 1);
+    assert_eq!(db.pip_timing_index(pip), 0);
 }
 
 #[test]
@@ -197,9 +190,8 @@ fn pip_src_dst_wire() {
 fn wire_info_access() {
     let db = make_test_chipdb();
     let wire = WireId::new(0, 0);
+    assert_eq!(db.wire_flags(wire), 0);
     let info = db.wire_info(wire);
-    let flags: i32 = unsafe { read_packed!(*info, flags) };
-    assert_eq!(flags, 0);
     assert_eq!(info.pips_downhill.len(), 1);
     assert_eq!(info.pips_uphill.len(), 0);
 }
@@ -215,11 +207,8 @@ fn tile_type_index() {
 #[test]
 fn tile_inst_access() {
     let db = make_test_chipdb();
-    let inst = db.tile_inst(0);
-    let tt: i32 = unsafe { read_packed!(*inst, tile_type) };
-    let shape: i32 = unsafe { read_packed!(*inst, shape) };
-    assert_eq!(tt, 0);
-    assert_eq!(shape, 0);
+    assert_eq!(db.tile_type_index(0), 0);
+    assert_eq!(db.tile_shape_index(0), 0);
 }
 
 #[test]
@@ -277,11 +266,13 @@ fn bel_pins_accessible() {
     let bel = BelId::new(0, 0);
     let info = db.bel_info(bel);
     let pins = info.pins.get();
-    assert_eq!(pins.len(), 1);
-    let wire: i32 = unsafe { read_packed!(pins[0], wire) };
-    let dir: i32 = unsafe { read_packed!(pins[0], dir) };
-    assert_eq!(wire, 0);
-    assert_eq!(dir, 0);
+    assert_eq!(pins.len(), 2);
+    let (_name, wire, dir) = db.bel_pin_fields(&pins[0]);
+    assert_eq!(wire, 0); // I0 on wire W0
+    assert_eq!(dir, 0);  // input
+    let (_name, wire, dir) = db.bel_pin_fields(&pins[1]);
+    assert_eq!(wire, 1); // O on wire W1
+    assert_eq!(dir, 1);  // output
 }
 
 #[test]
@@ -291,8 +282,7 @@ fn wire_bel_pins_accessible() {
     let info = db.wire_info(wire);
     let bel_pins = info.bel_pins.get();
     assert_eq!(bel_pins.len(), 1);
-    let bel: i32 = unsafe { read_packed!(bel_pins[0], bel) };
-    assert_eq!(bel, 0);
+    assert_eq!(db.bel_pin_ref_bel(&bel_pins[0]), 0);
 }
 
 #[test]
@@ -340,8 +330,68 @@ fn tile_shape_access() {
     let db = make_test_chipdb();
     let shape = db.tile_shape(0);
     assert_eq!(shape.wire_to_node.len(), 0);
-    let timing: i32 = unsafe { read_packed!(*shape, timing_index) };
-    assert_eq!(timing, -1);
+    assert_eq!(db.tile_shape_timing_index(0), 0);
+}
+
+// =============================================================================
+// Timing data tests
+// =============================================================================
+
+#[test]
+fn speed_grade_accessible() {
+    let db = make_test_chipdb();
+    assert_eq!(db.num_speed_grades(), 1);
+    let sg = db.speed_grade(0).unwrap();
+    assert_eq!(sg.pip_classes.len(), 1);
+    assert_eq!(sg.node_classes.len(), 1);
+    assert_eq!(sg.cell_types.len(), 1);
+}
+
+#[test]
+fn pip_timing_class_accessible() {
+    use nextpnr::read_packed;
+    let db = make_test_chipdb();
+    let sg = db.speed_grade(0).unwrap();
+    let pip = PipId::new(0, 0);
+    let tmg = db.pip_timing(sg, pip).unwrap();
+    // Uniform pip delay: 100ps fast, 150ps slow
+    let fast_min: i32 = unsafe { read_packed!(tmg.int_delay, fast_min) };
+    let slow_min: i32 = unsafe { read_packed!(tmg.int_delay, slow_min) };
+    assert_eq!(fast_min, 100);
+    assert_eq!(slow_min, 150);
+}
+
+#[test]
+fn node_timing_class_accessible() {
+    use nextpnr::read_packed;
+    let db = make_test_chipdb();
+    let sg = db.speed_grade(0).unwrap();
+    let wire = WireId::new(0, 0);
+    let tmg = db.node_timing(sg, wire).unwrap();
+    // Uniform node delay: 50ps fast, 75ps slow
+    let fast_min: i32 = unsafe { read_packed!(tmg.delay, fast_min) };
+    let slow_min: i32 = unsafe { read_packed!(tmg.delay, slow_min) };
+    assert_eq!(fast_min, 50);
+    assert_eq!(slow_min, 75);
+}
+
+#[test]
+fn cell_timing_has_lut4_comb_arc() {
+    use nextpnr::read_packed;
+    let db = make_test_chipdb();
+    let sg = db.speed_grade(0).unwrap();
+    // LUT4 type variant index
+    let ct_idx = db.cell_timing_index(sg, 2).unwrap(); // ID_LUT4 = 2
+    let ct = &sg.cell_types.get()[ct_idx];
+    assert_eq!(ct.pins.len(), 1);
+    let pin_tmg = &ct.pins.get()[0];
+    assert_eq!(pin_tmg.comb_arcs.len(), 1);
+    let arc = &pin_tmg.comb_arcs.get()[0];
+    // I0 -> O delay: 200ps fast, 300ps slow
+    let fast_min: i32 = unsafe { read_packed!(arc.delay, fast_min) };
+    let slow_min: i32 = unsafe { read_packed!(arc.delay, slow_min) };
+    assert_eq!(fast_min, 200);
+    assert_eq!(slow_min, 300);
 }
 
 // =============================================================================

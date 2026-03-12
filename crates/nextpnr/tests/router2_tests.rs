@@ -3,8 +3,8 @@ mod common;
 use nextpnr::chipdb::BelId;
 use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::PortType;
-use nextpnr::router::router2::{route_router2, Router2Cfg};
-use nextpnr::router::{Router, Router2, RouterError};
+use nextpnr::router::router2::Router2Cfg;
+use nextpnr::router::{Router, Router2};
 
 // =====================================================================
 // Config defaults
@@ -23,42 +23,17 @@ fn default_config() {
     assert!(!cfg.verbose);
 }
 
-// =====================================================================
-// Error display
-// =====================================================================
-
-#[test]
-fn router2_error_no_path() {
-    let err = RouterError::NoPath("my_net".to_string());
-    let msg = format!("{}", err);
-    assert!(msg.contains("my_net"));
-    assert!(msg.contains("no path"));
-}
-
-#[test]
-fn router2_error_congestion() {
-    let err = RouterError::Congestion(42, 7);
-    let msg = format!("{}", err);
-    assert!(msg.contains("42"));
-    assert!(msg.contains("7"));
-}
-
-#[test]
-fn router2_error_generic() {
-    let err = RouterError::Generic("something went wrong".to_string());
-    let msg = format!("{}", err);
-    assert!(msg.contains("something went wrong"));
-}
+// RouterError display tests are in router1_tests.rs (shared enum).
 
 // =====================================================================
-// Integration: route_router2
+// Integration: Router2.route()
 // =====================================================================
 
 #[test]
 fn route_r2_empty_design() {
     let mut ctx = common::make_context();
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, &cfg);
+    let result = Router2.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -69,7 +44,7 @@ fn route_r2_design_with_no_routable_nets() {
     ctx.design.add_net(net_name);
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, &cfg);
+    let result = Router2.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -89,7 +64,7 @@ fn route_r2_design_with_no_users() {
     ctx.design.net_edit(net_idx).set_driver(cell_idx, port);
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, &cfg);
+    let result = Router2.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 
@@ -113,7 +88,7 @@ fn route_r2_same_pin_driver_and_sink() {
     ctx.design.net_edit(net_idx).add_user(cell_idx, port_name);
 
     let cfg = Router2Cfg::default();
-    let result = route_router2(&mut ctx, &cfg);
+    let result = Router2.route(&mut ctx, &cfg);
     assert!(result.is_ok());
 }
 

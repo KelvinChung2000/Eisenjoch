@@ -362,17 +362,21 @@ fn estimate_delay_symmetric() {
 }
 
 #[test]
-fn pip_delay_returns_default() {
+fn pip_delay_from_timing_data() {
     let ctx = common::make_context();
     let pip = PipId::new(0, 0);
-    assert_eq!(ctx.pip(pip).delay(), DelayQuad::default());
+    let delay = ctx.pip(pip).delay();
+    // Synthetic chipdb has uniform pip timing: 100ps fast, 150ps slow
+    assert_ne!(delay, DelayQuad::default(), "pip should have non-zero timing");
 }
 
 #[test]
-fn wire_delay_returns_default() {
+fn wire_delay_from_timing_data() {
     let ctx = common::make_context();
     let wire = WireId::new(0, 0);
-    assert_eq!(ctx.wire(wire).delay(), DelayQuad::default());
+    let delay = ctx.wire(wire).delay();
+    // Synthetic chipdb has uniform node timing: 50ps fast, 75ps slow
+    assert_ne!(delay, DelayQuad::default(), "wire should have non-zero timing");
 }
 
 // =========================================================================

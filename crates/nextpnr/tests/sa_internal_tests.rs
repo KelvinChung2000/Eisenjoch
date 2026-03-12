@@ -3,8 +3,9 @@ mod common;
 use nextpnr::chipdb::BelId;
 use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::PortType;
-use nextpnr::placer::common::{initial_placement, net_hpwl, total_hpwl};
-use nextpnr::placer::sa::{revert_swap, try_swap};
+use nextpnr::metrics::{net_hpwl, total_hpwl};
+use nextpnr::placer::common::initial_placement;
+use nextpnr::placer::sa::{revert_swap, try_swap, CongestionCache};
 
 #[test]
 fn hpwl_no_driver_is_zero() {
@@ -169,7 +170,7 @@ fn swap_to_empty_bel() {
     let cell_idx = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
     let old_bel = ctx.design.cell(cell_idx).bel.unwrap();
     let empty_bel = ctx.bels().map(|b| b.id()).find(|&b| b != old_bel).unwrap();
-    let result = try_swap(&mut ctx, cell_idx, empty_bel);
+    let result = try_swap(&mut ctx, cell_idx, empty_bel, None);
     assert!(result.performed);
     assert_eq!(ctx.design.cell(cell_idx).bel, Some(empty_bel));
 }
@@ -182,7 +183,7 @@ fn swap_two_cells() {
     let cell1 = ctx.design.cell_by_name(ctx.id("cell_1")).unwrap();
     let bel0 = ctx.design.cell(cell0).bel.unwrap();
     let bel1 = ctx.design.cell(cell1).bel.unwrap();
-    let result = try_swap(&mut ctx, cell0, bel1);
+    let result = try_swap(&mut ctx, cell0, bel1, None);
     assert!(result.performed);
     assert_eq!(ctx.design.cell(cell0).bel, Some(bel1));
     assert_eq!(ctx.design.cell(cell1).bel, Some(bel0));
@@ -194,7 +195,7 @@ fn swap_same_bel_is_noop() {
     initial_placement(&mut ctx).unwrap();
     let cell_idx = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
     let bel = ctx.design.cell(cell_idx).bel.unwrap();
-    let result = try_swap(&mut ctx, cell_idx, bel);
+    let result = try_swap(&mut ctx, cell_idx, bel, None);
     assert!(!result.performed);
     assert_eq!(result.delta_cost, 0.0);
 }
@@ -207,8 +208,63 @@ fn revert_swap_restores_state() {
     let cell1 = ctx.design.cell_by_name(ctx.id("cell_1")).unwrap();
     let bel0 = ctx.design.cell(cell0).bel.unwrap();
     let bel1 = ctx.design.cell(cell1).bel.unwrap();
-    let _ = try_swap(&mut ctx, cell0, bel1);
+    let _ = try_swap(&mut ctx, cell0, bel1, None);
     revert_swap(&mut ctx, cell0, bel0, Some(cell1), bel1);
     assert_eq!(ctx.design.cell(cell0).bel, Some(bel0));
     assert_eq!(ctx.design.cell(cell1).bel, Some(bel1));
+}
+
+#[test]
+fn congestion_cache_initial_cost_is_non_negative() {
+    let mut ctx = common::make_context_with_cells(2);
+    initial_placement(&mut ctx).unwrap();
+    let cache = CongestionCache::new(&ctx);
+    assert!(cache.total_congestion_cost() >= 0.0);
+}
+
+#[test]
+fn swap_with_congestion_returns_delta() {
+    let mut ctx = common::make_context_with_cells(2);
+    initial_placement(&mut ctx).unwrap();
+    let mut cache = CongestionCache::new(&ctx);
+    let cell0 = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
+    let cell1 = ctx.design.cell_by_name(ctx.id("cell_1")).unwrap();
+    let bel1 = ctx.design.cell(cell1).bel.unwrap();
+    let result = try_swap(&mut ctx, cell0, bel1, Some(&mut cache));
+    assert!(result.performed);
+    // delta_congestion should be finite (could be zero for small grids).
+    assert!(result.delta_congestion.is_finite());
+}
+
+#[test]
+fn congestion_revert_restores_cost() {
+    let mut ctx = common::make_context_with_cells(2);
+    initial_placement(&mut ctx).unwrap();
+    let mut cache = CongestionCache::new(&ctx);
+    let cost_before = cache.total_congestion_cost();
+
+    let cell0 = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
+    let cell1 = ctx.design.cell_by_name(ctx.id("cell_1")).unwrap();
+    let bel0 = ctx.design.cell(cell0).bel.unwrap();
+    let bel1 = ctx.design.cell(cell1).bel.unwrap();
+
+    let result = try_swap(&mut ctx, cell0, bel1, Some(&mut cache));
+    assert!(result.performed);
+
+    // Revert: remove new demand, revert swap, add old demand.
+    for &net in &result.affected_nets {
+        cache.add_net_demand(&ctx, net, -1.0);
+    }
+    revert_swap(&mut ctx, cell0, bel0, Some(cell1), bel1);
+    for &net in &result.affected_nets {
+        cache.add_net_demand(&ctx, net, 1.0);
+    }
+
+    let cost_after = cache.total_congestion_cost();
+    assert!(
+        (cost_before - cost_after).abs() < 1e-9,
+        "congestion cost should be restored after revert: before={}, after={}",
+        cost_before,
+        cost_after
+    );
 }

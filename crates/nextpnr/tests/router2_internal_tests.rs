@@ -4,8 +4,9 @@ use nextpnr::chipdb::{BelId, PipId, WireId};
 use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
+use nextpnr::metrics::{BoundingBox, compute_bbox};
 use nextpnr::router::router2::{
-    astar_route_r2, compute_bbox, BoundingBox, R2QueueEntry, Router2Cfg, Router2State,
+    astar_route_r2, R2QueueEntry, Router2Cfg, Router2State,
 };
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;

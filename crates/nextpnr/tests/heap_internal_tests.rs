@@ -1,9 +1,7 @@
 mod common;
 
-use nextpnr::placer::heap::{
-    conjugate_gradient, count_bels_in_region, place_heap, spmv, HeapState, PlacerHeapCfg,
-    SparseSystem,
-};
+use nextpnr::placer::heap::{count_bels_in_region, place_heap, HeapState, PlacerHeapCfg};
+use nextpnr::placer::solver::{conjugate_gradient, spmv, Solver, SparseSystem};
 
 #[test]
 fn sparse_system_new() {
@@ -207,4 +205,23 @@ fn full_heap_run_smoke() {
             assert!(cell.bel_id().is_some());
         }
     }
+}
+
+#[test]
+fn cg_jacobi_preconditioned_fewer_iters() {
+    // A diagonally-dominant system where Jacobi preconditioning should help.
+    // A = [[10, -1], [-1, 10]], b = [9, 9] => x = [1, 1]
+    let mut x_precond = vec![0.0, 0.0];
+    let iters = conjugate_gradient(
+        &[10.0, 10.0],
+        &[(0, 1, -1.0)],
+        &[9.0, 9.0],
+        &mut x_precond,
+        1e-10,
+        100,
+    );
+    assert!((x_precond[0] - 1.0).abs() < 1e-6);
+    assert!((x_precond[1] - 1.0).abs() < 1e-6);
+    // Preconditioned CG on a 2x2 system should converge very quickly.
+    assert!(iters <= 2, "expected <= 2 iters, got {}", iters);
 }
