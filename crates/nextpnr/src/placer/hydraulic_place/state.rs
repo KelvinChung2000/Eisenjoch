@@ -554,6 +554,69 @@ impl HydraulicState {
         total
     }
 
+    /// Electrical transport energy: E = ½ · P^T · S.
+    ///
+    /// This is the total energy dissipated in the resistor network when
+    /// demand S is driven through conductances to produce potentials P.
+    /// Equivalent to Σ R_e · f_e² (sum of resistance × flow² over all edges).
+    ///
+    /// This is the natural objective of the Kirchhoff system LP = S.
+    /// Lower energy = shorter effective routing paths.
+    pub fn transport_energy(&self, demand: &[f64]) -> f64 {
+        let mut energy = 0.0;
+        for (j, &p) in self.network.junctions.iter().map(|j| &j.pressure).enumerate() {
+            energy += p * demand.get(j).unwrap_or(&0.0);
+        }
+        0.5 * energy
+    }
+
+    /// Density entropy: S = Σ_tiles ρ·ln(ρ) + hard_wall_penalty(ρ).
+    ///
+    /// Measures how far the cell distribution is from uniform.
+    /// ρ=1 everywhere → S ≈ 0 (well-spread). ρ >> 1 somewhere → S >> 0 (clustered).
+    /// The hard wall penalty adds α·(ρ-1)³ for ρ > 1, preventing overlap.
+    pub fn density_entropy(&self, ctx: &Context) -> f64 {
+        let w = self.network.width as usize;
+        let h = self.network.height as usize;
+        let n = self.num_cells();
+
+        // Build density field (same as compute_gas_gradient step 1-2).
+        let mut density = vec![0.0; w * h];
+        for i in 0..n {
+            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
+                density[ty as usize * w + tx as usize] += weight;
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
+                let n_bels = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
+                density[y * w + x] /= n_bels;
+            }
+        }
+
+        // Entropy + hard wall.
+        let mut entropy = 0.0;
+        for &rho in &density {
+            if rho > 1e-12 {
+                entropy += rho * rho.ln();
+            }
+            if rho > 1.0 {
+                let excess = rho - 1.0;
+                entropy += 10.0 * excess * excess * excess;
+            }
+        }
+        entropy
+    }
+
+    /// Free energy: F = E_transport + λ · S_density.
+    ///
+    /// The unified objective of the placement system.
+    /// Minimizing F simultaneously reduces routing energy and cell overlap.
+    pub fn free_energy(&self, ctx: &Context, demand: &[f64], lambda: f64) -> f64 {
+        self.transport_energy(demand) + lambda * self.density_entropy(ctx)
+    }
+
     pub fn clamp_positions(&mut self) {
         let max_x = (self.network.width - 1) as f64;
         let max_y = (self.network.height - 1) as f64;
@@ -626,25 +689,24 @@ impl HydraulicState {
         );
 
         // 4. Ideal gas pressure with hard-wall penalty at capacity.
-        //    Each cell has physical size 1/n_bels. A tile is "full" at ρ=1.0.
         //    Below capacity: P = ρ · T (linear, soft spreading)
         //    Above capacity: P = ρ · T + α·(ρ-1)³ (cubic hard wall)
-        //    This prevents cell overlap while allowing near-capacity packing.
+        const HARD_WALL_STIFFNESS: f64 = 10.0;
+        let mut pressure = vec![0.0; num_tiles];
         for i in 0..num_tiles {
             let rho = density[i];
-            let t = temperature_field[i];
-            let soft = rho * t;
+            let soft = rho * temperature_field[i];
             let hard_wall = if rho > 1.0 {
                 let excess = rho - 1.0;
-                10.0 * excess * excess * excess
+                HARD_WALL_STIFFNESS * excess * excess * excess
             } else {
                 0.0
             };
-            density[i] = soft + hard_wall;
+            pressure[i] = soft + hard_wall;
         }
 
         // 5. Gaussian blur + gradient.
-        let blurred = gaussian_blur_2d(&density, w, h, sigma);
+        let blurred = gaussian_blur_2d(&pressure, w, h, sigma);
         self.field_gradient(&blurred, w)
     }
 

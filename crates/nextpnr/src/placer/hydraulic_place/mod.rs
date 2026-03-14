@@ -1,13 +1,22 @@
-//! Gas hydraulic placer: compressible fluid on a pipe network.
+//! Hydraulic placer: minimum transport energy placement.
 //!
-//! Models cells as compressible gas flowing through the FPGA wire network:
-//! - Pressure P = κ × density (equation of state)
-//! - Pipe resistance R = 1/n_wires (routing difficulty)
-//! - Turbulence R_eff = R * (1 + beta * tanh((Q/C)^2)) (congestion)
-//! - Net demand = gas injection at driver, extraction at sinks
-//! - Pump energy E = Σ |P_driver - P_sinks| (minimise routing cost)
+//! Minimizes the free energy F(x) = E_transport(x) + λ · S_density(x) where:
 //!
-//! IOs are the pumps. Gas equilibrates through pipes. Cells follow pressure gradients.
+//! - E_transport = ½ P^T S: electrical flow energy through the routing graph.
+//!   Kirchhoff system LP = S gives equilibrium potentials P for demand S.
+//!   This is a convex relaxation of routing — flow splits across parallel paths,
+//!   automatically distributing demand and revealing congestion gradients.
+//!
+//! - S_density = Σ ρ·ln(ρ) + hard_wall(ρ): density entropy preventing cell overlap.
+//!   Cells have physical size 1/n_bels. Hard wall at ρ=1 prevents overcrowding.
+//!   Temperature T from cell kinetic energy provides natural annealing.
+//!
+//! - Congestion: R_eff = R·(1 + β·tanh(Q/C)²) increases resistance on congested
+//!   edges, naturally steering demand away from overutilized channels.
+//!
+//! The gradient ∂F/∂x drives cell motion via Adam optimizer.
+//! Kirchhoff gradient (asymmetric: drivers↓, sinks↑) minimizes transport energy.
+//! Density gradient (symmetric: always repulsive) minimizes entropy.
 
 pub mod config;
 pub mod kirchhoff;
@@ -226,17 +235,22 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         prev_x.copy_from_slice(&state.cell_x);
         prev_y.copy_from_slice(&state.cell_y);
 
-        // Track best continuous HPWL every iteration.
+        // 11. Track continuous HPWL for best-position selection.
+        //    Free energy F is logged for diagnostics but HPWL determines best snapshot
+        //    since F can increase during initial spreading before decreasing.
         let chpwl_now = state.continuous_hpwl(ctx);
         loop_state.record_metric(chpwl_now, &state.cell_x, &state.cell_y);
+        let f_energy = state.free_energy(ctx, &demand, density_lambda);
 
-        // 10. Reporting + convergence.
+        // 12. Reporting + convergence on free energy.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
+            let e_transport = state.transport_energy(&demand);
+            let s_density = state.density_entropy(ctx);
+            let chpwl = state.continuous_hpwl(ctx);
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, λ={:.2}, |∇|={:.2e}, β={:.2}",
-                iter, chpwl_now, loop_state.best_metric, density_lambda,
-                gradient_norm(&grad_x, &grad_y), beta,
+                "Hydraulic iter {}: F={:.1}, E={:.1}, S={:.1}, chpwl={:.0}, λ={:.3}, β={:.2}",
+                iter, f_energy, e_transport, s_density, chpwl, density_lambda, beta,
             );
 
             if chpwl_now > loop_state.best_metric * 1.20 && iter > diverge_patience {
