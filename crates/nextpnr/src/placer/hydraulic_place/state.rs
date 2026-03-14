@@ -1,13 +1,19 @@
 //! Hydraulic placer state: cell positions, network, solver state.
+//!
+//! All positions are continuous (floating-point). Demand injection and pressure
+//! gradient use bilinear interpolation — no tile snapping until final legalization.
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::context::Context;
-use crate::netlist::CellId;
+use crate::netlist::{CellId, NetId};
 
-use super::config::HydraulicPlacerCfg;
-use super::network::PipeNetwork;
-use crate::placer::solver::NesterovSolver;
+use super::config::InitStrategy;
+use super::network::{PipeNetwork, Port};
+
+const PARALLEL_THRESHOLD: usize = 4096;
+const ALL_PORTS: [Port; 4] = [Port::North, Port::East, Port::South, Port::West];
 
 pub struct HydraulicState {
     pub cell_x: Vec<f64>,
@@ -15,25 +21,56 @@ pub struct HydraulicState {
     pub cell_to_idx: FxHashMap<CellId, usize>,
     pub idx_to_cell: Vec<CellId>,
     pub network: PipeNetwork,
-    pub nesterov_x: NesterovSolver,
-    pub nesterov_y: NesterovSolver,
+    /// IO centroid and initial box half-size (for expanding box).
+    pub box_center: (f64, f64),
+    pub box_initial_half: f64,
 }
 
 impl HydraulicState {
-    pub fn new(ctx: &Context, cfg: &HydraulicPlacerCfg) -> Self {
+    pub fn new(ctx: &Context, init: InitStrategy) -> Self {
         let (cell_to_idx, idx_to_cell) = crate::placer::common::collect_movable_cells(ctx);
         let n = idx_to_cell.len();
 
-        let mut cell_x = vec![0.0; n];
-        let mut cell_y = vec![0.0; n];
-        crate::placer::common::init_positions_from_bels(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
-
         let network = PipeNetwork::from_context(ctx);
 
-        let mut nesterov_x = NesterovSolver::new(n, cfg.nesterov_step_size);
-        let mut nesterov_y = NesterovSolver::new(n, cfg.nesterov_step_size);
-        nesterov_x.set_positions(&cell_x);
-        nesterov_y.set_positions(&cell_y);
+        // Compute IO centroid for bounding box center.
+        let box_center = Self::compute_io_centroid(ctx, &network);
+
+        // Minimum box: just enough BELs to cover all cells.
+        // Average BEL density = total_bels / total_tiles.
+        let mut total_bels = 0usize;
+        for y in 0..network.height {
+            for x in 0..network.width {
+                let tile = ctx.chipdb().tile_by_xy(x, y);
+                total_bels += ctx.chipdb().tile_type(tile).bels.len();
+            }
+        }
+        let total_tiles = (network.width * network.height) as f64;
+        let bel_density = (total_bels as f64 / total_tiles).max(1.0);
+        let tiles_needed = n as f64 / bel_density;
+        let box_initial_half = (tiles_needed.sqrt() / 2.0).max(2.0);
+
+        // For Centroid strategy: distribute cells uniformly within the initial tight box
+        // centered at the IO centroid. Distinct positions avoid demand cancellation.
+        let (cell_x, cell_y) = match init {
+            InitStrategy::Uniform => Self::init_uniform(n, &network),
+            InitStrategy::Centroid => {
+                let (mut xs, mut ys) = Self::init_uniform(n, &network);
+                // Remap from full grid to initial box around IO centroid.
+                let (cx, cy) = box_center;
+                let half = box_initial_half;
+                let max_x = (network.width - 1) as f64;
+                let max_y = (network.height - 1) as f64;
+                for i in 0..n {
+                    let fx = xs[i] / network.width as f64;
+                    let fy = ys[i] / network.height as f64;
+                    xs[i] = (cx - half + 2.0 * half * fx).clamp(0.0, max_x);
+                    ys[i] = (cy - half + 2.0 * half * fy).clamp(0.0, max_y);
+                }
+                (xs, ys)
+            }
+            InitStrategy::RandomBel => Self::init_from_bels(ctx, &idx_to_cell, n),
+        };
 
         Self {
             cell_x,
@@ -41,146 +78,375 @@ impl HydraulicState {
             cell_to_idx,
             idx_to_cell,
             network,
-            nesterov_x,
-            nesterov_y,
+            box_center,
+            box_initial_half,
         }
+    }
+
+    /// Center of mass of all fixed (locked/IO) cells. Falls back to grid center.
+    fn compute_io_centroid(ctx: &Context, network: &PipeNetwork) -> (f64, f64) {
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut count = 0usize;
+        for (_cell_idx, cell) in ctx.design.iter_alive_cells() {
+            if !cell.bel_strength.is_locked() {
+                continue;
+            }
+            let Some(bel) = cell.bel else { continue };
+            let loc = ctx.bel(bel).loc();
+            sum_x += loc.x as f64;
+            sum_y += loc.y as f64;
+            count += 1;
+        }
+        if count > 0 {
+            (sum_x / count as f64, sum_y / count as f64)
+        } else {
+            ((network.width - 1) as f64 / 2.0, (network.height - 1) as f64 / 2.0)
+        }
+    }
+
+    /// Uniform grid: cells evenly distributed across the chip.
+    fn init_uniform(n: usize, network: &PipeNetwork) -> (Vec<f64>, Vec<f64>) {
+        let mut cell_x = vec![0.0; n];
+        let mut cell_y = vec![0.0; n];
+        if n > 0 {
+            let w = network.width as f64;
+            let h = network.height as f64;
+            let cols = (n as f64).sqrt().ceil() as usize;
+            let rows = (n + cols - 1) / cols;
+            let dx = w / (cols as f64 + 1.0);
+            let dy = h / (rows as f64 + 1.0);
+            for i in 0..n {
+                cell_x[i] = dx * ((i % cols) as f64 + 1.0);
+                cell_y[i] = dy * ((i / cols) as f64 + 1.0);
+            }
+        }
+        (cell_x, cell_y)
+    }
+
+    /// Random BEL: read positions from the BEL assignment done by initial_placement.
+    fn init_from_bels(ctx: &Context, idx_to_cell: &[CellId], n: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut cell_x = vec![0.0; n];
+        let mut cell_y = vec![0.0; n];
+        crate::placer::common::init_positions_from_bels(ctx, idx_to_cell, &mut cell_x, &mut cell_y);
+        (cell_x, cell_y)
     }
 
     pub fn num_cells(&self) -> usize {
         self.idx_to_cell.len()
     }
 
-    fn cell_tile(&self, i: usize) -> (i32, i32) {
-        let tx = (self.cell_x[i].round() as i32).clamp(0, self.network.width - 1);
-        let ty = (self.cell_y[i].round() as i32).clamp(0, self.network.height - 1);
-        (tx, ty)
-    }
-
-    fn pin_tile(&self, ctx: &Context, cell_id: CellId) -> (i32, i32) {
+    /// Continuous position of a pin (movable: from cell_x/y, fixed: from BEL).
+    pub fn pin_pos(&self, ctx: &Context, cell_id: CellId) -> (f64, f64) {
         if let Some(&idx) = self.cell_to_idx.get(&cell_id) {
-            self.cell_tile(idx)
+            (self.cell_x[idx], self.cell_y[idx])
         } else {
             let cell = ctx.design.cell(cell_id);
             if let Some(bel) = cell.bel {
                 let loc = ctx.bel(bel).loc();
-                (loc.x.clamp(0, self.network.width - 1), loc.y.clamp(0, self.network.height - 1))
+                (loc.x as f64, loc.y as f64)
             } else {
-                (self.network.width / 2, self.network.height / 2)
+                (self.network.width as f64 / 2.0, self.network.height as f64 / 2.0)
             }
         }
     }
 
-    /// Build demand vector from net connectivity (Kirchhoff model).
+    /// Nearest tile for a pin (for timing BFS and legalization diagnostics).
+    pub fn pin_tile(&self, ctx: &Context, cell_id: CellId) -> (i32, i32) {
+        let (x, y) = self.pin_pos(ctx, cell_id);
+        let tx = (x.round() as i32).clamp(0, self.network.width - 1);
+        let ty = (y.round() as i32).clamp(0, self.network.height - 1);
+        (tx, ty)
+    }
+
+    /// Clamp continuous position to grid and compute bilinear cell coordinates.
+    /// Returns (x0, y0, fx, fy) where x0/y0 are the lower-left tile indices
+    /// and fx/fy are the fractional offsets within the cell.
+    fn bilinear_cell(&self, x: f64, y: f64) -> (i32, i32, f64, f64) {
+        let max_x = (self.network.width - 1) as f64;
+        let max_y = (self.network.height - 1) as f64;
+        let x = x.clamp(0.0, max_x);
+        let y = y.clamp(0.0, max_y);
+
+        let x0 = (x.floor() as i32).clamp(0, self.network.width - 2);
+        let y0 = (y.floor() as i32).clamp(0, self.network.height - 2);
+        let fx = x - x0 as f64;
+        let fy = y - y0 as f64;
+        (x0, y0, fx, fy)
+    }
+
+    /// Bilinear weights: maps continuous (x, y) to 4 surrounding tiles with weights.
+    /// Returns [(tile_x, tile_y, weight); 4].
+    fn bilinear_weights(&self, x: f64, y: f64) -> [(i32, i32, f64); 4] {
+        let (x0, y0, fx, fy) = self.bilinear_cell(x, y);
+        [
+            (x0, y0, (1.0 - fx) * (1.0 - fy)),
+            (x0 + 1, y0, fx * (1.0 - fy)),
+            (x0, y0 + 1, (1.0 - fx) * fy),
+            (x0 + 1, y0 + 1, fx * fy),
+        ]
+    }
+
+    /// Build demand vector using bilinear interpolation (continuous positions).
     ///
-    /// Each net driver injects +1 unit of fluid at its tile junction.
-    /// Each net sink extracts 1/fanout at its tile junction.
-    /// This ensures demand is balanced (sum = 0) for each net.
-    pub fn compute_net_demands(&self, ctx: &Context) -> Vec<f64> {
+    /// IOs are the pumps — nets with fixed (locked) pins get boosted demand
+    /// because they provide the strongest placement signal (fixed endpoints
+    /// never cancel). Internal nets contribute at base level.
+    ///
+    /// Additional scaling: span (sqrt) and criticality (viscosity).
+    /// Star model force: WA wirelength gradient pulling cells toward connected pin centroids.
+    /// Fixed (IO) pins act as immovable attractors. Returns (grad_x, grad_y).
+    pub fn compute_star_force(
+        &self,
+        ctx: &Context,
+        wl_coeff: f64,
+        net_weights: Option<&FxHashMap<NetId, f64>>,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let n = self.num_cells();
+        let mut grad_x = vec![0.0; n];
+        let mut grad_y = vec![0.0; n];
+        crate::placer::common::add_wa_wirelength_gradient(
+            ctx,
+            &self.cell_to_idx,
+            &self.cell_x,
+            &self.cell_y,
+            wl_coeff,
+            &mut grad_x,
+            &mut grad_y,
+            net_weights,
+        );
+        (grad_x, grad_y)
+    }
+
+    pub fn compute_net_demands(
+        &self,
+        ctx: &Context,
+        criticality: &FxHashMap<NetId, f64>,
+        timing_weight: f64,
+        io_boost: f64,
+    ) -> Vec<f64> {
         let n_j = self.network.num_junctions();
         let mut demand = vec![0.0; n_j];
+        let grid_span = (self.network.width + self.network.height) as f64;
 
-        for (_, net) in ctx.design.iter_alive_nets() {
-            let driver = net.driver();
-            let users = net.users();
-            if users.is_empty() {
+        for (net_id, net) in ctx.design.iter_alive_nets() {
+            let Some(dp) = net.driver() else { continue };
+
+            // Collect valid sink positions and detect fixed pins in a single pass.
+            let mut has_fixed_sink = false;
+            let sink_positions: Vec<(f64, f64)> = net
+                .users()
+                .iter()
+                .filter(|u| u.is_valid())
+                .map(|u| {
+                    has_fixed_sink |= ctx.design.cell(u.cell).bel_strength.is_locked();
+                    self.pin_pos(ctx, u.cell)
+                })
+                .collect();
+            if sink_positions.is_empty() {
                 continue;
             }
-            let Some(dp) = driver else { continue };
 
-            let (dx, dy) = self.pin_tile(ctx, dp.cell);
-            let driver_jidx = self.network.junction_index(dx, dy);
-            demand[driver_jidx] += 1.0;
+            let (dx, dy) = self.pin_pos(ctx, dp.cell);
+            let fanout = sink_positions.len() as f64;
 
-            let sink_weight = 1.0 / users.len() as f64;
-            for user in users {
-                if !user.is_valid() {
-                    continue;
+            // IO boost: nets with a fixed (locked) pin pump harder.
+            let has_fixed_pin =
+                ctx.design.cell(dp.cell).bel_strength.is_locked() || has_fixed_sink;
+            let io_factor = if has_fixed_pin { io_boost } else { 1.0 };
+
+            // Sink centroid determines net span.
+            let (sum_x, sum_y) = sink_positions
+                .iter()
+                .fold((0.0, 0.0), |(ax, ay), &(x, y)| (ax + x, ay + y));
+            let (cx, cy) = (sum_x / fanout, sum_y / fanout);
+
+            // Span factor: sqrt for sublinear scaling.
+            let span = (dx - cx).abs() + (dy - cy).abs();
+            let span_factor = 1.0 + (span / grid_span).sqrt();
+
+            // Criticality factor: viscous nets pump harder.
+            let crit = criticality.get(&net_id).copied().unwrap_or(0.0);
+            let crit_factor = 1.0 + crit * timing_weight;
+
+            // Combined scale: IO boost × span × criticality.
+            let port_share = 0.25 * io_factor * span_factor * crit_factor;
+
+            // Driver injects +scale, bilinearly spread across 4 ports.
+            for (tx, ty, bw) in self.bilinear_weights(dx, dy) {
+                let share = port_share * bw;
+                for &port in &ALL_PORTS {
+                    demand[self.network.junction_index(tx, ty, port)] += share;
                 }
-                let (sx, sy) = self.pin_tile(ctx, user.cell);
-                let sink_jidx = self.network.junction_index(sx, sy);
-                demand[sink_jidx] -= sink_weight;
+            }
+
+            // Each sink extracts scale/fanout, bilinearly spread across 4 ports.
+            let sink_share = port_share / fanout;
+            for &(sx, sy) in &sink_positions {
+                for (tx, ty, bw) in self.bilinear_weights(sx, sy) {
+                    let share = sink_share * bw;
+                    for &port in &ALL_PORTS {
+                        demand[self.network.junction_index(tx, ty, port)] -= share;
+                    }
+                }
             }
         }
 
         demand
     }
 
-    /// Compute Kirchhoff pin weights for gradient normalization.
+    /// Per-cell viscosity from net criticality.
     ///
-    /// For each movable cell, sums the pin connectivity:
-    /// driver pins contribute +1.0 per net, sink pins contribute 1.0/fanout per net.
-    pub fn compute_kirchhoff_pin_weights(&self, ctx: &Context) -> Vec<f64> {
+    /// Viscosity = 1 + alpha * max_criticality across all nets touching this cell.
+    /// Critical cells (high viscosity) move slowly and settle first.
+    /// Non-critical cells (low viscosity) flow freely around them.
+    pub fn compute_cell_viscosity(
+        &self,
+        ctx: &Context,
+        criticality: &FxHashMap<NetId, f64>,
+        alpha: f64,
+    ) -> Vec<f64> {
         let n = self.num_cells();
-        let mut weights = vec![0.0; n];
+        let mut max_crit = vec![0.0_f64; n];
 
-        for (_, net) in ctx.design.iter_alive_nets() {
-            let driver = net.driver();
-            let users = net.users();
-            if users.is_empty() {
+        for (net_id, net) in ctx.design.iter_alive_nets() {
+            let crit = criticality.get(&net_id).copied().unwrap_or(0.0);
+            if crit <= 0.0 {
                 continue;
             }
-            let Some(dp) = driver else { continue };
+            let Some(dp) = net.driver() else { continue };
 
             if let Some(&idx) = self.cell_to_idx.get(&dp.cell) {
-                weights[idx] += 1.0;
+                max_crit[idx] = max_crit[idx].max(crit);
             }
-
-            let sink_weight = 1.0 / users.len() as f64;
-            for user in users {
+            for user in net.users() {
                 if !user.is_valid() {
                     continue;
                 }
                 if let Some(&idx) = self.cell_to_idx.get(&user.cell) {
-                    weights[idx] += sink_weight;
+                    max_crit[idx] = max_crit[idx].max(crit);
                 }
             }
         }
 
-        weights
+        max_crit.iter().map(|&c| 1.0 + alpha * c).collect()
     }
 
-    /// Unified pressure gradient: the force on each cell from the solved pressure field.
+    /// Bilinear gradient of a scalar field at cell position.
     ///
-    /// Force = -grad(P) at each cell's tile, computed via central finite differences.
-    /// This IS the wirelength + congestion force in one physical quantity.
-    pub fn compute_pressure_gradient(&self) -> (Vec<f64>, Vec<f64>) {
-        let n = self.num_cells();
-        let mut grad_x = vec![0.0; n];
-        let mut grad_y = vec![0.0; n];
-
-        let w = self.network.width;
-        let h = self.network.height;
-
-        for i in 0..n {
-            let (tx, ty) = self.cell_tile(i);
-            let center = self.pressure_at(tx, ty);
-
-            let east = if tx + 1 < w { self.pressure_at(tx + 1, ty) } else { center };
-            let west = if tx > 0 { self.pressure_at(tx - 1, ty) } else { center };
-            let north = if ty + 1 < h { self.pressure_at(tx, ty + 1) } else { center };
-            let south = if ty > 0 { self.pressure_at(tx, ty - 1) } else { center };
-
-            // Central differences: dP/dx ~ (P_east - P_west) / 2
-            grad_x[i] = (east - west) / 2.0;
-            grad_y[i] = (north - south) / 2.0;
-        }
-
-        (grad_x, grad_y)
-    }
-
+    /// Given 4 corner values (f00, f10, f01, f11) and fractional offsets (fx, fy):
+    ///   df/dx = (1-fy)(f10-f00) + fy(f11-f01)
+    ///   df/dy = (1-fx)(f01-f00) + fx(f11-f10)
     #[inline]
-    fn pressure_at(&self, x: i32, y: i32) -> f64 {
-        self.network.junctions[self.network.junction_index(x, y)].pressure
+    fn bilinear_gradient(fx: f64, fy: f64, f00: f64, f10: f64, f01: f64, f11: f64) -> (f64, f64) {
+        let gx = (1.0 - fy) * (f10 - f00) + fy * (f11 - f01);
+        let gy = (1.0 - fx) * (f01 - f00) + fx * (f11 - f10);
+        (gx, gy)
     }
 
-    pub fn sync_to_nesterov(&mut self) {
-        self.nesterov_x.set_positions(&self.cell_x);
-        self.nesterov_y.set_positions(&self.cell_y);
+    /// Compute per-cell gradients in parallel (or sequentially for small N),
+    /// returning separate x and y component vectors.
+    fn parallel_gradient(&self, f: impl Fn(usize) -> (f64, f64) + Sync) -> (Vec<f64>, Vec<f64>) {
+        let n = self.num_cells();
+        let pairs: Vec<(f64, f64)> = if n >= PARALLEL_THRESHOLD {
+            (0..n).into_par_iter().map(&f).collect()
+        } else {
+            (0..n).map(f).collect()
+        };
+        pairs.into_iter().unzip()
     }
 
-    pub fn sync_from_nesterov(&mut self) {
-        self.cell_x.copy_from_slice(self.nesterov_x.positions());
-        self.cell_y.copy_from_slice(self.nesterov_y.positions());
+    /// Per-cell bilinear gradient of a 2D scalar field stored in row-major order.
+    fn field_gradient(&self, field: &[f64], w: usize) -> (Vec<f64>, Vec<f64>) {
+        self.parallel_gradient(|i| {
+            let (x0, y0, fx, fy) = self.bilinear_cell(self.cell_x[i], self.cell_y[i]);
+            let row0 = y0 as usize * w;
+            let row1 = (y0 + 1) as usize * w;
+            let col0 = x0 as usize;
+            let col1 = (x0 + 1) as usize;
+            Self::bilinear_gradient(fx, fy, field[row0 + col0], field[row0 + col1], field[row1 + col0], field[row1 + col1])
+        })
+    }
+
+    /// Pressure gradient with optional Gaussian blur for multi-resolution.
+    ///
+    /// sigma = 0: raw pressure field (fine detail)
+    /// sigma > 0: blurred pressure field (global structure, coarse-to-fine)
+    ///
+    /// Large sigma lets cells see long-range pressure signals and converge
+    /// to global positions quickly. As sigma anneals to 0, cells refine locally.
+    pub fn compute_pressure_gradient(&self, sigma: f64) -> (Vec<f64>, Vec<f64>) {
+        let w = self.network.width as usize;
+        let h = self.network.height as usize;
+
+        // Build pressure map from junction pressures.
+        let pressure_map: Vec<f64> = (0..h)
+            .flat_map(|y| (0..w).map(move |x| self.pressure_at(x as i32, y as i32)))
+            .collect();
+
+        // Blur for multi-resolution (skip if sigma < 0.5 to avoid unnecessary copy).
+        let field = if sigma >= 0.5 {
+            gaussian_blur_2d(&pressure_map, w, h, sigma)
+        } else {
+            pressure_map
+        };
+
+        self.field_gradient(&field, w)
+    }
+
+    /// Average pressure across all 4 ports at tile (x, y).
+    #[inline]
+    pub fn pressure_at(&self, x: i32, y: i32) -> f64 {
+        let junctions = &self.network.junctions;
+        let sum: f64 = ALL_PORTS
+            .iter()
+            .map(|&port| junctions[self.network.junction_index(x, y, port)].pressure)
+            .sum();
+        sum / 4.0
+    }
+
+    /// Bilinearly interpolated pressure at a continuous position.
+    fn pressure_at_continuous(&self, x: f64, y: f64) -> f64 {
+        self.bilinear_weights(x, y)
+            .iter()
+            .map(|&(tx, ty, w)| w * self.pressure_at(tx, ty))
+            .sum()
+    }
+
+    /// Pump-cost energy: sum of pressure drops from driver to sinks per net.
+    ///
+    /// E = sum_nets (P_driver - avg(P_sinks))
+    ///
+    /// A longer pipe needs a stronger pump (higher driver pressure).
+    /// Always non-negative. Directly proportional to wirelength.
+    pub fn compute_pump_energy(&self, ctx: &Context) -> f64 {
+        let mut energy = 0.0;
+        for (_net_id, net) in ctx.design.iter_alive_nets() {
+            let users = net.users();
+            if users.is_empty() {
+                continue;
+            }
+            let Some(dp) = net.driver() else { continue };
+
+            let (dx, dy) = self.pin_pos(ctx, dp.cell);
+            let p_driver = self.pressure_at_continuous(dx, dy);
+
+            let mut p_sink_sum = 0.0;
+            let mut sink_count = 0usize;
+            for user in users {
+                if !user.is_valid() {
+                    continue;
+                }
+                let (sx, sy) = self.pin_pos(ctx, user.cell);
+                p_sink_sum += self.pressure_at_continuous(sx, sy);
+                sink_count += 1;
+            }
+
+            if sink_count > 0 {
+                energy += (p_driver - p_sink_sum / sink_count as f64).abs();
+            }
+        }
+        energy
     }
 
     pub fn clamp_positions(&mut self) {
@@ -188,4 +454,116 @@ impl HydraulicState {
         let max_y = (self.network.height - 1) as f64;
         crate::placer::common::clamp_positions(&mut self.cell_x, &mut self.cell_y, max_x, max_y);
     }
+
+    /// Clamp positions to an expanding bounding box centered on the IO centroid.
+    /// `progress` goes from 0.0 (initial tight box) to 1.0 (full grid).
+    /// The box starts at `box_initial_half` (just enough BELs for all cells)
+    /// and expands to the full grid.
+    pub fn clamp_to_box(&mut self, progress: f64) {
+        let (cx, cy) = self.box_center;
+        let grid_x = (self.network.width - 1) as f64;
+        let grid_y = (self.network.height - 1) as f64;
+
+        // Interpolate half-extent from initial tight box to full grid extent.
+        let half_x = self.box_initial_half + (grid_x - self.box_initial_half) * progress;
+        let half_y = self.box_initial_half + (grid_y - self.box_initial_half) * progress;
+
+        let (min_x, max_x) = ((cx - half_x).max(0.0), (cx + half_x).min(grid_x));
+        let (min_y, max_y) = ((cy - half_y).max(0.0), (cy + half_y).min(grid_y));
+        for i in 0..self.cell_x.len() {
+            self.cell_x[i] = self.cell_x[i].clamp(min_x, max_x);
+            self.cell_y[i] = self.cell_y[i].clamp(min_y, max_y);
+        }
+    }
+
+    /// Compute gas pressure gradient from cell density (compressible fluid model).
+    ///
+    /// Cells are modeled as compressible gas: dense regions have high internal
+    /// pressure that pushes cells outward. The density field is Gaussian-blurred
+    /// to prevent oscillation (blur radius = sigma).
+    ///
+    /// Gas force: F_gas = -temperature * grad(density) / capacity
+    /// where capacity = BEL count per tile.
+    pub fn compute_gas_gradient(
+        &self,
+        ctx: &Context,
+        temperature: f64,
+        sigma: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let w = self.network.width as usize;
+        let h = self.network.height as usize;
+        let n = self.num_cells();
+
+        // 1. Build density field: bilinear splatting of cell positions.
+        let mut density = vec![0.0; w * h];
+        for i in 0..n {
+            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
+                density[ty as usize * w + tx as usize] += weight;
+            }
+        }
+
+        // 2. Normalize by tile capacity (BELs). Tiles with more BELs tolerate more cells.
+        for y in 0..h {
+            for x in 0..w {
+                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
+                let n_bels = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
+                density[y * w + x] /= n_bels;
+            }
+        }
+
+        // 3. Gaussian blur (separable: horizontal then vertical).
+        let blurred = gaussian_blur_2d(&density, w, h, sigma);
+
+        // 4. Density gradient at each cell, scaled by temperature.
+        let (mut gx, mut gy) = self.field_gradient(&blurred, w);
+        for i in 0..n {
+            gx[i] *= temperature;
+            gy[i] *= temperature;
+        }
+        (gx, gy)
+    }
+}
+
+/// Separable Gaussian blur on a 2D grid.
+fn gaussian_blur_2d(input: &[f64], w: usize, h: usize, sigma: f64) -> Vec<f64> {
+    if sigma < 0.5 {
+        return input.to_vec();
+    }
+    let radius = (3.0 * sigma).ceil() as usize;
+    let kernel: Vec<f64> = (0..=radius)
+        .map(|i| (-0.5 * (i as f64 / sigma).powi(2)).exp())
+        .collect();
+    let norm: f64 = kernel[0] + 2.0 * kernel[1..].iter().sum::<f64>();
+
+    // Horizontal pass.
+    let mut temp = vec![0.0; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = input[y * w + x] * kernel[0];
+            for k in 1..=radius {
+                let left = if x >= k { x - k } else { 0 };
+                let right = (x + k).min(w - 1);
+                sum += input[y * w + left] * kernel[k];
+                sum += input[y * w + right] * kernel[k];
+            }
+            temp[y * w + x] = sum / norm;
+        }
+    }
+
+    // Vertical pass.
+    let mut output = vec![0.0; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = temp[y * w + x] * kernel[0];
+            for k in 1..=radius {
+                let up = if y >= k { y - k } else { 0 };
+                let down = (y + k).min(h - 1);
+                sum += temp[up * w + x] * kernel[k];
+                sum += temp[down * w + x] * kernel[k];
+            }
+            output[y * w + x] = sum / norm;
+        }
+    }
+
+    output
 }
