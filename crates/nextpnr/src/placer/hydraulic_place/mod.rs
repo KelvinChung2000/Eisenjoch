@@ -24,8 +24,8 @@ use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{initial_placement, validate_all_placed, with_locked_others};
-use super::common::{NesterovLoopState, compute_pin_weights};
-use super::solver::NesterovSolver;
+use super::common::{NesterovLoopState, compute_pin_weights, gradient_norm};
+use super::solver::AdamSolver;
 use super::PlacerError;
 
 pub struct PlacerHydraulic;
@@ -107,20 +107,17 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     let pin_weights = compute_pin_weights(ctx, &state.cell_to_idx, n);
     let mut loop_state = NesterovLoopState::new(&state.cell_x, &state.cell_y);
-    let mut nesterov_x = NesterovSolver::new(n, step_size);
-    let mut nesterov_y = NesterovSolver::new(n, step_size);
-    nesterov_x.set_positions(&state.cell_x);
-    nesterov_y.set_positions(&state.cell_y);
+
+    // Adam optimizer: per-cell adaptive step sizes, stable for non-smooth objectives.
+    // beta1=0.9 (momentum), beta2=0.999 (adaptive scaling).
+    let mut adam_x = AdamSolver::new(n, step_size);
+    let mut adam_y = AdamSolver::new(n, step_size);
+    adam_x.set_positions(&state.cell_x);
+    adam_y.set_positions(&state.cell_y);
     let max_x = (state.network.width - 1) as f64;
     let max_y = (state.network.height - 1) as f64;
 
     let mut criticality: FxHashMap<NetId, f64> = FxHashMap::default();
-
-    // EMA gradient smoothing: dampens oscillation from non-smooth pressure field.
-    // Alpha = blend factor: 0.3 = 30% new gradient, 70% history.
-    let ema_alpha = 0.3;
-    let mut ema_grad_x = vec![0.0; n];
-    let mut ema_grad_y = vec![0.0; n];
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -137,97 +134,53 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         // Turbulence ramp: caps at 50% of configured beta.
         let beta = (cfg.turbulence_beta * 0.5) * (1.0 - (-3.0 * progress).exp());
 
-
-        // 1. Nesterov look-ahead (kinetic momentum).
-        nesterov_x.look_ahead_into(&mut state.cell_x);
-        nesterov_y.look_ahead_into(&mut state.cell_y);
+        // 1. Optional expanding box constraint.
         if cfg.enable_expanding_box {
             state.clamp_to_box(progress);
         } else {
             state.clamp_positions();
         }
 
-        // 2. Build net demand vector (source at drivers, sink at users).
-        //    IO pins act as pressure anchors via io_boost.
-        //    Timing-critical nets pump harder via pump_gain.
+        // 2. Build net demand vector (IO-boosted, timing-amplified).
         let demand = state.compute_net_demands(
             ctx, &criticality, cfg.timing_weight, io_boost, cfg.pump_gain,
         );
 
         // 3. Kirchhoff solve: L(R_eff) · P = demand.
-        //    Global CG solve propagates pressure through the entire pipe network.
-        //    Turbulence R_eff = R * (1 + β·tanh(Q/C)²) penalises congested pipes.
         kirchhoff::kirchhoff_solve(
-            &mut state.network,
-            &demand,
-            beta,
-            cfg.newton_iters,
-            cfg.cg_max_iters,
-            cfg.cg_tolerance,
+            &mut state.network, &demand, beta,
+            cfg.newton_iters, cfg.cg_max_iters, cfg.cg_tolerance,
         );
 
-        // 4. Pressure gradient at cell positions (bilinear interpolation).
+        // 4. Pressure gradient at cell positions.
         let (px, py) = state.compute_pressure_gradient(0.0);
 
-        // 5. Asymmetric force: driver cells move -∇P, sink cells move +∇P.
-        //    Per-cell sign weight from net demand contribution (smooth tanh).
+        // 5. Asymmetric force from demand sign.
+        //    Adam does x -= alpha * m/sqrt(v), so grad points AWAY from target.
         let demand_sign = state.compute_cell_demand_sign(
             ctx, &criticality, cfg.timing_weight, io_boost,
         );
-        // Nesterov does x_new = y - step * grad, so grad must point AWAY from target.
-        // demand_sign encodes role: positive for sinks, negative for sources.
-        // grad = sign * ∇P  →  sinks move up-gradient (toward drivers),
-        //                       sources move down-gradient (toward sinks).
         let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| s * p).collect();
         let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| s * p).collect();
 
-        // Debug: log sign distribution on first iteration.
-        if iter == 0 {
-            let n_pos = demand_sign.iter().filter(|&&s| s > 0.0).count();
-            let n_neg = demand_sign.iter().filter(|&&s| s < 0.0).count();
-            let avg = demand_sign.iter().sum::<f64>() / n as f64;
-            let min = demand_sign.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = demand_sign.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let px_norm: f64 = px.iter().map(|g| g * g).sum::<f64>().sqrt();
-            let py_norm: f64 = py.iter().map(|g| g * g).sum::<f64>().sqrt();
-            eprintln!(
-                "  demand_sign: {n_pos} pos (sinks), {n_neg} neg (sources), avg={avg:.3}, range=[{min:.3}, {max:.3}], raw ∇P: |px|={px_norm:.2e}, |py|={py_norm:.2e}"
-            );
-        }
-
-        // Pressure gradient norm (before density) -- only for reporting iterations.
-        let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
-        let pressure_norm = if is_report_iter {
-            grad_x.iter().chain(grad_y.iter()).map(|g| g * g).sum::<f64>().sqrt()
-        } else {
-            0.0
-        };
-
-        // 6. Density spreading force (compressible gas repulsion).
-        //    Always repulsive: ALL cells pushed away from overcrowded tiles.
-        //    Temperature anneals: starts hot (strong spreading), cools down.
+        // 6. Density spreading (compressible gas, temperature-annealed).
         let temperature = gas_temperature * (1.0 - 0.5 * progress);
-        let mut density_norm = 0.0;
         if temperature > 0.0 {
             let sigma = 2.0 * (1.0 - progress).max(0.5);
             let (dx, dy) = state.compute_gas_gradient(ctx, temperature, sigma);
-            if is_report_iter {
-                density_norm = dx.iter().chain(dy.iter())
-                    .map(|g| g * g).sum::<f64>().sqrt();
-            }
             for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
                 *gx += ddx;
                 *gy += ddy;
             }
         }
 
-        // 7. Fluid timing → criticality update.
+        // 7. Fluid timing → criticality.
         if cfg.timing_weight > 0.0 {
             let timing_result = timing::compute_fluid_timing(ctx, &state, target_period, beta);
             criticality = timing_result.net_criticality;
         }
 
-        // 8. Viscosity preconditioner: critical cells have higher effective mass.
+        // 8. Viscosity preconditioner.
         let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
         for ((gx, gy), (&pw, &v)) in grad_x.iter_mut().zip(grad_y.iter_mut())
             .zip(pin_weights.iter().zip(&viscosity))
@@ -237,53 +190,38 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy /= w;
         }
 
-        // 9. EMA gradient smoothing: blend current gradient with history.
-        //    Dampens oscillation from the non-smooth pressure field.
-        let alpha = if iter == 0 { 1.0 } else { ema_alpha };
-        for i in 0..n {
-            ema_grad_x[i] = alpha * grad_x[i] + (1.0 - alpha) * ema_grad_x[i];
-            ema_grad_y[i] = alpha * grad_y[i] + (1.0 - alpha) * ema_grad_y[i];
-        }
+        // 9. Adam step: per-cell adaptive step sizes, built-in momentum.
+        adam_x.step(&grad_x);
+        adam_y.step(&grad_y);
+        adam_x.clamp_positions_range(0.0, max_x);
+        adam_y.clamp_positions_range(0.0, max_y);
+        state.cell_x.copy_from_slice(adam_x.positions());
+        state.cell_y.copy_from_slice(adam_y.positions());
 
-        // 10. Adaptive restart: reset momentum when gradient opposes velocity.
-        nesterov_x.adaptive_restart(&ema_grad_x);
-        nesterov_y.adaptive_restart(&ema_grad_y);
-
-        // 11. Step sizing + Nesterov momentum step.
-        if iter > 0 {
-            loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &ema_grad_x, &ema_grad_y);
-        }
-        loop_state.save_gradients(&ema_grad_x, &ema_grad_y);
-
-        nesterov_x.step(&ema_grad_x);
-        nesterov_y.step(&ema_grad_y);
-        nesterov_x.clamp_positions_range(0.0, max_x);
-        nesterov_y.clamp_positions_range(0.0, max_y);
-        state.cell_x.copy_from_slice(nesterov_x.positions());
-        state.cell_y.copy_from_slice(nesterov_y.positions());
-
-        // Track best continuous HPWL every iteration (not just report iters).
+        // Track best continuous HPWL every iteration.
         let chpwl_now = state.continuous_hpwl(ctx);
         loop_state.record_metric(chpwl_now, &state.cell_x, &state.cell_y);
 
-        // 12. Reporting + convergence (no legalization in loop).
+        // 10. Reporting + convergence.
+        let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, |∇P|={:.2e}, |∇ρ|={:.2e}, step={:.4}, β={:.2}",
-                iter, chpwl_now, loop_state.best_metric, pressure_norm, density_norm, nesterov_x.step_size(), beta,
+                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, |∇|={:.2e}, β={:.2}",
+                iter, chpwl_now, loop_state.best_metric,
+                gradient_norm(&grad_x, &grad_y), beta,
             );
 
-            if chpwl_now > loop_state.best_metric * 1.10 && iter > diverge_patience {
+            if chpwl_now > loop_state.best_metric * 1.20 && iter > diverge_patience {
                 eprintln!("Hydraulic: divergence at iter {}, reverting", iter);
                 state.cell_x.copy_from_slice(&loop_state.best_positions_x);
                 state.cell_y.copy_from_slice(&loop_state.best_positions_y);
-                nesterov_x.set_positions(&state.cell_x);
-                nesterov_y.set_positions(&state.cell_y);
+                adam_x.set_positions(&state.cell_x);
+                adam_y.set_positions(&state.cell_y);
                 break;
             }
             if iter > converge_patience {
                 let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
-                if rel < 0.001 {
+                if rel < 0.005 {
                     eprintln!("Hydraulic placer converged at iteration {}", iter);
                     break;
                 }
