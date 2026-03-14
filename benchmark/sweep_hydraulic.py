@@ -2,8 +2,8 @@
 """Sweep hydraulic placer parameters to find optimal configuration.
 
 Tests combinations of force configurations, init strategies, and expanding box
-settings across multiple designs. Records HPWL, line estimate, routed wirelength,
-congestion, density, and placement time for each combination.
+settings across multiple designs. Records HPWL, line estimate, congestion, density,
+and placement time for each combination.
 
 Usage:
     python sweep_hydraulic.py --chipdb path/to/chipdb.bin --designs-dir path/to/designs/
@@ -82,8 +82,8 @@ def pre_place_clock_ios(ctx):
     """Pre-place clock IO cells at dedicated GCLK positions.
 
     The synthetic chipdb has clock ladders from GCLK0_OUT at (1,0) and
-    GCLK1_OUT at (2,0). If clock IOs aren't at these positions, the
-    router can't find a path through the clock network.
+    GCLK1_OUT at (2,0). Clock IOs must be at these positions so the
+    placer can properly account for clock network connectivity.
     """
     for cell_name in ctx.cells:
         if "clk" in cell_name.lower() and "$io$" in cell_name:
@@ -106,7 +106,7 @@ def run_single(
     init_strategy="centroid",
     expanding_box=True,
 ):
-    """Run one placement+routing configuration, return metrics dict."""
+    """Run one placement configuration and return metrics dict."""
     ctx = nextpnr.Context(chipdb=chipdb_path)
     ctx.load_design(str(design_path))
     ctx.pack()
@@ -141,14 +141,9 @@ def run_single(
     except Exception:
         max_congestion = 0.0
 
-    # Route
-    ctx.route(router="router1", max_iterations=50)
-    routed_wl = ctx.total_routed_wirelength()
-
     return {
         "hpwl": hpwl,
         "line_est": line_est,
-        "routed_wl": routed_wl,
         "max_congestion": max_congestion,
         "max_density": max_density,
         "place_time": place_time,
@@ -166,18 +161,10 @@ FIELDNAMES = [
     "expanding_box",
     "hpwl",
     "line_est",
-    "routed_wl",
     "max_congestion",
     "max_density",
     "place_time",
 ]
-
-
-def format_routed_wl(value):
-    """Format routed wirelength as integer or float string."""
-    if isinstance(value, float):
-        return f"{value:>10.0f}"
-    return f"{value:>10d}"
 
 
 def main():
@@ -260,7 +247,6 @@ def main():
                                 "expanding_box": exp_box,
                                 "hpwl": float("nan"),
                                 "line_est": float("nan"),
-                                "routed_wl": float("nan"),
                                 "max_congestion": float("nan"),
                                 "max_density": float("nan"),
                                 "place_time": float("nan"),
@@ -278,41 +264,41 @@ def main():
     # Print summary table to stdout
     print(
         f"\n{'Design':<20} {'Config':<15} {'Init':<12} {'Box':<5} "
-        f"{'HPWL':>10} {'LineEst':>10} {'RoutedWL':>10} {'Cong':>8} "
+        f"{'HPWL':>10} {'LineEst':>10} {'Cong':>8} "
         f"{'Dens':>8} {'Time':>8}"
     )
-    print("-" * 120)
+    print("-" * 105)
     for r in results:
         box_str = "Y" if r["expanding_box"] else "N"
         print(
             f"{r['design']:<20} {r['config']:<15} {r['init_strategy']:<12} "
             f"{box_str:<5} {r['hpwl']:>10.0f} {r['line_est']:>10.0f} "
-            f"{format_routed_wl(r['routed_wl'])} {r['max_congestion']:>8.3f} "
+            f"{r['max_congestion']:>8.3f} "
             f"{r['max_density']:>8.3f} {r['place_time']:>7.1f}s"
         )
 
-    # Print best config per design
+    # Print best config per design (by HPWL)
     designs_seen = list(dict.fromkeys(r["design"] for r in results))
 
     if designs_seen:
-        print("\nBest config per design (by routed wirelength)")
-        print(f"{'Design':<20} {'Config':<15} {'Init':<12} {'Box':<5} {'RoutedWL':>10}")
-        print("-" * 70)
+        print("\nBest config per design (by HPWL)")
+        print(
+            f"{'Design':<20} {'Config':<15} {'Init':<12} {'Box':<5} {'HPWL':>10} {'LineEst':>10}"
+        )
+        print("-" * 80)
         for d in designs_seen:
             d_results = [r for r in results if r["design"] == d]
             valid = [
                 r
                 for r in d_results
-                if not (
-                    isinstance(r["routed_wl"], float) and math.isnan(r["routed_wl"])
-                )
+                if not (isinstance(r["hpwl"], float) and math.isnan(r["hpwl"]))
             ]
             if valid:
-                best = min(valid, key=lambda r: r["routed_wl"])
+                best = min(valid, key=lambda r: r["hpwl"])
                 box_str = "Y" if best["expanding_box"] else "N"
                 print(
                     f"{d:<20} {best['config']:<15} {best['init_strategy']:<12} "
-                    f"{box_str:<5} {format_routed_wl(best['routed_wl'])}"
+                    f"{box_str:<5} {best['hpwl']:>10.0f} {best['line_est']:>10.0f}"
                 )
 
 
