@@ -224,6 +224,7 @@ impl HydraulicState {
         criticality: &FxHashMap<NetId, f64>,
         timing_weight: f64,
         io_boost: f64,
+        pump_gain: f64,
     ) -> Vec<f64> {
         let n_j = self.network.num_junctions();
         let mut demand = vec![0.0; n_j];
@@ -269,8 +270,12 @@ impl HydraulicState {
             let crit = criticality.get(&net_id).copied().unwrap_or(0.0);
             let crit_factor = 1.0 + crit * timing_weight;
 
-            // Combined scale: IO boost × span × criticality.
-            let port_share = 0.25 * io_factor * span_factor * crit_factor;
+            // Dynamic pump: nets violating timing get amplified demand.
+            // Quadratic ramp steepens local gradients for stuck long-distance nets.
+            let transit_factor = 1.0 + pump_gain * crit.powi(2);
+
+            // Combined scale: IO boost × span × criticality × pump.
+            let port_share = 0.25 * io_factor * span_factor * crit_factor * transit_factor;
 
             // Driver injects +scale, bilinearly spread across 4 ports.
             for (tx, ty, bw) in self.bilinear_weights(dx, dy) {

@@ -125,7 +125,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let pressure_weight = cfg.pressure_weight_start
             + (cfg.pressure_weight_end - cfg.pressure_weight_start) * progress;
         if cfg.gas_temperature > 0.0 && pressure_weight > 0.0 {
-            let demand = state.compute_net_demands(ctx, &criticality, cfg.timing_weight, cfg.io_boost);
+            let demand = state.compute_net_demands(ctx, &criticality, cfg.timing_weight, cfg.io_boost, cfg.pump_gain);
             kirchhoff::gas_hydraulic_solve(
                 &mut state.network, &demand, cfg.gas_temperature, beta,
                 cfg.newton_iters * 5,

@@ -76,6 +76,10 @@ pub struct HydraulicPlacerCfg {
 
     /// Enable expanding bounding box (default: true). Set false to disable.
     pub enable_expanding_box: bool,
+
+    /// Pump gain for dynamic demand amplification of timing-violating nets (default: 10.0).
+    /// Nets with high criticality get demand scaled by (1 + pump_gain * crit^2).
+    pub pump_gain: f64,
 }
 
 impl Default for HydraulicPlacerCfg {
@@ -102,6 +106,7 @@ impl Default for HydraulicPlacerCfg {
             legalize_interval: 5,
             wl_coeff: 0.5,
             enable_expanding_box: true,
+            pump_gain: 10.0,
         }
     }
 }

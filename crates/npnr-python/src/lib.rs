@@ -210,19 +210,24 @@ impl PyContext {
     ///     seed: RNG seed for reproducibility. Default 1.
     ///     max_iters: Maximum iterations (default varies by placer).
     ///     congestion_weight: Weight for congestion cost. Default 0.5.
-    ///     density_weight: Density penalty for electro placer. Default 0.0 (auto).
     ///     turbulence_beta: Nonlinear resistance coefficient for hydraulic placer. Default 4.0.
     ///     newton_iters: Newton iterations for nonlinear resistance (hydraulic). Default 2.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, density_weight=0.0, turbulence_beta=4.0, newton_iters=2))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, turbulence_beta=4.0, newton_iters=2, star_weight=1.0, pressure_weight_start=0.0, pressure_weight_end=2.0, io_boost=4.0, nesterov_step_size=0.1, wl_coeff=0.5, momentum=None))]
     fn place(
         &mut self,
         placer: &str,
         seed: u64,
         max_iters: Option<usize>,
         congestion_weight: f64,
-        density_weight: f64,
         turbulence_beta: f64,
         newton_iters: usize,
+        star_weight: f64,
+        pressure_weight_start: f64,
+        pressure_weight_end: f64,
+        io_boost: f64,
+        nesterov_step_size: f64,
+        wl_coeff: f64,
+        momentum: Option<f64>,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -246,6 +251,13 @@ impl PyContext {
                 cfg.seed = seed;
                 cfg.turbulence_beta = turbulence_beta;
                 cfg.newton_iters = newton_iters;
+                cfg.star_weight = star_weight;
+                cfg.pressure_weight_start = pressure_weight_start;
+                cfg.pressure_weight_end = pressure_weight_end;
+                cfg.io_boost = io_boost;
+                cfg.nesterov_step_size = nesterov_step_size;
+                cfg.wl_coeff = wl_coeff;
+                cfg.momentum = momentum;
                 if let Some(iters) = max_iters {
                     cfg.max_outer_iters = iters;
                 }
@@ -256,7 +268,6 @@ impl PyContext {
             "electro" => {
                 let mut cfg = ElectroPlaceCfg::default();
                 cfg.seed = seed;
-                cfg.density_weight = density_weight;
                 if let Some(iters) = max_iters {
                     cfg.max_iters = iters;
                 }
