@@ -119,6 +119,8 @@ fn default_config_values() {
     assert_eq!(cfg.max_outer_iters, 500);
     assert_eq!(cfg.report_interval, 5);
     assert_eq!(cfg.timing_weight, 0.0);
+    assert_eq!(cfg.gas_temperature, 1.0);
+    assert_eq!(cfg.lap_max_cells, 10000);
     assert_eq!(cfg.star_weight, 1.0);
     assert_eq!(cfg.pressure_weight_start, 0.0);
     assert_eq!(cfg.pressure_weight_end, 2.0);

@@ -12,6 +12,7 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
+use ::nextpnr::placer::hydraulic_place::config::InitStrategy;
 use ::nextpnr::placer::hydraulic_place::{HydraulicPlacerCfg, PlacerHydraulic};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
@@ -212,7 +213,7 @@ impl PyContext {
     ///     congestion_weight: Weight for congestion cost. Default 0.5.
     ///     turbulence_beta: Nonlinear resistance coefficient for hydraulic placer. Default 4.0.
     ///     newton_iters: Newton iterations for nonlinear resistance (hydraulic). Default 2.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, turbulence_beta=4.0, newton_iters=2, star_weight=1.0, pressure_weight_start=0.0, pressure_weight_end=2.0, io_boost=4.0, nesterov_step_size=0.1, wl_coeff=0.5, momentum=None))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, turbulence_beta=4.0, newton_iters=2, star_weight=1.0, pressure_weight_start=0.0, pressure_weight_end=2.0, io_boost=4.0, nesterov_step_size=0.1, wl_coeff=0.5, momentum=None, init_strategy="centroid", enable_expanding_box=true))]
     fn place(
         &mut self,
         placer: &str,
@@ -228,6 +229,8 @@ impl PyContext {
         nesterov_step_size: f64,
         wl_coeff: f64,
         momentum: Option<f64>,
+        init_strategy: &str,
+        enable_expanding_box: bool,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -258,6 +261,15 @@ impl PyContext {
                 cfg.nesterov_step_size = nesterov_step_size;
                 cfg.wl_coeff = wl_coeff;
                 cfg.momentum = momentum;
+                cfg.enable_expanding_box = enable_expanding_box;
+                cfg.init_strategy = match init_strategy {
+                    "centroid" => InitStrategy::Centroid,
+                    "uniform" => InitStrategy::Uniform,
+                    "random_bel" => InitStrategy::RandomBel,
+                    other => return Err(PyValueError::new_err(format!(
+                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
+                    ))),
+                };
                 if let Some(iters) = max_iters {
                     cfg.max_outer_iters = iters;
                 }

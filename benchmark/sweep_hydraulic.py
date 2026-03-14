@@ -13,16 +13,16 @@ Usage:
 
 import argparse
 import csv
-import os
+import math
 import sys
 import time
 from pathlib import Path
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, "python"))
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "python"))
 
-import nextpnr
+import nextpnr  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Force configurations to sweep
@@ -30,16 +30,41 @@ import nextpnr
 
 FORCE_CONFIGS = [
     # Pure kinetic gas (no star model)
-    {"star_weight": 0.0, "pressure_weight_end": 1.0, "io_boost": 4.0, "label": "gas_io4"},
-    {"star_weight": 0.0, "pressure_weight_end": 1.0, "io_boost": 8.0, "label": "gas_io8"},
+    {
+        "star_weight": 0.0,
+        "pressure_weight_end": 1.0,
+        "io_boost": 4.0,
+        "label": "gas_io4",
+    },
+    {
+        "star_weight": 0.0,
+        "pressure_weight_end": 1.0,
+        "io_boost": 8.0,
+        "label": "gas_io8",
+    },
     # Pure star model (no gas)
     {"star_weight": 1.0, "pressure_weight_end": 0.0, "label": "star_only"},
     # Hybrid: star + gas pressure ramp
     {"star_weight": 1.0, "pressure_weight_end": 2.0, "label": "hybrid_pw2"},
     {"star_weight": 1.0, "pressure_weight_end": 4.0, "label": "hybrid_pw4"},
-    {"star_weight": 0.5, "pressure_weight_end": 1.0, "io_boost": 4.0, "label": "balanced"},
-    {"star_weight": 1.0, "pressure_weight_end": 0.5, "io_boost": 8.0, "label": "star_dom"},
-    {"star_weight": 0.2, "pressure_weight_end": 2.0, "io_boost": 8.0, "label": "gas_dom"},
+    {
+        "star_weight": 0.5,
+        "pressure_weight_end": 1.0,
+        "io_boost": 4.0,
+        "label": "balanced",
+    },
+    {
+        "star_weight": 1.0,
+        "pressure_weight_end": 0.5,
+        "io_boost": 8.0,
+        "label": "star_dom",
+    },
+    {
+        "star_weight": 0.2,
+        "pressure_weight_end": 2.0,
+        "io_boost": 8.0,
+        "label": "gas_dom",
+    },
 ]
 
 # Init strategies (not yet exposed in Python bindings, included for future use)
@@ -51,6 +76,7 @@ EXPANDING_BOX = [True, False]
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def pre_place_clock_ios(ctx):
     """Pre-place clock IO cells at dedicated GCLK positions.
@@ -72,7 +98,14 @@ def pre_place_clock_ios(ctx):
                     pass
 
 
-def run_single(chipdb_path, design_path, force_cfg, seed=1):
+def run_single(
+    chipdb_path,
+    design_path,
+    force_cfg,
+    seed=1,
+    init_strategy="centroid",
+    expanding_box=True,
+):
     """Run one placement+routing configuration, return metrics dict."""
     ctx = nextpnr.Context(chipdb=chipdb_path)
     ctx.load_design(str(design_path))
@@ -84,6 +117,8 @@ def run_single(chipdb_path, design_path, force_cfg, seed=1):
     place_kwargs["placer"] = "hydraulic"
     place_kwargs["seed"] = seed
     place_kwargs["max_iters"] = 200
+    place_kwargs["init_strategy"] = init_strategy
+    place_kwargs["enable_expanding_box"] = expanding_box
 
     t0 = time.perf_counter()
     ctx.place(**place_kwargs)
@@ -127,6 +162,8 @@ def run_single(chipdb_path, design_path, force_cfg, seed=1):
 FIELDNAMES = [
     "design",
     "config",
+    "init_strategy",
+    "expanding_box",
     "hpwl",
     "line_est",
     "routed_wl",
@@ -134,6 +171,13 @@ FIELDNAMES = [
     "max_density",
     "place_time",
 ]
+
+
+def format_routed_wl(value):
+    """Format routed wirelength as integer or float string."""
+    if isinstance(value, float):
+        return f"{value:>10.0f}"
+    return f"{value:>10d}"
 
 
 def main():
@@ -146,9 +190,7 @@ def main():
         required=True,
         help="Directory containing design JSON files",
     )
-    parser.add_argument(
-        "--output", default="sweep_results.csv", help="Output CSV file"
-    )
+    parser.add_argument("--output", default="sweep_results.csv", help="Output CSV file")
     parser.add_argument(
         "--configs",
         nargs="*",
@@ -173,37 +215,57 @@ def main():
             )
             sys.exit(1)
 
-    total = len(configs) * len(designs)
+    total = len(configs) * len(INIT_STRATEGIES) * len(EXPANDING_BOX) * len(designs)
     count = 0
     results = []
 
     for design_path in designs:
         design_name = design_path.stem
         for force_cfg in configs:
-            count += 1
             label = force_cfg["label"]
-            print(
-                f"[{count}/{total}] {design_name} / {label}",
-                file=sys.stderr,
-            )
+            for init_strat in INIT_STRATEGIES:
+                for exp_box in EXPANDING_BOX:
+                    count += 1
+                    tag = f"{label}/{init_strat}/{'box' if exp_box else 'nobox'}"
+                    print(
+                        f"[{count}/{total}] {design_name} / {tag}",
+                        file=sys.stderr,
+                    )
 
-            try:
-                metrics = run_single(
-                    args.chipdb, str(design_path), force_cfg, seed=args.seed
-                )
-                results.append({"design": design_name, "config": label, **metrics})
-            except Exception as e:
-                print(f"  FAILED: {e}", file=sys.stderr)
-                results.append({
-                    "design": design_name,
-                    "config": label,
-                    "hpwl": float("nan"),
-                    "line_est": float("nan"),
-                    "routed_wl": float("nan"),
-                    "max_congestion": float("nan"),
-                    "max_density": float("nan"),
-                    "place_time": float("nan"),
-                })
+                    try:
+                        metrics = run_single(
+                            args.chipdb,
+                            str(design_path),
+                            force_cfg,
+                            seed=args.seed,
+                            init_strategy=init_strat,
+                            expanding_box=exp_box,
+                        )
+                        results.append(
+                            {
+                                "design": design_name,
+                                "config": label,
+                                "init_strategy": init_strat,
+                                "expanding_box": exp_box,
+                                **metrics,
+                            }
+                        )
+                    except Exception as e:
+                        print(f"  FAILED: {e}", file=sys.stderr)
+                        results.append(
+                            {
+                                "design": design_name,
+                                "config": label,
+                                "init_strategy": init_strat,
+                                "expanding_box": exp_box,
+                                "hpwl": float("nan"),
+                                "line_est": float("nan"),
+                                "routed_wl": float("nan"),
+                                "max_congestion": float("nan"),
+                                "max_density": float("nan"),
+                                "place_time": float("nan"),
+                            }
+                        )
 
     # Write CSV
     if results:
@@ -215,43 +277,43 @@ def main():
 
     # Print summary table to stdout
     print(
-        f"\n{'Design':<20} {'Config':<15} {'HPWL':>10} {'LineEst':>10} "
-        f"{'RoutedWL':>10} {'Cong':>8} {'Dens':>8} {'Time':>8}"
+        f"\n{'Design':<20} {'Config':<15} {'Init':<12} {'Box':<5} "
+        f"{'HPWL':>10} {'LineEst':>10} {'RoutedWL':>10} {'Cong':>8} "
+        f"{'Dens':>8} {'Time':>8}"
     )
-    print("-" * 100)
+    print("-" * 120)
     for r in results:
-        routed = r["routed_wl"]
-        routed_str = f"{routed:>10.0f}" if isinstance(routed, float) else f"{routed:>10d}"
+        box_str = "Y" if r["expanding_box"] else "N"
         print(
-            f"{r['design']:<20} {r['config']:<15} {r['hpwl']:>10.0f} "
-            f"{r['line_est']:>10.0f} {routed_str} "
-            f"{r['max_congestion']:>8.3f} {r['max_density']:>8.3f} "
-            f"{r['place_time']:>7.1f}s"
+            f"{r['design']:<20} {r['config']:<15} {r['init_strategy']:<12} "
+            f"{box_str:<5} {r['hpwl']:>10.0f} {r['line_est']:>10.0f} "
+            f"{format_routed_wl(r['routed_wl'])} {r['max_congestion']:>8.3f} "
+            f"{r['max_density']:>8.3f} {r['place_time']:>7.1f}s"
         )
 
     # Print best config per design
-    designs_seen = []
-    for r in results:
-        if r["design"] not in designs_seen:
-            designs_seen.append(r["design"])
+    designs_seen = list(dict.fromkeys(r["design"] for r in results))
 
-    if len(designs_seen) > 0:
-        print(f"\n{'Best config per design (by routed wirelength)':}")
-        print(f"{'Design':<20} {'Config':<15} {'RoutedWL':>10}")
-        print("-" * 50)
+    if designs_seen:
+        print("\nBest config per design (by routed wirelength)")
+        print(f"{'Design':<20} {'Config':<15} {'Init':<12} {'Box':<5} {'RoutedWL':>10}")
+        print("-" * 70)
         for d in designs_seen:
             d_results = [r for r in results if r["design"] == d]
-            # Filter out NaN results
-            valid = [r for r in d_results if r["routed_wl"] == r["routed_wl"]]
+            valid = [
+                r
+                for r in d_results
+                if not (
+                    isinstance(r["routed_wl"], float) and math.isnan(r["routed_wl"])
+                )
+            ]
             if valid:
                 best = min(valid, key=lambda r: r["routed_wl"])
-                routed = best["routed_wl"]
-                routed_str = (
-                    f"{routed:>10.0f}"
-                    if isinstance(routed, float)
-                    else f"{routed:>10d}"
+                box_str = "Y" if best["expanding_box"] else "N"
+                print(
+                    f"{d:<20} {best['config']:<15} {best['init_strategy']:<12} "
+                    f"{box_str:<5} {format_routed_wl(best['routed_wl'])}"
                 )
-                print(f"{d:<20} {best['config']:<15} {routed_str}")
 
 
 if __name__ == "__main__":

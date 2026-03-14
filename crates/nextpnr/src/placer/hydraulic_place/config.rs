@@ -36,7 +36,7 @@ pub struct HydraulicPlacerCfg {
     /// Higher values make critical nets resist spreading, keeping timing paths short.
     /// Also controls transit-time-based setup/hold violation checking.
     pub timing_weight: f64,
-    /// Initial gas temperature for density spreading (default: 0.0).
+    /// Initial gas temperature for density spreading (default: 1.0).
     /// Starts hot (strong spreading to break clustering), anneals to 0.
     /// Higher = more initial spreading. Set to 0.0 to disable.
     pub gas_temperature: f64,

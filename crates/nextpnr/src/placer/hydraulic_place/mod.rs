@@ -109,12 +109,13 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
         // 3. Star model force (if enabled).
         if cfg.star_weight > 0.0 {
-            let nw: Option<FxHashMap<NetId, f64>> = if cfg.timing_weight > 0.0 {
-                Some(criticality.iter().map(|(&k, &v)| (k, 1.0 + cfg.timing_weight * v)).collect())
+            let net_weights: FxHashMap<NetId, f64> = if cfg.timing_weight > 0.0 {
+                criticality.iter().map(|(&k, &v)| (k, 1.0 + cfg.timing_weight * v)).collect()
             } else {
-                None
+                FxHashMap::default()
             };
-            let (sx, sy) = state.compute_star_force(ctx, cfg.wl_coeff, nw.as_ref());
+            let nw_ref = if net_weights.is_empty() { None } else { Some(&net_weights) };
+            let (sx, sy) = state.compute_star_force(ctx, cfg.wl_coeff, nw_ref);
             for i in 0..n {
                 grad_x[i] += cfg.star_weight * sx[i];
                 grad_y[i] += cfg.star_weight * sy[i];
