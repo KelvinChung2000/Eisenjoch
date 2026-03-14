@@ -70,6 +70,7 @@ impl HydraulicState {
                 (xs, ys)
             }
             InitStrategy::RandomBel => Self::init_from_bels(ctx, &idx_to_cell, n),
+            InitStrategy::RadialCapacity => Self::init_radial_capacity(ctx, n, &network, box_center),
         };
 
         Self {
@@ -129,6 +130,71 @@ impl HydraulicState {
         let mut cell_x = vec![0.0; n];
         let mut cell_y = vec![0.0; n];
         crate::placer::common::init_positions_from_bels(ctx, idx_to_cell, &mut cell_x, &mut cell_y);
+        (cell_x, cell_y)
+    }
+
+    /// Capacity-aware radial init: spread cells outward from IO centroid,
+    /// filling each tile up to its BEL capacity before moving to the next ring.
+    ///
+    /// This gives a compact starting position (cells near centroid for strong
+    /// Kirchhoff gradients) with no overlap (each tile ≤ capacity). Tiles are
+    /// filled closest-to-centroid first, so the placement radiates outward.
+    fn init_radial_capacity(
+        ctx: &Context,
+        n: usize,
+        network: &PipeNetwork,
+        center: (f64, f64),
+    ) -> (Vec<f64>, Vec<f64>) {
+        let (cx, cy) = center;
+        let w = network.width;
+        let h = network.height;
+
+        // Build list of (tile_x, tile_y, bel_capacity, distance_to_centroid).
+        let mut tiles: Vec<(i32, i32, usize, f64)> = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let tile = ctx.chipdb().tile_by_xy(x, y);
+                let cap = ctx.chipdb().tile_type(tile).bels.len();
+                if cap > 0 {
+                    let dx = x as f64 - cx;
+                    let dy = y as f64 - cy;
+                    let dist = dx * dx + dy * dy;
+                    tiles.push((x, y, cap, dist));
+                }
+            }
+        }
+
+        // Sort by distance to centroid (closest first).
+        tiles.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
+
+        // Assign cells to tiles, filling closest first up to capacity.
+        let mut cell_x = Vec::with_capacity(n);
+        let mut cell_y = Vec::with_capacity(n);
+        let mut placed = 0;
+
+        for &(tx, ty, cap, _) in &tiles {
+            if placed >= n {
+                break;
+            }
+            // Place up to `cap` cells in this tile, spread within the tile.
+            let to_place = cap.min(n - placed);
+            let cols = (to_place as f64).sqrt().ceil() as usize;
+            let rows = (to_place + cols - 1) / cols;
+            for i in 0..to_place {
+                let lx = (i % cols) as f64 / (cols as f64 + 1.0);
+                let ly = (i / cols) as f64 / (rows as f64 + 1.0);
+                cell_x.push(tx as f64 + lx);
+                cell_y.push(ty as f64 + ly);
+            }
+            placed += to_place;
+        }
+
+        // If somehow we didn't place all cells (shouldn't happen), fill at centroid.
+        while cell_x.len() < n {
+            cell_x.push(cx);
+            cell_y.push(cy);
+        }
+
         (cell_x, cell_y)
     }
 
@@ -564,23 +630,20 @@ impl HydraulicState {
     /// Lower energy = shorter effective routing paths.
     pub fn transport_energy(&self, demand: &[f64]) -> f64 {
         let mut energy = 0.0;
-        for (j, &p) in self.network.junctions.iter().map(|j| &j.pressure).enumerate() {
-            energy += p * demand.get(j).unwrap_or(&0.0);
+        for (junction, &d) in self.network.junctions.iter().zip(demand.iter()) {
+            energy += junction.pressure * d;
         }
         0.5 * energy
     }
 
-    /// Density entropy: S = Σ_tiles ρ·ln(ρ) + hard_wall_penalty(ρ).
-    ///
-    /// Measures how far the cell distribution is from uniform.
-    /// ρ=1 everywhere → S ≈ 0 (well-spread). ρ >> 1 somewhere → S >> 0 (clustered).
-    /// The hard wall penalty adds α·(ρ-1)³ for ρ > 1, preventing overlap.
-    pub fn density_entropy(&self, ctx: &Context) -> f64 {
+    /// Build normalized density field: bilinear splat of cell positions,
+    /// divided by per-tile BEL capacity. Shared by `density_entropy` and
+    /// `compute_gas_gradient`.
+    fn build_density_field(&self, ctx: &Context) -> Vec<f64> {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let n = self.num_cells();
 
-        // Build density field (same as compute_gas_gradient step 1-2).
         let mut density = vec![0.0; w * h];
         for i in 0..n {
             for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
@@ -594,8 +657,17 @@ impl HydraulicState {
                 density[y * w + x] /= n_bels;
             }
         }
+        density
+    }
 
-        // Entropy + hard wall.
+    /// Density entropy: S = Σ_tiles ρ·ln(ρ) + hard_wall_penalty(ρ).
+    ///
+    /// Measures how far the cell distribution is from uniform.
+    /// ρ=1 everywhere → S ≈ 0 (well-spread). ρ >> 1 somewhere → S >> 0 (clustered).
+    /// The hard wall penalty adds α·(ρ-1)³ for ρ > 1, preventing overlap.
+    pub fn density_entropy(&self, ctx: &Context) -> f64 {
+        let density = self.build_density_field(ctx);
+
         let mut entropy = 0.0;
         for &rho in &density {
             if rho > 1e-12 {
@@ -666,22 +738,8 @@ impl HydraulicState {
         let n = self.num_cells();
         let num_tiles = w * h;
 
-        // 1. Build density field: bilinear splatting of cell positions.
-        let mut density = vec![0.0; num_tiles];
-        for i in 0..n {
-            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
-                density[ty as usize * w + tx as usize] += weight;
-            }
-        }
-
-        // 2. Normalize by tile capacity (BELs).
-        for y in 0..h {
-            for x in 0..w {
-                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
-                let n_bels = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
-                density[y * w + x] /= n_bels;
-            }
-        }
+        // 1-2. Build density field: bilinear splat, normalized by BEL capacity.
+        let density = self.build_density_field(ctx);
 
         // 3. Build temperature field from cell velocities: T(tile) = base + mean(|v|^2).
         let temperature_field = self.build_temperature_field(

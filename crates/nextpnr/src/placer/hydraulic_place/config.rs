@@ -9,6 +9,8 @@ pub enum InitStrategy {
     Centroid,
     /// Random BEL: read positions from the random BEL assignment by initial_placement.
     RandomBel,
+    /// Radial capacity: spread from IO centroid, filling tiles up to BEL capacity.
+    RadialCapacity,
 }
 
 #[derive(Clone)]

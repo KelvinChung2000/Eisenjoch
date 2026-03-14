@@ -270,6 +270,7 @@ impl PyContext {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
                     "random_bel" => InitStrategy::RandomBel,
+                    "radial" => InitStrategy::RadialCapacity,
                     other => return Err(PyValueError::new_err(format!(
                         "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
                     ))),
