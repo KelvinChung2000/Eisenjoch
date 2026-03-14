@@ -88,11 +88,6 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     // Dilute designs (low util) need stronger IO pull to gather cells.
     let io_boost = cfg.io_boost * (1.0 + 2.0 * (1.0 - utilization).max(0.0));
 
-    // Density temperature: proportional to utilization.
-    // Dense gas needs spreading; dilute gas has room, needs less.
-    // Also scale down relative to pressure so it doesn't dominate.
-    let gas_temperature = cfg.gas_temperature * utilization * 0.1;
-
     // Step size: scale with grid diagonal for proportional movement.
     let step_size = cfg.nesterov_step_size * grid_diag / 50.0;
 
@@ -101,8 +96,8 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let converge_patience = diverge_patience + 20;
 
     eprintln!(
-        "Auto-scaled: util={:.1}%, io_boost={:.1}, temp={:.3}, step={:.3}, patience={}",
-        utilization * 100.0, io_boost, gas_temperature, step_size, diverge_patience,
+        "Auto-scaled: util={:.1}%, io_boost={:.1}, step={:.3}, patience={}",
+        utilization * 100.0, io_boost, step_size, diverge_patience,
     );
 
     let pin_weights = compute_pin_weights(ctx, &state.cell_to_idx, n);
@@ -119,6 +114,12 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     let mut criticality: FxHashMap<NetId, f64> = FxHashMap::default();
     let mut density_lambda = 0.0; // Adaptive density penalty multiplier.
+
+    // Cell velocity tracking for thermodynamic temperature.
+    let mut prev_x = state.cell_x.clone();
+    let mut prev_y = state.cell_y.clone();
+    let mut vel_x = vec![0.0; n];
+    let mut vel_y = vec![0.0; n];
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -164,26 +165,25 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| s * p).collect();
         let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| s * p).collect();
 
-        // 6. Density spreading: adaptive penalty (ePlace incremental update).
-        //    λ is initialized from gradient norm ratio, then incrementally
-        //    adjusted based on cell overflow. This prevents λ from exploding.
+        // 6. Density spreading with thermodynamic temperature.
+        //    P = κ · ρ · T where T = base + average(|v|²) at each tile.
+        //    Hot regions (cells moving) spread more; cold regions freeze naturally.
         let sigma = 2.0 * (1.0 - progress).max(0.5);
-        let (dx, dy) = state.compute_gas_gradient(ctx, 1.0, sigma);
-
-        if iter == 0 {
-            // Initialize λ from norm ratio (balanced start).
-            let wl_norm = gradient_norm(&grad_x, &grad_y);
-            let dens_norm = gradient_norm(&dx, &dy);
-            if dens_norm > 1e-20 {
-                density_lambda = 0.5 * wl_norm / dens_norm;
-            }
+        let velocities = if iter > 0 {
+            Some((vel_x.as_slice(), vel_y.as_slice()))
         } else {
-            // Incremental update: increase λ proportional to how much density
-            // exceeds wirelength gradient (cells not spreading enough).
-            let wl_norm = gradient_norm(&grad_x, &grad_y);
-            let dens_norm = gradient_norm(&dx, &dy);
-            if dens_norm > 1e-20 && wl_norm > 1e-20 {
-                let ratio = wl_norm / dens_norm;
+            None
+        };
+        let (dx, dy) = state.compute_gas_gradient(ctx, 1.0, sigma, velocities);
+
+        let wl_norm = gradient_norm(&grad_x, &grad_y);
+        let dens_norm = gradient_norm(&dx, &dy);
+        if dens_norm > 1e-20 && wl_norm > 1e-20 {
+            let ratio = wl_norm / dens_norm;
+            if iter == 0 {
+                // Initialize λ to half the balanced ratio.
+                density_lambda = 0.5 * ratio;
+            } else {
                 // Blend current λ toward the balanced ratio.
                 density_lambda = 0.95 * density_lambda + 0.05 * ratio;
             }
@@ -217,6 +217,14 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         adam_y.clamp_positions_range(0.0, max_y);
         state.cell_x.copy_from_slice(adam_x.positions());
         state.cell_y.copy_from_slice(adam_y.positions());
+
+        // 10. Compute cell velocities for thermodynamic temperature.
+        for i in 0..n {
+            vel_x[i] = state.cell_x[i] - prev_x[i];
+            vel_y[i] = state.cell_y[i] - prev_y[i];
+        }
+        prev_x.copy_from_slice(&state.cell_x);
+        prev_y.copy_from_slice(&state.cell_y);
 
         // Track best continuous HPWL every iteration.
         let chpwl_now = state.continuous_hpwl(ctx);

@@ -581,19 +581,23 @@ impl HydraulicState {
         }
     }
 
-    /// Compute gas pressure gradient from cell density (compressible fluid model).
+    /// Compute gas pressure gradient from cell density and thermodynamic temperature.
     ///
-    /// Cells are modeled as compressible gas: dense regions have high internal
-    /// pressure that pushes cells outward. The density field is Gaussian-blurred
-    /// to prevent oscillation (blur radius = sigma).
+    /// Models cells as ideal gas: P = κ · ρ · T where:
+    /// - ρ = cell density per tile (bilinear splatted, normalized by BEL capacity)
+    /// - T = local kinetic energy of cells (from velocity field)
     ///
-    /// Gas force: F_gas = -temperature * grad(density) / capacity
-    /// where capacity = BEL count per tile.
+    /// Temperature is self-consistent: T(tile) = average |v|² of cells near that tile.
+    /// Hot regions (cells still moving) spread more; cold regions (cells settled) freeze.
+    /// This naturally anneals without an artificial temperature schedule.
+    ///
+    /// If no velocities are provided (None), uses a uniform base temperature.
     pub fn compute_gas_gradient(
         &self,
         ctx: &Context,
-        temperature: f64,
+        base_temperature: f64,
         sigma: f64,
+        velocities: Option<(&[f64], &[f64])>,
     ) -> (Vec<f64>, Vec<f64>) {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
@@ -607,7 +611,7 @@ impl HydraulicState {
             }
         }
 
-        // 2. Normalize by tile capacity (BELs). Tiles with more BELs tolerate more cells.
+        // 2. Normalize by tile capacity (BELs).
         for y in 0..h {
             for x in 0..w {
                 let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
@@ -616,16 +620,41 @@ impl HydraulicState {
             }
         }
 
-        // 3. Gaussian blur (separable: horizontal then vertical).
-        let blurred = gaussian_blur_2d(&density, w, h, sigma);
+        // 3. Build temperature field from cell velocities (thermodynamic T = ½mv²).
+        //    If velocities are provided, T(tile) = base + average(vx² + vy²) at tile.
+        //    Otherwise, T = base (uniform).
+        let temperature_field: Vec<f64> = if let Some((vx, vy)) = velocities {
+            let mut ke_field = vec![0.0; w * h]; // kinetic energy accumulator
+            let mut count_field = vec![0.0; w * h]; // cell count per tile
+            for i in 0..n {
+                let ke = vx[i] * vx[i] + vy[i] * vy[i];
+                for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
+                    let idx = ty as usize * w + tx as usize;
+                    ke_field[idx] += weight * ke;
+                    count_field[idx] += weight;
+                }
+            }
+            // T = base_temperature + kinetic_energy / count (average KE per cell).
+            ke_field.iter().zip(&count_field).map(|(&ke, &cnt)| {
+                if cnt > 1e-12 {
+                    base_temperature + ke / cnt
+                } else {
+                    base_temperature
+                }
+            }).collect()
+        } else {
+            vec![base_temperature; w * h]
+        };
 
-        // 4. Density gradient at each cell, scaled by temperature.
-        let (mut gx, mut gy) = self.field_gradient(&blurred, w);
-        for i in 0..n {
-            gx[i] *= temperature;
-            gy[i] *= temperature;
+        // 4. Ideal gas pressure: P = ρ · T (per tile).
+        let mut pressure = vec![0.0; w * h];
+        for i in 0..w * h {
+            pressure[i] = density[i] * temperature_field[i];
         }
-        (gx, gy)
+
+        // 5. Gaussian blur + gradient.
+        let blurred = gaussian_blur_2d(&pressure, w, h, sigma);
+        self.field_gradient(&blurred, w)
     }
 }
 
