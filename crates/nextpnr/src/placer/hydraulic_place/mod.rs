@@ -94,7 +94,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let progress = iter as f64 / cfg.max_outer_iters as f64;
         let beta = cfg.turbulence_beta * (1.0 - (-3.0 * progress).exp());
 
-        // 1. Nesterov look-ahead + optional expanding box.
+        // 1. Nesterov look-ahead (kinetic momentum).
         nesterov_x.look_ahead_into(&mut state.cell_x);
         nesterov_y.look_ahead_into(&mut state.cell_y);
         if cfg.enable_expanding_box {
@@ -103,55 +103,68 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             state.clamp_positions();
         }
 
-        // 2. Initialize combined gradient to zero.
+        // 2. Build net demand vector (source at drivers, sink at users).
+        //    IO pins act as pressure anchors via io_boost.
+        //    Timing-critical nets pump harder via pump_gain.
+        let demand = state.compute_net_demands(
+            ctx, &criticality, cfg.timing_weight, cfg.io_boost, cfg.pump_gain,
+        );
+
+        // 3. Kirchhoff solve: L(R_eff) · P = demand.
+        //    Global CG solve propagates pressure through the entire pipe network.
+        //    Turbulence R_eff = R * (1 + β·tanh(Q/C)²) penalises congested pipes.
+        kirchhoff::kirchhoff_solve(
+            &mut state.network,
+            &demand,
+            beta,
+            cfg.newton_iters,
+            cfg.cg_max_iters,
+            cfg.cg_tolerance,
+        );
+
+        // 4. Pressure gradient at cell positions (bilinear interpolation).
+        let (px, py) = state.compute_pressure_gradient(0.0);
+
+        // 5. Asymmetric force: driver cells move -∇P, sink cells move +∇P.
+        //    Per-cell sign weight from net demand contribution (smooth tanh).
+        let demand_sign = state.compute_cell_demand_sign(
+            ctx, &criticality, cfg.timing_weight, cfg.io_boost,
+        );
         let mut grad_x = vec![0.0; n];
         let mut grad_y = vec![0.0; n];
+        for i in 0..n {
+            grad_x[i] = demand_sign[i] * px[i];
+            grad_y[i] = demand_sign[i] * py[i];
+        }
 
-        // 3. Star model force (if enabled).
-        if cfg.star_weight > 0.0 {
-            let net_weights: FxHashMap<NetId, f64> = if cfg.timing_weight > 0.0 {
-                criticality.iter().map(|(&k, &v)| (k, 1.0 + cfg.timing_weight * v)).collect()
-            } else {
-                FxHashMap::default()
-            };
-            let nw_ref = if net_weights.is_empty() { None } else { Some(&net_weights) };
-            let (sx, sy) = state.compute_star_force(ctx, cfg.wl_coeff, nw_ref);
+        // 6. Density spreading force (compressible gas repulsion).
+        //    Always repulsive: ALL cells pushed away from overcrowded tiles.
+        //    Temperature anneals: starts hot (strong spreading), cools down.
+        let temperature = cfg.gas_temperature * (1.0 - 0.5 * progress);
+        if temperature > 0.0 {
+            let sigma = 2.0 * (1.0 - progress).max(0.5);
+            let (dx, dy) = state.compute_gas_gradient(ctx, temperature, sigma);
             for i in 0..n {
-                grad_x[i] += cfg.star_weight * sx[i];
-                grad_y[i] += cfg.star_weight * sy[i];
+                grad_x[i] += dx[i];
+                grad_y[i] += dy[i];
             }
         }
 
-        // 4. Gas hydraulic pressure (if enabled).
-        let pressure_weight = cfg.pressure_weight_start
-            + (cfg.pressure_weight_end - cfg.pressure_weight_start) * progress;
-        if cfg.gas_temperature > 0.0 && pressure_weight > 0.0 {
-            let demand = state.compute_net_demands(ctx, &criticality, cfg.timing_weight, cfg.io_boost, cfg.pump_gain);
-            kirchhoff::gas_hydraulic_solve(
-                &mut state.network, &demand, cfg.gas_temperature, beta,
-                cfg.newton_iters * 5,
-            );
-            let (px, py) = state.compute_pressure_gradient(0.0);
-            for i in 0..n {
-                grad_x[i] += pressure_weight * px[i];
-                grad_y[i] += pressure_weight * py[i];
-            }
-        }
-
-        // 5. Fluid timing → criticality.
+        // 7. Fluid timing → criticality update.
         if cfg.timing_weight > 0.0 {
             let timing_result = timing::compute_fluid_timing(ctx, &state, target_period, beta);
             criticality = timing_result.net_criticality;
         }
 
-        // 6. Preconditioner.
+        // 8. Viscosity preconditioner: critical cells have higher effective mass.
+        let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
         for i in 0..n {
-            let w = (pin_weights[i] + pressure_weight).max(1.0);
+            let w = (pin_weights[i] + viscosity[i]).max(1.0);
             grad_x[i] /= w;
             grad_y[i] /= w;
         }
 
-        // 7. Step sizing + Nesterov step.
+        // 9. Step sizing + Nesterov momentum step.
         if iter > 0 {
             loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &grad_x, &grad_y);
         }
@@ -164,15 +177,15 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_x.copy_from_slice(nesterov_x.positions());
         state.cell_y.copy_from_slice(nesterov_y.positions());
 
-        // 8. Periodic legalization + convergence.
+        // 10. Periodic legalization + convergence.
         if iter % cfg.legalize_interval == 0 || iter == cfg.max_outer_iters - 1 {
             let displacement = legalize::legalize_greedy(ctx, &state)?;
             let hpwl = crate::metrics::wirelength::total_hpwl(ctx);
             let line_est = crate::metrics::wirelength::total_line_estimate(ctx);
             loop_state.record_metric(hpwl, &state.cell_x, &state.cell_y);
             eprintln!(
-                "Hydraulic iter {}: hpwl={:.0}, line_est={:.0}, disp={:.1}, p_w={:.2}, beta={:.2}",
-                iter, hpwl, line_est, displacement, pressure_weight, beta,
+                "Hydraulic iter {}: hpwl={:.0}, line_est={:.0}, disp={:.1}, beta={:.2}",
+                iter, hpwl, line_est, displacement, beta,
             );
 
             if hpwl > loop_state.best_metric * 1.05 && iter > 40 {

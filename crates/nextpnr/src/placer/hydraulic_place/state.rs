@@ -300,6 +300,80 @@ impl HydraulicState {
         demand
     }
 
+    /// Per-cell demand sign for asymmetric pressure gradient.
+    ///
+    /// Returns a smooth sign factor per cell: positive for net sinks, negative
+    /// for net sources. Used to flip the pressure gradient direction:
+    /// - Source cells (drivers): negative sign → force = -∇P (toward sinks)
+    /// - Sink cells: positive sign → force = +∇P (toward drivers)
+    ///
+    /// Uses tanh for smooth transition. The result is in [-1, 1].
+    pub fn compute_cell_demand_sign(
+        &self,
+        ctx: &Context,
+        criticality: &FxHashMap<NetId, f64>,
+        timing_weight: f64,
+        io_boost: f64,
+    ) -> Vec<f64> {
+        let n = self.num_cells();
+        let mut cell_demand = vec![0.0; n];
+
+        for (_net_id, net) in ctx.design.iter_alive_nets() {
+            let Some(dp) = net.driver() else { continue };
+            let users = net.users();
+            if users.is_empty() {
+                continue;
+            }
+
+            let has_fixed_sink = users.iter().any(|u| {
+                u.is_valid() && ctx.design.cell(u.cell).bel_strength.is_locked()
+            });
+            let has_fixed_pin =
+                ctx.design.cell(dp.cell).bel_strength.is_locked() || has_fixed_sink;
+            let io_factor = if has_fixed_pin { io_boost } else { 1.0 };
+
+            let crit = criticality.get(&_net_id).copied().unwrap_or(0.0);
+            let crit_factor = 1.0 + crit * timing_weight;
+            let weight = io_factor * crit_factor;
+
+            let fanout = users.iter().filter(|u| u.is_valid()).count() as f64;
+            if fanout == 0.0 {
+                continue;
+            }
+
+            // Driver contributes positive demand (source).
+            if let Some(&idx) = self.cell_to_idx.get(&dp.cell) {
+                cell_demand[idx] += weight;
+            }
+            // Sinks contribute negative demand (extraction).
+            let sink_weight = weight / fanout;
+            for user in users {
+                if !user.is_valid() {
+                    continue;
+                }
+                if let Some(&idx) = self.cell_to_idx.get(&user.cell) {
+                    cell_demand[idx] -= sink_weight;
+                }
+            }
+        }
+
+        // Smooth sign: tanh(demand / scale).
+        // Scale by median absolute value to normalize.
+        let mut abs_vals: Vec<f64> = cell_demand.iter().map(|d| d.abs()).filter(|&a| a > 1e-12).collect();
+        let scale = if abs_vals.is_empty() {
+            1.0
+        } else {
+            abs_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            abs_vals[abs_vals.len() / 2].max(1e-6)
+        };
+
+        // Return -tanh(d/scale): negative for sources, positive for sinks.
+        // This way: force = sign[i] * ∇P(x_i)
+        // Sources: sign < 0, so force = -∇P (down gradient, toward sinks) ✓
+        // Sinks: sign > 0, so force = +∇P (up gradient, toward sources) ✓
+        cell_demand.iter().map(|&d| -(d / scale).tanh()).collect()
+    }
+
     /// Per-cell viscosity from net criticality.
     ///
     /// Viscosity = 1 + alpha * max_criticality across all nets touching this cell.
