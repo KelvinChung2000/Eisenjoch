@@ -585,13 +585,12 @@ impl HydraulicState {
     ///
     /// Models cells as ideal gas: P = κ · ρ · T where:
     /// - ρ = cell density per tile (bilinear splatted, normalized by BEL capacity)
-    /// - T = local kinetic energy of cells (from velocity field)
+    /// - T = base_temperature + mean(|v|^2) at each tile from cell velocities
     ///
-    /// Temperature is self-consistent: T(tile) = average |v|² of cells near that tile.
     /// Hot regions (cells still moving) spread more; cold regions (cells settled) freeze.
     /// This naturally anneals without an artificial temperature schedule.
     ///
-    /// If no velocities are provided (None), uses a uniform base temperature.
+    /// If no velocities are provided (iter 0), uses uniform base temperature.
     pub fn compute_gas_gradient(
         &self,
         ctx: &Context,
@@ -602,9 +601,10 @@ impl HydraulicState {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let n = self.num_cells();
+        let num_tiles = w * h;
 
         // 1. Build density field: bilinear splatting of cell positions.
-        let mut density = vec![0.0; w * h];
+        let mut density = vec![0.0; num_tiles];
         for i in 0..n {
             for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
                 density[ty as usize * w + tx as usize] += weight;
@@ -620,41 +620,73 @@ impl HydraulicState {
             }
         }
 
-        // 3. Build temperature field from cell velocities (thermodynamic T = ½mv²).
-        //    If velocities are provided, T(tile) = base + average(vx² + vy²) at tile.
-        //    Otherwise, T = base (uniform).
-        let temperature_field: Vec<f64> = if let Some((vx, vy)) = velocities {
-            let mut ke_field = vec![0.0; w * h]; // kinetic energy accumulator
-            let mut count_field = vec![0.0; w * h]; // cell count per tile
-            for i in 0..n {
-                let ke = vx[i] * vx[i] + vy[i] * vy[i];
-                for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
-                    let idx = ty as usize * w + tx as usize;
-                    ke_field[idx] += weight * ke;
-                    count_field[idx] += weight;
-                }
+        // 3. Build temperature field from cell velocities: T(tile) = base + mean(|v|^2).
+        let temperature_field = self.build_temperature_field(
+            w, h, n, base_temperature, velocities,
+        );
+
+        // 4. Ideal gas pressure with hard-wall penalty at capacity.
+        //    Each cell has physical size 1/n_bels. A tile is "full" at ρ=1.0.
+        //    Below capacity: P = ρ · T (linear, soft spreading)
+        //    Above capacity: P = ρ · T + α·(ρ-1)³ (cubic hard wall)
+        //    This prevents cell overlap while allowing near-capacity packing.
+        for i in 0..num_tiles {
+            let rho = density[i];
+            let t = temperature_field[i];
+            let soft = rho * t;
+            let hard_wall = if rho > 1.0 {
+                let excess = rho - 1.0;
+                10.0 * excess * excess * excess
+            } else {
+                0.0
+            };
+            density[i] = soft + hard_wall;
+        }
+
+        // 5. Gaussian blur + gradient.
+        let blurred = gaussian_blur_2d(&density, w, h, sigma);
+        self.field_gradient(&blurred, w)
+    }
+
+    /// Build per-tile temperature field from cell velocities.
+    ///
+    /// Splats |v|^2 onto tiles using bilinear weights, then averages per tile.
+    /// Returns base_temperature for tiles with no nearby cells.
+    fn build_temperature_field(
+        &self,
+        w: usize,
+        h: usize,
+        n: usize,
+        base_temperature: f64,
+        velocities: Option<(&[f64], &[f64])>,
+    ) -> Vec<f64> {
+        let num_tiles = w * h;
+        let Some((vx, vy)) = velocities else {
+            return vec![base_temperature; num_tiles];
+        };
+
+        let mut ke_sum = vec![0.0; num_tiles];
+        let mut cell_count = vec![0.0; num_tiles];
+        for i in 0..n {
+            let speed_sq = vx[i] * vx[i] + vy[i] * vy[i];
+            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
+                let idx = ty as usize * w + tx as usize;
+                ke_sum[idx] += weight * speed_sq;
+                cell_count[idx] += weight;
             }
-            // T = base_temperature + kinetic_energy / count (average KE per cell).
-            ke_field.iter().zip(&count_field).map(|(&ke, &cnt)| {
+        }
+
+        ke_sum
+            .iter()
+            .zip(&cell_count)
+            .map(|(&ke, &cnt)| {
                 if cnt > 1e-12 {
                     base_temperature + ke / cnt
                 } else {
                     base_temperature
                 }
-            }).collect()
-        } else {
-            vec![base_temperature; w * h]
-        };
-
-        // 4. Ideal gas pressure: P = ρ · T (per tile).
-        let mut pressure = vec![0.0; w * h];
-        for i in 0..w * h {
-            pressure[i] = density[i] * temperature_field[i];
-        }
-
-        // 5. Gaussian blur + gradient.
-        let blurred = gaussian_blur_2d(&pressure, w, h, sigma);
-        self.field_gradient(&blurred, w)
+            })
+            .collect()
     }
 }
 
