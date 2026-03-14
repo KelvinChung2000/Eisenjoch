@@ -67,10 +67,8 @@ FORCE_CONFIGS = [
     },
 ]
 
-# Init strategies (not yet exposed in Python bindings, included for future use)
 INIT_STRATEGIES = ["centroid", "uniform", "random_bel"]
 
-# Expanding box toggle (not yet exposed in Python bindings, included for future use)
 EXPANDING_BOX = [True, False]
 
 # ---------------------------------------------------------------------------
@@ -127,19 +125,8 @@ def run_single(
     hpwl = ctx.total_hpwl()
     line_est = ctx.total_line_estimate()
 
-    # Density after placement
-    try:
-        density = ctx.placement_density(window=10)
-        max_density = density["max_density"]
-    except Exception:
-        max_density = 0.0
-
-    # Pre-route congestion estimate
-    try:
-        cong = ctx.congestion_estimate(threshold=0.5)
-        max_congestion = cong["max_congestion"]
-    except Exception:
-        max_congestion = 0.0
+    max_density = ctx.placement_density(window=10)["max_density"]
+    max_congestion = ctx.congestion_estimate(threshold=0.5)["max_congestion"]
 
     return {
         "hpwl": hpwl,
@@ -222,7 +209,7 @@ def main():
                     try:
                         metrics = run_single(
                             args.chipdb,
-                            str(design_path),
+                            design_path,
                             force_cfg,
                             seed=args.seed,
                             init_strategy=init_strat,
