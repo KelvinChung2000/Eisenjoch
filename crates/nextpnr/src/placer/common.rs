@@ -427,7 +427,7 @@ pub(crate) fn gradient_norm(grad_x: &[f64], grad_y: &[f64]) -> f64 {
 /// Minimum step size for Lipschitz-based step size estimation.
 const LIPSCHITZ_STEP_MIN: f64 = 1e-2;
 /// Maximum step size for Lipschitz-based step size estimation.
-const LIPSCHITZ_STEP_MAX: f64 = 1.0;
+const LIPSCHITZ_STEP_MAX: f64 = 0.2;
 
 /// Shared state for the FISTA/Nesterov optimization loop.
 ///

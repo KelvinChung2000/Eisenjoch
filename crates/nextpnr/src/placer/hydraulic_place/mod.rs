@@ -116,6 +116,12 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     let mut criticality: FxHashMap<NetId, f64> = FxHashMap::default();
 
+    // EMA gradient smoothing: dampens oscillation from non-smooth pressure field.
+    // Alpha = blend factor: 0.3 = 30% new gradient, 70% history.
+    let ema_alpha = 0.3;
+    let mut ema_grad_x = vec![0.0; n];
+    let mut ema_grad_y = vec![0.0; n];
+
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
         let mut ta = crate::timing::TimingAnalyser::new();
@@ -128,7 +134,9 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     for iter in 0..cfg.max_outer_iters {
         let progress = iter as f64 / cfg.max_outer_iters as f64;
-        let beta = cfg.turbulence_beta * (1.0 - (-3.0 * progress).exp());
+        // Turbulence ramp: caps at 50% of configured beta.
+        let beta = (cfg.turbulence_beta * 0.5) * (1.0 - (-3.0 * progress).exp());
+
 
         // 1. Nesterov look-ahead (kinetic momentum).
         nesterov_x.look_ahead_into(&mut state.cell_x);
@@ -229,34 +237,43 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy /= w;
         }
 
-        // 9. Adaptive restart: reset momentum when gradient opposes velocity.
-        nesterov_x.adaptive_restart(&grad_x);
-        nesterov_y.adaptive_restart(&grad_y);
-
-        // 10. Step sizing + Nesterov momentum step.
-        if iter > 0 {
-            loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &grad_x, &grad_y);
+        // 9. EMA gradient smoothing: blend current gradient with history.
+        //    Dampens oscillation from the non-smooth pressure field.
+        let alpha = if iter == 0 { 1.0 } else { ema_alpha };
+        for i in 0..n {
+            ema_grad_x[i] = alpha * grad_x[i] + (1.0 - alpha) * ema_grad_x[i];
+            ema_grad_y[i] = alpha * grad_y[i] + (1.0 - alpha) * ema_grad_y[i];
         }
-        loop_state.save_gradients(&grad_x, &grad_y);
 
-        nesterov_x.step(&grad_x);
-        nesterov_y.step(&grad_y);
+        // 10. Adaptive restart: reset momentum when gradient opposes velocity.
+        nesterov_x.adaptive_restart(&ema_grad_x);
+        nesterov_y.adaptive_restart(&ema_grad_y);
+
+        // 11. Step sizing + Nesterov momentum step.
+        if iter > 0 {
+            loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &ema_grad_x, &ema_grad_y);
+        }
+        loop_state.save_gradients(&ema_grad_x, &ema_grad_y);
+
+        nesterov_x.step(&ema_grad_x);
+        nesterov_y.step(&ema_grad_y);
         nesterov_x.clamp_positions_range(0.0, max_x);
         nesterov_y.clamp_positions_range(0.0, max_y);
         state.cell_x.copy_from_slice(nesterov_x.positions());
         state.cell_y.copy_from_slice(nesterov_y.positions());
 
-        // 10. Continuous metrics (no legalization in loop).
+        // Track best continuous HPWL every iteration (not just report iters).
+        let chpwl_now = state.continuous_hpwl(ctx);
+        loop_state.record_metric(chpwl_now, &state.cell_x, &state.cell_y);
+
+        // 12. Reporting + convergence (no legalization in loop).
         if is_report_iter {
-            let chpwl = state.continuous_hpwl(ctx);
-            let pump_e = state.compute_pump_energy(ctx);
-            loop_state.record_metric(chpwl, &state.cell_x, &state.cell_y);
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, pump_e={:.1}, |∇P|={:.2e}, |∇ρ|={:.2e}, step={:.4}, β={:.2}",
-                iter, chpwl, pump_e, pressure_norm, density_norm, nesterov_x.step_size(), beta,
+                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, |∇P|={:.2e}, |∇ρ|={:.2e}, step={:.4}, β={:.2}",
+                iter, chpwl_now, loop_state.best_metric, pressure_norm, density_norm, nesterov_x.step_size(), beta,
             );
 
-            if chpwl > loop_state.best_metric * 1.10 && iter > diverge_patience {
+            if chpwl_now > loop_state.best_metric * 1.10 && iter > diverge_patience {
                 eprintln!("Hydraulic: divergence at iter {}, reverting", iter);
                 state.cell_x.copy_from_slice(&loop_state.best_positions_x);
                 state.cell_y.copy_from_slice(&loop_state.best_positions_y);
@@ -265,7 +282,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
                 break;
             }
             if iter > converge_patience {
-                let rel = (chpwl - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
+                let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.001 {
                     eprintln!("Hydraulic placer converged at iteration {}", iter);
                     break;

@@ -68,9 +68,6 @@ pub struct HydraulicPlacerCfg {
     /// Nesterov momentum coefficient override. None = use FISTA automatic (default: None).
     pub momentum: Option<f64>,
 
-    /// Legalize every N iterations for convergence tracking (default: 5).
-    pub legalize_interval: usize,
-
     /// WA wirelength smoothing coefficient (default: 0.5).
     pub wl_coeff: f64,
 
@@ -95,7 +92,7 @@ impl Default for HydraulicPlacerCfg {
             report_interval: 5,
             timing_weight: 0.0,
             gas_temperature: 1.0,
-            init_strategy: InitStrategy::Centroid,
+            init_strategy: InitStrategy::Uniform,
             lap_max_cells: 10000,
             star_weight: 1.0,
             pressure_weight_start: 0.0,
@@ -103,7 +100,6 @@ impl Default for HydraulicPlacerCfg {
             io_boost: 4.0,
             nesterov_step_size: 0.1,
             momentum: None,
-            legalize_interval: 5,
             wl_coeff: 0.5,
             enable_expanding_box: true,
             pump_gain: 10.0,
