@@ -196,6 +196,7 @@ impl HydraulicState {
     /// Additional scaling: span (sqrt) and criticality (viscosity).
     /// Star model force: WA wirelength gradient pulling cells toward connected pin centroids.
     /// Fixed (IO) pins act as immovable attractors. Returns (grad_x, grad_y).
+    #[allow(dead_code)]
     pub fn compute_star_force(
         &self,
         ctx: &Context,
@@ -233,16 +234,13 @@ impl HydraulicState {
         for (net_id, net) in ctx.design.iter_alive_nets() {
             let Some(dp) = net.driver() else { continue };
 
-            // Collect valid sink positions and detect fixed pins in a single pass.
-            let mut has_fixed_sink = false;
-            let sink_positions: Vec<(f64, f64)> = net
-                .users()
+            let valid_users: Vec<_> = net.users().iter().filter(|u| u.is_valid()).collect();
+            let has_fixed_sink = valid_users
                 .iter()
-                .filter(|u| u.is_valid())
-                .map(|u| {
-                    has_fixed_sink |= ctx.design.cell(u.cell).bel_strength.is_locked();
-                    self.pin_pos(ctx, u.cell)
-                })
+                .any(|u| ctx.design.cell(u.cell).bel_strength.is_locked());
+            let sink_positions: Vec<(f64, f64)> = valid_users
+                .iter()
+                .map(|u| self.pin_pos(ctx, u.cell))
                 .collect();
             if sink_positions.is_empty() {
                 continue;
@@ -318,12 +316,9 @@ impl HydraulicState {
         let n = self.num_cells();
         let mut cell_demand = vec![0.0; n];
 
-        for (_net_id, net) in ctx.design.iter_alive_nets() {
+        for (net_id, net) in ctx.design.iter_alive_nets() {
             let Some(dp) = net.driver() else { continue };
             let users = net.users();
-            if users.is_empty() {
-                continue;
-            }
 
             let has_fixed_sink = users.iter().any(|u| {
                 u.is_valid() && ctx.design.cell(u.cell).bel_strength.is_locked()
@@ -332,7 +327,7 @@ impl HydraulicState {
                 ctx.design.cell(dp.cell).bel_strength.is_locked() || has_fixed_sink;
             let io_factor = if has_fixed_pin { io_boost } else { 1.0 };
 
-            let crit = criticality.get(&_net_id).copied().unwrap_or(0.0);
+            let crit = criticality.get(&net_id).copied().unwrap_or(0.0);
             let crit_factor = 1.0 + crit * timing_weight;
             let weight = io_factor * crit_factor;
 
@@ -363,7 +358,7 @@ impl HydraulicState {
         let scale = if abs_vals.is_empty() {
             1.0
         } else {
-            abs_vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            abs_vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
             abs_vals[abs_vals.len() / 2].max(1e-6)
         };
 
@@ -498,6 +493,7 @@ impl HydraulicState {
     ///
     /// A longer pipe needs a stronger pump (higher driver pressure).
     /// Always non-negative. Directly proportional to wirelength.
+    #[allow(dead_code)]
     pub fn compute_pump_energy(&self, ctx: &Context) -> f64 {
         let mut energy = 0.0;
         for (_net_id, net) in ctx.design.iter_alive_nets() {
@@ -526,6 +522,37 @@ impl HydraulicState {
             }
         }
         energy
+    }
+
+    /// Continuous HPWL: sum of half-perimeter bounding boxes from continuous positions.
+    /// No legalization needed — uses cell_x/cell_y directly.
+    pub fn continuous_hpwl(&self, ctx: &Context) -> f64 {
+        let mut total = 0.0;
+        for (_net_id, net) in ctx.design.iter_alive_nets() {
+            let Some(dp) = net.driver() else { continue };
+            let users = net.users();
+            if users.is_empty() {
+                continue;
+            }
+
+            let (dx, dy) = self.pin_pos(ctx, dp.cell);
+            let (mut min_x, mut max_x) = (dx, dx);
+            let (mut min_y, mut max_y) = (dy, dy);
+
+            for user in users {
+                if !user.is_valid() {
+                    continue;
+                }
+                let (x, y) = self.pin_pos(ctx, user.cell);
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+
+            total += (max_x - min_x) + (max_y - min_y);
+        }
+        total
     }
 
     pub fn clamp_positions(&mut self) {

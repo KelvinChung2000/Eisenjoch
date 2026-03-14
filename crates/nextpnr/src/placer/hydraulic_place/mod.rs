@@ -130,23 +130,47 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let demand_sign = state.compute_cell_demand_sign(
             ctx, &criticality, cfg.timing_weight, cfg.io_boost,
         );
-        let mut grad_x = vec![0.0; n];
-        let mut grad_y = vec![0.0; n];
-        for i in 0..n {
-            grad_x[i] = demand_sign[i] * px[i];
-            grad_y[i] = demand_sign[i] * py[i];
+        // Nesterov does x_new = y - step * grad, so grad must point AWAY from target.
+        // demand_sign > 0 (sink): force toward driver = +∇P, so grad = -∇P
+        // demand_sign < 0 (source): force toward sinks = -∇P, so grad = +∇P
+        // Combined: grad = -sign * ∇P
+        let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| -s * p).collect();
+        let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| -s * p).collect();
+
+        // Debug: log sign distribution on first iteration.
+        if iter == 0 {
+            let n_pos = demand_sign.iter().filter(|&&s| s > 0.0).count();
+            let n_neg = demand_sign.iter().filter(|&&s| s < 0.0).count();
+            let avg = demand_sign.iter().sum::<f64>() / n as f64;
+            let min = demand_sign.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = demand_sign.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            eprintln!(
+                "  demand_sign: {n_pos} pos (sinks), {n_neg} neg (sources), avg={avg:.3}, range=[{min:.3}, {max:.3}]"
+            );
+            let px_norm: f64 = px.iter().map(|g| g * g).sum::<f64>().sqrt();
+            let py_norm: f64 = py.iter().map(|g| g * g).sum::<f64>().sqrt();
+            eprintln!("  raw ∇P: |px|={px_norm:.2e}, |py|={py_norm:.2e}");
         }
+
+        // Log pressure gradient norm (before density).
+        let pressure_norm: f64 = grad_x.iter().chain(grad_y.iter())
+            .map(|g| g * g).sum::<f64>().sqrt();
 
         // 6. Density spreading force (compressible gas repulsion).
         //    Always repulsive: ALL cells pushed away from overcrowded tiles.
         //    Temperature anneals: starts hot (strong spreading), cools down.
         let temperature = cfg.gas_temperature * (1.0 - 0.5 * progress);
+        let mut density_norm = 0.0;
         if temperature > 0.0 {
             let sigma = 2.0 * (1.0 - progress).max(0.5);
             let (dx, dy) = state.compute_gas_gradient(ctx, temperature, sigma);
-            for i in 0..n {
-                grad_x[i] += dx[i];
-                grad_y[i] += dy[i];
+            density_norm = dx.iter().chain(dy.iter())
+                .map(|g| g * g).sum::<f64>().sqrt();
+            for (gx, d) in grad_x.iter_mut().zip(&dx) {
+                *gx += d;
+            }
+            for (gy, d) in grad_y.iter_mut().zip(&dy) {
+                *gy += d;
             }
         }
 
@@ -158,10 +182,12 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
         // 8. Viscosity preconditioner: critical cells have higher effective mass.
         let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
-        for i in 0..n {
-            let w = (pin_weights[i] + viscosity[i]).max(1.0);
-            grad_x[i] /= w;
-            grad_y[i] /= w;
+        for ((gx, gy), (&pw, &v)) in grad_x.iter_mut().zip(grad_y.iter_mut())
+            .zip(pin_weights.iter().zip(&viscosity))
+        {
+            let w = (pw + v).max(1.0);
+            *gx /= w;
+            *gy /= w;
         }
 
         // 9. Step sizing + Nesterov momentum step.
@@ -177,18 +203,18 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_x.copy_from_slice(nesterov_x.positions());
         state.cell_y.copy_from_slice(nesterov_y.positions());
 
-        // 10. Periodic legalization + convergence.
-        if iter % cfg.legalize_interval == 0 || iter == cfg.max_outer_iters - 1 {
-            let displacement = legalize::legalize_greedy(ctx, &state)?;
-            let hpwl = crate::metrics::wirelength::total_hpwl(ctx);
-            let line_est = crate::metrics::wirelength::total_line_estimate(ctx);
-            loop_state.record_metric(hpwl, &state.cell_x, &state.cell_y);
+        // 10. Continuous metrics (no legalization in loop).
+        if iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1 {
+            let chpwl = state.continuous_hpwl(ctx);
+            let pump_e = state.compute_pump_energy(ctx);
+            let step_x = nesterov_x.step_size();
+            loop_state.record_metric(chpwl, &state.cell_x, &state.cell_y);
             eprintln!(
-                "Hydraulic iter {}: hpwl={:.0}, line_est={:.0}, disp={:.1}, beta={:.2}",
-                iter, hpwl, line_est, displacement, beta,
+                "Hydraulic iter {}: chpwl={:.0}, pump_e={:.1}, |∇P|={:.2e}, |∇ρ|={:.2e}, step={:.4}, β={:.2}",
+                iter, chpwl, pump_e, pressure_norm, density_norm, step_x, beta,
             );
 
-            if hpwl > loop_state.best_metric * 1.05 && iter > 40 {
+            if chpwl > loop_state.best_metric * 1.10 && iter > 40 {
                 eprintln!("Hydraulic: divergence at iter {}, reverting", iter);
                 state.cell_x.copy_from_slice(&loop_state.best_positions_x);
                 state.cell_y.copy_from_slice(&loop_state.best_positions_y);
@@ -197,7 +223,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
                 break;
             }
             if iter > 50 {
-                let rel = (hpwl - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
+                let rel = (chpwl - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.001 {
                     eprintln!("Hydraulic placer converged at iteration {}", iter);
                     break;
