@@ -69,10 +69,46 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     let n = state.num_cells();
 
+    // === Auto-scale parameters from design characteristics ===
+    // The design is a gas: utilization = compression, grid = container.
+
+    // Count total BELs for true utilization.
+    let mut total_bels = 0usize;
+    for y in 0..state.network.height {
+        for x in 0..state.network.width {
+            let tile = ctx.chipdb().tile_by_xy(x, y);
+            total_bels += ctx.chipdb().tile_type(tile).bels.len();
+        }
+    }
+    let utilization = n as f64 / (total_bels as f64).max(1.0);
+    let grid_diag = ((state.network.width as f64).powi(2)
+        + (state.network.height as f64).powi(2)).sqrt();
+
+    // IO boost: amplify boundary pressure for dilute gas.
+    // Dilute designs (low util) need stronger IO pull to gather cells.
+    let io_boost = cfg.io_boost * (1.0 + 2.0 * (1.0 - utilization).max(0.0));
+
+    // Density temperature: proportional to utilization.
+    // Dense gas needs spreading; dilute gas has room, needs less.
+    // Also scale down relative to pressure so it doesn't dominate.
+    let gas_temperature = cfg.gas_temperature * utilization * 0.1;
+
+    // Step size: scale with grid diagonal for proportional movement.
+    let step_size = cfg.nesterov_step_size * grid_diag / 50.0;
+
+    // Divergence patience: larger designs need more iterations.
+    let diverge_patience = (60.0 + 2.0 * (n as f64).sqrt()) as usize;
+    let converge_patience = diverge_patience + 20;
+
+    eprintln!(
+        "Auto-scaled: util={:.1}%, io_boost={:.1}, temp={:.3}, step={:.3}, patience={}",
+        utilization * 100.0, io_boost, gas_temperature, step_size, diverge_patience,
+    );
+
     let pin_weights = compute_pin_weights(ctx, &state.cell_to_idx, n);
     let mut loop_state = NesterovLoopState::new(&state.cell_x, &state.cell_y);
-    let mut nesterov_x = NesterovSolver::new(n, cfg.nesterov_step_size);
-    let mut nesterov_y = NesterovSolver::new(n, cfg.nesterov_step_size);
+    let mut nesterov_x = NesterovSolver::new(n, step_size);
+    let mut nesterov_y = NesterovSolver::new(n, step_size);
     nesterov_x.set_positions(&state.cell_x);
     nesterov_y.set_positions(&state.cell_y);
     let max_x = (state.network.width - 1) as f64;
@@ -107,7 +143,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         //    IO pins act as pressure anchors via io_boost.
         //    Timing-critical nets pump harder via pump_gain.
         let demand = state.compute_net_demands(
-            ctx, &criticality, cfg.timing_weight, cfg.io_boost, cfg.pump_gain,
+            ctx, &criticality, cfg.timing_weight, io_boost, cfg.pump_gain,
         );
 
         // 3. Kirchhoff solve: L(R_eff) · P = demand.
@@ -128,14 +164,14 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         // 5. Asymmetric force: driver cells move -∇P, sink cells move +∇P.
         //    Per-cell sign weight from net demand contribution (smooth tanh).
         let demand_sign = state.compute_cell_demand_sign(
-            ctx, &criticality, cfg.timing_weight, cfg.io_boost,
+            ctx, &criticality, cfg.timing_weight, io_boost,
         );
         // Nesterov does x_new = y - step * grad, so grad must point AWAY from target.
-        // demand_sign > 0 (sink): force toward driver = +∇P, so grad = -∇P
-        // demand_sign < 0 (source): force toward sinks = -∇P, so grad = +∇P
-        // Combined: grad = -sign * ∇P
-        let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| -s * p).collect();
-        let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| -s * p).collect();
+        // demand_sign encodes role: positive for sinks, negative for sources.
+        // grad = sign * ∇P  →  sinks move up-gradient (toward drivers),
+        //                       sources move down-gradient (toward sinks).
+        let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| s * p).collect();
+        let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| s * p).collect();
 
         // Debug: log sign distribution on first iteration.
         if iter == 0 {
@@ -144,33 +180,36 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             let avg = demand_sign.iter().sum::<f64>() / n as f64;
             let min = demand_sign.iter().cloned().fold(f64::INFINITY, f64::min);
             let max = demand_sign.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            eprintln!(
-                "  demand_sign: {n_pos} pos (sinks), {n_neg} neg (sources), avg={avg:.3}, range=[{min:.3}, {max:.3}]"
-            );
             let px_norm: f64 = px.iter().map(|g| g * g).sum::<f64>().sqrt();
             let py_norm: f64 = py.iter().map(|g| g * g).sum::<f64>().sqrt();
-            eprintln!("  raw ∇P: |px|={px_norm:.2e}, |py|={py_norm:.2e}");
+            eprintln!(
+                "  demand_sign: {n_pos} pos (sinks), {n_neg} neg (sources), avg={avg:.3}, range=[{min:.3}, {max:.3}], raw ∇P: |px|={px_norm:.2e}, |py|={py_norm:.2e}"
+            );
         }
 
-        // Log pressure gradient norm (before density).
-        let pressure_norm: f64 = grad_x.iter().chain(grad_y.iter())
-            .map(|g| g * g).sum::<f64>().sqrt();
+        // Pressure gradient norm (before density) -- only for reporting iterations.
+        let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
+        let pressure_norm = if is_report_iter {
+            grad_x.iter().chain(grad_y.iter()).map(|g| g * g).sum::<f64>().sqrt()
+        } else {
+            0.0
+        };
 
         // 6. Density spreading force (compressible gas repulsion).
         //    Always repulsive: ALL cells pushed away from overcrowded tiles.
         //    Temperature anneals: starts hot (strong spreading), cools down.
-        let temperature = cfg.gas_temperature * (1.0 - 0.5 * progress);
+        let temperature = gas_temperature * (1.0 - 0.5 * progress);
         let mut density_norm = 0.0;
         if temperature > 0.0 {
             let sigma = 2.0 * (1.0 - progress).max(0.5);
             let (dx, dy) = state.compute_gas_gradient(ctx, temperature, sigma);
-            density_norm = dx.iter().chain(dy.iter())
-                .map(|g| g * g).sum::<f64>().sqrt();
-            for (gx, d) in grad_x.iter_mut().zip(&dx) {
-                *gx += d;
+            if is_report_iter {
+                density_norm = dx.iter().chain(dy.iter())
+                    .map(|g| g * g).sum::<f64>().sqrt();
             }
-            for (gy, d) in grad_y.iter_mut().zip(&dy) {
-                *gy += d;
+            for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
+                *gx += ddx;
+                *gy += ddy;
             }
         }
 
@@ -190,7 +229,11 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy /= w;
         }
 
-        // 9. Step sizing + Nesterov momentum step.
+        // 9. Adaptive restart: reset momentum when gradient opposes velocity.
+        nesterov_x.adaptive_restart(&grad_x);
+        nesterov_y.adaptive_restart(&grad_y);
+
+        // 10. Step sizing + Nesterov momentum step.
         if iter > 0 {
             loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &grad_x, &grad_y);
         }
@@ -204,17 +247,16 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_y.copy_from_slice(nesterov_y.positions());
 
         // 10. Continuous metrics (no legalization in loop).
-        if iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1 {
+        if is_report_iter {
             let chpwl = state.continuous_hpwl(ctx);
             let pump_e = state.compute_pump_energy(ctx);
-            let step_x = nesterov_x.step_size();
             loop_state.record_metric(chpwl, &state.cell_x, &state.cell_y);
             eprintln!(
                 "Hydraulic iter {}: chpwl={:.0}, pump_e={:.1}, |∇P|={:.2e}, |∇ρ|={:.2e}, step={:.4}, β={:.2}",
-                iter, chpwl, pump_e, pressure_norm, density_norm, step_x, beta,
+                iter, chpwl, pump_e, pressure_norm, density_norm, nesterov_x.step_size(), beta,
             );
 
-            if chpwl > loop_state.best_metric * 1.10 && iter > 40 {
+            if chpwl > loop_state.best_metric * 1.10 && iter > diverge_patience {
                 eprintln!("Hydraulic: divergence at iter {}, reverting", iter);
                 state.cell_x.copy_from_slice(&loop_state.best_positions_x);
                 state.cell_y.copy_from_slice(&loop_state.best_positions_y);
@@ -222,7 +264,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
                 nesterov_y.set_positions(&state.cell_y);
                 break;
             }
-            if iter > 50 {
+            if iter > converge_patience {
                 let rel = (chpwl - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.001 {
                     eprintln!("Hydraulic placer converged at iteration {}", iter);

@@ -198,73 +198,93 @@ pub(crate) fn init_positions_from_bels(
     }
 }
 
-/// Compute LSE wirelength gradient for all nets, accumulating into grad_x/grad_y.
+/// Compute WA wirelength gradient for all nets, accumulating into grad_x/grad_y.
 ///
-/// Uses the `cell_to_idx` map to determine which pins are movable solver variables.
-/// Fixed pins use their current BEL position.
-pub(crate) fn add_wirelength_gradient(
+/// Same pattern as `add_wirelength_gradient` but uses WA instead of LSE.
+/// Accepts optional net weights for timing-driven placement.
+pub(crate) fn add_wa_wirelength_gradient(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
-    gamma: f64,
+    wl_coeff: f64,
     grad_x: &mut [f64],
     grad_y: &mut [f64],
+    net_weights: Option<&FxHashMap<crate::netlist::NetId, f64>>,
 ) {
-    use super::solver::lse;
+    use super::solver::wa;
 
-    for (_, net) in ctx.design.iter_alive_nets() {
-        let mut pin_positions: Vec<(f64, f64)> = Vec::new();
-        let mut pin_indices: Vec<usize> = Vec::new();
+    let mut pin_xs = Vec::new();
+    let mut pin_ys = Vec::new();
+    let mut pin_indices = Vec::new();
+    let mut net_grad_x = Vec::new();
+    let mut net_grad_y = Vec::new();
+
+    for (net_id, net) in ctx.design.iter_alive_nets() {
+        pin_xs.clear();
+        pin_ys.clear();
+        pin_indices.clear();
 
         if let Some(driver_pin) = net.driver() {
-            collect_pin_position(
+            collect_pin_position_xy(
                 ctx, cell_to_idx, cell_x, cell_y,
-                driver_pin.cell, &mut pin_positions, &mut pin_indices,
+                driver_pin.cell, &mut pin_xs, &mut pin_ys, &mut pin_indices,
             );
         }
 
         for user in net.users().iter() {
-            collect_pin_position(
+            collect_pin_position_xy(
                 ctx, cell_to_idx, cell_x, cell_y,
-                user.cell, &mut pin_positions, &mut pin_indices,
+                user.cell, &mut pin_xs, &mut pin_ys, &mut pin_indices,
             );
         }
 
-        if pin_positions.len() < 2 {
+        if pin_xs.len() < 2 {
             continue;
         }
 
-        let mut net_grad = vec![(0.0, 0.0); pin_positions.len()];
-        lse::lse_gradient(&pin_positions, gamma, &mut net_grad);
+        let net_weight = net_weights
+            .and_then(|w| w.get(&net_id))
+            .copied()
+            .unwrap_or(1.0);
+
+        net_grad_x.clear();
+        net_grad_x.resize(pin_xs.len(), 0.0);
+        net_grad_y.clear();
+        net_grad_y.resize(pin_ys.len(), 0.0);
+        wa::wa_axis_grad(&pin_xs, wl_coeff, &mut net_grad_x);
+        wa::wa_axis_grad(&pin_ys, wl_coeff, &mut net_grad_y);
 
         for (k, &solver_idx) in pin_indices.iter().enumerate() {
             if solver_idx != usize::MAX {
-                grad_x[solver_idx] += net_grad[k].0;
-                grad_y[solver_idx] += net_grad[k].1;
+                grad_x[solver_idx] += net_weight * net_grad_x[k];
+                grad_y[solver_idx] += net_weight * net_grad_y[k];
             }
         }
     }
 }
 
-/// Collect position of a single pin for gradient computation.
-fn collect_pin_position(
+/// Collect position of a single pin for WA gradient computation (separate x/y arrays).
+fn collect_pin_position_xy(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
     cell_id: CellId,
-    positions: &mut Vec<(f64, f64)>,
+    xs: &mut Vec<f64>,
+    ys: &mut Vec<f64>,
     indices: &mut Vec<usize>,
 ) {
     if let Some(&idx) = cell_to_idx.get(&cell_id) {
-        positions.push((cell_x[idx], cell_y[idx]));
+        xs.push(cell_x[idx]);
+        ys.push(cell_y[idx]);
         indices.push(idx);
     } else {
         let cell = ctx.design.cell(cell_id);
         if let Some(bel) = cell.bel {
             let loc = ctx.bel(bel).loc();
-            positions.push((loc.x as f64, loc.y as f64));
+            xs.push(loc.x as f64);
+            ys.push(loc.y as f64);
             indices.push(usize::MAX);
         }
     }
@@ -386,28 +406,6 @@ pub(crate) fn compute_pin_weights(
     weights
 }
 
-/// Apply WA preconditioner: `grad[i] /= max(1.0, pin_weight[i] + alpha * penalty_weight)`.
-///
-/// This normalizes gradients so highly-connected cells receive smaller update steps,
-/// preventing them from oscillating and causing placement divergence. The `alpha`
-/// parameter controls how much the density penalty term contributes to preconditioning.
-///
-/// In our FPGA model all cells occupy 1 BEL (area = 1), so the cell area term from
-/// the original ePlace formulation is folded into `penalty_weight` directly.
-pub(crate) fn apply_preconditioner(
-    grad_x: &mut [f64],
-    grad_y: &mut [f64],
-    pin_weights: &[f64],
-    alpha: f64,
-    penalty_weight: f64,
-) {
-    for i in 0..grad_x.len() {
-        let precond = (pin_weights[i] + alpha * penalty_weight).max(1.0);
-        grad_x[i] /= precond;
-        grad_y[i] /= precond;
-    }
-}
-
 /// Clamp positions to grid bounds.
 pub(crate) fn clamp_positions(cell_x: &mut [f64], cell_y: &mut [f64], max_x: f64, max_y: f64) {
     for i in 0..cell_x.len() {
@@ -427,51 +425,40 @@ pub(crate) fn gradient_norm(grad_x: &[f64], grad_y: &[f64]) -> f64 {
 }
 
 /// Minimum step size for Lipschitz-based step size estimation.
-const LIPSCHITZ_STEP_MIN: f64 = 1e-4;
+const LIPSCHITZ_STEP_MIN: f64 = 1e-2;
 /// Maximum step size for Lipschitz-based step size estimation.
 const LIPSCHITZ_STEP_MAX: f64 = 1.0;
-/// Maximum preconditioner alpha value.
-const PRECOND_ALPHA_MAX: f64 = 1024.0;
-/// Preconditioner alpha doubling interval (iterations).
-const PRECOND_DOUBLE_INTERVAL: usize = 20;
 
 /// Shared state for the FISTA/Nesterov optimization loop.
 ///
-/// Encapsulates the pattern common to both ElectroPlace and Hydraulic placers:
-/// Lipschitz step size estimation, WA preconditioner alpha scaling, previous
-/// gradient tracking, and best-position snapshot for divergence recovery.
+/// Encapsulates Lipschitz step size estimation, previous gradient tracking,
+/// and best-position snapshot for divergence recovery.
 pub(crate) struct NesterovLoopState {
     /// Previous gradient (for Lipschitz step estimation).
     pub prev_grad_x: Vec<f64>,
     /// Previous gradient (for Lipschitz step estimation).
     pub prev_grad_y: Vec<f64>,
-    /// WA preconditioner scaling factor (doubles periodically).
-    pub precond_alpha: f64,
-    /// Best HPWL seen during legalization.
-    pub best_hpwl: f64,
-    /// Cell x positions at the best HPWL.
+    /// Best metric seen during legalization.
+    pub best_metric: f64,
+    /// Cell x positions at the best metric.
     pub best_positions_x: Vec<f64>,
-    /// Cell y positions at the best HPWL.
+    /// Cell y positions at the best metric.
     pub best_positions_y: Vec<f64>,
 }
 
 impl NesterovLoopState {
     /// Create a new loop state for `n` movable cells with initial positions.
     pub fn new(initial_x: &[f64], initial_y: &[f64]) -> Self {
-        let n = initial_x.len();
         Self {
-            prev_grad_x: vec![0.0; n],
-            prev_grad_y: vec![0.0; n],
-            precond_alpha: 1.0,
-            best_hpwl: f64::INFINITY,
+            prev_grad_x: vec![0.0; initial_x.len()],
+            prev_grad_y: vec![0.0; initial_y.len()],
+            best_metric: f64::INFINITY,
             best_positions_x: initial_x.to_vec(),
             best_positions_y: initial_y.to_vec(),
         }
     }
 
     /// Update Lipschitz-based step sizes from consecutive gradients.
-    ///
-    /// Should be called after iteration 0 (needs a previous gradient).
     pub fn update_step_sizes(
         &mut self,
         nesterov_x: &mut super::solver::NesterovSolver,
@@ -491,17 +478,10 @@ impl NesterovLoopState {
         self.prev_grad_y.copy_from_slice(grad_y);
     }
 
-    /// Double preconditioner alpha if conditions are met (low overflow, periodic).
-    pub fn maybe_increase_precond_alpha(&mut self, overflow_metric: f64, threshold: f64, iter: usize) {
-        if overflow_metric < threshold && iter > 0 && iter % PRECOND_DOUBLE_INTERVAL == 0 {
-            self.precond_alpha = (self.precond_alpha * 2.0).min(PRECOND_ALPHA_MAX);
-        }
-    }
-
     /// Record a legalization result. Returns true if this is a new best.
-    pub fn record_hpwl(&mut self, hpwl: f64, cell_x: &[f64], cell_y: &[f64]) -> bool {
-        if hpwl < self.best_hpwl {
-            self.best_hpwl = hpwl;
+    pub fn record_metric(&mut self, metric: f64, cell_x: &[f64], cell_y: &[f64]) -> bool {
+        if metric < self.best_metric {
+            self.best_metric = metric;
             self.best_positions_x.copy_from_slice(cell_x);
             self.best_positions_y.copy_from_slice(cell_y);
             true

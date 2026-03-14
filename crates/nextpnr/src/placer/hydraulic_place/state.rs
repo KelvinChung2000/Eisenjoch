@@ -234,14 +234,15 @@ impl HydraulicState {
         for (net_id, net) in ctx.design.iter_alive_nets() {
             let Some(dp) = net.driver() else { continue };
 
-            let valid_users: Vec<_> = net.users().iter().filter(|u| u.is_valid()).collect();
-            let has_fixed_sink = valid_users
-                .iter()
-                .any(|u| ctx.design.cell(u.cell).bel_strength.is_locked());
-            let sink_positions: Vec<(f64, f64)> = valid_users
-                .iter()
-                .map(|u| self.pin_pos(ctx, u.cell))
-                .collect();
+            let mut has_fixed_sink = false;
+            let mut sink_positions: Vec<(f64, f64)> = Vec::new();
+            for user in net.users() {
+                if !user.is_valid() {
+                    continue;
+                }
+                has_fixed_sink |= ctx.design.cell(user.cell).bel_strength.is_locked();
+                sink_positions.push(self.pin_pos(ctx, user.cell));
+            }
             if sink_positions.is_empty() {
                 continue;
             }
@@ -362,10 +363,8 @@ impl HydraulicState {
             abs_vals[abs_vals.len() / 2].max(1e-6)
         };
 
-        // Return -tanh(d/scale): negative for sources, positive for sinks.
-        // This way: force = sign[i] * ∇P(x_i)
-        // Sources: sign < 0, so force = -∇P (down gradient, toward sinks) ✓
-        // Sinks: sign > 0, so force = +∇P (up gradient, toward sources) ✓
+        // Negate and smooth: sources (d>0) get sign<0, sinks (d<0) get sign>0.
+        // Used as: grad = sign * ∇P, so sources move down-gradient, sinks up-gradient.
         cell_demand.iter().map(|&d| -(d / scale).tanh()).collect()
     }
 
@@ -493,7 +492,6 @@ impl HydraulicState {
     ///
     /// A longer pipe needs a stronger pump (higher driver pressure).
     /// Always non-negative. Directly proportional to wirelength.
-    #[allow(dead_code)]
     pub fn compute_pump_energy(&self, ctx: &Context) -> f64 {
         let mut energy = 0.0;
         for (_net_id, net) in ctx.design.iter_alive_nets() {
@@ -528,26 +526,27 @@ impl HydraulicState {
     /// No legalization needed — uses cell_x/cell_y directly.
     pub fn continuous_hpwl(&self, ctx: &Context) -> f64 {
         let mut total = 0.0;
-        for (_net_id, net) in ctx.design.iter_alive_nets() {
+        for (_, net) in ctx.design.iter_alive_nets() {
             let Some(dp) = net.driver() else { continue };
-            let users = net.users();
-            if users.is_empty() {
-                continue;
-            }
 
             let (dx, dy) = self.pin_pos(ctx, dp.cell);
             let (mut min_x, mut max_x) = (dx, dx);
             let (mut min_y, mut max_y) = (dy, dy);
 
-            for user in users {
+            let mut has_valid_sink = false;
+            for user in net.users() {
                 if !user.is_valid() {
                     continue;
                 }
+                has_valid_sink = true;
                 let (x, y) = self.pin_pos(ctx, user.cell);
                 min_x = min_x.min(x);
                 max_x = max_x.max(x);
                 min_y = min_y.min(y);
                 max_y = max_y.max(y);
+            }
+            if !has_valid_sink {
+                continue;
             }
 
             total += (max_x - min_x) + (max_y - min_y);
