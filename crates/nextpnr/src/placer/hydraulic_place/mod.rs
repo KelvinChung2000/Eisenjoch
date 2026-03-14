@@ -118,6 +118,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let max_y = (state.network.height - 1) as f64;
 
     let mut criticality: FxHashMap<NetId, f64> = FxHashMap::default();
+    let mut density_lambda = 0.0; // Adaptive density penalty multiplier.
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -163,15 +164,34 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| s * p).collect();
         let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| s * p).collect();
 
-        // 6. Density spreading (compressible gas, temperature-annealed).
-        let temperature = gas_temperature * (1.0 - 0.5 * progress);
-        if temperature > 0.0 {
-            let sigma = 2.0 * (1.0 - progress).max(0.5);
-            let (dx, dy) = state.compute_gas_gradient(ctx, temperature, sigma);
-            for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
-                *gx += ddx;
-                *gy += ddy;
+        // 6. Density spreading: adaptive penalty (ePlace incremental update).
+        //    λ is initialized from gradient norm ratio, then incrementally
+        //    adjusted based on cell overflow. This prevents λ from exploding.
+        let sigma = 2.0 * (1.0 - progress).max(0.5);
+        let (dx, dy) = state.compute_gas_gradient(ctx, 1.0, sigma);
+
+        if iter == 0 {
+            // Initialize λ from norm ratio (balanced start).
+            let wl_norm = gradient_norm(&grad_x, &grad_y);
+            let dens_norm = gradient_norm(&dx, &dy);
+            if dens_norm > 1e-20 {
+                density_lambda = 0.5 * wl_norm / dens_norm;
             }
+        } else {
+            // Incremental update: increase λ proportional to how much density
+            // exceeds wirelength gradient (cells not spreading enough).
+            let wl_norm = gradient_norm(&grad_x, &grad_y);
+            let dens_norm = gradient_norm(&dx, &dy);
+            if dens_norm > 1e-20 && wl_norm > 1e-20 {
+                let ratio = wl_norm / dens_norm;
+                // Blend current λ toward the balanced ratio.
+                density_lambda = 0.95 * density_lambda + 0.05 * ratio;
+            }
+        }
+
+        for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
+            *gx += density_lambda * ddx;
+            *gy += density_lambda * ddy;
         }
 
         // 7. Fluid timing → criticality.
@@ -206,8 +226,8 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, |∇|={:.2e}, β={:.2}",
-                iter, chpwl_now, loop_state.best_metric,
+                "Hydraulic iter {}: chpwl={:.0}, best={:.0}, λ={:.2}, |∇|={:.2e}, β={:.2}",
+                iter, chpwl_now, loop_state.best_metric, density_lambda,
                 gradient_norm(&grad_x, &grad_y), beta,
             );
 

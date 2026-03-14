@@ -83,6 +83,14 @@ impl AdamSolver {
         step_norm_sq.sqrt()
     }
 
+    /// Reset moments (m, v) without changing positions.
+    /// Use when the objective function changes significantly (e.g., density penalty ramp).
+    pub fn reset_moments(&mut self) {
+        self.m.fill(0.0);
+        self.v.fill(0.0);
+        self.t = 0;
+    }
+
     /// Current positions.
     pub fn positions(&self) -> &[f64] {
         &self.x
