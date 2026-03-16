@@ -130,6 +130,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let mut vel_x = vec![0.0; n];
     let mut vel_y = vec![0.0; n];
 
+
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
         let mut ta = crate::timing::TimingAnalyser::new();
@@ -190,11 +191,14 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         if dens_norm > 1e-20 && wl_norm > 1e-20 {
             let ratio = wl_norm / dens_norm;
             if iter == 0 {
-                // Initialize λ to half the balanced ratio.
                 density_lambda = 0.5 * ratio;
             } else {
-                // Blend current λ toward the balanced ratio.
-                density_lambda = 0.95 * density_lambda + 0.05 * ratio;
+                // Overflow-driven boost: increase λ when tiles are overcrowded.
+                // The more overflow, the stronger the density penalty.
+                let (overflow_ratio, _, _) = state.overlap_metrics(ctx);
+                let overflow_boost = 1.0 + 5.0 * overflow_ratio; // 1× at 0% overflow, 6× at 100%
+                let target = ratio * overflow_boost;
+                density_lambda = 0.9 * density_lambda + 0.1 * target;
             }
         }
 
@@ -209,7 +213,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             criticality = timing_result.net_criticality;
         }
 
-        // 8. Viscosity preconditioner.
+        // 9. Viscosity preconditioner.
         let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
         for ((gx, gy), (&pw, &v)) in grad_x.iter_mut().zip(grad_y.iter_mut())
             .zip(pin_weights.iter().zip(&viscosity))
@@ -219,7 +223,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy /= w;
         }
 
-        // 9. Adam step: per-cell adaptive step sizes, built-in momentum.
+        // 10. Adam step: per-cell adaptive step sizes, built-in momentum.
         adam_x.step(&grad_x);
         adam_y.step(&grad_y);
         adam_x.clamp_positions_range(0.0, max_x);
@@ -227,7 +231,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_x.copy_from_slice(adam_x.positions());
         state.cell_y.copy_from_slice(adam_y.positions());
 
-        // 10. Compute cell velocities for thermodynamic temperature.
+        // 11. Compute cell velocities for thermodynamic temperature.
         for i in 0..n {
             vel_x[i] = state.cell_x[i] - prev_x[i];
             vel_y[i] = state.cell_y[i] - prev_y[i];
@@ -235,22 +239,17 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         prev_x.copy_from_slice(&state.cell_x);
         prev_y.copy_from_slice(&state.cell_y);
 
-        // 11. Track continuous HPWL for best-position selection.
-        //    Free energy F is logged for diagnostics but HPWL determines best snapshot
-        //    since F can increase during initial spreading before decreasing.
+        // 10. Track continuous HPWL for best-position selection.
         let chpwl_now = state.continuous_hpwl(ctx);
         loop_state.record_metric(chpwl_now, &state.cell_x, &state.cell_y);
-        let f_energy = state.free_energy(ctx, &demand, density_lambda);
 
-        // 12. Reporting + convergence on free energy.
+        // 11. Reporting + convergence.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
-            let e_transport = state.transport_energy(&demand);
-            let s_density = state.density_entropy(ctx);
-            let chpwl = state.continuous_hpwl(ctx);
+            let (overflow_ratio, max_rho, _) = state.overlap_metrics(ctx);
             eprintln!(
-                "Hydraulic iter {}: F={:.1}, E={:.1}, S={:.1}, chpwl={:.0}, λ={:.3}, β={:.2}",
-                iter, f_energy, e_transport, s_density, chpwl, density_lambda, beta,
+                "Hydraulic iter {}: chpwl={:.0}, λ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
+                iter, chpwl_now, density_lambda, overflow_ratio * 100.0, max_rho, beta,
             );
 
             if chpwl_now > loop_state.best_metric * 1.20 && iter > diverge_patience {

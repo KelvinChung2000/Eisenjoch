@@ -137,7 +137,7 @@ impl HydraulicState {
     /// filling each tile up to its BEL capacity before moving to the next ring.
     ///
     /// This gives a compact starting position (cells near centroid for strong
-    /// Kirchhoff gradients) with no overlap (each tile ≤ capacity). Tiles are
+    /// Kirchhoff gradients) with no overlap (each tile <= capacity). Tiles are
     /// filled closest-to-centroid first, so the placement radiates outward.
     fn init_radial_capacity(
         ctx: &Context,
@@ -145,54 +145,56 @@ impl HydraulicState {
         network: &PipeNetwork,
         center: (f64, f64),
     ) -> (Vec<f64>, Vec<f64>) {
-        let (cx, cy) = center;
-        let w = network.width;
-        let h = network.height;
+        struct TileSlot {
+            x: i32,
+            y: i32,
+            capacity: usize,
+            dist_sq: f64,
+        }
 
-        // Build list of (tile_x, tile_y, bel_capacity, distance_to_centroid).
-        let mut tiles: Vec<(i32, i32, usize, f64)> = Vec::new();
-        for y in 0..h {
-            for x in 0..w {
+        let (cx, cy) = center;
+
+        let mut tiles: Vec<TileSlot> = Vec::new();
+        for y in 0..network.height {
+            for x in 0..network.width {
                 let tile = ctx.chipdb().tile_by_xy(x, y);
-                let cap = ctx.chipdb().tile_type(tile).bels.len();
-                if cap > 0 {
+                let capacity = ctx.chipdb().tile_type(tile).bels.len();
+                if capacity > 0 {
                     let dx = x as f64 - cx;
                     let dy = y as f64 - cy;
-                    let dist = dx * dx + dy * dy;
-                    tiles.push((x, y, cap, dist));
+                    tiles.push(TileSlot { x, y, capacity, dist_sq: dx * dx + dy * dy });
                 }
             }
         }
 
-        // Sort by distance to centroid (closest first).
-        tiles.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
+        tiles.sort_by(|a, b| a.dist_sq.total_cmp(&b.dist_sq));
 
-        // Assign cells to tiles, filling closest first up to capacity.
+        let total_capacity: usize = tiles.iter().map(|t| t.capacity).sum();
+        assert!(
+            n <= total_capacity,
+            "init_radial_capacity: {} cells exceed total BEL capacity {}",
+            n,
+            total_capacity,
+        );
+
         let mut cell_x = Vec::with_capacity(n);
         let mut cell_y = Vec::with_capacity(n);
         let mut placed = 0;
 
-        for &(tx, ty, cap, _) in &tiles {
+        for slot in &tiles {
             if placed >= n {
                 break;
             }
-            // Place up to `cap` cells in this tile, spread within the tile.
-            let to_place = cap.min(n - placed);
+            let to_place = slot.capacity.min(n - placed);
             let cols = (to_place as f64).sqrt().ceil() as usize;
             let rows = (to_place + cols - 1) / cols;
             for i in 0..to_place {
-                let lx = (i % cols) as f64 / (cols as f64 + 1.0);
-                let ly = (i / cols) as f64 / (rows as f64 + 1.0);
-                cell_x.push(tx as f64 + lx);
-                cell_y.push(ty as f64 + ly);
+                let lx = (i % cols + 1) as f64 / (cols + 1) as f64;
+                let ly = (i / cols + 1) as f64 / (rows + 1) as f64;
+                cell_x.push(slot.x as f64 + lx);
+                cell_y.push(slot.y as f64 + ly);
             }
             placed += to_place;
-        }
-
-        // If somehow we didn't place all cells (shouldn't happen), fill at centroid.
-        while cell_x.len() < n {
-            cell_x.push(cx);
-            cell_y.push(cy);
         }
 
         (cell_x, cell_y)
@@ -679,6 +681,34 @@ impl HydraulicState {
             }
         }
         entropy
+    }
+
+    /// Cell overlap metrics from the density field.
+    ///
+    /// Returns (overflow_ratio, max_density, overflow_count):
+    /// - overflow_ratio: fraction of occupied tiles where ρ > 1.0 (above capacity)
+    /// - max_density: highest ρ value across all tiles
+    /// - overflow_count: number of tiles exceeding capacity
+    pub fn overlap_metrics(&self, ctx: &Context) -> (f64, f64, usize) {
+        let density = self.build_density_field(ctx);
+        let mut max_rho = 0.0_f64;
+        let mut overflow_count = 0usize;
+        let mut occupied_count = 0usize;
+        for &rho in &density {
+            max_rho = max_rho.max(rho);
+            if rho > 1e-6 {
+                occupied_count += 1;
+                if rho > 1.0 {
+                    overflow_count += 1;
+                }
+            }
+        }
+        let overflow_ratio = if occupied_count > 0 {
+            overflow_count as f64 / occupied_count as f64
+        } else {
+            0.0
+        };
+        (overflow_ratio, max_rho, overflow_count)
     }
 
     /// Free energy: F = E_transport + λ · S_density.
