@@ -208,21 +208,30 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         state.cell_y.copy_from_slice(adam_y.positions());
 
         // 10. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
+        //     Also periodically reset Adam moments so cells can respond to the
+        //     growing density multipliers (Adam adapts to early gradient magnitudes
+        //     and ignores later changes without a reset).
         {
             let density = state.build_density_field(ctx);
             let num_tiles = w * h;
             for i in 0..num_tiles {
                 tile_lambda[i] = (tile_lambda[i] + al_alpha * (density[i] - 1.0)).max(0.0);
             }
+            // Reset Adam every 50 iterations so cells re-adapt to new λ landscape.
+            if iter > 0 && iter % 50 == 0 {
+                adam_x.reset_moments();
+                adam_y.reset_moments();
+            }
         }
 
-        // 11. Track best position using overlap-penalized HPWL.
-        //    Raw chpwl favors overlapping solutions. Penalize by max density
-        //    so the best snapshot has reasonable spreading for legalization.
+        // 11. Track best position using the same objective the optimizer minimizes:
+        //    score = chpwl + λ_avg · E_density where E_density = Σ max(0,ρ-1)².
+        //    This selects the position that best balances wirelength and legalizability.
         let chpwl_now = state.continuous_hpwl(ctx);
-        let (_, max_rho_now, _) = state.overlap_metrics(ctx);
-        let penalized = chpwl_now * max_rho_now.max(1.0);
-        loop_state.record_metric(penalized, &state.cell_x, &state.cell_y);
+        let e_density = state.density_energy(ctx);
+        let avg_lambda = tile_lambda.iter().sum::<f64>() / (w * h) as f64;
+        let score = chpwl_now + avg_lambda.max(1.0) * e_density;
+        loop_state.record_metric(score, &state.cell_x, &state.cell_y);
 
         // 12. Reporting + convergence.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;

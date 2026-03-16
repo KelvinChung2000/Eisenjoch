@@ -692,6 +692,18 @@ impl OptTransState {
             .sum()
     }
 
+    /// Quadratic density energy: E_density = Σ max(0, ρᵢ - 1)².
+    ///
+    /// Zero penalty below capacity, quadratic above. This is the density
+    /// term in the optimal transport objective F = E_transport + λ·E_density.
+    pub fn density_energy(&self, ctx: &Context) -> f64 {
+        let density = self.build_density_field(ctx);
+        density.iter()
+            .filter(|&&rho| rho > 1.0)
+            .map(|&rho| { let excess = rho - 1.0; excess * excess })
+            .sum()
+    }
+
     /// Cell overlap metrics from the density field.
     ///
     /// Returns (overflow_ratio, max_density, overflow_count):
@@ -755,15 +767,13 @@ impl OptTransState {
         }
     }
 
-    /// Compute density gradient from normalized cell density and per-tile
-    /// Augmented Lagrangian multipliers.
+    /// Compute density gradient using quadratic excess penalty.
     ///
-    /// Pressure at each tile: P[tile] = λ[tile] * ρ[tile] where λ is the
-    /// per-tile AL multiplier that grows at overcrowded tiles and stays zero
-    /// at tiles below capacity.
+    /// Pressure at each tile: P[tile] = λ[tile] · max(0, ρ[tile] - 1)²
+    /// where λ is the per-tile Augmented Lagrangian multiplier.
     ///
-    /// Returns the bilinear gradient of the (optionally blurred) pressure field
-    /// evaluated at each cell position.
+    /// Zero pressure below capacity (ρ ≤ 1). Quadratic above capacity.
+    /// This matches the optimal transport density energy E = Σ max(0,ρ-1)².
     pub fn compute_density_gradient(
         &self,
         ctx: &Context,
@@ -774,13 +784,15 @@ impl OptTransState {
         let h = self.network.height as usize;
         let num_tiles = w * h;
 
-        // Build density field: bilinear splat, normalized by BEL capacity.
         let density = self.build_density_field(ctx);
 
-        // Density pressure: P[tile] = λ[tile] * ρ[tile].
+        // Quadratic excess pressure: zero below capacity, λ·(ρ-1)² above.
         let mut pressure = vec![0.0; num_tiles];
         for i in 0..num_tiles {
-            pressure[i] = tile_multipliers[i] * density[i];
+            if density[i] > 1.0 {
+                let excess = density[i] - 1.0;
+                pressure[i] = tile_multipliers[i] * excess * excess;
+            }
         }
 
         // Gaussian blur + gradient.
