@@ -524,50 +524,6 @@ impl OptTransState {
         sum / 4.0
     }
 
-    /// Bilinearly interpolated pressure at a continuous position.
-    fn pressure_at_continuous(&self, x: f64, y: f64) -> f64 {
-        self.bilinear_weights(x, y)
-            .iter()
-            .map(|&(tx, ty, w)| w * self.pressure_at(tx, ty))
-            .sum()
-    }
-
-    /// Pump-cost energy: sum of pressure drops from driver to sinks per net.
-    ///
-    /// E = sum_nets (P_driver - avg(P_sinks))
-    ///
-    /// A longer pipe needs a stronger pump (higher driver pressure).
-    /// Always non-negative. Directly proportional to wirelength.
-    pub fn compute_pump_energy(&self, ctx: &Context) -> f64 {
-        let mut energy = 0.0;
-        for (_net_id, net) in ctx.design.iter_alive_nets() {
-            let users = net.users();
-            if users.is_empty() {
-                continue;
-            }
-            let Some(dp) = net.driver() else { continue };
-
-            let (dx, dy) = self.pin_pos(ctx, dp.cell);
-            let p_driver = self.pressure_at_continuous(dx, dy);
-
-            let mut p_sink_sum = 0.0;
-            let mut sink_count = 0usize;
-            for user in users {
-                if !user.is_valid() {
-                    continue;
-                }
-                let (sx, sy) = self.pin_pos(ctx, user.cell);
-                p_sink_sum += self.pressure_at_continuous(sx, sy);
-                sink_count += 1;
-            }
-
-            if sink_count > 0 {
-                energy += (p_driver - p_sink_sum / sink_count as f64).abs();
-            }
-        }
-        energy
-    }
-
     /// Continuous HPWL: sum of half-perimeter bounding boxes from continuous positions.
     /// No legalization needed — uses cell_x/cell_y directly.
     pub fn continuous_hpwl(&self, ctx: &Context) -> f64 {
@@ -598,22 +554,6 @@ impl OptTransState {
             total += (max_x - min_x) + (max_y - min_y);
         }
         total
-    }
-
-    /// Electrical transport energy: E = ½ · P^T · S.
-    ///
-    /// This is the total energy dissipated in the resistor network when
-    /// demand S is driven through conductances to produce potentials P.
-    /// Equivalent to Σ R_e · f_e² (sum of resistance × flow² over all edges).
-    ///
-    /// This is the natural objective of the Kirchhoff system LP = S.
-    /// Lower energy = shorter effective routing paths.
-    pub fn transport_energy(&self, demand: &[f64]) -> f64 {
-        let mut energy = 0.0;
-        for (junction, &d) in self.network.junctions.iter().zip(demand.iter()) {
-            energy += junction.pressure * d;
-        }
-        0.5 * energy
     }
 
     /// Build normalized density field using smooth bell-shaped cell basis functions.
@@ -680,27 +620,20 @@ impl OptTransState {
         density
     }
 
-    /// Density entropy: S = Σ_tiles ρ·ln(ρ).
+    /// Quadratic capacity deviation energy: E_density = Σ (ρᵢ - 1)².
     ///
-    /// Measures how non-uniform the cell distribution is.
-    /// ρ=1 everywhere → S ≈ 0. High ρ → S >> 0.
-    pub fn density_entropy(&self, ctx: &Context) -> f64 {
-        let density = self.build_density_field(ctx);
-        density.iter()
-            .filter(|&&rho| rho > 1e-12)
-            .map(|&rho| rho * rho.ln())
-            .sum()
-    }
-
-    /// Quadratic density energy: E_density = Σ max(0, ρᵢ - 1)².
-    ///
-    /// Zero penalty below capacity, quadratic above. This is the density
-    /// term in the optimal transport objective F = E_transport + λ·E_density.
+    /// Penalizes ALL deviation from capacity: overcrowded tiles push cells out,
+    /// underfilled tiles pull cells in. Targets uniform capacity usage.
+    /// This is NOT electrostatic spreading (which penalizes ρ itself).
     pub fn density_energy(&self, ctx: &Context) -> f64 {
         let density = self.build_density_field(ctx);
+        Self::density_energy_from_field(&density)
+    }
+
+    /// Quadratic capacity deviation from a pre-computed density field.
+    pub fn density_energy_from_field(density: &[f64]) -> f64 {
         density.iter()
-            .filter(|&&rho| rho > 1.0)
-            .map(|&rho| { let excess = rho - 1.0; excess * excess })
+            .map(|&rho| { let dev = rho - 1.0; dev * dev })
             .sum()
     }
 
@@ -712,10 +645,15 @@ impl OptTransState {
     /// - overflow_count: number of tiles exceeding capacity
     pub fn overlap_metrics(&self, ctx: &Context) -> (f64, f64, usize) {
         let density = self.build_density_field(ctx);
+        Self::overlap_metrics_from_field(&density)
+    }
+
+    /// Overlap metrics from a pre-computed density field.
+    pub fn overlap_metrics_from_field(density: &[f64]) -> (f64, f64, usize) {
         let mut max_rho = 0.0_f64;
         let mut overflow_count = 0usize;
         let mut occupied_count = 0usize;
-        for &rho in &density {
+        for &rho in density {
             max_rho = max_rho.max(rho);
             if rho > 1e-6 {
                 occupied_count += 1;
@@ -730,14 +668,6 @@ impl OptTransState {
             0.0
         };
         (overflow_ratio, max_rho, overflow_count)
-    }
-
-    /// Free energy: F = E_transport + λ · S_density.
-    ///
-    /// The unified objective of the placement system.
-    /// Minimizing F simultaneously reduces routing energy and cell overlap.
-    pub fn free_energy(&self, ctx: &Context, demand: &[f64], lambda: f64) -> f64 {
-        self.transport_energy(demand) + lambda * self.density_entropy(ctx)
     }
 
     pub fn clamp_positions(&mut self) {
@@ -780,19 +710,27 @@ impl OptTransState {
         sigma: f64,
         tile_multipliers: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
+        let density = self.build_density_field(ctx);
+        self.density_gradient_from_field(&density, sigma, tile_multipliers)
+    }
+
+    /// Density gradient from a pre-computed density field.
+    pub fn density_gradient_from_field(
+        &self,
+        density: &[f64],
+        sigma: f64,
+        tile_multipliers: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let num_tiles = w * h;
 
-        let density = self.build_density_field(ctx);
-
-        // Quadratic excess pressure: zero below capacity, λ·(ρ-1)² above.
+        // Quadratic capacity deviation: P = λ · (ρ - 1)² for ALL tiles.
+        // Over-capacity tiles push cells out, under-capacity tiles pull cells in.
         let mut pressure = vec![0.0; num_tiles];
         for i in 0..num_tiles {
-            if density[i] > 1.0 {
-                let excess = density[i] - 1.0;
-                pressure[i] = tile_multipliers[i] * excess * excess;
-            }
+            let dev = density[i] - 1.0;
+            pressure[i] = tile_multipliers[i] * dev * dev;
         }
 
         // Gaussian blur + gradient.
