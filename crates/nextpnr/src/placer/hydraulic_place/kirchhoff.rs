@@ -1,26 +1,21 @@
-//! Kirchhoff resistive network solver for congestion-driven placement.
+//! Kirchhoff solver for minimum-energy electrical flow on the pipe network.
 //!
-//! Solves L * P = d where L is a conductance-weighted Laplacian and d is
-//! net demand injected at junctions. Flow Q = (P_from - P_to) / R.
+//! Solves the Kirchhoff system LP = S where L is the conductance-weighted
+//! Laplacian, P is junction potential, and S is net demand.
+//! Newton iterations update nonlinear resistance from flow-dependent turbulence.
 //!
-//! Turbulence: R_eff = R_base * (1 + beta * (Q/C)^2). Re-solved via Newton
-//! iteration with warm-started CG.
-//!
-//! The resistive energy E = sum(d[j] * P[j]) = sum(R * Q^2) is the unified
-//! objective: it captures both wirelength (pressure drop) and congestion
-//! (turbulent resistance).
+//! Turbulence: R_eff = R_base * (1 + beta * tanh((Q/C)^2)).
+//! Pump energy: E = Σ |P_driver - P_sinks| per net.
 
 use super::network::{Pipe, PipeNetwork};
-use crate::placer::solver::cg::conjugate_gradient;
+use crate::placer::solver::cg::multigrid_preconditioned_cg;
 
 pub struct SolveResult {
     pub converged: bool,
     pub iterations: usize,
-    /// Resistive energy E = d^T * P = sum(R * Q^2).
-    pub energy: f64,
 }
 
-/// Effective resistance with turbulence: R_eff = R_base * (1 + beta * (Q/C)^2).
+/// Effective resistance with turbulence: R_eff = R_base * (1 + beta * tanh((Q/C)^2)).
 ///
 /// On the first Newton iteration (before any flow is computed), uses base resistance only.
 fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool) -> f64 {
@@ -33,7 +28,7 @@ fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool)
     } else {
         0.0
     };
-    r_base * (1.0 + turbulence_beta * util * util)
+    r_base * (1.0 + turbulence_beta * (util * util).tanh())
 }
 
 /// Solve the Kirchhoff system on the pipe network.
@@ -43,7 +38,7 @@ fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool)
 /// 3. CG solve L * P = demand (warm-started from previous pressure)
 /// 4. Newton loop: compute flows, update R_eff with turbulence, re-solve
 /// 5. Store pressure in junctions, flow in pipes
-/// 6. Return energy = sum(demand[j] * P[j])
+/// 6. Return solve result (energy computed separately via pump-cost model)
 pub fn kirchhoff_solve(
     network: &mut PipeNetwork,
     demand: &[f64],
@@ -59,7 +54,6 @@ pub fn kirchhoff_solve(
         return SolveResult {
             converged: true,
             iterations: 0,
-            energy: 0.0,
         };
     }
 
@@ -91,7 +85,16 @@ pub fn kirchhoff_solve(
         let mut rhs = demand.to_vec();
         rhs[0] = 0.0;
 
-        let iters = conjugate_gradient(&diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters);
+        let iters = multigrid_preconditioned_cg(
+            &diag,
+            &off_diag,
+            &rhs,
+            &mut pressure,
+            cg_tol,
+            cg_max_iters,
+            network.width as usize,
+            network.height as usize,
+        );
         total_iters += iters;
 
         // Compute flows: Q = (P[from] - P[to]) / R_eff.
@@ -102,17 +105,74 @@ pub fn kirchhoff_solve(
     }
 
     // Store pressure in junctions.
-    for (j, p) in pressure.iter().enumerate() {
-        network.junctions[j].pressure = *p;
+    for (j, &p) in pressure.iter().enumerate() {
+        network.junctions[j].pressure = p;
     }
     network.junctions[0].pressure = 0.0;
-
-    let energy: f64 = demand.iter().zip(pressure.iter()).map(|(d, p)| d * p).sum();
 
     SolveResult {
         converged: true,
         iterations: total_iters,
-        energy,
+    }
+}
+
+/// Direct density-pressure solver (legacy, unused in main loop).
+///
+/// Sets P = kappa * density at each junction, computes flow Q = (P_from - P_to) / R_eff,
+/// and sub-steps to equilibrate density through the pipe network.
+#[allow(dead_code)]
+pub fn gas_hydraulic_solve(
+    network: &mut PipeNetwork,
+    demand: &[f64],
+    kappa: f64,
+    turbulence_beta: f64,
+    sub_steps: usize,
+) {
+    let n_j = network.num_junctions();
+    if n_j == 0 {
+        return;
+    }
+
+    // Initialize density from demand (positive = source, negative = sink).
+    // Base density = 1.0 everywhere, clamped non-negative after adding demand.
+    let mut density: Vec<f64> = demand.iter().map(|&d| (1.0 + d).max(0.0)).collect();
+
+    // Sub-step density dynamics to equilibrate through the pipe network.
+    for _step in 0..sub_steps {
+        // Compute flow through each pipe: P = kappa * density.
+        // Q = (P_from - P_to) / R_eff drives flow from high-density to low-density.
+        for pipe in &mut network.pipes {
+            let r_eff = effective_resistance(pipe, turbulence_beta, true);
+            let dp = kappa * (density[pipe.from] - density[pipe.to]);
+            pipe.flow = dp / r_eff;
+        }
+
+        // Update density from flow divergence.
+        // CFL-stable time step: dt < min(R * density / (kappa * max_conductance)).
+        // Use a conservative fraction.
+        let dt = 0.1;
+        for pipe in &network.pipes {
+            let transfer = pipe.flow * dt;
+            density[pipe.from] -= transfer;
+            density[pipe.to] += transfer;
+        }
+
+        // Clamp density to non-negative.
+        for d in &mut density {
+            *d = d.max(0.0);
+        }
+    }
+
+    // Final pressure from equilibrated density.
+    for j in 0..n_j {
+        network.junctions[j].pressure = kappa * density[j];
+    }
+
+    // Final flow computation.
+    for pipe in &mut network.pipes {
+        let r_eff = effective_resistance(pipe, turbulence_beta, true);
+        pipe.flow = (network.junctions[pipe.from].pressure - network.junctions[pipe.to].pressure)
+            / r_eff;
     }
 }
 
@@ -123,6 +183,193 @@ pub fn transit_time(flow: f64, capacity: f64, beta: f64) -> f64 {
     }
     let excess = (flow.abs() / capacity - 1.0).max(0.0);
     1.0 + beta * excess * excess
+}
+
+/// A cropped region of the grid for faster Kirchhoff solves.
+///
+/// Only junctions within the bounding box (expanded by a margin) are included.
+/// Junctions outside get P=0 (Dirichlet boundary).
+pub struct CroppedRegion {
+    pub x_min: i32,
+    pub x_max: i32,
+    pub y_min: i32,
+    pub y_max: i32,
+    /// Maps full junction index -> cropped index (None if outside).
+    pub junction_map: Vec<Option<usize>>,
+    /// Inverse map: cropped index -> full junction index.
+    pub cropped_to_full: Vec<usize>,
+}
+
+impl CroppedRegion {
+    /// Compute a cropped region from cell positions.
+    ///
+    /// The region is the bounding box of all cells, expanded by a margin.
+    pub fn from_cells(cell_x: &[f64], cell_y: &[f64], width: i32, height: i32) -> Self {
+        let n_cells = cell_x.len();
+        if n_cells == 0 {
+            return Self::from_bounds(0, width - 1, 0, height - 1, width, height);
+        }
+
+        let margin = 5i32.max((n_cells as f64).sqrt().ceil() as i32);
+
+        let mut x_min = i32::MAX;
+        let mut x_max = i32::MIN;
+        let mut y_min = i32::MAX;
+        let mut y_max = i32::MIN;
+
+        for i in 0..n_cells {
+            let tx = cell_x[i].round() as i32;
+            let ty = cell_y[i].round() as i32;
+            x_min = x_min.min(tx);
+            x_max = x_max.max(tx);
+            y_min = y_min.min(ty);
+            y_max = y_max.max(ty);
+        }
+
+        Self::from_bounds(x_min - margin, x_max + margin, y_min - margin, y_max + margin, width, height)
+    }
+
+    /// Create a cropped region from explicit bounds.
+    pub fn from_bounds(x_min: i32, x_max: i32, y_min: i32, y_max: i32, width: i32, height: i32) -> Self {
+        let x_min = x_min.max(0);
+        let x_max = x_max.min(width - 1);
+        let y_min = y_min.max(0);
+        let y_max = y_max.min(height - 1);
+
+        let n_full = (width * height * 4) as usize;
+        let mut junction_map = vec![None; n_full];
+        let mut cropped_to_full = Vec::new();
+
+        for y in y_min..=y_max {
+            for x in x_min..=x_max {
+                for port in 0..4 {
+                    let full_idx = ((y * width + x) * 4 + port) as usize;
+                    junction_map[full_idx] = Some(cropped_to_full.len());
+                    cropped_to_full.push(full_idx);
+                }
+            }
+        }
+
+        Self { x_min, x_max, y_min, y_max, junction_map, cropped_to_full }
+    }
+
+    /// Number of junctions in the cropped region.
+    pub fn num_junctions(&self) -> usize {
+        self.cropped_to_full.len()
+    }
+
+    /// Width of the cropped grid in tiles.
+    pub fn grid_width(&self) -> usize {
+        (self.x_max - self.x_min + 1) as usize
+    }
+
+    /// Height of the cropped grid in tiles.
+    pub fn grid_height(&self) -> usize {
+        (self.y_max - self.y_min + 1) as usize
+    }
+}
+
+/// Solve the Kirchhoff system on a cropped subregion of the pipe network.
+///
+/// Only pipes with BOTH endpoints inside the region are included.
+/// Junctions outside get P=0 (Dirichlet boundary).
+pub fn kirchhoff_solve_cropped(
+    network: &mut PipeNetwork,
+    demand: &[f64],
+    turbulence_beta: f64,
+    newton_iters: usize,
+    cg_max_iters: usize,
+    cg_tol: f64,
+    region: &CroppedRegion,
+) -> SolveResult {
+    let n_cropped = region.num_junctions();
+
+    if n_cropped == 0 {
+        return SolveResult {
+            converged: true,
+            iterations: 0,
+        };
+    }
+
+    // Map demand and initial pressure to cropped indices.
+    let mut cropped_demand = vec![0.0; n_cropped];
+    let mut pressure = vec![0.0; n_cropped];
+    for (ci, &fi) in region.cropped_to_full.iter().enumerate() {
+        cropped_demand[ci] = demand[fi];
+        pressure[ci] = network.junctions[fi].pressure;
+    }
+
+    let mut total_iters = 0;
+    let num_solves = newton_iters.max(1);
+
+    for newton_iter in 0..num_solves {
+        let use_turbulence = newton_iter > 0;
+
+        let mut diag = vec![0.0; n_cropped];
+        let mut off_diag: Vec<(usize, usize, f64)> = Vec::with_capacity(network.num_pipes());
+
+        for pipe in &network.pipes {
+            let ci_from = region.junction_map[pipe.from];
+            let ci_to = region.junction_map[pipe.to];
+
+            // Only include pipes with BOTH endpoints in the cropped region.
+            if let (Some(cf), Some(ct)) = (ci_from, ci_to) {
+                let conductance =
+                    1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence);
+                diag[cf] += conductance;
+                diag[ct] += conductance;
+                let (lo, hi) = if cf < ct { (cf, ct) } else { (ct, cf) };
+                off_diag.push((lo, hi, -conductance));
+            }
+        }
+
+        // Pin junction 0 (in cropped space) as reference.
+        diag[0] = 1e10;
+        cropped_demand[0] = 0.0;
+
+        let iters = multigrid_preconditioned_cg(
+            &diag,
+            &off_diag,
+            &cropped_demand,
+            &mut pressure,
+            cg_tol,
+            cg_max_iters,
+            region.grid_width(),
+            region.grid_height(),
+        );
+        total_iters += iters;
+
+        // Compute flows for ALL pipes (not just cropped).
+        for pipe in &mut network.pipes {
+            let p_from = region
+                .junction_map[pipe.from]
+                .map(|ci| pressure[ci])
+                .unwrap_or(0.0);
+            let p_to = region
+                .junction_map[pipe.to]
+                .map(|ci| pressure[ci])
+                .unwrap_or(0.0);
+            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence);
+            pipe.flow = (p_from - p_to) / r_eff;
+        }
+    }
+
+    // Write pressures back: cropped region gets solved values, outside gets 0.
+    for j in &mut network.junctions {
+        j.pressure = 0.0;
+    }
+    for (ci, &fi) in region.cropped_to_full.iter().enumerate() {
+        network.junctions[fi].pressure = pressure[ci];
+    }
+    // Pin reference junction.
+    if let Some(&fi) = region.cropped_to_full.first() {
+        network.junctions[fi].pressure = 0.0;
+    }
+
+    SolveResult {
+        converged: true,
+        iterations: total_iters,
+    }
 }
 
 #[cfg(test)]

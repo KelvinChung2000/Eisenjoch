@@ -10,44 +10,57 @@
 
 use crate::context::Context;
 
-/// Direction of a pipe between two junctions.
+/// Direction of an inter-tile pipe between two adjacent tiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     East,
     South,
 }
 
-/// A junction node (one per tile) in the pipe network.
+/// Identifies the specific boundary port within a single tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Port {
+    North = 0,
+    East = 1,
+    South = 2,
+    West = 3,
+}
+
+/// Distinguishes between global routing wires and internal switch matrix paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipeType {
+    InterTile(Direction),
+    IntraTile,
+}
+
+/// A junction node in the pipe network, representing one port on a tile.
 #[derive(Debug, Clone)]
 pub struct Junction {
     pub x: i32,
     pub y: i32,
+    pub port: Port,
     pub pressure: f64,
-    /// Net flow demand (positive = source, negative = sink).
-    pub demand: f64,
 }
 
-/// A pipe connecting two junctions.
+/// A pipe connecting two junctions, modelling either external wires or internal routing.
 #[derive(Debug, Clone)]
 pub struct Pipe {
     pub from: usize,
     pub to: usize,
-    /// r = base / n_wires² (fewer wires = higher resistance).
+    /// Resistance is $1 / conductance$. For intra-tile pipes, this comes from the Schur matrix.
     pub resistance: f64,
     pub capacity: f64,
     pub flow: f64,
-    pub direction: Direction,
+    pub pipe_type: PipeType,
 }
 
 pub struct PipeNetwork {
     pub junctions: Vec<Junction>,
-    /// East and South pipes only; reverse direction for West/North.
     pub pipes: Vec<Pipe>,
-    /// Junction index -> list of incident pipe indices.
     pub junction_pipes: Vec<Vec<usize>>,
     pub width: i32,
     pub height: i32,
-    /// Per tile-type Schur condensation matrices (4x4: N, E, S, W).
+    /// Per tile-type Schur condensation matrices.
     pub schur_matrices: Vec<[[f64; 4]; 4]>,
 }
 
@@ -61,22 +74,68 @@ impl PipeNetwork {
         let h = ctx.chipdb().height();
         let n = (w * h) as usize;
 
-        let junctions: Vec<Junction> = (0..n)
-            .map(|tile| Junction {
-                x: (tile as i32) % w,
-                y: (tile as i32) / w,
-                pressure: 0.0,
-                demand: 0.0,
-            })
-            .collect();
+        const PORTS: [Port; 4] = [Port::North, Port::East, Port::South, Port::West];
+
+        // 4 junctions per tile (North, East, South, West).
+        let mut junctions = Vec::with_capacity(n * 4);
+        for tile in 0..n {
+            let x = (tile as i32) % w;
+            let y = (tile as i32) / w;
+            for &port in &PORTS {
+                junctions.push(Junction {
+                    x,
+                    y,
+                    port,
+                    pressure: 0.0,
+                });
+            }
+        }
 
         let mut pipes = Vec::new();
-        let mut junction_pipes = vec![Vec::new(); n];
+        let mut junction_pipes = vec![Vec::new(); n * 4];
 
+        let num_tile_types = ctx.chipdb().num_tile_types();
+        let schur_matrices = compute_schur_matrices(ctx, num_tile_types);
+
+        // 1. Build Intra-Tile Pipes (Internal Switch Matrix)
+        for y in 0..h {
+            for x in 0..w {
+                let tile = ctx.chipdb().tile_by_xy(x, y);
+                let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
+                let tt = ctx.chipdb().tile_type(tile);
+                let matrix = &schur_matrices[tt_idx];
+                let n_bels = tt.bels.len() as f64;
+
+                // Connect internal ports to each other.
+                for i in 0..4 {
+                    for j in (i + 1)..4 {
+                        let conductance = -matrix[i][j];
+                        if conductance > 1e-9 {
+                            let from = (((y * w) + x) * 4 + (i as i32)) as usize;
+                            let to = (((y * w) + x) * 4 + (j as i32)) as usize;
+                            let pipe_idx = pipes.len();
+                            pipes.push(Pipe {
+                                from,
+                                to,
+                                resistance: 1.0 / conductance,
+                                capacity: n_bels.max(1.0),
+                                flow: 0.0,
+                                pipe_type: PipeType::IntraTile,
+                            });
+                            junction_pipes[from].push(pipe_idx);
+                            junction_pipes[to].push(pipe_idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Build Inter-Tile Pipes (Global Routing Channels)
         for y in 0..h {
             for x in 0..(w - 1) {
-                let from = (y * w + x) as usize;
-                let to = (y * w + x + 1) as usize;
+                // East port of (x, y) to West port of (x+1, y)
+                let from = (((y * w) + x) * 4 + (Port::East as i32)) as usize;
+                let to = (((y * w) + x + 1) * 4 + (Port::West as i32)) as usize;
 
                 let wire_count = estimate_wire_count(ctx, x, y, Direction::East);
                 let pipe_idx = pipes.len();
@@ -86,7 +145,7 @@ impl PipeNetwork {
                     resistance: compute_resistance(wire_count),
                     capacity: wire_count as f64,
                     flow: 0.0,
-                    direction: Direction::East,
+                    pipe_type: PipeType::InterTile(Direction::East),
                 });
                 junction_pipes[from].push(pipe_idx);
                 junction_pipes[to].push(pipe_idx);
@@ -95,8 +154,9 @@ impl PipeNetwork {
 
         for y in 0..(h - 1) {
             for x in 0..w {
-                let from = (y * w + x) as usize;
-                let to = ((y + 1) * w + x) as usize;
+                // South port of (x, y) to North port of (x, y+1)
+                let from = (((y * w) + x) * 4 + (Port::South as i32)) as usize;
+                let to = ((((y + 1) * w) + x) * 4 + (Port::North as i32)) as usize;
 
                 let wire_count = estimate_wire_count(ctx, x, y, Direction::South);
                 let pipe_idx = pipes.len();
@@ -106,15 +166,12 @@ impl PipeNetwork {
                     resistance: compute_resistance(wire_count),
                     capacity: wire_count as f64,
                     flow: 0.0,
-                    direction: Direction::South,
+                    pipe_type: PipeType::InterTile(Direction::South),
                 });
                 junction_pipes[from].push(pipe_idx);
                 junction_pipes[to].push(pipe_idx);
             }
         }
-
-        let num_tile_types = ctx.chipdb().num_tile_types();
-        let schur_matrices = compute_schur_matrices(ctx, num_tile_types);
 
         Self {
             junctions,
@@ -127,14 +184,13 @@ impl PipeNetwork {
     }
 
     #[inline]
-    pub fn junction_index(&self, x: i32, y: i32) -> usize {
-        (y * self.width + x) as usize
+    pub fn junction_index(&self, x: i32, y: i32, port: Port) -> usize {
+        ((y * self.width + x) * 4 + port as i32) as usize
     }
 
     pub fn reset(&mut self) {
         for j in &mut self.junctions {
             j.pressure = 0.0;
-            j.demand = 0.0;
         }
         for p in &mut self.pipes {
             p.flow = 0.0;
@@ -179,10 +235,13 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
     (avg_pips / 4).max(1)
 }
 
-/// Pipe resistance: 1 / n_wires² (fewer wires = higher resistance).
+/// Pipe resistance: 1 / n_wires (linear).
+///
+/// Fewer wires = narrower pipe = higher resistance = more pump energy.
+/// Linear scaling keeps resistance high enough for meaningful pressure
+/// gradients while reflecting actual routing availability.
 fn compute_resistance(wire_count: usize) -> f64 {
-    let n = wire_count as f64;
-    1.0 / (n * n).max(1.0)
+    1.0 / (wire_count as f64).max(1.0)
 }
 
 /// Schur condensation of internal BEL-to-port sub-networks into 4x4
@@ -203,8 +262,8 @@ fn compute_schur_matrices(ctx: &Context, num_tile_types: usize) -> Vec<[[f64; 4]
             continue;
         }
 
-        // Schur complement with uniform BEL-to-port conductance g = 1/n_bels:
-        // G_off = n_bels * g² / (4g) = 1/4
+        // Schur complement: with uniform internal conductance the off-diagonal
+        // entries reduce to a constant 1/4 regardless of BEL count.
         let g_off = 0.25;
 
         let mut m = [[0.0; 4]; 4];

@@ -640,8 +640,8 @@ impl HydraulicState {
 
     /// Build normalized density field: bilinear splat of cell positions,
     /// divided by per-tile BEL capacity. Shared by `density_entropy` and
-    /// `compute_gas_gradient`.
-    fn build_density_field(&self, ctx: &Context) -> Vec<f64> {
+    /// `compute_density_gradient`.
+    pub fn build_density_field(&self, ctx: &Context) -> Vec<f64> {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let n = self.num_cells();
@@ -662,25 +662,16 @@ impl HydraulicState {
         density
     }
 
-    /// Density entropy: S = Σ_tiles ρ·ln(ρ) + hard_wall_penalty(ρ).
+    /// Density entropy: S = Σ_tiles ρ·ln(ρ).
     ///
-    /// Measures how far the cell distribution is from uniform.
-    /// ρ=1 everywhere → S ≈ 0 (well-spread). ρ >> 1 somewhere → S >> 0 (clustered).
-    /// The hard wall penalty adds α·(ρ-1)³ for ρ > 1, preventing overlap.
+    /// Measures how non-uniform the cell distribution is.
+    /// ρ=1 everywhere → S ≈ 0. High ρ → S >> 0.
     pub fn density_entropy(&self, ctx: &Context) -> f64 {
         let density = self.build_density_field(ctx);
-
-        let mut entropy = 0.0;
-        for &rho in &density {
-            if rho > 1e-12 {
-                entropy += rho * rho.ln();
-            }
-            if rho > 1.0 {
-                let excess = rho - 1.0;
-                entropy += 10.0 * excess * excess * excess;
-            }
-        }
-        entropy
+        density.iter()
+            .filter(|&&rho| rho > 1e-12)
+            .map(|&rho| rho * rho.ln())
+            .sum()
     }
 
     /// Cell overlap metrics from the density field.
@@ -746,97 +737,37 @@ impl HydraulicState {
         }
     }
 
-    /// Compute gas pressure gradient from cell density and thermodynamic temperature.
+    /// Compute density gradient from normalized cell density and per-tile
+    /// Augmented Lagrangian multipliers.
     ///
-    /// Models cells as ideal gas: P = κ · ρ · T where:
-    /// - ρ = cell density per tile (bilinear splatted, normalized by BEL capacity)
-    /// - T = base_temperature + mean(|v|^2) at each tile from cell velocities
+    /// Pressure at each tile: P[tile] = λ[tile] * ρ[tile] where λ is the
+    /// per-tile AL multiplier that grows at overcrowded tiles and stays zero
+    /// at tiles below capacity.
     ///
-    /// Hot regions (cells still moving) spread more; cold regions (cells settled) freeze.
-    /// This naturally anneals without an artificial temperature schedule.
-    ///
-    /// If no velocities are provided (iter 0), uses uniform base temperature.
-    pub fn compute_gas_gradient(
+    /// Returns the bilinear gradient of the (optionally blurred) pressure field
+    /// evaluated at each cell position.
+    pub fn compute_density_gradient(
         &self,
         ctx: &Context,
-        base_temperature: f64,
         sigma: f64,
-        velocities: Option<(&[f64], &[f64])>,
+        tile_multipliers: &[f64],
     ) -> (Vec<f64>, Vec<f64>) {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
-        let n = self.num_cells();
         let num_tiles = w * h;
 
-        // 1-2. Build density field: bilinear splat, normalized by BEL capacity.
+        // Build density field: bilinear splat, normalized by BEL capacity.
         let density = self.build_density_field(ctx);
 
-        // 3. Build temperature field from cell velocities: T(tile) = base + mean(|v|^2).
-        let temperature_field = self.build_temperature_field(
-            w, h, n, base_temperature, velocities,
-        );
-
-        // 4. Ideal gas pressure with hard-wall penalty at capacity.
-        //    Below capacity: P = ρ · T (linear, soft spreading)
-        //    Above capacity: P = ρ · T + α·(ρ-1)³ (cubic hard wall)
-        const HARD_WALL_STIFFNESS: f64 = 10.0;
+        // Density pressure: P[tile] = λ[tile] * ρ[tile].
         let mut pressure = vec![0.0; num_tiles];
         for i in 0..num_tiles {
-            let rho = density[i];
-            let soft = rho * temperature_field[i];
-            let hard_wall = if rho > 1.0 {
-                let excess = rho - 1.0;
-                HARD_WALL_STIFFNESS * excess * excess * excess
-            } else {
-                0.0
-            };
-            pressure[i] = soft + hard_wall;
+            pressure[i] = tile_multipliers[i] * density[i];
         }
 
-        // 5. Gaussian blur + gradient.
+        // Gaussian blur + gradient.
         let blurred = gaussian_blur_2d(&pressure, w, h, sigma);
         self.field_gradient(&blurred, w)
-    }
-
-    /// Build per-tile temperature field from cell velocities.
-    ///
-    /// Splats |v|^2 onto tiles using bilinear weights, then averages per tile.
-    /// Returns base_temperature for tiles with no nearby cells.
-    fn build_temperature_field(
-        &self,
-        w: usize,
-        h: usize,
-        n: usize,
-        base_temperature: f64,
-        velocities: Option<(&[f64], &[f64])>,
-    ) -> Vec<f64> {
-        let num_tiles = w * h;
-        let Some((vx, vy)) = velocities else {
-            return vec![base_temperature; num_tiles];
-        };
-
-        let mut ke_sum = vec![0.0; num_tiles];
-        let mut cell_count = vec![0.0; num_tiles];
-        for i in 0..n {
-            let speed_sq = vx[i] * vx[i] + vy[i] * vy[i];
-            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
-                let idx = ty as usize * w + tx as usize;
-                ke_sum[idx] += weight * speed_sq;
-                cell_count[idx] += weight;
-            }
-        }
-
-        ke_sum
-            .iter()
-            .zip(&cell_count)
-            .map(|(&ke, &cnt)| {
-                if cnt > 1e-12 {
-                    base_temperature + ke / cnt
-                } else {
-                    base_temperature
-                }
-            })
-            .collect()
     }
 }
 

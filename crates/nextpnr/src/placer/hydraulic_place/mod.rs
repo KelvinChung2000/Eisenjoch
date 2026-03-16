@@ -7,9 +7,9 @@
 //!   This is a convex relaxation of routing — flow splits across parallel paths,
 //!   automatically distributing demand and revealing congestion gradients.
 //!
-//! - S_density = Σ ρ·ln(ρ) + hard_wall(ρ): density entropy preventing cell overlap.
-//!   Cells have physical size 1/n_bels. Hard wall at ρ=1 prevents overcrowding.
-//!   Temperature T from cell kinetic energy provides natural annealing.
+//! - S_density = Σ ρ·ln(ρ): density entropy preventing cell overlap.
+//!   Per-tile Augmented Lagrangian multipliers enforce capacity constraints:
+//!   λ[tile] grows at overcrowded tiles, stays zero at tiles below capacity.
 //!
 //! - Congestion: R_eff = R·(1 + β·tanh(Q/C)²) increases resistance on congested
 //!   edges, naturally steering demand away from overutilized channels.
@@ -33,7 +33,7 @@ use log::info;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{initial_placement, validate_all_placed, with_locked_others};
-use super::common::{NesterovLoopState, compute_pin_weights, gradient_norm};
+use super::common::{NesterovLoopState, compute_pin_weights};
 use super::solver::AdamSolver;
 use super::PlacerError;
 
@@ -79,7 +79,6 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let n = state.num_cells();
 
     // === Auto-scale parameters from design characteristics ===
-    // The design is a gas: utilization = compression, grid = container.
 
     // Count total BELs for true utilization.
     let mut total_bels = 0usize;
@@ -93,8 +92,8 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let grid_diag = ((state.network.width as f64).powi(2)
         + (state.network.height as f64).powi(2)).sqrt();
 
-    // IO boost: amplify boundary pressure for dilute gas.
-    // Dilute designs (low util) need stronger IO pull to gather cells.
+    // IO boost: amplify boundary pressure for low utilization designs.
+    // Low utilization designs need stronger IO pull to gather cells.
     let io_boost = cfg.io_boost * (1.0 + 2.0 * (1.0 - utilization).max(0.0));
 
     // Step size: scale with grid diagonal for proportional movement.
@@ -122,14 +121,12 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     let max_y = (state.network.height - 1) as f64;
 
     let mut criticality: FxHashMap<NetId, f64> = FxHashMap::default();
-    let mut density_lambda = 0.0; // Adaptive density penalty multiplier.
 
-    // Cell velocity tracking for thermodynamic temperature.
-    let mut prev_x = state.cell_x.clone();
-    let mut prev_y = state.cell_y.clone();
-    let mut vel_x = vec![0.0; n];
-    let mut vel_y = vec![0.0; n];
-
+    // Per-tile Augmented Lagrangian multipliers for density enforcement.
+    let w = state.network.width as usize;
+    let h = state.network.height as usize;
+    let mut tile_lambda = vec![0.0; w * h];
+    let al_alpha = 0.1; // AL dual update step size.
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -143,7 +140,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
 
     for iter in 0..cfg.max_outer_iters {
         let progress = iter as f64 / cfg.max_outer_iters as f64;
-        // Turbulence ramp: caps at 50% of configured beta.
+        // Nonlinear resistance ramp: caps at 50% of configured beta.
         let beta = (cfg.turbulence_beta * 0.5) * (1.0 - (-3.0 * progress).exp());
 
         // 1. Optional expanding box constraint.
@@ -175,39 +172,19 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let mut grad_x: Vec<f64> = demand_sign.iter().zip(&px).map(|(s, p)| s * p).collect();
         let mut grad_y: Vec<f64> = demand_sign.iter().zip(&py).map(|(s, p)| s * p).collect();
 
-        // 6. Density spreading with thermodynamic temperature.
-        //    P = κ · ρ · T where T = base + average(|v|²) at each tile.
-        //    Hot regions (cells moving) spread more; cold regions freeze naturally.
+        // 6. Density spreading via per-tile Augmented Lagrangian multipliers.
+        //    P[tile] = λ[tile] * ρ[tile] — overcrowded tiles get increasing λ.
         let sigma = 2.0 * (1.0 - progress).max(0.5);
-        let velocities = if iter > 0 {
-            Some((vel_x.as_slice(), vel_y.as_slice()))
-        } else {
-            None
-        };
-        let (dx, dy) = state.compute_gas_gradient(ctx, 1.0, sigma, velocities);
+        let (dx, dy) = state.compute_density_gradient(ctx, sigma, &tile_lambda);
 
-        let wl_norm = gradient_norm(&grad_x, &grad_y);
-        let dens_norm = gradient_norm(&dx, &dy);
-        if dens_norm > 1e-20 && wl_norm > 1e-20 {
-            let ratio = wl_norm / dens_norm;
-            if iter == 0 {
-                density_lambda = 0.5 * ratio;
-            } else {
-                // Overflow-driven boost: increase λ when tiles are overcrowded.
-                // The more overflow, the stronger the density penalty.
-                let (overflow_ratio, _, _) = state.overlap_metrics(ctx);
-                let overflow_boost = 1.0 + 5.0 * overflow_ratio; // 1× at 0% overflow, 6× at 100%
-                let target = ratio * overflow_boost;
-                density_lambda = 0.9 * density_lambda + 0.1 * target;
-            }
-        }
+        let overlap = if iter > 0 { Some(state.overlap_metrics(ctx)) } else { None };
 
         for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
-            *gx += density_lambda * ddx;
-            *gy += density_lambda * ddy;
+            *gx += ddx;
+            *gy += ddy;
         }
 
-        // 7. Fluid timing → criticality.
+        // 8. Timing feedback → criticality.
         if cfg.timing_weight > 0.0 {
             let timing_result = timing::compute_fluid_timing(ctx, &state, target_period, beta);
             criticality = timing_result.net_criticality;
@@ -231,35 +208,37 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_x.copy_from_slice(adam_x.positions());
         state.cell_y.copy_from_slice(adam_y.positions());
 
-        // 11. Compute cell velocities for thermodynamic temperature.
-        for i in 0..n {
-            vel_x[i] = state.cell_x[i] - prev_x[i];
-            vel_y[i] = state.cell_y[i] - prev_y[i];
+        // 11. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
+        {
+            let density = state.build_density_field(ctx);
+            let num_tiles = w * h;
+            for i in 0..num_tiles {
+                tile_lambda[i] = (tile_lambda[i] + al_alpha * (density[i] - 1.0)).max(0.0);
+            }
         }
-        prev_x.copy_from_slice(&state.cell_x);
-        prev_y.copy_from_slice(&state.cell_y);
 
-        // 10. Track continuous HPWL for best-position selection.
+        // 12. Track best position using overlap-penalized HPWL.
+        //    Raw chpwl favors overlapping solutions. Penalize by max density
+        //    so the best snapshot has reasonable spreading for legalization.
         let chpwl_now = state.continuous_hpwl(ctx);
-        loop_state.record_metric(chpwl_now, &state.cell_x, &state.cell_y);
+        let (_, max_rho_now, _) = state.overlap_metrics(ctx);
+        let penalized = chpwl_now * max_rho_now.max(1.0);
+        loop_state.record_metric(penalized, &state.cell_x, &state.cell_y);
 
-        // 11. Reporting + convergence.
+        // 13. Reporting + convergence.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
-            let (overflow_ratio, max_rho, _) = state.overlap_metrics(ctx);
+            let (overflow_ratio, max_rho, _) = overlap
+                .unwrap_or_else(|| state.overlap_metrics(ctx));
+            let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, λ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
-                iter, chpwl_now, density_lambda, overflow_ratio * 100.0, max_rho, beta,
+                "Hydraulic iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
+                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta,
             );
 
-            if chpwl_now > loop_state.best_metric * 1.20 && iter > diverge_patience {
-                eprintln!("Hydraulic: divergence at iter {}, reverting", iter);
-                state.cell_x.copy_from_slice(&loop_state.best_positions_x);
-                state.cell_y.copy_from_slice(&loop_state.best_positions_y);
-                adam_x.set_positions(&state.cell_x);
-                adam_y.set_positions(&state.cell_y);
-                break;
-            }
+            // No divergence revert — the AL multiplier needs full iterations
+            // to enforce density constraints. Early revert to low-chpwl (overlapping)
+            // positions defeats the purpose of density spreading.
             if iter > converge_patience {
                 let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.005 {
