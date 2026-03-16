@@ -1,9 +1,12 @@
-//! ElectroPlace: ePlace-style electric-field-based analytical placer.
+//! ElectroPlace: RePlAce-style analytical placer aligned with placer_static.cc.
 //!
 //! Uses Nesterov accelerated gradient descent with:
-//! - Log-Sum-Exp smooth HPWL for wirelength
-//! - FFT-based density penalty (electric field analogy)
-//! - Reuses shared solver infrastructure from `placer::solver`
+//! - Weighted-Average (WA) smooth wirelength (no gamma annealing)
+//! - DCT-based density penalty (Poisson field)
+//! - Growing density penalty (multiplicative then additive)
+//! - Overlap-based convergence (not HPWL stagnation)
+//! - Spacer insertion to target utilization
+//! - Barzilai-Borwein step size
 
 pub mod config;
 pub mod density;
@@ -17,7 +20,7 @@ use log::info;
 use rustc_hash::FxHashSet;
 
 use super::common::{
-    add_wirelength_gradient, apply_preconditioner, clamp_positions, collect_movable_cells,
+    add_wa_wirelength_gradient, clamp_positions, collect_movable_cells,
     compute_pin_weights, gradient_norm, init_positions_from_bels, initial_placement,
     place_cluster_children, unbind_movable_cells, validate_all_placed, with_locked_others,
     NesterovLoopState,
@@ -25,13 +28,19 @@ use super::common::{
 use super::solver::NesterovSolver;
 use super::PlacerError;
 
-const DIVERGENCE_RATIO: f64 = 1.10;
-const DIVERGENCE_MIN_ITERS: usize = 40;
-const CONVERGENCE_MIN_ITERS: usize = 50;
-const CONVERGENCE_THRESHOLD: f64 = 0.001;
-const DENSITY_WEIGHT_SCALE: f64 = 0.1;
-const PRECOND_OVERFLOW_THRESHOLD: f64 = 0.3;
 const DENSITY_NORM_EPSILON: f64 = 1e-30;
+/// Initial density penalty ratio: eta * (wl_norm / den_norm).
+const DENSITY_ETA: f64 = 0.1;
+/// Multiplicative growth factor for density penalty.
+const DENSITY_GROW_MULT: f64 = 1.025;
+/// Threshold after which density penalty grows additively.
+const DENSITY_GROW_ADDITIVE_THRESHOLD: f64 = 50.0;
+/// Additive growth increment.
+const DENSITY_GROW_ADDITIVE: f64 = 1.0;
+/// Overlap convergence threshold.
+const OVERLAP_CONVERGE: f64 = 0.1;
+/// Minimum iterations before checking overlap convergence.
+const CONVERGENCE_MIN_ITERS: usize = 20;
 
 pub struct PlacerElectro;
 
@@ -81,68 +90,79 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
     nesterov_x.set_positions(&cell_x);
     nesterov_y.set_positions(&cell_y);
 
-    let mut gamma = if cfg.gamma_init <= 0.0 {
-        (w as f64 / 10.0).max(1.0)
-    } else {
-        cfg.gamma_init
-    };
-
     info!(
-        "ElectroPlace: {} movable cells, {}x{} grid",
-        n, grid_w, grid_h
+        "ElectroPlace: {} movable cells, {}x{} grid, wl_coeff={}",
+        n, grid_w, grid_h, cfg.wl_coeff
     );
 
     let pin_weights = compute_pin_weights(ctx, &cell_to_idx, n);
+
+    let mut density_penalty = 0.0;
+    let mut density_initialized = false;
     let mut loop_state = NesterovLoopState::new(&cell_x, &cell_y);
-    let mut density_weight = cfg.density_weight;
-    let auto_density = cfg.density_weight <= 0.0;
 
     for iter in 0..cfg.max_iters {
         nesterov_x.look_ahead_into(&mut cell_x);
         nesterov_y.look_ahead_into(&mut cell_y);
         clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
 
+        // WA wirelength gradient (no gamma parameter).
         let mut grad_x = vec![0.0; n];
         let mut grad_y = vec![0.0; n];
-        add_wirelength_gradient(
-            ctx, &cell_to_idx, &cell_x, &cell_y, gamma, &mut grad_x, &mut grad_y,
+        add_wa_wirelength_gradient(
+            ctx, &cell_to_idx, &cell_x, &cell_y, cfg.wl_coeff,
+            &mut grad_x, &mut grad_y, None,
         );
 
-        let density_map = density::compute_density_map(
-            &cell_x, &cell_y, grid_w, grid_h, cfg.target_density,
+        // DCT-based density computation.
+        let concrete_density = density::compute_concrete_density(&cell_x, &cell_y, grid_w, grid_h);
+        let overlap = density::compute_overlap(&concrete_density);
+
+        let (field_x, field_y) = density::compute_density_field(
+            &concrete_density, grid_w, grid_h, cfg.target_density,
         );
         let mut density_grad_x = vec![0.0; n];
         let mut density_grad_y = vec![0.0; n];
         density::compute_density_gradient(
-            &cell_x, &cell_y, &density_map, grid_w, grid_h,
+            &cell_x, &cell_y, &field_x, &field_y, grid_w, grid_h,
             &mut density_grad_x, &mut density_grad_y,
         );
 
-        let overflow: f64 = density_map.iter().map(|d| d.max(0.0)).sum();
-        let overflow_ratio = (overflow / (n as f64).max(1.0)).clamp(0.0, 1.0);
-
-        // Auto-compute density weight once, then hold. Re-computing each
-        // iteration causes decay to 0 as the wirelength gradient shrinks.
-        if auto_density && density_weight <= 0.0 {
+        // Initialize or grow density penalty.
+        if !density_initialized {
             let wl_norm = gradient_norm(&grad_x, &grad_y);
             let den_norm = gradient_norm(&density_grad_x, &density_grad_y);
             if den_norm > DENSITY_NORM_EPSILON {
-                density_weight = DENSITY_WEIGHT_SCALE * wl_norm / den_norm;
+                density_penalty = DENSITY_ETA * wl_norm / den_norm;
+                density_initialized = true;
             }
+        } else if density_penalty < DENSITY_GROW_ADDITIVE_THRESHOLD {
+            density_penalty *= DENSITY_GROW_MULT;
+        } else {
+            density_penalty += DENSITY_GROW_ADDITIVE;
         }
 
+        // Combine gradients.
         for i in 0..n {
-            grad_x[i] += density_weight * density_grad_x[i];
-            grad_y[i] += density_weight * density_grad_y[i];
+            grad_x[i] += density_penalty * density_grad_x[i];
+            grad_y[i] += density_penalty * density_grad_y[i];
         }
 
-        apply_preconditioner(
-            &mut grad_x, &mut grad_y, &pin_weights,
-            loop_state.precond_alpha, density_weight,
-        );
+        // Simple preconditioner: precond[i] = max(1.0, pin_count[i] + density_penalty).
+        for i in 0..n {
+            let precond = (pin_weights[i] + density_penalty).max(1.0);
+            grad_x[i] /= precond;
+            grad_y[i] /= precond;
+        }
 
+        // Barzilai-Borwein step size (after first iteration).
         if iter > 0 {
-            loop_state.update_step_sizes(&mut nesterov_x, &mut nesterov_y, &grad_x, &grad_y);
+            if let Some(bb_x) = nesterov_x.bb_step_size(&loop_state.prev_grad_x, &grad_x) {
+                nesterov_x.set_step_size(bb_x.clamp(1e-4, 1.0));
+            }
+            if let Some(bb_y) = nesterov_y.bb_step_size(&loop_state.prev_grad_y, &grad_y) {
+                nesterov_y.set_step_size(bb_y.clamp(1e-4, 1.0));
+            }
         }
         loop_state.save_gradients(&grad_x, &grad_y);
 
@@ -152,11 +172,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
         nesterov_x.clamp_positions_range(0.0, max_x);
         nesterov_y.clamp_positions_range(0.0, max_y);
 
-        nesterov_x.adaptive_restart(&grad_x);
-        nesterov_y.adaptive_restart(&grad_y);
-
-        loop_state.maybe_increase_precond_alpha(overflow_ratio, PRECOND_OVERFLOW_THRESHOLD, iter);
-
+        // Periodic legalization + convergence check.
         if iter % cfg.legalize_interval == 0 || iter == cfg.max_iters - 1 {
             cell_x.copy_from_slice(nesterov_x.positions());
             cell_y.copy_from_slice(nesterov_y.positions());
@@ -164,33 +180,20 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
 
             let displacement = legalize_electro(ctx, &idx_to_cell, &cell_x, &cell_y)?;
             let hpwl = crate::metrics::wirelength::total_hpwl(ctx);
-            loop_state.record_hpwl(hpwl, &cell_x, &cell_y);
+            loop_state.record_metric(hpwl, &cell_x, &cell_y);
 
             eprintln!(
-                "ElectroPlace iter {}: HPWL={:.0}, displacement={:.1}, step=({:.4},{:.4}), gamma={:.2}, density_w={:.3}, overflow={:.3}",
-                iter, hpwl, displacement, step_x, step_y, gamma, density_weight, overflow_ratio,
+                "ElectroPlace iter {}: HPWL={:.0}, disp={:.1}, step=({:.4},{:.4}), density_p={:.3}, overlap={:.4}",
+                iter, hpwl, displacement, step_x, step_y, density_penalty, overlap,
             );
 
-            if hpwl > loop_state.best_hpwl * DIVERGENCE_RATIO && iter > DIVERGENCE_MIN_ITERS {
-                eprintln!(
-                    "ElectroPlace: divergence detected at iter {}, reverting to best (HPWL {:.0} > {:.0})",
-                    iter, hpwl, loop_state.best_hpwl,
-                );
-                nesterov_x.set_positions(&loop_state.best_positions_x);
-                nesterov_y.set_positions(&loop_state.best_positions_y);
+            // Overlap-based convergence (only after minimum iterations to avoid
+            // premature exit on sparse designs where initial overlap is already low).
+            if iter >= CONVERGENCE_MIN_ITERS && overlap < OVERLAP_CONVERGE {
+                eprintln!("ElectroPlace converged at iteration {} (overlap {:.4} < {})", iter, overlap, OVERLAP_CONVERGE);
                 break;
             }
-
-            if iter > CONVERGENCE_MIN_ITERS {
-                let rel_change = (hpwl - loop_state.best_hpwl).abs() / loop_state.best_hpwl.max(1.0);
-                if rel_change < CONVERGENCE_THRESHOLD {
-                    eprintln!("ElectroPlace converged at iteration {} (HPWL {:.0})", iter, hpwl);
-                    break;
-                }
-            }
         }
-
-        gamma = (gamma * cfg.gamma_decay).max(cfg.gamma_min);
     }
 
     let _ = legalize_electro(ctx, &idx_to_cell, &loop_state.best_positions_x, &loop_state.best_positions_y)?;

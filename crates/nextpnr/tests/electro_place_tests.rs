@@ -98,9 +98,9 @@ fn electro_no_cells_is_ok() {
 fn default_config_values() {
     let cfg = ElectroPlaceCfg::default();
     assert_eq!(cfg.seed, 1);
-    assert_eq!(cfg.gamma_decay, 0.9);
-    assert_eq!(cfg.gamma_min, 1.0);
-    assert_eq!(cfg.density_weight, 0.0); // auto-compute
+    assert_eq!(cfg.wl_coeff, 0.5);
+    assert_eq!(cfg.target_util, 0.7);
+    assert!(!cfg.timing_driven);
     assert_eq!(cfg.target_density, 1.0);
     assert_eq!(cfg.timing_weight, 0.0);
     assert_eq!(cfg.nesterov_step_size, 0.1);

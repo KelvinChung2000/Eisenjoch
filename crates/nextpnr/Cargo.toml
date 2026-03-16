@@ -18,6 +18,9 @@ anyhow = { workspace = true }
 lasso = { workspace = true }
 rayon = { workspace = true }
 rustfft = "6"
+rustdct = "0.7"
+ndarray = { workspace = true }
+lapjv = { workspace = true }
 
 [dev-dependencies]
 petgraph = "0.6"
@@ -94,12 +97,12 @@ path = "tests/incremental_tests.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "hydraulic_tests"
-path = "tests/hydraulic_tests.rs"
+name = "opt_trans_tests"
+path = "tests/opt_trans_tests.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "hydraulic_internal_tests"
+name = "opt_trans_internal_tests"
 path = "tests/hydraulic_internal_tests.rs"
 required-features = ["test-utils"]
 

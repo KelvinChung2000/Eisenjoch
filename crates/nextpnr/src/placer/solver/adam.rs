@@ -100,9 +100,7 @@ impl AdamSolver {
     pub fn set_positions(&mut self, x: &[f64]) {
         debug_assert_eq!(x.len(), self.x.len());
         self.x.copy_from_slice(x);
-        self.m.fill(0.0);
-        self.v.fill(0.0);
-        self.t = 0;
+        self.reset_moments();
     }
 
     /// Clamp all positions to [lo, hi].

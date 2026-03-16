@@ -2,14 +2,15 @@
 
 pub mod common;
 pub mod electro_place;
+pub mod legalize;
 pub mod heap;
-pub mod hydraulic_place;
+pub mod opt_trans_place;
 pub mod sa;
 pub mod solver;
 
 pub use electro_place::PlacerElectro;
 pub use heap::PlacerHeap;
-pub use hydraulic_place::PlacerHydraulic;
+pub use opt_trans_place::PlacerOptTrans;
 pub use sa::PlacerSa;
 
 use crate::context::Context;

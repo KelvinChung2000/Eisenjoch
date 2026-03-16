@@ -116,66 +116,6 @@ pub fn kirchhoff_solve(
     }
 }
 
-/// Direct density-pressure solver (legacy, unused in main loop).
-///
-/// Sets P = kappa * density at each junction, computes flow Q = (P_from - P_to) / R_eff,
-/// and sub-steps to equilibrate density through the pipe network.
-#[allow(dead_code)]
-pub fn gas_hydraulic_solve(
-    network: &mut PipeNetwork,
-    demand: &[f64],
-    kappa: f64,
-    turbulence_beta: f64,
-    sub_steps: usize,
-) {
-    let n_j = network.num_junctions();
-    if n_j == 0 {
-        return;
-    }
-
-    // Initialize density from demand (positive = source, negative = sink).
-    // Base density = 1.0 everywhere, clamped non-negative after adding demand.
-    let mut density: Vec<f64> = demand.iter().map(|&d| (1.0 + d).max(0.0)).collect();
-
-    // Sub-step density dynamics to equilibrate through the pipe network.
-    for _step in 0..sub_steps {
-        // Compute flow through each pipe: P = kappa * density.
-        // Q = (P_from - P_to) / R_eff drives flow from high-density to low-density.
-        for pipe in &mut network.pipes {
-            let r_eff = effective_resistance(pipe, turbulence_beta, true);
-            let dp = kappa * (density[pipe.from] - density[pipe.to]);
-            pipe.flow = dp / r_eff;
-        }
-
-        // Update density from flow divergence.
-        // CFL-stable time step: dt < min(R * density / (kappa * max_conductance)).
-        // Use a conservative fraction.
-        let dt = 0.1;
-        for pipe in &network.pipes {
-            let transfer = pipe.flow * dt;
-            density[pipe.from] -= transfer;
-            density[pipe.to] += transfer;
-        }
-
-        // Clamp density to non-negative.
-        for d in &mut density {
-            *d = d.max(0.0);
-        }
-    }
-
-    // Final pressure from equilibrated density.
-    for j in 0..n_j {
-        network.junctions[j].pressure = kappa * density[j];
-    }
-
-    // Final flow computation.
-    for pipe in &mut network.pipes {
-        let r_eff = effective_resistance(pipe, turbulence_beta, true);
-        pipe.flow = (network.junctions[pipe.from].pressure - network.junctions[pipe.to].pressure)
-            / r_eff;
-    }
-}
-
 /// Transit time: tau = 1 + beta * max(0, |Q|/C - 1)^2.
 pub fn transit_time(flow: f64, capacity: f64, beta: f64) -> f64 {
     if capacity <= 0.0 {

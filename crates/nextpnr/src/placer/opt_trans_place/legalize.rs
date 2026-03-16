@@ -1,4 +1,4 @@
-//! BEL legalization for the Hydraulic placer.
+//! BEL legalization for the optimal transport placer.
 //!
 //! Uses minimum-displacement LAPJV bipartite matching for final legalization.
 //! Pure distance² cost — the continuous solver already encodes pressure and
@@ -8,16 +8,16 @@ use crate::context::Context;
 use crate::placer::legalize::{legalize_bipartite, DistanceCost};
 use crate::placer::PlacerError;
 
-use super::state::HydraulicState;
+use super::state::OptTransState;
 
 /// Bipartite (LAPJV) legalization: minimum-displacement cell-to-BEL assignment.
 ///
 /// Uses pure distance² cost to preserve the continuous solver's positions as
 /// closely as possible. The solver already accounts for wire distance, density,
 /// and congestion — legalization just snaps to the nearest valid BELs.
-pub fn legalize_hydraulic(
+pub fn legalize_opt_trans(
     ctx: &mut Context,
-    state: &HydraulicState,
+    state: &OptTransState,
     lap_max_cells: usize,
 ) -> Result<f64, PlacerError> {
     legalize_bipartite(

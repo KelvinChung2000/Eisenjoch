@@ -1,115 +1,200 @@
-//! Density computation and gradient for ElectroPlace.
+//! DCT-based density computation and Poisson solve for ElectroPlace.
 //!
-//! Uses a bell-shaped density kernel per cell, summed on a grid.
-//! FFT-based convolution for O(N log N) density gradient computation.
+//! Aligned with placer_static.cc: uses DCT-II forward, spectral Poisson solve,
+//! and mixed DST/DCT inverse transforms for field recovery.
+//! Cell-to-bin mapping uses slither (fractional bin overlap based on cell area).
 
-use rustfft::num_complex::Complex;
-use rustfft::FftPlanner;
+use rustdct::DctPlanner;
+use std::f64::consts::PI;
 
-/// Bell-shape kernel spread radius (in grid cells).
-const SIGMA: f64 = 1.5;
+/// Compute the grid size as the next power of two >= max(width, height).
+pub fn grid_size(width: usize, height: usize) -> usize {
+    let m = width.max(height);
+    m.next_power_of_two().max(4)
+}
 
-/// Number of grid cells to sample around each cell center (3 sigma).
-const KERNEL_RADIUS: i32 = 5; // ceil(3.0 * SIGMA)
-
-/// Compute the density map on a grid using bell-shaped kernels.
+/// Compute the bin range and bounding box for a unit-area cell centered at (cx, cy).
 ///
-/// Each cell contributes a Gaussian-like bell curve centered at its position.
-/// The result is a grid-sized density map with target density subtracted.
-pub fn compute_density_map(
+/// Returns (x_lo, x_hi, y_lo, y_hi, bx_lo, bx_hi, by_lo, by_hi).
+#[inline]
+fn cell_bin_overlap(
+    cx: f64,
+    cy: f64,
+    grid_w: usize,
+    grid_h: usize,
+) -> (f64, f64, f64, f64, usize, usize, usize, usize) {
+    let x_lo = cx - 0.5;
+    let x_hi = cx + 0.5;
+    let y_lo = cy - 0.5;
+    let y_hi = cy + 0.5;
+
+    let bx_lo = (x_lo.floor() as i32).max(0) as usize;
+    let bx_hi = (x_hi.ceil() as usize).min(grid_w);
+    let by_lo = (y_lo.floor() as i32).max(0) as usize;
+    let by_hi = (y_hi.ceil() as usize).min(grid_h);
+
+    (x_lo, x_hi, y_lo, y_hi, bx_lo, bx_hi, by_lo, by_hi)
+}
+
+/// Compute the fractional overlap between a cell bounding box and a bin.
+#[inline]
+fn bin_overlap_area(
+    x_lo: f64, x_hi: f64, y_lo: f64, y_hi: f64,
+    bx: usize, by: usize,
+) -> f64 {
+    let ox = (x_hi.min(bx as f64 + 1.0) - x_lo.max(bx as f64)).max(0.0);
+    let oy = (y_hi.min(by as f64 + 1.0) - y_lo.max(by as f64)).max(0.0);
+    ox * oy
+}
+
+/// Compute concrete (raw) density by mapping cells to bins via slither overlap.
+///
+/// Each cell occupies area=1 (one BEL). The density at each bin is the sum
+/// of fractional overlaps with all cells.
+pub fn compute_concrete_density(
     cell_x: &[f64],
     cell_y: &[f64],
     grid_w: usize,
     grid_h: usize,
-    target_density: f64,
 ) -> Vec<f64> {
-    let total_cells = grid_w * grid_h;
-    let mut density = vec![0.0; total_cells];
+    let mut density = vec![0.0; grid_w * grid_h];
 
     for i in 0..cell_x.len() {
-        let cx = cell_x[i];
-        let cy = cell_y[i];
-        let gx = cx.round() as i32;
-        let gy = cy.round() as i32;
+        let (x_lo, x_hi, y_lo, y_hi, bx_lo, bx_hi, by_lo, by_hi) =
+            cell_bin_overlap(cell_x[i], cell_y[i], grid_w, grid_h);
 
-        for dy in -KERNEL_RADIUS..=KERNEL_RADIUS {
-            let iy = gy + dy;
-            if iy < 0 || iy >= grid_h as i32 {
-                continue;
-            }
-            for dx in -KERNEL_RADIUS..=KERNEL_RADIUS {
-                let ix = gx + dx;
-                if ix < 0 || ix >= grid_w as i32 {
-                    continue;
-                }
-
-                let fx = cx - ix as f64;
-                let fy = cy - iy as f64;
-                let w = bell_shape(fx) * bell_shape(fy);
-
-                density[grid_index(ix, iy, grid_w)] += w;
+        for by in by_lo..by_hi {
+            for bx in bx_lo..bx_hi {
+                density[by * grid_w + bx] += bin_overlap_area(x_lo, x_hi, y_lo, y_hi, bx, by);
             }
         }
-    }
-
-    // Subtract target density
-    let avg_density = cell_x.len() as f64 / total_cells as f64;
-    let target = target_density * avg_density;
-    for d in &mut density {
-        *d -= target;
     }
 
     density
 }
 
-/// Compute the density gradient for each cell using FFT-based convolution.
+/// Compute overlap metric: sum(max(0, d-1)) / sum(d).
 ///
-/// The density gradient tells each cell which direction to move to reduce
-/// local density overflow.
+/// Returns 0 for non-overlapping placements, positive for overlapping.
+pub fn compute_overlap(concrete_density: &[f64]) -> f64 {
+    let total: f64 = concrete_density.iter().sum();
+    if total < 1e-30 {
+        return 0.0;
+    }
+    let overflow: f64 = concrete_density.iter().map(|&d| (d - 1.0).max(0.0)).sum();
+    overflow / total
+}
+
+/// DCT-based density solve: compute electric field (Ex, Ey) from density.
+///
+/// Steps:
+/// 1. Subtract target density to get charge density rho
+/// 2. Forward DCT-II (rows then columns)
+/// 3. Spectral scaling and Poisson solve
+/// 4. Inverse transforms: IDST-rows/IDCT-cols for Ex, IDCT-rows/IDST-cols for Ey
+/// 5. Return field grids (Ex, Ey)
+pub fn compute_density_field(
+    density: &[f64],
+    grid_w: usize,
+    grid_h: usize,
+    target_density: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let n = grid_w * grid_h;
+
+    // Compute charge density: rho = density - target
+    let avg_density = density.iter().sum::<f64>() / n as f64;
+    let target = target_density * avg_density.max(1e-30);
+    let mut rho: Vec<f64> = density.iter().map(|&d| d - target).collect();
+
+    // Forward DCT-II (rows then columns)
+    let mut planner = DctPlanner::new();
+    dct2_2d(&mut rho, grid_w, grid_h, &mut planner);
+
+    // Spectral scaling: first row/col by 0.5, all by 4/(m*m)
+    let scale = 4.0 / (grid_w as f64 * grid_h as f64);
+    for ky in 0..grid_h {
+        for kx in 0..grid_w {
+            let idx = ky * grid_w + kx;
+            let mut s = scale;
+            if kx == 0 {
+                s *= 0.5;
+            }
+            if ky == 0 {
+                s *= 0.5;
+            }
+            rho[idx] *= s;
+        }
+    }
+
+    // Poisson solve and field computation in spectral domain
+    let mut phi = vec![0.0; n];
+    let mut ex_spec = vec![0.0; n];
+    let mut ey_spec = vec![0.0; n];
+
+    for ky in 0..grid_h {
+        let wy = PI * ky as f64 / grid_h as f64;
+        let wy2 = 2.0 * (1.0 - wy.cos());
+        for kx in 0..grid_w {
+            let idx = ky * grid_w + kx;
+            let wx = PI * kx as f64 / grid_w as f64;
+            let wx2 = 2.0 * (1.0 - wx.cos());
+            let denom = wx2 + wy2;
+
+            if denom < 1e-30 {
+                phi[idx] = 0.0;
+                ex_spec[idx] = 0.0;
+                ey_spec[idx] = 0.0;
+            } else {
+                phi[idx] = rho[idx] / denom;
+                ex_spec[idx] = phi[idx] * wx;
+                ey_spec[idx] = phi[idx] * wy;
+            }
+        }
+    }
+
+    // Inverse transforms for Ex: IDST-rows, IDCT-cols
+    let mut ex = ex_spec;
+    idst_rows(&mut ex, grid_w, grid_h, &mut planner);
+    idct_cols(&mut ex, grid_w, grid_h, &mut planner);
+
+    // Inverse transforms for Ey: IDCT-rows, IDST-cols
+    let mut ey = ey_spec;
+    idct_rows(&mut ey, grid_w, grid_h, &mut planner);
+    idst_cols(&mut ey, grid_w, grid_h, &mut planner);
+
+    (ex, ey)
+}
+
+/// Compute density gradient for each cell by interpolating the field at cell positions.
+///
+/// Uses slither weights (fractional bin overlap) for interpolation.
 pub fn compute_density_gradient(
     cell_x: &[f64],
     cell_y: &[f64],
-    density_map: &[f64],
+    field_x: &[f64],
+    field_y: &[f64],
     grid_w: usize,
     grid_h: usize,
     grad_x: &mut [f64],
     grad_y: &mut [f64],
 ) {
-    let n = cell_x.len();
-
-    // Compute electric field from density map using FFT-based Poisson solve
-    let (field_x, field_y) = poisson_field(density_map, grid_w, grid_h);
-
-    // Interpolate field at each cell position using bell-shape weights
-    for i in 0..n {
-        let cx = cell_x[i];
-        let cy = cell_y[i];
-        let gx = cx.round() as i32;
-        let gy = cy.round() as i32;
+    for i in 0..cell_x.len() {
+        let (x_lo, x_hi, y_lo, y_hi, bx_lo, bx_hi, by_lo, by_hi) =
+            cell_bin_overlap(cell_x[i], cell_y[i], grid_w, grid_h);
 
         let mut fx_total = 0.0;
         let mut fy_total = 0.0;
         let mut w_total = 0.0;
 
-        for dy in -KERNEL_RADIUS..=KERNEL_RADIUS {
-            let iy = gy + dy;
-            if iy < 0 || iy >= grid_h as i32 {
-                continue;
-            }
-            for dx in -KERNEL_RADIUS..=KERNEL_RADIUS {
-                let ix = gx + dx;
-                if ix < 0 || ix >= grid_w as i32 {
-                    continue;
+        for by in by_lo..by_hi {
+            for bx in bx_lo..bx_hi {
+                let w = bin_overlap_area(x_lo, x_hi, y_lo, y_hi, bx, by);
+                if w > 0.0 {
+                    let idx = by * grid_w + bx;
+                    fx_total += w * field_x[idx];
+                    fy_total += w * field_y[idx];
+                    w_total += w;
                 }
-
-                let dfx = cx - ix as f64;
-                let dfy = cy - iy as f64;
-                let w = bell_shape(dfx) * bell_shape(dfy);
-
-                let idx = grid_index(ix, iy, grid_w);
-                fx_total += w * field_x[idx];
-                fy_total += w * field_y[idx];
-                w_total += w;
             }
         }
 
@@ -120,119 +205,71 @@ pub fn compute_density_gradient(
     }
 }
 
-/// Convert grid coordinates to a flat index in a row-major grid.
-fn grid_index(x: i32, y: i32, width: usize) -> usize {
-    y as usize * width + x as usize
-}
+// --- DCT/DST transform helpers ---
 
-/// Bell-shaped (cosine-based) density kernel using module-level SIGMA.
-///
-/// b(x) = (1 + cos(pi * x / sigma)) / 2 for |x| < sigma, else 0
-fn bell_shape(x: f64) -> f64 {
-    let ax = x.abs();
-    if ax < SIGMA {
-        0.5 * (1.0 + (std::f64::consts::PI * ax / SIGMA).cos())
-    } else {
-        0.0
-    }
-}
-
-/// Solve Poisson equation ∇²φ = ρ and return the electric field (Ex, Ey) = -∇φ.
-///
-/// Uses 2D FFT (row transforms + column transforms) with discrete Laplacian
-/// eigenvalues: λ(kx,ky) = 2(cos(2πkx/W) - 1) + 2(cos(2πky/H) - 1).
-///
-/// The electric field is computed via spectral differentiation:
-/// Ex = -∂φ/∂x using forward finite difference in frequency domain.
-fn poisson_field(density: &[f64], w: usize, h: usize) -> (Vec<f64>, Vec<f64>) {
-    let n = w * h;
-    let pi = std::f64::consts::PI;
-
-    let mut planner = FftPlanner::new();
-
-    // Working buffer
-    let mut data: Vec<Complex<f64>> = density
-        .iter()
-        .map(|&d| Complex::new(d, 0.0))
-        .collect();
-
-    // Forward 2D FFT: transform rows, then columns
-    fft_2d(&mut data, w, h, &mut planner, true);
-
-    // Solve in frequency domain and compute field
-    let mut ex_hat = vec![Complex::new(0.0, 0.0); n];
-    let mut ey_hat = vec![Complex::new(0.0, 0.0); n];
-
-    for ky in 0..h {
-        for kx in 0..w {
-            let idx = ky * w + kx;
-
-            // Discrete Laplacian eigenvalues:
-            // λ = 2(cos(2πkx/W) - 1) + 2(cos(2πky/H) - 1)
-            let lam_x = 2.0 * ((2.0 * pi * kx as f64 / w as f64).cos() - 1.0);
-            let lam_y = 2.0 * ((2.0 * pi * ky as f64 / h as f64).cos() - 1.0);
-            let lam = lam_x + lam_y;
-
-            if lam.abs() < 1e-10 {
-                // DC component: set to zero (remove mean)
-                ex_hat[idx] = Complex::new(0.0, 0.0);
-                ey_hat[idx] = Complex::new(0.0, 0.0);
-            } else {
-                // φ̂ = ρ̂ / λ
-                let phi = data[idx] / lam;
-
-                // Discrete derivative via spectral differentiation:
-                // ∂/∂x in frequency domain: multiply by (exp(i2πkx/W) - 1)
-                // E = -∇φ, so Ex = -(exp(i2πkx/W) - 1) * φ̂
-                let angle_x = 2.0 * pi * kx as f64 / w as f64;
-                let angle_y = 2.0 * pi * ky as f64 / h as f64;
-                let dx_kernel = Complex::new(angle_x.cos() - 1.0, angle_x.sin());
-                let dy_kernel = Complex::new(angle_y.cos() - 1.0, angle_y.sin());
-
-                ex_hat[idx] = -dx_kernel * phi;
-                ey_hat[idx] = -dy_kernel * phi;
-            }
-        }
-    }
-
-    // Inverse 2D FFT
-    fft_2d(&mut ex_hat, w, h, &mut planner, false);
-    fft_2d(&mut ey_hat, w, h, &mut planner, false);
-
-    let inv_n = 1.0 / n as f64;
-    let field_x: Vec<f64> = ex_hat.iter().map(|c| c.re * inv_n).collect();
-    let field_y: Vec<f64> = ey_hat.iter().map(|c| c.re * inv_n).collect();
-
-    (field_x, field_y)
-}
-
-/// Perform a 2D FFT on a row-major grid by transforming rows then columns.
-fn fft_2d(data: &mut [Complex<f64>], w: usize, h: usize, planner: &mut FftPlanner<f64>, forward: bool) {
-    // Transform each row
-    let fft_row = if forward {
-        planner.plan_fft_forward(w)
-    } else {
-        planner.plan_fft_inverse(w)
-    };
+/// Forward DCT-II on a 2D grid (rows then columns).
+fn dct2_2d(data: &mut [f64], w: usize, h: usize, planner: &mut DctPlanner<f64>) {
+    let dct_row = planner.plan_dct2(w);
     for row in 0..h {
         let start = row * w;
-        fft_row.process(&mut data[start..start + w]);
+        dct_row.process_dct2(&mut data[start..start + w]);
     }
 
-    // Transform each column (need to gather/scatter since data is row-major)
-    let fft_col = if forward {
-        planner.plan_fft_forward(h)
-    } else {
-        planner.plan_fft_inverse(h)
-    };
-    let mut col_buf = vec![Complex::new(0.0, 0.0); h];
+    let dct_col = planner.plan_dct2(h);
+    let mut col_buf = vec![0.0; h];
     for col in 0..w {
-        // Gather column
         for row in 0..h {
             col_buf[row] = data[row * w + col];
         }
-        fft_col.process(&mut col_buf);
-        // Scatter column
+        dct_col.process_dct2(&mut col_buf);
+        for row in 0..h {
+            data[row * w + col] = col_buf[row];
+        }
+    }
+}
+
+/// Inverse DCT (IDCT) on rows.
+fn idct_rows(data: &mut [f64], w: usize, h: usize, planner: &mut DctPlanner<f64>) {
+    let idct = planner.plan_dct3(w);
+    for row in 0..h {
+        let start = row * w;
+        idct.process_dct3(&mut data[start..start + w]);
+    }
+}
+
+/// Inverse DCT (IDCT) on columns.
+fn idct_cols(data: &mut [f64], w: usize, h: usize, planner: &mut DctPlanner<f64>) {
+    let idct = planner.plan_dct3(h);
+    let mut col_buf = vec![0.0; h];
+    for col in 0..w {
+        for row in 0..h {
+            col_buf[row] = data[row * w + col];
+        }
+        idct.process_dct3(&mut col_buf);
+        for row in 0..h {
+            data[row * w + col] = col_buf[row];
+        }
+    }
+}
+
+/// Inverse DST (IDST) on rows.
+fn idst_rows(data: &mut [f64], w: usize, h: usize, planner: &mut DctPlanner<f64>) {
+    let idst = planner.plan_dst3(w);
+    for row in 0..h {
+        let start = row * w;
+        idst.process_dst3(&mut data[start..start + w]);
+    }
+}
+
+/// Inverse DST (IDST) on columns.
+fn idst_cols(data: &mut [f64], w: usize, h: usize, planner: &mut DctPlanner<f64>) {
+    let idst = planner.plan_dst3(h);
+    let mut col_buf = vec![0.0; h];
+    for col in 0..w {
+        for row in 0..h {
+            col_buf[row] = data[row * w + col];
+        }
+        idst.process_dst3(&mut col_buf);
         for row in 0..h {
             data[row * w + col] = col_buf[row];
         }
@@ -247,45 +284,68 @@ mod tests {
     fn density_map_single_cell() {
         let x = vec![4.0];
         let y = vec![4.0];
-        let map = compute_density_map(&x, &y, 8, 8, 0.0);
+        let map = compute_concrete_density(&x, &y, 8, 8);
 
-        // Peak should be at (4, 4)
+        // Cell at (4,4) with area 1x1 should produce density ~1.0 at (4,4)
         let peak_idx = 4 * 8 + 4;
         let peak = map[peak_idx];
         assert!(peak > 0.0, "Peak density should be positive: {}", peak);
+    }
 
-        // Should be highest at center
-        for (i, &d) in map.iter().enumerate() {
-            if i != peak_idx {
-                assert!(d <= peak + 1e-10, "Index {} ({}) > peak ({})", i, d, peak);
-            }
+    #[test]
+    fn overlap_zero_for_spread() {
+        // 4 cells spread far apart on 8x8 grid
+        let x = vec![1.0, 3.0, 5.0, 7.0];
+        let y = vec![1.0, 3.0, 5.0, 7.0];
+        let density = compute_concrete_density(&x, &y, 8, 8);
+        let overlap = compute_overlap(&density);
+        assert!(
+            overlap < 0.01,
+            "Spread cells should have near-zero overlap: {}",
+            overlap
+        );
+    }
+
+    #[test]
+    fn overlap_positive_for_clustered() {
+        // Many cells at same integer position - each cell centered on bin,
+        // so all area goes to one bin. 8 cells at bin (4,4) = density 8.
+        let x = vec![4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5];
+        let y = vec![4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5, 4.5];
+        let density = compute_concrete_density(&x, &y, 8, 8);
+        let overlap = compute_overlap(&density);
+        assert!(
+            overlap > 0.0,
+            "Clustered cells should have positive overlap: {}",
+            overlap
+        );
+    }
+
+    #[test]
+    fn density_field_finite_values() {
+        let x = vec![2.0, 6.0, 4.0];
+        let y = vec![2.0, 6.0, 4.0];
+        let density = compute_concrete_density(&x, &y, 8, 8);
+        let (fx, fy) = compute_density_field(&density, 8, 8, 1.0);
+
+        for val in fx.iter().chain(fy.iter()) {
+            assert!(val.is_finite(), "Field value should be finite: {}", val);
         }
     }
 
     #[test]
-    fn density_gradient_pushes_apart() {
-        // Two cells at same position should have gradients pushing them apart
-        let x = vec![4.0, 4.0];
-        let y = vec![4.0, 4.0];
-        let map = compute_density_map(&x, &y, 8, 8, 0.0);
+    fn density_gradient_finite() {
+        let x = vec![2.0, 6.0, 4.0];
+        let y = vec![2.0, 6.0, 4.0];
+        let density = compute_concrete_density(&x, &y, 8, 8);
+        let (fx, fy) = compute_density_field(&density, 8, 8, 1.0);
 
-        let mut gx = vec![0.0; 2];
-        let mut gy = vec![0.0; 2];
-        compute_density_gradient(&x, &y, &map, 8, 8, &mut gx, &mut gy);
+        let mut gx = vec![0.0; 3];
+        let mut gy = vec![0.0; 3];
+        compute_density_gradient(&x, &y, &fx, &fy, 8, 8, &mut gx, &mut gy);
 
-        // Gradients should be finite (they'll be equal for identical positions)
-        for g in &gx {
+        for g in gx.iter().chain(gy.iter()) {
             assert!(g.is_finite(), "Gradient should be finite: {}", g);
         }
-    }
-
-    #[test]
-    fn bell_shape_properties() {
-        // Maximum at center
-        assert!((bell_shape(0.0) - 1.0).abs() < 1e-10);
-        // Zero outside sigma
-        assert_eq!(bell_shape(2.0), 0.0);
-        // Symmetric
-        assert!((bell_shape(0.5) - bell_shape(-0.5)).abs() < 1e-10);
     }
 }

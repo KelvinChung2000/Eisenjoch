@@ -13,4 +13,6 @@ thiserror = "2"
 anyhow = "1"
 lasso = { version = "0.7", features = ["multi-threaded"] }
 rayon = "1"
+ndarray = "0.16"
+lapjv = "0.3"
 nextpnr = { path = "crates/nextpnr" }

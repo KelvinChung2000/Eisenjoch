@@ -1,4 +1,4 @@
-//! Configuration for the Hydraulic placer (Kirchhoff resistive network model).
+//! Configuration for the optimal transport placer (Kirchhoff resistive network model).
 
 /// How to initialize cell positions before the optimization loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub enum InitStrategy {
 }
 
 #[derive(Clone)]
-pub struct HydraulicPlacerCfg {
+pub struct OptTransPlacerCfg {
     /// RNG seed for reproducibility.
     pub seed: u64,
     /// Maximum turbulence coefficient (default: 4.0).
@@ -27,8 +27,7 @@ pub struct HydraulicPlacerCfg {
     pub cg_max_iters: usize,
     /// CG convergence tolerance (default: 1e-6).
     pub cg_tolerance: f64,
-    /// CFL number: max cell displacement per iteration in tiles (default: 0.5).
-    /// From the Courant-Friedrichs-Lewy stability condition.
+    /// Unused. Kept for Python API backward compatibility.
     pub cfl_number: f64,
     /// Maximum outer loop iterations (default: 500).
     pub max_outer_iters: usize,
@@ -38,25 +37,22 @@ pub struct HydraulicPlacerCfg {
     /// Higher values make critical nets resist spreading, keeping timing paths short.
     /// Also controls transit-time-based setup/hold violation checking.
     pub timing_weight: f64,
-    /// Legacy field: initial gas temperature (default: 1.0).
-    /// No longer used in the density gradient (replaced by per-tile AL multipliers).
-    /// Kept for backward compatibility with existing config serialization.
+    /// Unused. Replaced by per-tile AL multipliers. Kept for Python API backward compatibility.
     pub gas_temperature: f64,
     /// Initial cell placement strategy (default: Centroid).
     pub init_strategy: InitStrategy,
     /// Maximum cells per type group for bipartite legalization (default: 10000).
     pub lap_max_cells: usize,
 
-    // === Force blend weights (all independently configurable) ===
+    // === Unused force blend weights (kept for Python API backward compatibility) ===
 
-    /// Weight for WA star model force (default: 1.0). Set 0.0 to disable.
+    /// Unused. Kept for Python API backward compatibility.
     pub star_weight: f64,
 
-    /// Weight for gas hydraulic pressure gradient (default: 0.0 at start).
-    /// Ramps from `pressure_weight_start` to `pressure_weight_end` over iterations.
+    /// Unused. Kept for Python API backward compatibility.
     pub pressure_weight_start: f64,
 
-    /// Final weight for pressure gradient (default: 2.0).
+    /// Unused. Kept for Python API backward compatibility.
     pub pressure_weight_end: f64,
 
     /// IO demand boost factor for nets with fixed pins (default: 4.0).
@@ -67,10 +63,10 @@ pub struct HydraulicPlacerCfg {
     /// Nesterov initial step size (default: 0.1).
     pub nesterov_step_size: f64,
 
-    /// Nesterov momentum coefficient override. None = use FISTA automatic (default: None).
+    /// Unused. Kept for Python API backward compatibility.
     pub momentum: Option<f64>,
 
-    /// WA wirelength smoothing coefficient (default: 0.5).
+    /// Unused. Kept for Python API backward compatibility.
     pub wl_coeff: f64,
 
     /// Enable expanding bounding box (default: true). Set false to disable.
@@ -81,7 +77,7 @@ pub struct HydraulicPlacerCfg {
     pub pump_gain: f64,
 }
 
-impl Default for HydraulicPlacerCfg {
+impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,

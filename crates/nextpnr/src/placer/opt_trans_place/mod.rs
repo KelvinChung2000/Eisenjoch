@@ -1,4 +1,4 @@
-//! Hydraulic placer: minimum transport energy placement.
+//! Optimal transport placer: minimum transport energy placement.
 //!
 //! Minimizes the free energy F(x) = E_transport(x) + λ · S_density(x) where:
 //!
@@ -25,7 +25,7 @@ pub mod network;
 pub mod state;
 pub mod timing;
 
-pub use config::HydraulicPlacerCfg;
+pub use config::OptTransPlacerCfg;
 
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
@@ -37,13 +37,13 @@ use super::common::{NesterovLoopState, compute_pin_weights};
 use super::solver::AdamSolver;
 use super::PlacerError;
 
-pub struct PlacerHydraulic;
+pub struct PlacerOptTrans;
 
-impl super::Placer for PlacerHydraulic {
-    type Config = HydraulicPlacerCfg;
+impl super::Placer for PlacerOptTrans {
+    type Config = OptTransPlacerCfg;
 
     fn place(&self, ctx: &mut Context, cfg: &Self::Config) -> Result<(), PlacerError> {
-        place_hydraulic(ctx, cfg)
+        place_opt_trans(ctx, cfg)
     }
 
     fn place_cells(
@@ -53,23 +53,23 @@ impl super::Placer for PlacerHydraulic {
         cells: &[CellId],
     ) -> Result<(), PlacerError> {
         let cells_set: FxHashSet<CellId> = cells.iter().copied().collect();
-        with_locked_others(ctx, &cells_set, |ctx| place_hydraulic(ctx, cfg))
+        with_locked_others(ctx, &cells_set, |ctx| place_opt_trans(ctx, cfg))
     }
 }
 
-pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<(), PlacerError> {
+pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     ctx.reseed_rng(cfg.seed);
 
     initial_placement(ctx)?;
     ctx.populate_bel_buckets();
-    let mut state = state::HydraulicState::new(ctx, cfg.init_strategy);
+    let mut state = state::OptTransState::new(ctx, cfg.init_strategy);
 
     if state.num_cells() == 0 {
         return Ok(());
     }
 
     info!(
-        "Hydraulic placer: {} movable cells, {}x{} grid, {} pipes",
+        "OptTrans placer: {} movable cells, {}x{} grid, {} pipes",
         state.num_cells(),
         state.network.width,
         state.network.height,
@@ -99,13 +99,12 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     // Step size: scale with grid diagonal for proportional movement.
     let step_size = cfg.nesterov_step_size * grid_diag / 50.0;
 
-    // Divergence patience: larger designs need more iterations.
-    let diverge_patience = (60.0 + 2.0 * (n as f64).sqrt()) as usize;
-    let converge_patience = diverge_patience + 20;
+    // Convergence patience: larger designs need more iterations before checking.
+    let converge_patience = (80.0 + 2.0 * (n as f64).sqrt()) as usize;
 
     eprintln!(
         "Auto-scaled: util={:.1}%, io_boost={:.1}, step={:.3}, patience={}",
-        utilization * 100.0, io_boost, step_size, diverge_patience,
+        utilization * 100.0, io_boost, step_size, converge_patience,
     );
 
     let pin_weights = compute_pin_weights(ctx, &state.cell_to_idx, n);
@@ -184,13 +183,13 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy += ddy;
         }
 
-        // 8. Timing feedback → criticality.
+        // 7. Timing feedback → criticality.
         if cfg.timing_weight > 0.0 {
             let timing_result = timing::compute_fluid_timing(ctx, &state, target_period, beta);
             criticality = timing_result.net_criticality;
         }
 
-        // 9. Viscosity preconditioner.
+        // 8. Viscosity preconditioner.
         let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
         for ((gx, gy), (&pw, &v)) in grad_x.iter_mut().zip(grad_y.iter_mut())
             .zip(pin_weights.iter().zip(&viscosity))
@@ -200,7 +199,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             *gy /= w;
         }
 
-        // 10. Adam step: per-cell adaptive step sizes, built-in momentum.
+        // 9. Adam step: per-cell adaptive step sizes, built-in momentum.
         adam_x.step(&grad_x);
         adam_y.step(&grad_y);
         adam_x.clamp_positions_range(0.0, max_x);
@@ -208,7 +207,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         state.cell_x.copy_from_slice(adam_x.positions());
         state.cell_y.copy_from_slice(adam_y.positions());
 
-        // 11. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
+        // 10. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
         {
             let density = state.build_density_field(ctx);
             let num_tiles = w * h;
@@ -217,7 +216,7 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
             }
         }
 
-        // 12. Track best position using overlap-penalized HPWL.
+        // 11. Track best position using overlap-penalized HPWL.
         //    Raw chpwl favors overlapping solutions. Penalize by max density
         //    so the best snapshot has reasonable spreading for legalization.
         let chpwl_now = state.continuous_hpwl(ctx);
@@ -225,24 +224,21 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
         let penalized = chpwl_now * max_rho_now.max(1.0);
         loop_state.record_metric(penalized, &state.cell_x, &state.cell_y);
 
-        // 13. Reporting + convergence.
+        // 12. Reporting + convergence.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
             let (overflow_ratio, max_rho, _) = overlap
                 .unwrap_or_else(|| state.overlap_metrics(ctx));
             let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
             eprintln!(
-                "Hydraulic iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
+                "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
                 iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta,
             );
 
-            // No divergence revert — the AL multiplier needs full iterations
-            // to enforce density constraints. Early revert to low-chpwl (overlapping)
-            // positions defeats the purpose of density spreading.
             if iter > converge_patience {
                 let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.005 {
-                    eprintln!("Hydraulic placer converged at iteration {}", iter);
+                    eprintln!("OptTrans placer converged at iteration {}", iter);
                     break;
                 }
             }
@@ -252,10 +248,10 @@ pub fn place_hydraulic(ctx: &mut Context, cfg: &HydraulicPlacerCfg) -> Result<()
     // Restore best and final legalize.
     state.cell_x.copy_from_slice(&loop_state.best_positions_x);
     state.cell_y.copy_from_slice(&loop_state.best_positions_y);
-    legalize::legalize_hydraulic(ctx, &state, cfg.lap_max_cells)?;
+    legalize::legalize_opt_trans(ctx, &state, cfg.lap_max_cells)?;
 
     validate_all_placed(ctx)?;
 
-    info!("Hydraulic placement complete");
+    info!("OptTrans placement complete");
     Ok(())
 }

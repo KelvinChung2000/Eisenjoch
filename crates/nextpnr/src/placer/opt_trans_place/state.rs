@@ -1,4 +1,4 @@
-//! Hydraulic placer state: cell positions, network, solver state.
+//! Optimal transport placer state: cell positions, network, solver state.
 //!
 //! All positions are continuous (floating-point). Demand injection and pressure
 //! gradient use bilinear interpolation — no tile snapping until final legalization.
@@ -15,7 +15,7 @@ use super::network::{PipeNetwork, Port};
 const PARALLEL_THRESHOLD: usize = 4096;
 const ALL_PORTS: [Port; 4] = [Port::North, Port::East, Port::South, Port::West];
 
-pub struct HydraulicState {
+pub struct OptTransState {
     pub cell_x: Vec<f64>,
     pub cell_y: Vec<f64>,
     pub cell_to_idx: FxHashMap<CellId, usize>,
@@ -24,9 +24,11 @@ pub struct HydraulicState {
     /// IO centroid and initial box half-size (for expanding box).
     pub box_center: (f64, f64),
     pub box_initial_half: f64,
+    /// Average BEL count per occupied tile (tiles with capacity > 0).
+    avg_bels: f64,
 }
 
-impl HydraulicState {
+impl OptTransState {
     pub fn new(ctx: &Context, init: InitStrategy) -> Self {
         let (cell_to_idx, idx_to_cell) = crate::placer::common::collect_movable_cells(ctx);
         let n = idx_to_cell.len();
@@ -36,15 +38,22 @@ impl HydraulicState {
         // Compute IO centroid for bounding box center.
         let box_center = Self::compute_io_centroid(ctx, &network);
 
-        // Minimum box: just enough BELs to cover all cells.
-        // Average BEL density = total_bels / total_tiles.
+        // Average BEL density across occupied tiles (capacity > 0).
         let mut total_bels = 0usize;
+        let mut occupied_tiles = 0usize;
         for y in 0..network.height {
             for x in 0..network.width {
                 let tile = ctx.chipdb().tile_by_xy(x, y);
-                total_bels += ctx.chipdb().tile_type(tile).bels.len();
+                let bel_count = ctx.chipdb().tile_type(tile).bels.len();
+                if bel_count > 0 {
+                    total_bels += bel_count;
+                    occupied_tiles += 1;
+                }
             }
         }
+        let avg_bels = (total_bels as f64 / occupied_tiles.max(1) as f64).max(1.0);
+
+        // Minimum box: just enough BELs to cover all cells.
         let total_tiles = (network.width * network.height) as f64;
         let bel_density = (total_bels as f64 / total_tiles).max(1.0);
         let tiles_needed = n as f64 / bel_density;
@@ -81,6 +90,7 @@ impl HydraulicState {
             network,
             box_center,
             box_initial_half,
+            avg_bels,
         }
     }
 
@@ -625,21 +635,8 @@ impl HydraulicState {
         let n = self.num_cells();
 
         // Cell radius: each cell occupies ~1/avg_bels of a tile.
-        // σ = sqrt(1/avg_bels) gives appropriate spreading width.
-        let mut total_bels = 0usize;
-        let mut total_tiles = 0usize;
-        for y in 0..h {
-            for x in 0..w {
-                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
-                let nb = ctx.chipdb().tile_type(tile).bels.len();
-                if nb > 0 {
-                    total_bels += nb;
-                    total_tiles += 1;
-                }
-            }
-        }
-        let avg_bels = (total_bels as f64 / total_tiles.max(1) as f64).max(1.0);
-        let cell_sigma = (1.0 / avg_bels).sqrt().max(0.3);
+        // sigma = sqrt(1/avg_bels) gives appropriate spreading width.
+        let cell_sigma = (1.0 / self.avg_bels).sqrt().max(0.3);
         let radius = (3.0 * cell_sigma).ceil() as i32;
         let inv_2sigma2 = 1.0 / (2.0 * cell_sigma * cell_sigma);
 
@@ -648,19 +645,26 @@ impl HydraulicState {
         let hi = h as i32;
 
         for i in 0..n {
-            let cx = self.cell_x[i];
-            let cy = self.cell_y[i];
-            let cx_floor = cx.floor() as i32;
-            let cy_floor = cy.floor() as i32;
+            let px = self.cell_x[i];
+            let py = self.cell_y[i];
+            let floor_x = px.floor() as i32;
+            let floor_y = py.floor() as i32;
+
+            let ty_lo = (floor_y - radius).max(0);
+            let ty_hi = (floor_y + radius).min(hi - 1);
+            let tx_lo = (floor_x - radius).max(0);
+            let tx_hi = (floor_x + radius).min(wi - 1);
 
             // Splat bell function over tiles within radius.
-            for ty in (cy_floor - radius).max(0)..=(cy_floor + radius).min(hi - 1) {
-                for tx in (cx_floor - radius).max(0)..=(cx_floor + radius).min(wi - 1) {
-                    let dx = tx as f64 + 0.5 - cx; // distance to tile center
-                    let dy = ty as f64 + 0.5 - cy;
-                    let dist2 = dx * dx + dy * dy;
+            for ty in ty_lo..=ty_hi {
+                let dy = ty as f64 + 0.5 - py;
+                let dy2 = dy * dy;
+                let row_offset = ty as usize * w;
+                for tx in tx_lo..=tx_hi {
+                    let dx = tx as f64 + 0.5 - px;
+                    let dist2 = dx * dx + dy2;
                     let weight = (-dist2 * inv_2sigma2).exp();
-                    density[ty as usize * w + tx as usize] += weight;
+                    density[row_offset + tx as usize] += weight;
                 }
             }
         }
@@ -669,8 +673,8 @@ impl HydraulicState {
         for y in 0..h {
             for x in 0..w {
                 let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
-                let n_bels = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
-                density[y * w + x] /= n_bels;
+                let bel_count = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
+                density[y * w + x] /= bel_count;
             }
         }
         density

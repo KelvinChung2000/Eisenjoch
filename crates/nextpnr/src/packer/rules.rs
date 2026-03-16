@@ -3,10 +3,9 @@
 //! Rules describe when two cells connected by a net should be clustered together.
 //! They can come from chipdb `extra_data` (explicit) or be derived from wire topology.
 
-use crate::chipdb::{ChipDb, ChipExtraDataPod, PackingRulePod};
+use crate::chipdb::ChipDb;
 use crate::common::IdString;
 use crate::context::Context;
-use crate::read_packed;
 
 /// Intern a constid index to an IdString, returning EMPTY for invalid indices.
 fn intern_constid(chipdb: &ChipDb, ctx: &Context, constid: i32) -> IdString {
@@ -46,44 +45,39 @@ impl PackingRule {
     }
 
     /// Load from a chipdb POD structure, using context to intern strings.
-    pub fn from_pod(pod: &PackingRulePod, ctx: &Context) -> Self {
+    pub fn from_pod(pod: &crate::chipdb::PackingRulePod, ctx: &Context) -> Self {
         let chipdb = ctx.chipdb();
         let intern = |id: i32| intern_constid(chipdb, ctx, id);
-        let flag: i32 = unsafe { read_packed!(*pod, flag) };
+        let flag = pod.flag();
 
         Self {
             driver: CellTypePort {
-                cell_type: intern(unsafe { read_packed!(pod.driver, cell_type) }),
-                port: intern(unsafe { read_packed!(pod.driver, port) }),
+                cell_type: intern(pod.driver.cell_type()),
+                port: intern(pod.driver.port()),
             },
             user: CellTypePort {
-                cell_type: intern(unsafe { read_packed!(pod.user, cell_type) }),
-                port: intern(unsafe { read_packed!(pod.user, port) }),
+                cell_type: intern(pod.user.cell_type()),
+                port: intern(pod.user.port()),
             },
-            rel_x: unsafe { read_packed!(*pod, rel_x) },
-            rel_y: unsafe { read_packed!(*pod, rel_y) },
-            rel_z: unsafe { read_packed!(*pod, rel_z) },
-            base_z: unsafe { read_packed!(*pod, base_z) },
-            is_base_rule: (flag & PackingRulePod::FLAG_BASE_RULE) != 0,
-            is_absolute: (flag & PackingRulePod::FLAG_ABS_RULE) != 0,
+            rel_x: pod.rel_x(),
+            rel_y: pod.rel_y(),
+            rel_z: pod.rel_z(),
+            base_z: pod.base_z(),
+            is_base_rule: (flag & crate::chipdb::PackingRulePod::FLAG_BASE_RULE) != 0,
+            is_absolute: (flag & crate::chipdb::PackingRulePod::FLAG_ABS_RULE) != 0,
         }
     }
 }
 
 /// Load packing rules from ChipInfoPod::extra_data (ChipExtraDataPod).
 pub fn load_rules_from_extra_data(ctx: &Context) -> Vec<PackingRule> {
-    let ci = ctx.chipdb().chip_info();
-    if ci.extra_data.is_null() {
+    let Some(extra) = ctx.chipdb().chip_extra_data() else {
         return Vec::new();
-    }
+    };
 
-    let extra: &ChipExtraDataPod = unsafe { &*(ci.extra_data.get() as *const ChipExtraDataPod) };
-    let rules_slice = extra.packing_rules.get();
-    if rules_slice.is_empty() {
-        return Vec::new();
-    }
-
-    rules_slice
+    extra
+        .packing_rules
+        .get()
         .iter()
         .map(|pod| PackingRule::from_pod(pod, ctx))
         .collect()
@@ -94,8 +88,8 @@ fn bel_pin_direction(bel: &crate::chipdb::BelDataPod, pin_name: i32) -> Option<i
     bel.pins
         .get()
         .iter()
-        .find(|p| unsafe { read_packed!(**p, name) } == pin_name)
-        .map(|p| unsafe { read_packed!(*p, dir) })
+        .find(|p| p.name() == pin_name)
+        .map(|p| p.dir())
 }
 
 /// Pin direction constants matching the chipdb format.
@@ -137,10 +131,10 @@ pub fn derive_rules_from_topology(ctx: &Context) -> Vec<PackingRule> {
                         continue;
                     }
 
-                    let drv_type_id: i32 = unsafe { read_packed!(*drv_bel_data, bel_type) };
-                    let usr_type_id: i32 = unsafe { read_packed!(*usr_bel_data, bel_type) };
-                    let drv_z: i16 = unsafe { read_packed!(*drv_bel_data, z) };
-                    let usr_z: i16 = unsafe { read_packed!(*usr_bel_data, z) };
+                    let drv_type_id = drv_bel_data.bel_type();
+                    let usr_type_id = usr_bel_data.bel_type();
+                    let drv_z = drv_bel_data.z();
+                    let usr_z = usr_bel_data.z();
 
                     rules.push(PackingRule {
                         driver: CellTypePort {

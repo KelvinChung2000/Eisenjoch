@@ -1,4 +1,4 @@
-//! Hydraulic pipe network model for FPGA placement.
+//! Optimal transport pipe network model for FPGA placement.
 //!
 //! Models the FPGA tile grid as a network of pipes and junctions:
 //! - Each tile is a junction node with a pressure variable

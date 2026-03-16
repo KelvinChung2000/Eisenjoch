@@ -91,18 +91,15 @@ impl ChipDb {
             .expect("bel_info: BEL index out of bounds")
     }
 
-    /// Extract (name_constid, wire_index, dir) from a BEL pin, encapsulating unsafe access.
+    /// Extract (name_constid, wire_index, dir) from a BEL pin.
     #[inline]
     pub fn bel_pin_fields(&self, pin: &BelPinPod) -> (i32, i32, i32) {
-        let name: i32 = unsafe { read_packed!(*pin, name) };
-        let wire: i32 = unsafe { read_packed!(*pin, wire) };
-        let dir: i32 = unsafe { read_packed!(*pin, dir) };
-        (name, wire, dir)
+        (pin.name(), pin.wire(), pin.dir())
     }
 
     #[inline]
     pub fn bel_pin_ref_bel(&self, pin_ref: &BelPinRefPod) -> i32 {
-        unsafe { read_packed!(*pin_ref, bel) }
+        pin_ref.bel()
     }
 
     #[inline]
@@ -231,21 +228,18 @@ impl ChipDb {
 
     pub fn bel_name(&self, bel: BelId) -> &str {
         let info = self.bel_info(bel);
-        let name_id: i32 = unsafe { read_packed!(*info, name) };
-        self.constid_str(name_id).unwrap_or("<unknown>")
+        self.constid_str(info.name()).unwrap_or("<unknown>")
     }
 
     pub fn bel_type(&self, bel: BelId) -> &str {
         let info = self.bel_info(bel);
-        let type_id: i32 = unsafe { read_packed!(*info, bel_type) };
-        self.constid_str(type_id).unwrap_or("<unknown>")
+        self.constid_str(info.bel_type()).unwrap_or("<unknown>")
     }
 
     pub fn bel_loc(&self, bel: BelId) -> Loc {
         let (x, y) = self.tile_xy(bel.tile());
         let info = self.bel_info(bel);
-        let z: i16 = unsafe { read_packed!(*info, z) };
-        Loc::new(x, y, z as i32)
+        Loc::new(x, y, info.z() as i32)
     }
 
     pub fn pip_timing_index(&self, pip: PipId) -> i32 {
@@ -296,6 +290,15 @@ impl ChipDb {
         self.constid_str(type_name_id).unwrap_or("<unknown>")
     }
 
+    /// Get the chip extra data (packing rules, etc.), if present.
+    pub fn chip_extra_data(&self) -> Option<&ChipExtraDataPod> {
+        let ci = self.chip_info();
+        if ci.extra_data.is_null() {
+            return None;
+        }
+        Some(unsafe { &*(ci.extra_data.get() as *const ChipExtraDataPod) })
+    }
+
     // =====================================================================
     // Packer query methods
     // =====================================================================
@@ -313,9 +316,7 @@ impl ChipDb {
                 if bel_pins.len() > 1 {
                     let pins: Vec<(i32, i32)> = bel_pins
                         .iter()
-                        .map(|bp| unsafe {
-                            (read_packed!(*bp, bel), read_packed!(*bp, pin))
-                        })
+                        .map(|bp| (bp.bel(), bp.pin()))
                         .collect();
                     Some((wi as i32, pins))
                 } else {
@@ -334,8 +335,7 @@ impl ChipDb {
             .enumerate()
             .filter(|(_, tt)| {
                 tt.bels.get().iter().any(|bel| {
-                    let bt: i32 = unsafe { read_packed!(*bel, bel_type) };
-                    self.constid_str(bt).is_some_and(|s| s == bel_type)
+                    self.constid_str(bel.bel_type()).is_some_and(|s| s == bel_type)
                 })
             })
             .map(|(i, _)| i as i32)
@@ -349,8 +349,7 @@ impl ChipDb {
             .get()
             .iter()
             .filter(|bel| {
-                let bt: i32 = unsafe { read_packed!(**bel, bel_type) };
-                self.constid_str(bt).is_some_and(|s| s == bel_type)
+                self.constid_str(bel.bel_type()).is_some_and(|s| s == bel_type)
             })
             .count()
     }

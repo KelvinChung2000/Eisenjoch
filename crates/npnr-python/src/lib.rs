@@ -12,8 +12,8 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::hydraulic_place::config::InitStrategy;
-use ::nextpnr::placer::hydraulic_place::{HydraulicPlacerCfg, PlacerHydraulic};
+use ::nextpnr::placer::opt_trans_place::config::InitStrategy;
+use ::nextpnr::placer::opt_trans_place::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
 use ::nextpnr::router::router1::{Router1, Router1Cfg};
@@ -207,12 +207,12 @@ impl PyContext {
     /// Run a placer on the design.
     ///
     /// Args:
-    ///     placer: Placer algorithm name ("heap", "sa", "hydraulic", or "electro"). Default "heap".
+    ///     placer: Placer algorithm name ("heap", "sa", "opt_trans", "hydraulic", or "electro"). Default "heap".
     ///     seed: RNG seed for reproducibility. Default 1.
     ///     max_iters: Maximum iterations (default varies by placer).
     ///     congestion_weight: Weight for congestion cost. Default 0.5.
-    ///     turbulence_beta: Nonlinear resistance coefficient for hydraulic placer. Default 4.0.
-    ///     newton_iters: Newton iterations for nonlinear resistance (hydraulic). Default 2.
+    ///     turbulence_beta: Nonlinear resistance coefficient for optimal transport placer. Default 4.0.
+    ///     newton_iters: Newton iterations for nonlinear resistance (optimal transport). Default 2.
     #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, turbulence_beta=4.0, newton_iters=2, star_weight=1.0, pressure_weight_start=0.0, pressure_weight_end=2.0, io_boost=4.0, nesterov_step_size=0.1, wl_coeff=0.5, momentum=None, init_strategy="centroid", enable_expanding_box=true, gas_temperature=1.0, pump_gain=10.0))]
     fn place(
         &mut self,
@@ -251,8 +251,8 @@ impl PyContext {
                     .place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
-            "hydraulic" => {
-                let mut cfg = HydraulicPlacerCfg::default();
+            "opt_trans" | "hydraulic" => {
+                let mut cfg = OptTransPlacerCfg::default();
                 cfg.seed = seed;
                 cfg.turbulence_beta = turbulence_beta;
                 cfg.newton_iters = newton_iters;
@@ -272,15 +272,15 @@ impl PyContext {
                     "random_bel" => InitStrategy::RandomBel,
                     "radial" => InitStrategy::RadialCapacity,
                     other => return Err(PyValueError::new_err(format!(
-                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
+                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel, radial", other
                     ))),
                 };
                 if let Some(iters) = max_iters {
                     cfg.max_outer_iters = iters;
                 }
-                PlacerHydraulic
+                PlacerOptTrans
                     .place(&mut self.ctx, &cfg)
-                    .map_err(|e| PyRuntimeError::new_err(format!("Hydraulic placer error: {}", e)))
+                    .map_err(|e| PyRuntimeError::new_err(format!("OptTrans placer error: {}", e)))
             }
             "electro" => {
                 let mut cfg = ElectroPlaceCfg::default();
@@ -293,7 +293,7 @@ impl PyContext {
                     .map_err(|e| PyRuntimeError::new_err(format!("ElectroPlace error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!(
-                "Unknown placer: {}. Available: heap, sa, hydraulic, electro",
+                "Unknown placer: {}. Available: heap, sa, opt_trans, hydraulic, electro",
                 placer
             ))),
         }

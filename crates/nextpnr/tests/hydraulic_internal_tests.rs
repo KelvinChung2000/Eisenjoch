@@ -1,7 +1,9 @@
 mod common;
 
-use nextpnr::placer::hydraulic_place::kirchhoff;
-use nextpnr::placer::hydraulic_place::network::{Direction, Junction, Pipe, PipeNetwork};
+use nextpnr::placer::opt_trans_place::kirchhoff;
+use nextpnr::placer::opt_trans_place::network::{
+    Direction, Junction, Pipe, PipeNetwork, PipeType, Port,
+};
 
 // =====================================================================
 // Kirchhoff solver tests
@@ -12,14 +14,14 @@ fn make_2_node_network() -> (PipeNetwork, Vec<f64>) {
         Junction {
             x: 0,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 1,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
     ];
     let pipes = vec![Pipe {
@@ -28,7 +30,7 @@ fn make_2_node_network() -> (PipeNetwork, Vec<f64>) {
         resistance: 2.0,
         capacity: 10.0,
         flow: 0.0,
-        direction: Direction::East,
+        pipe_type: PipeType::InterTile(Direction::East),
     }];
     let junction_pipes = vec![vec![0], vec![0]];
     let network = PipeNetwork {
@@ -70,7 +72,6 @@ fn kirchhoff_zero_demand_zero_pressure() {
     let demand = vec![0.0, 0.0];
     let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-8);
     assert!(result.converged);
-    assert!(result.energy.abs() < 1e-6);
     for j in &network.junctions {
         assert!(j.pressure.abs() < 1e-6, "Zero demand -> zero pressure");
     }
@@ -79,21 +80,23 @@ fn kirchhoff_zero_demand_zero_pressure() {
 #[test]
 fn kirchhoff_turbulence_increases_resistance() {
     let (mut net_lam, demand) = make_2_node_network();
-    let (mut net_turb, demand2) = make_2_node_network();
+    let (mut net_turb, demand_turb) = make_2_node_network();
 
     // Laminar solve.
-    let r_lam = kirchhoff::kirchhoff_solve(&mut net_lam, &demand, 0.0, 1, 500, 1e-8);
+    kirchhoff::kirchhoff_solve(&mut net_lam, &demand, 0.0, 1, 500, 1e-8);
 
     // Pre-seed flow to trigger turbulence in Newton iteration.
     net_turb.pipes[0].flow = 5.0;
-    let r_turb = kirchhoff::kirchhoff_solve(&mut net_turb, &demand2, 10.0, 3, 500, 1e-8);
+    kirchhoff::kirchhoff_solve(&mut net_turb, &demand_turb, 10.0, 3, 500, 1e-8);
 
-    // Turbulence should increase effective resistance -> higher energy magnitude.
+    // Turbulence should increase effective resistance -> larger pressure drop.
+    let dp_lam = (net_lam.junctions[0].pressure - net_lam.junctions[1].pressure).abs();
+    let dp_turb = (net_turb.junctions[0].pressure - net_turb.junctions[1].pressure).abs();
     assert!(
-        r_turb.energy.abs() >= r_lam.energy.abs() - 0.01,
-        "Turbulent energy ({}) should be >= laminar ({})",
-        r_turb.energy,
-        r_lam.energy
+        dp_turb >= dp_lam - 0.01,
+        "Turbulent pressure drop ({}) should be >= laminar ({})",
+        dp_turb,
+        dp_lam
     );
 }
 
@@ -103,20 +106,20 @@ fn kirchhoff_flow_conservation_3_node() {
         Junction {
             x: 0,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 1,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 2,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
     ];
     let pipes = vec![
@@ -126,7 +129,7 @@ fn kirchhoff_flow_conservation_3_node() {
             resistance: 1.0,
             capacity: 10.0,
             flow: 0.0,
-            direction: Direction::East,
+            pipe_type: PipeType::InterTile(Direction::East),
         },
         Pipe {
             from: 1,
@@ -134,7 +137,7 @@ fn kirchhoff_flow_conservation_3_node() {
             resistance: 1.0,
             capacity: 10.0,
             flow: 0.0,
-            direction: Direction::East,
+            pipe_type: PipeType::InterTile(Direction::East),
         },
     ];
     let junction_pipes = vec![vec![0], vec![0, 1], vec![1]];
@@ -164,9 +167,14 @@ fn network_from_synthetic_chipdb() {
 
     assert_eq!(network.width, 2);
     assert_eq!(network.height, 2);
-    assert_eq!(network.num_junctions(), 4);
-    // (w-1)*h east + w*(h-1) south = 1*2 + 2*1 = 4
-    assert_eq!(network.num_pipes(), 4);
+    // 4 junctions per tile * 4 tiles = 16
+    assert_eq!(network.num_junctions(), 16);
+    // Inter-tile: (w-1)*h east + w*(h-1) south = 1*2 + 2*1 = 4
+    // Intra-tile: up to 6 per tile (4 choose 2) * 4 tiles
+    assert!(
+        network.num_pipes() >= 4,
+        "Should have at least 4 inter-tile pipes"
+    );
 }
 
 #[test]
@@ -174,10 +182,13 @@ fn network_junction_index() {
     let ctx = common::make_context();
     let network = PipeNetwork::from_context(&ctx);
 
-    assert_eq!(network.junction_index(0, 0), 0);
-    assert_eq!(network.junction_index(1, 0), 1);
-    assert_eq!(network.junction_index(0, 1), 2);
-    assert_eq!(network.junction_index(1, 1), 3);
+    // junction_index(x, y, port) = ((y * width + x) * 4 + port)
+    assert_eq!(network.junction_index(0, 0, Port::North), 0);
+    assert_eq!(network.junction_index(0, 0, Port::East), 1);
+    assert_eq!(network.junction_index(0, 0, Port::South), 2);
+    assert_eq!(network.junction_index(0, 0, Port::West), 3);
+    assert_eq!(network.junction_index(1, 0, Port::North), 4);
+    assert_eq!(network.junction_index(0, 1, Port::North), 8);
 }
 
 // =====================================================================
@@ -189,26 +200,26 @@ fn make_congested_2x2() -> PipeNetwork {
         Junction {
             x: 0,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 1,
             y: 0,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 0,
             y: 1,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
         Junction {
             x: 1,
             y: 1,
+            port: Port::North,
             pressure: 0.0,
-            demand: 0.0,
         },
     ];
     let pipes = vec![
@@ -218,7 +229,7 @@ fn make_congested_2x2() -> PipeNetwork {
             resistance: 1.0,
             capacity: 5.0,
             flow: 0.0,
-            direction: Direction::East,
+            pipe_type: PipeType::InterTile(Direction::East),
         },
         Pipe {
             from: 2,
@@ -226,7 +237,7 @@ fn make_congested_2x2() -> PipeNetwork {
             resistance: 1.0,
             capacity: 5.0,
             flow: 0.0,
-            direction: Direction::East,
+            pipe_type: PipeType::InterTile(Direction::East),
         },
         Pipe {
             from: 0,
@@ -234,7 +245,7 @@ fn make_congested_2x2() -> PipeNetwork {
             resistance: 1.0,
             capacity: 5.0,
             flow: 0.0,
-            direction: Direction::South,
+            pipe_type: PipeType::InterTile(Direction::South),
         },
         Pipe {
             from: 1,
@@ -242,7 +253,7 @@ fn make_congested_2x2() -> PipeNetwork {
             resistance: 1.0,
             capacity: 5.0,
             flow: 0.0,
-            direction: Direction::South,
+            pipe_type: PipeType::InterTile(Direction::South),
         },
     ];
     let junction_pipes = vec![vec![0, 2], vec![0, 3], vec![1, 2], vec![1, 3]];

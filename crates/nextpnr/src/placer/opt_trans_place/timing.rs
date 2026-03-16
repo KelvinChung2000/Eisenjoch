@@ -9,7 +9,7 @@ use crate::netlist::NetId;
 
 use super::kirchhoff::transit_time;
 use super::network::Port;
-use super::state::HydraulicState;
+use super::state::OptTransState;
 
 pub struct FluidTimingResult {
     pub net_criticality: FxHashMap<NetId, f64>,
@@ -22,7 +22,7 @@ pub struct FluidTimingResult {
 /// Net criticality = max_sink_arrival / target_period, clamped to [0, 1].
 pub fn compute_fluid_timing(
     ctx: &Context,
-    state: &HydraulicState,
+    state: &OptTransState,
     target_period: f64,
     turbulence_beta: f64,
 ) -> FluidTimingResult {

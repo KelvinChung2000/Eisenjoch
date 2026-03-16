@@ -52,6 +52,38 @@ pub struct BelDataPod {
 impl BelDataPod {
     pub const FLAG_GLOBAL: u32 = 0x01;
     pub const FLAG_HIDDEN: u32 = 0x02;
+
+    #[inline]
+    pub fn bel_type(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, bel_type) }
+    }
+
+    #[inline]
+    pub fn z(&self) -> i16 {
+        unsafe { crate::read_packed!(*self, z) }
+    }
+
+    #[inline]
+    pub fn name(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, name) }
+    }
+}
+
+impl BelPinPod {
+    #[inline]
+    pub fn name(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, name) }
+    }
+
+    #[inline]
+    pub fn dir(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, dir) }
+    }
+
+    #[inline]
+    pub fn wire(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, wire) }
+    }
 }
 
 /// Reference to a BEL pin from a wire's perspective.
@@ -62,6 +94,18 @@ pub struct BelPinRefPod {
     pub bel: i32,
     /// Pin name (constid index).
     pub pin: i32,
+}
+
+impl BelPinRefPod {
+    #[inline]
+    pub fn bel(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, bel) }
+    }
+
+    #[inline]
+    pub fn pin(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, pin) }
+    }
 }
 
 // =============================================================================
@@ -464,6 +508,43 @@ pub struct PackingRulePod {
 impl PackingRulePod {
     pub const FLAG_BASE_RULE: i32 = 0x01;
     pub const FLAG_ABS_RULE: i32 = 0x02;
+
+    #[inline]
+    pub fn flag(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, flag) }
+    }
+
+    #[inline]
+    pub fn rel_x(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, rel_x) }
+    }
+
+    #[inline]
+    pub fn rel_y(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, rel_y) }
+    }
+
+    #[inline]
+    pub fn rel_z(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, rel_z) }
+    }
+
+    #[inline]
+    pub fn base_z(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, base_z) }
+    }
+}
+
+impl CellPortPod {
+    #[inline]
+    pub fn cell_type(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, cell_type) }
+    }
+
+    #[inline]
+    pub fn port(&self) -> i32 {
+        unsafe { crate::read_packed!(*self, port) }
+    }
 }
 
 /// Chip-level extra data containing packing rules (matches C++ Chip_extra_data_POD).
