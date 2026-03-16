@@ -1,13 +1,14 @@
 //! Optimal transport placer: minimum transport energy placement.
 //!
-//! Minimizes the free energy F(x) = E_transport(x) + λ · S_density(x) where:
+//! Minimizes score = CHPWL(x) + λ_avg · E_density(x) where:
 //!
-//! - E_transport = ½ P^T S: electrical flow energy through the routing graph.
-//!   Kirchhoff system LP = S gives equilibrium potentials P for demand S.
+//! - CHPWL: continuous half-perimeter wirelength from cell positions.
+//!   Kirchhoff system LP = S gives equilibrium potentials P for demand S,
+//!   providing pressure gradients that drive cells toward shorter routes.
 //!   This is a convex relaxation of routing — flow splits across parallel paths,
 //!   automatically distributing demand and revealing congestion gradients.
 //!
-//! - S_density = Σ ρ·ln(ρ): density entropy preventing cell overlap.
+//! - E_density = Σ max(0, ρ-1)²: quadratic excess density penalty.
 //!   Per-tile Augmented Lagrangian multipliers enforce capacity constraints:
 //!   λ[tile] grows at overcrowded tiles, stays zero at tiles below capacity.
 //!
@@ -16,7 +17,7 @@
 //!
 //! The gradient ∂F/∂x drives cell motion via Adam optimizer.
 //! Kirchhoff gradient (asymmetric: drivers↓, sinks↑) minimizes transport energy.
-//! Density gradient (symmetric: always repulsive) minimizes entropy.
+//! Density gradient (symmetric: always repulsive) spreads overcrowded cells.
 
 pub mod config;
 pub mod kirchhoff;
@@ -174,16 +175,30 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // 6. Density spreading via per-tile Augmented Lagrangian multipliers.
         //    P[tile] = λ[tile] * ρ[tile] — overcrowded tiles get increasing λ.
         let sigma = 2.0 * (1.0 - progress).max(0.5);
-        let (dx, dy) = state.compute_density_gradient(ctx, sigma, &tile_lambda);
+        let pre_density = state.build_density_field(ctx);
+        let (dx, dy) = state.density_gradient_from_field(&pre_density, sigma, &tile_lambda);
 
-        let overlap = if iter > 0 { Some(state.overlap_metrics(ctx)) } else { None };
+        let overlap = if iter > 0 {
+            Some(state::OptTransState::overlap_metrics_from_field(&pre_density))
+        } else {
+            None
+        };
 
         for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
             *gx += ddx;
             *gy += ddy;
         }
 
-        // 7. Timing feedback → criticality.
+        // 7. Steiner anchor: pull pins toward net routing centers.
+        //    Keeps nets spatially compact, approximating Steiner junction topology.
+        let anchor_weight = 0.05; // mild pull, doesn't fight transport energy
+        let (ax, ay) = state.compute_anchor_gradient(ctx, anchor_weight);
+        for ((gx, gy), (aax, aay)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(ax.iter().zip(&ay)) {
+            *gx += aax;
+            *gy += aay;
+        }
+
+        // 8. Timing feedback → criticality.
         if cfg.timing_weight > 0.0 {
             let timing_result = timing::compute_fluid_timing(ctx, &state, target_period, beta);
             criticality = timing_result.net_criticality;
@@ -211,11 +226,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         //     Also periodically reset Adam moments so cells can respond to the
         //     growing density multipliers (Adam adapts to early gradient magnitudes
         //     and ignores later changes without a reset).
+        let post_density = state.build_density_field(ctx);
         {
-            let density = state.build_density_field(ctx);
             let num_tiles = w * h;
             for i in 0..num_tiles {
-                tile_lambda[i] = (tile_lambda[i] + al_alpha * (density[i] - 1.0)).max(0.0);
+                tile_lambda[i] = (tile_lambda[i] + al_alpha * (post_density[i] - 1.0)).max(0.0);
             }
             // Reset Adam every 50 iterations so cells re-adapt to new λ landscape.
             if iter > 0 && iter % 50 == 0 {
@@ -228,7 +243,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         //    score = chpwl + λ_avg · E_density where E_density = Σ max(0,ρ-1)².
         //    This selects the position that best balances wirelength and legalizability.
         let chpwl_now = state.continuous_hpwl(ctx);
-        let e_density = state.density_energy(ctx);
+        let e_density = state::OptTransState::density_energy_from_field(&post_density);
         let avg_lambda = tile_lambda.iter().sum::<f64>() / (w * h) as f64;
         let score = chpwl_now + avg_lambda.max(1.0) * e_density;
         loop_state.record_metric(score, &state.cell_x, &state.cell_y);
@@ -237,7 +252,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
         if is_report_iter {
             let (overflow_ratio, max_rho, _) = overlap
-                .unwrap_or_else(|| state.overlap_metrics(ctx));
+                .unwrap_or_else(|| state::OptTransState::overlap_metrics_from_field(&pre_density));
             let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
             eprintln!(
                 "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",

@@ -524,6 +524,73 @@ impl OptTransState {
         sum / 4.0
     }
 
+    /// Steiner anchor gradient: pulls each pin toward the net's routing center.
+    ///
+    /// For each net, computes the centroid of all pin positions (movable + fixed).
+    /// Adds a gradient pulling each movable pin toward the centroid, weighted
+    /// by 1/fanout to prevent large nets from dominating.
+    ///
+    /// This approximates the Steiner junction — the optimal routing meeting point.
+    /// Keeps nets spatially compact without fighting the transport energy.
+    pub fn compute_anchor_gradient(
+        &self,
+        ctx: &Context,
+        anchor_weight: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let n = self.num_cells();
+        let mut grad_x = vec![0.0; n];
+        let mut grad_y = vec![0.0; n];
+
+        for (_net_id, net) in ctx.design.iter_alive_nets() {
+            let Some(dp) = net.driver() else { continue };
+            let users = net.users();
+            if users.is_empty() {
+                continue;
+            }
+
+            // Collect all pin positions for this net.
+            let mut pin_xs = Vec::new();
+            let mut pin_ys = Vec::new();
+            let mut pin_indices = Vec::new(); // solver index, or usize::MAX for fixed
+
+            let (dx, dy) = self.pin_pos(ctx, dp.cell);
+            pin_xs.push(dx);
+            pin_ys.push(dy);
+            pin_indices.push(self.cell_to_idx.get(&dp.cell).copied().unwrap_or(usize::MAX));
+
+            for user in users {
+                if !user.is_valid() {
+                    continue;
+                }
+                let (ux, uy) = self.pin_pos(ctx, user.cell);
+                pin_xs.push(ux);
+                pin_ys.push(uy);
+                pin_indices.push(self.cell_to_idx.get(&user.cell).copied().unwrap_or(usize::MAX));
+            }
+
+            if pin_xs.len() < 2 {
+                continue;
+            }
+
+            // Net center: centroid of all pins (movable + fixed).
+            let fanout = pin_xs.len() as f64;
+            let cx = pin_xs.iter().sum::<f64>() / fanout;
+            let cy = pin_ys.iter().sum::<f64>() / fanout;
+
+            // Pull each movable pin toward the center.
+            // Weight = anchor_weight / fanout (large nets get weaker per-pin pull).
+            let w = anchor_weight / fanout;
+            for (k, &idx) in pin_indices.iter().enumerate() {
+                if idx != usize::MAX {
+                    grad_x[idx] += w * (pin_xs[k] - cx);
+                    grad_y[idx] += w * (pin_ys[k] - cy);
+                }
+            }
+        }
+
+        (grad_x, grad_y)
+    }
+
     /// Continuous HPWL: sum of half-perimeter bounding boxes from continuous positions.
     /// No legalization needed — uses cell_x/cell_y directly.
     pub fn continuous_hpwl(&self, ctx: &Context) -> f64 {
@@ -697,13 +764,13 @@ impl OptTransState {
         }
     }
 
-    /// Compute density gradient using quadratic excess penalty.
+    /// Compute density gradient using quadratic capacity deviation.
     ///
-    /// Pressure at each tile: P[tile] = λ[tile] · max(0, ρ[tile] - 1)²
+    /// Potential at each tile: P[tile] = λ[tile] · (ρ[tile] - 1)²
     /// where λ is the per-tile Augmented Lagrangian multiplier.
     ///
-    /// Zero pressure below capacity (ρ ≤ 1). Quadratic above capacity.
-    /// This matches the optimal transport density energy E = Σ max(0,ρ-1)².
+    /// Penalizes all deviation from capacity: overcrowded tiles push cells out,
+    /// underfilled tiles pull cells in. Matches the energy E = Σ (ρ-1)².
     pub fn compute_density_gradient(
         &self,
         ctx: &Context,
