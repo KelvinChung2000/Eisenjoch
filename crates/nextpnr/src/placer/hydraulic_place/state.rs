@@ -255,38 +255,6 @@ impl HydraulicState {
         ]
     }
 
-    /// Build demand vector using bilinear interpolation (continuous positions).
-    ///
-    /// IOs are the pumps — nets with fixed (locked) pins get boosted demand
-    /// because they provide the strongest placement signal (fixed endpoints
-    /// never cancel). Internal nets contribute at base level.
-    ///
-    /// Additional scaling: span (sqrt) and criticality (viscosity).
-    /// Star model force: WA wirelength gradient pulling cells toward connected pin centroids.
-    /// Fixed (IO) pins act as immovable attractors. Returns (grad_x, grad_y).
-    #[allow(dead_code)]
-    pub fn compute_star_force(
-        &self,
-        ctx: &Context,
-        wl_coeff: f64,
-        net_weights: Option<&FxHashMap<NetId, f64>>,
-    ) -> (Vec<f64>, Vec<f64>) {
-        let n = self.num_cells();
-        let mut grad_x = vec![0.0; n];
-        let mut grad_y = vec![0.0; n];
-        crate::placer::common::add_wa_wirelength_gradient(
-            ctx,
-            &self.cell_to_idx,
-            &self.cell_x,
-            &self.cell_y,
-            wl_coeff,
-            &mut grad_x,
-            &mut grad_y,
-            net_weights,
-        );
-        (grad_x, grad_y)
-    }
-
     pub fn compute_net_demands(
         &self,
         ctx: &Context,
@@ -638,20 +606,66 @@ impl HydraulicState {
         0.5 * energy
     }
 
-    /// Build normalized density field: bilinear splat of cell positions,
-    /// divided by per-tile BEL capacity. Shared by `density_entropy` and
-    /// `compute_density_gradient`.
+    /// Build normalized density field using smooth bell-shaped cell basis functions.
+    ///
+    /// Each cell contributes a Gaussian bump to surrounding tiles:
+    ///   contribution = exp(-dist²/(2σ²))
+    /// where σ = cell_radius (proportional to 1/sqrt(avg_capacity)).
+    ///
+    /// Unlike bilinear splatting (2×2 tile support), the bell function has a
+    /// wider footprint (~3σ radius). This gives co-located cells different
+    /// gradients because their exact sub-tile positions produce different
+    /// contributions to surrounding tiles. Critical for breaking the symmetry
+    /// of overlapping cells at centroid init.
+    ///
+    /// Density is normalized by per-tile BEL capacity: ρ=1.0 means full.
     pub fn build_density_field(&self, ctx: &Context) -> Vec<f64> {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let n = self.num_cells();
 
-        let mut density = vec![0.0; w * h];
-        for i in 0..n {
-            for (tx, ty, weight) in self.bilinear_weights(self.cell_x[i], self.cell_y[i]) {
-                density[ty as usize * w + tx as usize] += weight;
+        // Cell radius: each cell occupies ~1/avg_bels of a tile.
+        // σ = sqrt(1/avg_bels) gives appropriate spreading width.
+        let mut total_bels = 0usize;
+        let mut total_tiles = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
+                let nb = ctx.chipdb().tile_type(tile).bels.len();
+                if nb > 0 {
+                    total_bels += nb;
+                    total_tiles += 1;
+                }
             }
         }
+        let avg_bels = (total_bels as f64 / total_tiles.max(1) as f64).max(1.0);
+        let cell_sigma = (1.0 / avg_bels).sqrt().max(0.3);
+        let radius = (3.0 * cell_sigma).ceil() as i32;
+        let inv_2sigma2 = 1.0 / (2.0 * cell_sigma * cell_sigma);
+
+        let mut density = vec![0.0; w * h];
+        let wi = w as i32;
+        let hi = h as i32;
+
+        for i in 0..n {
+            let cx = self.cell_x[i];
+            let cy = self.cell_y[i];
+            let cx_floor = cx.floor() as i32;
+            let cy_floor = cy.floor() as i32;
+
+            // Splat bell function over tiles within radius.
+            for ty in (cy_floor - radius).max(0)..=(cy_floor + radius).min(hi - 1) {
+                for tx in (cx_floor - radius).max(0)..=(cx_floor + radius).min(wi - 1) {
+                    let dx = tx as f64 + 0.5 - cx; // distance to tile center
+                    let dy = ty as f64 + 0.5 - cy;
+                    let dist2 = dx * dx + dy * dy;
+                    let weight = (-dist2 * inv_2sigma2).exp();
+                    density[ty as usize * w + tx as usize] += weight;
+                }
+            }
+        }
+
+        // Normalize by per-tile BEL capacity.
         for y in 0..h {
             for x in 0..w {
                 let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
