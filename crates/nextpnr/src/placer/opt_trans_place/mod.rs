@@ -191,7 +191,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
         // 7. Steiner anchor: pull pins toward net routing centers.
         //    Keeps nets spatially compact, approximating Steiner junction topology.
-        let anchor_weight = 0.05; // mild pull, doesn't fight transport energy
+        let anchor_weight = 0.02; // tuned: best diffeq1 HPWL, ch insensitive
         let (ax, ay) = state.compute_anchor_gradient(ctx, anchor_weight);
         for ((gx, gy), (aax, aay)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(ax.iter().zip(&ay)) {
             *gx += aax;
