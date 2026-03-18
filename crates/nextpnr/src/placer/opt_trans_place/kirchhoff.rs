@@ -15,9 +15,13 @@ pub struct SolveResult {
     pub iterations: usize,
 }
 
-/// Effective resistance with turbulence: R_eff = R_base * (1 + beta * tanh((Q/C)^2)).
+/// Effective resistance with congestion feedback.
 ///
-/// On the first Newton iteration (before any flow is computed), uses base resistance only.
+/// R_eff = R_base * (1 + beta * min((Q/C)^2, 100))
+///
+/// Quadratic growth with cap at 100× to prevent numerical instability
+/// from extreme utilization spikes. This is much stronger than the
+/// original tanh which saturated at 1.0×.
 fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool) -> f64 {
     let r_base = pipe.resistance.max(1e-12);
     if !use_turbulence {
@@ -28,7 +32,8 @@ fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool)
     } else {
         0.0
     };
-    r_base * (1.0 + turbulence_beta * (util * util).tanh())
+    let penalty = (util * util).min(100.0);
+    r_base * (1.0 + turbulence_beta * penalty)
 }
 
 /// Solve the Kirchhoff system on the pipe network.

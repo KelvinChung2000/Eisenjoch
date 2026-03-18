@@ -163,7 +163,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         let (px, py) = state.compute_pressure_gradient(0.0);
 
         // 5. Asymmetric force from demand sign.
-        //    Adam does x -= alpha * m/sqrt(v), so grad points AWAY from target.
+        //    Sources (positive demand) move down-gradient (toward sinks).
+        //    Sinks (negative demand) move up-gradient (toward sources).
+        //    This minimizes transport energy: E = Σ |P_driver - P_sink|.
         let demand_sign = state.compute_cell_demand_sign(
             ctx, &criticality, cfg.timing_weight, io_boost,
         );
@@ -254,7 +256,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
             eprintln!(
                 "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
-                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta,
+                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta max_qc,
             );
 
             if iter > converge_patience {
