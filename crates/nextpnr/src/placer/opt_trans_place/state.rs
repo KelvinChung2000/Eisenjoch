@@ -26,6 +26,11 @@ pub struct OptTransState {
     pub box_initial_half: f64,
     /// Average BEL count per occupied tile (tiles with capacity > 0).
     avg_bels: f64,
+    /// Cached per-tile BEL capacity for density normalization.
+    /// Tiles with BELs use their real count. Tiles without BELs use a large
+    /// sentinel (1e6) so density there is effectively zero — this prevents
+    /// the optimizer from parking cells on unbuildable tiles.
+    pub tile_bel_cap: Vec<f64>,
 }
 
 impl OptTransState {
@@ -33,22 +38,92 @@ impl OptTransState {
         let (cell_to_idx, idx_to_cell) = crate::placer::common::collect_movable_cells(ctx);
         let n = idx_to_cell.len();
 
-        let network = PipeNetwork::from_context(ctx);
+        // Compute IO centroid in physical coords for box centering.
+        // Do this on a temporary full-grid to find the center, then create
+        // a cropped network around it.
+        let full_w = ctx.chipdb().width();
+        let full_h = ctx.chipdb().height();
 
-        // Compute IO centroid for bounding box center.
-        let box_center = Self::compute_io_centroid(ctx, &network);
+        // Count total BELs and compute bel_density on full grid.
+        let mut total_bels_full = 0usize;
+        let mut total_tiles_with_bels = 0usize;
+        for y in 0..full_h {
+            for x in 0..full_w {
+                let tile = ctx.chipdb().tile_by_xy(x, y);
+                let bc = ctx.chipdb().tile_type(tile).bels.len();
+                if bc > 0 {
+                    total_bels_full += bc;
+                    total_tiles_with_bels += 1;
+                }
+            }
+        }
+        let bel_density = (total_bels_full as f64 / (full_w * full_h) as f64).max(0.01);
+        let tiles_needed = n as f64 / bel_density;
+        let initial_half = (tiles_needed.sqrt() / 2.0).max(5.0) as i32;
 
-        // Average BEL density across occupied tiles (capacity > 0).
+        // Find center: use placed/locked cells if any, else center of LOGIC tiles.
+        let (io_cx, io_cy) = {
+            let mut sx = 0.0_f64;
+            let mut sy = 0.0_f64;
+            let mut cnt = 0usize;
+            // Try locked/placed cells first
+            for (_cell_idx, cell) in ctx.design.iter_alive_cells() {
+                if let Some(bel) = cell.bel {
+                    let loc = ctx.bel(bel).loc();
+                    sx += loc.x as f64;
+                    sy += loc.y as f64;
+                    cnt += 1;
+                }
+            }
+            if cnt == 0 {
+                // Fall back to center of LOGIC tiles (tiles with >2 BELs)
+                for y in 0..full_h {
+                    for x in 0..full_w {
+                        let tile = ctx.chipdb().tile_by_xy(x, y);
+                        if ctx.chipdb().tile_type(tile).bels.len() > 2 {
+                            sx += x as f64;
+                            sy += y as f64;
+                            cnt += 1;
+                        }
+                    }
+                }
+            }
+            if cnt > 0 {
+                (sx / cnt as f64, sy / cnt as f64)
+            } else {
+                (full_w as f64 / 2.0, full_h as f64 / 2.0)
+            }
+        };
+
+        // Create cropped network centered on design center.
+        // Size must be large enough for cells to spread and avoid congestion.
+        // Use design size × headroom factor, capped at full grid.
+        let headroom = 4;  // 4x the minimum needed area
+        let crop_half = (initial_half * headroom).max(15);
+        let network = PipeNetwork::from_context_with_bounds(
+            ctx,
+            Some((io_cx as i32, io_cy as i32, crop_half)),
+        );
+
+        // Box center in virtual coords
+        let box_center = (io_cx - network.x0 as f64, io_cy - network.y0 as f64);
+
+        // Pre-compute per-tile BEL capacity and average BEL density.
+        let w = network.width as usize;
+        let h = network.height as usize;
+        let mut tile_bel_cap = vec![1e6_f64; w * h]; // sentinel for empty tiles
         let mut total_bels = 0usize;
         let mut occupied_tiles = 0usize;
         for y in 0..network.height {
             for x in 0..network.width {
-                let tile = ctx.chipdb().tile_by_xy(x, y);
+                let tile = ctx.chipdb().tile_by_xy(x + network.x0, y + network.y0);
                 let bel_count = ctx.chipdb().tile_type(tile).bels.len();
                 if bel_count > 0 {
+                    tile_bel_cap[y as usize * w + x as usize] = bel_count as f64;
                     total_bels += bel_count;
                     occupied_tiles += 1;
                 }
+                // else: stays at 1e6 sentinel — density will be ~0
             }
         }
         let avg_bels = (total_bels as f64 / occupied_tiles.max(1) as f64).max(1.0);
@@ -78,7 +153,7 @@ impl OptTransState {
                 }
                 (xs, ys)
             }
-            InitStrategy::RandomBel => Self::init_from_bels(ctx, &idx_to_cell, n),
+            InitStrategy::RandomBel => Self::init_from_bels(ctx, &idx_to_cell, n, &network),
             InitStrategy::RadialCapacity => Self::init_radial_capacity(ctx, n, &network, box_center),
         };
 
@@ -91,6 +166,7 @@ impl OptTransState {
             box_center,
             box_initial_half,
             avg_bels,
+            tile_bel_cap,
         }
     }
 
@@ -105,8 +181,8 @@ impl OptTransState {
             }
             let Some(bel) = cell.bel else { continue };
             let loc = ctx.bel(bel).loc();
-            sum_x += loc.x as f64;
-            sum_y += loc.y as f64;
+            sum_x += (loc.x - network.x0) as f64;
+            sum_y += (loc.y - network.y0) as f64;
             count += 1;
         }
         if count > 0 {
@@ -136,10 +212,19 @@ impl OptTransState {
     }
 
     /// Random BEL: read positions from the BEL assignment done by initial_placement.
-    fn init_from_bels(ctx: &Context, idx_to_cell: &[CellId], n: usize) -> (Vec<f64>, Vec<f64>) {
+    fn init_from_bels(ctx: &Context, idx_to_cell: &[CellId], n: usize, network: &PipeNetwork) -> (Vec<f64>, Vec<f64>) {
         let mut cell_x = vec![0.0; n];
         let mut cell_y = vec![0.0; n];
         crate::placer::common::init_positions_from_bels(ctx, idx_to_cell, &mut cell_x, &mut cell_y);
+        // Convert from physical to virtual coords
+        let x0 = network.x0 as f64;
+        let y0 = network.y0 as f64;
+        let max_x = (network.width - 1) as f64;
+        let max_y = (network.height - 1) as f64;
+        for i in 0..n {
+            cell_x[i] = (cell_x[i] - x0).clamp(0.0, max_x);
+            cell_y[i] = (cell_y[i] - y0).clamp(0.0, max_y);
+        }
         (cell_x, cell_y)
     }
 
@@ -167,7 +252,7 @@ impl OptTransState {
         let mut tiles: Vec<TileSlot> = Vec::new();
         for y in 0..network.height {
             for x in 0..network.width {
-                let tile = ctx.chipdb().tile_by_xy(x, y);
+                let tile = ctx.chipdb().tile_by_xy(x + network.x0, y + network.y0);
                 let capacity = ctx.chipdb().tile_type(tile).bels.len();
                 if capacity > 0 {
                     let dx = x as f64 - cx;
@@ -219,10 +304,11 @@ impl OptTransState {
         if let Some(&idx) = self.cell_to_idx.get(&cell_id) {
             (self.cell_x[idx], self.cell_y[idx])
         } else {
+            // Fixed cell: convert physical BEL position to virtual grid coords
             let cell = ctx.design.cell(cell_id);
             if let Some(bel) = cell.bel {
                 let loc = ctx.bel(bel).loc();
-                (loc.x as f64, loc.y as f64)
+                ((loc.x - self.network.x0) as f64, (loc.y - self.network.y0) as f64)
             } else {
                 (self.network.width as f64 / 2.0, self.network.height as f64 / 2.0)
             }
@@ -636,7 +722,7 @@ impl OptTransState {
     /// of overlapping cells at centroid init.
     ///
     /// Density is normalized by per-tile BEL capacity: ρ=1.0 means full.
-    pub fn build_density_field(&self, ctx: &Context) -> Vec<f64> {
+    pub fn build_density_field(&self, _ctx: &Context) -> Vec<f64> {
         let w = self.network.width as usize;
         let h = self.network.height as usize;
         let n = self.num_cells();
@@ -676,13 +762,9 @@ impl OptTransState {
             }
         }
 
-        // Normalize by per-tile BEL capacity.
-        for y in 0..h {
-            for x in 0..w {
-                let tile = ctx.chipdb().tile_by_xy(x as i32, y as i32);
-                let bel_count = ctx.chipdb().tile_type(tile).bels.len().max(1) as f64;
-                density[y * w + x] /= bel_count;
-            }
+        // Normalize by per-tile BEL capacity (cached).
+        for i in 0..w * h {
+            density[i] /= self.tile_bel_cap[i];
         }
         density
     }

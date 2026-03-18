@@ -60,6 +60,9 @@ pub struct PipeNetwork {
     pub junction_pipes: Vec<Vec<usize>>,
     pub width: i32,
     pub height: i32,
+    /// Grid origin offset — the virtual grid starts at (x0, y0) in physical coordinates.
+    pub x0: i32,
+    pub y0: i32,
     /// Per tile-type Schur condensation matrices.
     pub schur_matrices: Vec<[[f64; 4]; 4]>,
 }
@@ -70,13 +73,44 @@ impl PipeNetwork {
     /// Creates one junction per tile and pipes between adjacent tiles.
     /// Resistance is inversely proportional to wire count at tile boundaries.
     pub fn from_context(ctx: &Context) -> Self {
-        let w = ctx.chipdb().width();
-        let h = ctx.chipdb().height();
+        Self::from_context_with_bounds(ctx, None)
+    }
+
+    /// Build a pipe network, optionally cropped to a bounding box.
+    /// `bounds`: Optional (center_x, center_y, half_size) in physical coords.
+    pub fn from_context_with_bounds(ctx: &Context, bounds: Option<(i32, i32, i32)>) -> Self {
+        let full_w = ctx.chipdb().width();
+        let full_h = ctx.chipdb().height();
+
+        let (min_x, min_y, max_x, max_y) = if let Some((cx, cy, half)) = bounds {
+            // Crop to specified region with margin for growth
+            let margin = half; // Allow 2x growth
+            let min_x = (cx - half - margin).max(0);
+            let min_y = (cy - half - margin).max(0);
+            let max_x = (cx + half + margin).min(full_w - 1);
+            let max_y = (cy + half + margin).min(full_h - 1);
+            (min_x, min_y, max_x, max_y)
+        } else {
+            (0, 0, full_w - 1, full_h - 1)
+        };
+
+        let w = max_x - min_x + 1;
+        let h = max_y - min_y + 1;
+        if w != full_w || h != full_h {
+            eprintln!(
+                "PipeNetwork: cropped grid from {}x{} to {}x{} (bbox [{},{}]-[{},{}])",
+                full_w, full_h, w, h, min_x, min_y, max_x, max_y,
+            );
+        }
         let n = (w * h) as usize;
 
         const PORTS: [Port; 4] = [Port::North, Port::East, Port::South, Port::West];
 
+        let x0 = min_x;
+        let y0 = min_y;
+
         // 4 junctions per tile (North, East, South, West).
+        // Junction coordinates are in virtual (cropped) space.
         let mut junctions = Vec::with_capacity(n * 4);
         for tile in 0..n {
             let x = (tile as i32) % w;
@@ -100,7 +134,8 @@ impl PipeNetwork {
         // 1. Build Intra-Tile Pipes (Internal Switch Matrix)
         for y in 0..h {
             for x in 0..w {
-                let tile = ctx.chipdb().tile_by_xy(x, y);
+                // Map virtual coords to physical for chipdb lookup
+                let tile = ctx.chipdb().tile_by_xy(x + x0, y + y0);
                 let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
                 let tt = ctx.chipdb().tile_type(tile);
                 let matrix = &schur_matrices[tt_idx];
@@ -137,7 +172,7 @@ impl PipeNetwork {
                 let from = (((y * w) + x) * 4 + (Port::East as i32)) as usize;
                 let to = (((y * w) + x + 1) * 4 + (Port::West as i32)) as usize;
 
-                let wire_count = estimate_wire_count(ctx, x, y, Direction::East);
+                let wire_count = estimate_wire_count(ctx, x + x0, y + y0, Direction::East);
                 let pipe_idx = pipes.len();
                 pipes.push(Pipe {
                     from,
@@ -158,7 +193,7 @@ impl PipeNetwork {
                 let from = (((y * w) + x) * 4 + (Port::South as i32)) as usize;
                 let to = ((((y + 1) * w) + x) * 4 + (Port::North as i32)) as usize;
 
-                let wire_count = estimate_wire_count(ctx, x, y, Direction::South);
+                let wire_count = estimate_wire_count(ctx, x + x0, y + y0, Direction::South);
                 let pipe_idx = pipes.len();
                 pipes.push(Pipe {
                     from,
@@ -179,6 +214,8 @@ impl PipeNetwork {
             junction_pipes,
             width: w,
             height: h,
+            x0,
+            y0,
             schur_matrices,
         }
     }

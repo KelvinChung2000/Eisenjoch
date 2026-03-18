@@ -81,15 +81,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     // === Auto-scale parameters from design characteristics ===
 
-    // Count total BELs for true utilization.
-    let mut total_bels = 0usize;
-    for y in 0..state.network.height {
-        for x in 0..state.network.width {
-            let tile = ctx.chipdb().tile_by_xy(x, y);
-            total_bels += ctx.chipdb().tile_type(tile).bels.len();
-        }
-    }
-    let utilization = n as f64 / (total_bels as f64).max(1.0);
+    // Use cached BEL capacity for utilization.
+    // Only count tiles with real BELs (cap < 1000, since empty tiles use 1e6 sentinel).
+    let total_bels: f64 = state.tile_bel_cap.iter().filter(|&&c| c < 1000.0).sum();
+    let utilization = n as f64 / total_bels.max(1.0);
     let grid_diag = ((state.network.width as f64).powi(2)
         + (state.network.height as f64).powi(2)).sqrt();
 
@@ -100,8 +95,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // Step size: scale with grid diagonal for proportional movement.
     let step_size = cfg.nesterov_step_size * grid_diag / 50.0;
 
-    // Convergence patience: larger designs need more iterations before checking.
-    let converge_patience = (80.0 + 2.0 * (n as f64).sqrt()) as usize;
+    // Convergence patience: larger designs need more iterations.
+    // Scale with both cell count AND utilization — sparse grids converge fast.
+    let base_patience = 20.0 + 2.0 * (n as f64).sqrt();
+    let util_scale = (utilization * 100.0).max(1.0).min(100.0) / 10.0; // 0.1..10
+    let converge_patience = (base_patience * util_scale.max(1.0)) as usize;
 
     eprintln!(
         "Auto-scaled: util={:.1}%, io_boost={:.1}, step={:.3}, patience={}",
@@ -262,7 +260,20 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             if iter > converge_patience {
                 let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
                 if rel < 0.005 {
-                    eprintln!("OptTrans placer converged at iteration {}", iter);
+                    eprintln!("OptTrans placer converged at iteration {} (metric plateau)", iter);
+                    break;
+                }
+            }
+
+            // Early termination: if overflow is low enough for legalization
+            // to succeed, stop early. At low utilization, even 5% overflow
+            // legalizes fine since there's abundant capacity.
+            if iter >= 20 {
+                let (ov, _, _) = overlap
+                    .unwrap_or_else(|| state::OptTransState::overlap_metrics_from_field(&pre_density));
+                let ov_threshold = if utilization < 0.05 { 0.03 } else { 0.02 };
+                if ov < ov_threshold {
+                    eprintln!("OptTrans placer converged at iteration {} (overflow {:.1}% < {:.0}%)", iter, ov * 100.0, ov_threshold * 100.0);
                     break;
                 }
             }
