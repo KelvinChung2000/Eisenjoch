@@ -258,7 +258,9 @@ impl PipeNetwork {
 /// as a heuristic for directional routing capacity.
 fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> usize {
     let tile = ctx.chipdb().tile_by_xy(x, y);
-    let total_pips = ctx.chipdb().tile_type(tile).pips.len();
+    let tt = ctx.chipdb().tile_type(tile);
+    let total_pips = tt.pips.len();
+    let bels = tt.bels.len();
 
     let (nx, ny) = match direction {
         Direction::East => (x + 1, y),
@@ -266,10 +268,18 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
     };
 
     let neighbor_tile = ctx.chipdb().tile_by_xy(nx, ny);
-    let neighbor_pips = ctx.chipdb().tile_type(neighbor_tile).pips.len();
+    let ntt = ctx.chipdb().tile_type(neighbor_tile);
+    let neighbor_pips = ntt.pips.len();
+    let neighbor_bels = ntt.bels.len();
 
-    let avg_pips = (total_pips + neighbor_pips) / 2;
-    (avg_pips / 4).max(1)
+    // Use the MINIMUM of the two tiles' PIP counts (bottleneck model).
+    // If either tile has no BELs (NULL tile), it has no real routing —
+    // use just 1 wire (high resistance) so flow avoids that path.
+    if bels == 0 || neighbor_bels == 0 {
+        return 1; // minimal capacity through empty tiles
+    }
+    let min_pips = total_pips.min(neighbor_pips);
+    (min_pips / 4).max(1)
 }
 
 /// Pipe resistance: 1 / n_wires (linear).
@@ -299,9 +309,11 @@ fn compute_schur_matrices(ctx: &Context, num_tile_types: usize) -> Vec<[[f64; 4]
             continue;
         }
 
-        // Schur complement: with uniform internal conductance the off-diagonal
-        // entries reduce to a constant 1/4 regardless of BEL count.
-        let g_off = 0.25;
+        // Schur complement: internal conductance scales with BEL count.
+        // More BELs = more internal routing paths = higher conductance
+        // between ports.  Normalized so a tile with 1 BEL has g_off = 0.1
+        // and a tile with 24 BELs has g_off ≈ 0.5.
+        let g_off = 0.1 + 0.4 * (n_bels as f64 / 24.0).min(1.0);
 
         let mut m = [[0.0; 4]; 4];
         for i in 0..4 {

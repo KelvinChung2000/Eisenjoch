@@ -769,6 +769,55 @@ impl OptTransState {
         density
     }
 
+    /// Build a routing congestion field: for each tile, estimate how many
+    /// net bounding boxes pass through it.  Tiles with high routing demand
+    /// should be treated as congested even if cell density is low.
+    ///
+    /// Returns a field of the same size as the density field.
+    pub fn build_routing_demand_field(&self, ctx: &Context) -> Vec<f64> {
+        let w = self.network.width as usize;
+        let h = self.network.height as usize;
+        let mut demand = vec![0.0_f64; w * h];
+
+        for (_, net) in ctx.design.iter_alive_nets() {
+            let Some(dp) = net.driver() else { continue };
+            if net.num_users() == 0 { continue; }
+
+            // Compute bounding box of the net in virtual coords
+            let (dx, dy) = self.pin_pos(ctx, dp.cell);
+            let (mut min_x, mut max_x) = (dx, dx);
+            let (mut min_y, mut max_y) = (dy, dy);
+
+            for user in net.users() {
+                if !user.is_valid() { continue; }
+                let (ux, uy) = self.pin_pos(ctx, user.cell);
+                min_x = min_x.min(ux);
+                max_x = max_x.max(ux);
+                min_y = min_y.min(uy);
+                max_y = max_y.max(uy);
+            }
+
+            // Add demand to all tiles in the bounding box
+            let x0 = (min_x.floor() as i32).max(0) as usize;
+            let x1 = (max_x.ceil() as i32).min(w as i32 - 1) as usize;
+            let y0 = (min_y.floor() as i32).max(0) as usize;
+            let y1 = (max_y.ceil() as i32).min(h as i32 - 1) as usize;
+
+            // Weight inversely with bbox area (larger nets spread demand thinner)
+            let area = ((x1 - x0 + 1) * (y1 - y0 + 1)).max(1) as f64;
+            let weight = 1.0 / area;
+
+            for ty in y0..=y1 {
+                let row = ty * w;
+                for tx in x0..=x1 {
+                    demand[row + tx] += weight;
+                }
+            }
+        }
+
+        demand
+    }
+
     /// Quadratic capacity deviation energy: E_density = Σ (ρᵢ - 1)².
     ///
     /// Penalizes ALL deviation from capacity: overcrowded tiles push cells out,
