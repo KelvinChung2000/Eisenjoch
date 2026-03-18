@@ -132,7 +132,7 @@ pub fn unroute_net(ctx: &mut Context, net_idx: NetId) {
 ///
 /// Resolves each user's BEL pin to a wire via the view API.
 /// Skips unconnected or unplaced users.
-pub(crate) fn collect_sink_wires(ctx: &Context, net_idx: NetId) -> Vec<WireId> {
+pub fn collect_sink_wires(ctx: &Context, net_idx: NetId) -> Vec<WireId> {
     let net = ctx.net(net_idx);
     let mut sink_wires = Vec::with_capacity(net.num_users());
     for user in net.users() {

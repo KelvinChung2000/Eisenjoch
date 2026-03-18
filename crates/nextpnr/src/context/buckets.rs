@@ -4,10 +4,28 @@ use crate::common::IdString;
 use super::Context;
 
 impl Context {
-    /// All BELs belonging to a given bucket.
+    /// Resolve a cell type to its BEL bucket, following aliases if set.
+    #[inline]
+    pub fn resolve_bucket(&self, cell_type: IdString) -> IdString {
+        self.cell_type_aliases
+            .get(&cell_type)
+            .copied()
+            .unwrap_or(cell_type)
+    }
+
+    /// Register a cell type alias: cells of type `cell_type` will be placed
+    /// on BELs of type `bel_type`.
+    pub fn add_cell_type_alias(&mut self, cell_type: &str, bel_type: &str) {
+        let ct = self.id(cell_type);
+        let bt = self.id(bel_type);
+        self.cell_type_aliases.insert(ct, bt);
+    }
+
+    /// All BELs belonging to a given bucket (resolves aliases).
     pub fn bels_for_bucket(&self, bucket: IdString) -> impl Iterator<Item = super::Bel<'_>> {
+        let resolved = self.resolve_bucket(bucket);
         self.bucket_bels
-            .get(&bucket)
+            .get(&resolved)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
             .iter()
@@ -46,12 +64,12 @@ impl Context {
         bucket: IdString,
         region_idx: u32,
     ) -> &[BelId] {
-        let key = (region_idx, bucket);
-        if !self.region_bel_cache.contains_key(&key) {
+        let resolved = self.resolve_bucket(bucket);
+        let key = (region_idx, resolved);
+        self.region_bel_cache.entry(key).or_insert_with(|| {
             let region = &self.design.regions[region_idx as usize];
-            let bels: Vec<BelId> = self
-                .bucket_bels
-                .get(&bucket)
+            self.bucket_bels
+                .get(&resolved)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[])
                 .iter()
@@ -60,10 +78,8 @@ impl Context {
                     let loc = self.chipdb.bel_loc(bel);
                     region.contains(loc.x, loc.y)
                 })
-                .collect();
-            self.region_bel_cache.insert(key, bels);
-        }
-        &self.region_bel_cache[&key]
+                .collect()
+        })
     }
 
     /// Invalidate the region BEL cache (call after modifying region constraints).
@@ -71,12 +87,13 @@ impl Context {
         self.region_bel_cache.clear();
     }
 
-    /// Check whether any BEL of the given type exists in the chipdb.
+    /// Check whether any BEL of the given type exists in the chipdb (resolves aliases).
     ///
     /// Requires `populate_bel_buckets()` to have been called first.
     pub fn has_bel_type(&self, bel_type: IdString) -> bool {
+        let resolved = self.resolve_bucket(bel_type);
         self.bucket_bels
-            .get(&bel_type)
-            .map_or(false, |v| !v.is_empty())
+            .get(&resolved)
+            .is_some_and(|v| !v.is_empty())
     }
 }

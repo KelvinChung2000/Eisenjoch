@@ -247,12 +247,14 @@ impl ChipDb {
         unsafe { read_packed!(*info, timing_idx) }
     }
 
+    #[inline]
     pub fn pip_src_wire(&self, pip: PipId) -> WireId {
         let info = self.pip_info(pip);
         let src_wire: i32 = unsafe { read_packed!(*info, src_wire) };
         WireId::new(pip.tile(), src_wire)
     }
 
+    #[inline]
     pub fn pip_dst_wire(&self, pip: PipId) -> WireId {
         let info = self.pip_info(pip);
         let dst_wire: i32 = unsafe { read_packed!(*info, dst_wire) };
@@ -444,23 +446,24 @@ impl ChipDb {
         unsafe { read_packed!(*wire_data, timing_idx) }
     }
 
-    /// Get all wires that belong to the same routing node as the given wire.
+    /// Call `f` for each wire in the same routing node as `wire` (excluding `wire` itself).
     ///
-    /// Returns an empty Vec if the wire is tile-local (not part of a node).
-    /// Otherwise returns all wires in the node, including the input wire itself.
-    pub fn node_wires(&self, wire: WireId) -> Vec<WireId> {
+    /// Does nothing if the wire is tile-local (not part of a multi-tile node).
+    /// Avoids allocation, unlike `node_wires()`.
+    #[inline]
+    pub fn node_wires_cb<F: FnMut(WireId)>(&self, wire: WireId, mut f: F) {
         let tile = wire.tile();
         let wire_idx = wire.index();
         let shape = self.tile_shape(tile);
         let wire_to_node = shape.wire_to_node.get();
 
         let Some(node_ref) = wire_to_node.get(wire_idx as usize) else {
-            return Vec::new();
+            return;
         };
         let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
 
         if dx_mode == RelNodeRefPod::MODE_TILE_WIRE {
-            return Vec::new();
+            return;
         }
 
         let (root_tile, shape_idx) = if dx_mode == RelNodeRefPod::MODE_IS_ROOT {
@@ -474,23 +477,37 @@ impl ChipDb {
             if let Some(root_ref) = root_w2n.get(w as usize) {
                 (root_tile, Self::node_shape_idx(root_ref))
             } else {
-                return Vec::new();
+                return;
             }
         };
 
         let node_shapes = self.chip_info().node_shapes.get();
         let Some(ns) = node_shapes.get(shape_idx as usize) else {
-            return Vec::new();
+            return;
         };
 
         let tile_wires = ns.tile_wires.get();
-        let mut result = Vec::with_capacity(tile_wires.len());
         for tw in tile_wires {
             let dx: i16 = unsafe { read_packed!(*tw, dx) };
             let dy: i16 = unsafe { read_packed!(*tw, dy) };
             let w: i16 = unsafe { read_packed!(*tw, wire) };
             let dest_tile = self.rel_tile(root_tile, dx as i32, dy as i32);
-            result.push(WireId::new(dest_tile, w as i32));
+            let nw = WireId::new(dest_tile, w as i32);
+            if nw != wire {
+                f(nw);
+            }
+        }
+    }
+
+    /// Get all wires that belong to the same routing node as the given wire.
+    ///
+    /// Returns an empty Vec if the wire is tile-local (not part of a node).
+    /// Otherwise returns all wires in the node, including the input wire itself.
+    pub fn node_wires(&self, wire: WireId) -> Vec<WireId> {
+        let mut result = Vec::new();
+        self.node_wires_cb(wire, |nw| result.push(nw));
+        if !result.is_empty() {
+            result.push(wire);
         }
         result
     }
@@ -630,6 +647,7 @@ impl ChipDb {
     /// Compute PIP delay using the RC model from C++ himbaechel.
     ///
     /// Formula: int_delay + in_cap * in_res / 1e6 + (out_res + node_res/2) * node_cap / 1e6
+    #[inline]
     pub fn compute_pip_delay(
         &self,
         speed_grade: &SpeedGradePod,

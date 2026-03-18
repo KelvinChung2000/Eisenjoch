@@ -44,6 +44,33 @@ pub fn parse_bit_value(val: &Value) -> Result<BitValue> {
     }
 }
 
+/// Infer port direction from cell type and port name when `port_directions`
+/// is missing from the Yosys JSON (common with BLIF import).
+fn infer_port_direction(cell_type: &str, port_name: &str) -> PortType {
+    match cell_type {
+        "LUT4" => {
+            if port_name == "F" { PortType::Out } else { PortType::In }
+        }
+        "CARRY4" => {
+            if port_name.starts_with("CO") || port_name.starts_with("O") {
+                PortType::Out
+            } else {
+                PortType::In
+            }
+        }
+        "GND" | "VCC" | "GND_DRV" | "VCC_DRV" => PortType::Out,
+        "IOB" => PortType::InOut,
+        _ => {
+            // Heuristic: common output port names across LUT, DFF, BUF, IBUF, OBUF, etc.
+            if port_name == "Q" || port_name == "O" || port_name == "F" || port_name == "Y" {
+                PortType::Out
+            } else {
+                PortType::In
+            }
+        }
+    }
+}
+
 /// Parse a Yosys port direction string into a [`PortType`].
 pub fn parse_port_direction(dir: &str) -> Result<PortType> {
     match dir {
@@ -338,7 +365,10 @@ fn parse_cell(
                 .as_array()
                 .context("Connection bits must be an array")?;
 
-            let port_type = port_dirs.get(port_name).copied().unwrap_or(PortType::In);
+            let port_type = port_dirs
+                .get(port_name)
+                .copied()
+                .unwrap_or_else(|| infer_port_direction(cell_type_str, port_name));
             let total_bits = bits.len();
 
             for (i, bit) in bits.iter().enumerate() {

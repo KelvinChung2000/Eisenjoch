@@ -53,6 +53,10 @@ pub struct Context {
     bucket_bels: FxHashMap<IdString, Vec<BelId>>,
     /// Cache of BELs per (region_idx, bucket). Populated on demand.
     region_bel_cache: FxHashMap<(u32, IdString), Vec<BelId>>,
+    /// Cell type aliases: maps a cell type (e.g. "FDRE") to the BEL bucket
+    /// it should be placed on (e.g. "AFF"). Used for architectures where
+    /// cell types in the netlist don't match BEL type names in the chipdb.
+    cell_type_aliases: FxHashMap<IdString, IdString>,
 
     // -- Settings and flags --
     /// Arbitrary key-value settings (e.g. from command-line options).
@@ -98,6 +102,7 @@ impl Context {
             pip_to_net,
             bucket_bels: FxHashMap::default(),
             region_bel_cache: FxHashMap::default(),
+            cell_type_aliases: FxHashMap::default(),
             settings: FxHashMap::default(),
             speed_grade_idx: 0,
             rng: DeterministicRng::new(1),
