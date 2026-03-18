@@ -155,6 +155,14 @@ impl PyContext {
         Ok(())
     }
 
+    /// Register a cell type alias for BEL bucket mapping.
+    ///
+    /// Cells of `cell_type` will be placed on BELs of `bel_type`.
+    /// Use this for architectures where netlist cell types differ from chipdb BEL types.
+    fn add_cell_type_alias(&mut self, cell_type: &str, bel_type: &str) {
+        self.ctx.add_cell_type_alias(cell_type, bel_type);
+    }
+
     /// Lock a cell to a specific BEL before placement.
     ///
     /// The BEL is identified by tile coordinates (x, y) and a BEL name
@@ -303,23 +311,66 @@ impl PyContext {
     ///
     /// Args:
     ///     router: Router algorithm name ("router1" or "router2"). Default "router1".
-    ///     bb_margin: Bounding box margin for Router2 (tiles). Default 3.
+    ///     bb_margin: Bounding box margin in tiles for A* pruning. Default 3.
     ///     max_iterations: Max routing iterations. Router1 default 500, Router2 default 50.
-    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None))]
+    ///     skip_unplaced: If true, skip nets whose driver cell is not placed. Default false.
+    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false))]
     fn route(
         &mut self,
         router: &str,
         bb_margin: Option<i32>,
         max_iterations: Option<usize>,
+        skip_unplaced: bool,
     ) -> PyResult<()> {
+        use ::nextpnr::router::common::collect_routable_nets;
+
+        // Collect nets, optionally filtering out those touching unplaced
+        // or IO/packer cells (whose routing may not be modeled).
+        let nets = if skip_unplaced {
+            collect_routable_nets(&self.ctx)
+                .into_iter()
+                .filter(|&net_idx| {
+                    let net = self.ctx.net(net_idx);
+                    // Skip nets driven by unplaced or IO/packer cells
+                    if let Some(dp) = net.driver_cell_port() {
+                        let cell = self.ctx.cell(dp.cell);
+                        if cell.bel().is_none() {
+                            return false;
+                        }
+                        let name_str = self.ctx.name_of(cell.name_id());
+                        if name_str.starts_with("$io$") || name_str.starts_with("$PACKER_") {
+                            return false;
+                        }
+                    }
+                    // Skip nets with any unplaced or IO/packer sink cell
+                    net.users().iter().all(|user| {
+                        if !user.is_valid() {
+                            return true;
+                        }
+                        let cell = self.ctx.cell(user.cell);
+                        if cell.bel().is_none() {
+                            return false;
+                        }
+                        let name_str = self.ctx.name_of(cell.name_id());
+                        !name_str.starts_with("$io$") && !name_str.starts_with("$PACKER_")
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            collect_routable_nets(&self.ctx)
+        };
+
         match router {
             "router1" => {
                 let mut cfg = Router1Cfg::default();
+                if let Some(margin) = bb_margin {
+                    cfg.bb_margin = margin;
+                }
                 if let Some(iters) = max_iterations {
                     cfg.max_iterations = iters;
                 }
                 Router1
-                    .route(&mut self.ctx, &cfg)
+                    .route_nets(&mut self.ctx, &cfg, &nets)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router1 error: {}", e)))
             }
             "router2" => {
@@ -331,7 +382,7 @@ impl PyContext {
                     cfg.max_iterations = iters;
                 }
                 Router2
-                    .route(&mut self.ctx, &cfg)
+                    .route_nets(&mut self.ctx, &cfg, &nets)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router2 error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!("Unknown router: {}", router))),

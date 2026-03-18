@@ -11,6 +11,11 @@ use nextpnr::router::router2::{
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;
 
+/// Helper: create an FxHashSet from a slice of WireIds.
+fn wire_set(wires: &[WireId]) -> FxHashSet<WireId> {
+    wires.iter().copied().collect()
+}
+
 #[test]
 fn bbox_contains_within() {
     let bb = BoundingBox {
@@ -311,7 +316,7 @@ fn astar_r2_same_wire_returns_empty_path() {
         y1: 1,
     };
     assert!(
-        astar_route_r2(&ctx, &[wire], wire, NetId::from_raw(0), &state, &bbox)
+        astar_route_r2(&ctx, &wire_set(&[wire]), wire, NetId::from_raw(0), &state, &bbox)
             .unwrap()
             .is_empty()
     );
@@ -330,7 +335,7 @@ fn astar_r2_single_pip_path() {
     assert_eq!(
         astar_route_r2(
             &ctx,
-            &[WireId::new(0, 0)],
+            &wire_set(&[WireId::new(0, 0)]),
             WireId::new(0, 1),
             NetId::from_raw(0),
             &state,
@@ -353,7 +358,7 @@ fn astar_r2_no_path_returns_none() {
     };
     assert!(astar_route_r2(
         &ctx,
-        &[WireId::new(0, 1)],
+        &wire_set(&[WireId::new(0, 1)]),
         WireId::new(0, 0),
         NetId::from_raw(0),
         &state,
@@ -374,7 +379,7 @@ fn astar_r2_bbox_prunes_out_of_range() {
     };
     assert!(astar_route_r2(
         &ctx,
-        &[WireId::new(0, 0)],
+        &wire_set(&[WireId::new(0, 0)]),
         WireId::new(1, 0),
         NetId::from_raw(0),
         &state,
@@ -395,7 +400,7 @@ fn astar_r2_empty_sources_returns_none() {
     };
     assert!(astar_route_r2(
         &ctx,
-        &[],
+        &wire_set(&[]),
         WireId::new(0, 1),
         NetId::from_raw(0),
         &state,

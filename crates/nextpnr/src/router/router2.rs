@@ -265,19 +265,18 @@ impl Router2State {
 /// - Prunes wires that fall outside the bounding box (with margin).
 pub fn astar_route_r2(
     ctx: &Context,
-    src_wires: &[WireId],
+    src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     net_idx: NetId,
     state: &Router2State,
     bbox: &BoundingBox,
 ) -> Option<Vec<PipId>> {
-    let src_set: FxHashSet<WireId> = src_wires.iter().copied().collect();
-
     // Trivial case: destination is already in the source set.
-    if src_set.contains(&dst_wire) {
+    if src_wires.contains(&dst_wire) {
         return Some(Vec::new());
     }
 
+    let chipdb = ctx.chipdb();
     let init_capacity = src_wires.len().saturating_mul(8).max(16);
     let mut heap = BinaryHeap::with_capacity(init_capacity);
     // visited: wire -> (best cost, Option<pip>, came_from wire)
@@ -311,7 +310,7 @@ pub fn astar_route_r2(
                 match pip {
                     Some(p) => {
                         pips.push(p);
-                        current = ctx.pip(p).src_wire().id();
+                        current = chipdb.pip_src_wire(p);
                     }
                     None => {
                         if from == current {
@@ -325,21 +324,21 @@ pub fn astar_route_r2(
             return Some(pips);
         }
 
-        let wire_info = ctx.chipdb().wire_info(entry.wire);
+        let wire_info = chipdb.wire_info(entry.wire);
         let downhill_indices = wire_info.pips_downhill.get();
 
         for &pip_index in downhill_indices {
             let pip = PipId::new(entry.wire.tile(), pip_index);
-            let next_wire = ctx.pip(pip).dst_wire().id();
+            let next_wire = chipdb.pip_dst_wire(pip);
 
-            let (wx, wy) = ctx.chipdb().tile_xy(next_wire.tile());
+            let (wx, wy) = chipdb.tile_xy(next_wire.tile());
             if !bbox.contains(wx, wy) {
                 continue;
             }
 
             let pip_delay = ctx.pip(pip).delay().max_delay() as f64;
-            let wire_neg_cost = state.wire_cost(next_wire, net_idx);
-            let new_cost = entry.cost + pip_delay + wire_neg_cost;
+            let negotiation_cost = state.wire_cost(next_wire, net_idx);
+            let new_cost = entry.cost + pip_delay + negotiation_cost;
 
             if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
                 if new_cost >= prev_cost {
@@ -357,14 +356,11 @@ pub fn astar_route_r2(
             });
         }
 
-        // Node expansion for inter-tile routing nodes.
-        for nw in ctx.chipdb().node_wires(entry.wire) {
-            if nw == entry.wire {
-                continue;
-            }
+        // Node expansion for inter-tile routing nodes (allocation-free).
+        chipdb.node_wires_cb(entry.wire, |nw| {
             if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
                 if entry.cost >= prev_cost {
-                    continue;
+                    return;
                 }
             }
             visited.insert(nw, (entry.cost, None, entry.wire));
@@ -374,7 +370,7 @@ pub fn astar_route_r2(
                 cost: entry.cost,
                 estimate: entry.cost + h,
             });
-        }
+        });
     }
 
     None
@@ -410,9 +406,9 @@ pub fn compute_route_r2(
     let bbox = compute_bbox(ctx, net, bb_margin);
     let sink_wires = collect_sink_wires(ctx, net);
 
-    // Track routing tree locally (no Context mutation).
-    // Start with source wire plus any already-routed wires on the net.
-    let mut tree_wires: Vec<WireId> = vec![source_wire];
+    // Track routing tree locally using HashSet for O(1) contains checks.
+    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    tree_wires.insert(source_wire);
     tree_wires.extend(ctx.net(net).wire_ids());
 
     // For constant nets, add all matching constant wires as additional sources.
@@ -434,7 +430,7 @@ pub fn compute_route_r2(
             Some(pips) => {
                 // Extend the local tree with newly reached wires.
                 for &pip in &pips {
-                    tree_wires.push(ctx.pip(pip).dst_wire().id());
+                    tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
                 }
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }

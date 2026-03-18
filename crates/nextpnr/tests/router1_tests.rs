@@ -16,6 +16,7 @@ fn default_config() {
     assert_eq!(cfg.max_iterations, 500);
     assert_eq!(cfg.rip_up_penalty, 10);
     assert!((cfg.congestion_weight - 1.0).abs() < f64::EPSILON);
+    assert_eq!(cfg.bb_margin, 3);
     assert!(!cfg.verbose);
 }
 

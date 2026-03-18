@@ -14,6 +14,8 @@ use crate::netlist::NetId;
 use crate::timing::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::metrics::{BoundingBox, compute_bbox};
+
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
     find_congested_wires, resolve_source_wire, source_wire_const_value, unroute_net, RoutePlan,
@@ -33,6 +35,9 @@ pub struct Router1Cfg {
     pub rip_up_penalty: DelayT,
     /// Weight multiplier for congestion cost.
     pub congestion_weight: f64,
+    /// Margin (in tiles) added around each net's bounding box for A* pruning.
+    /// Set to 0 to disable bounding-box pruning.
+    pub bb_margin: i32,
     /// Whether to emit verbose log messages.
     pub verbose: bool,
 }
@@ -43,6 +48,7 @@ impl Default for Router1Cfg {
             max_iterations: 500,
             rip_up_penalty: 10,
             congestion_weight: 1.0,
+            bb_margin: 3,
             verbose: false,
         }
     }
@@ -98,6 +104,8 @@ pub struct Router1State {
     pub wire_penalty: FxHashMap<WireId, DelayT>,
     /// Per-wire usage count, updated incrementally as nets are ripped up/rerouted.
     pub wire_usage: FxHashMap<WireId, u32>,
+    /// Reverse index: wire → set of nets using it. Enables O(1) congestion lookups.
+    pub wire_nets: FxHashMap<WireId, FxHashSet<NetId>>,
 }
 
 impl Router1State {
@@ -105,6 +113,7 @@ impl Router1State {
         Self {
             wire_penalty: FxHashMap::default(),
             wire_usage: FxHashMap::default(),
+            wire_nets: FxHashMap::default(),
         }
     }
 }
@@ -127,11 +136,11 @@ impl super::Router for Router1 {
     fn route_net(
         &self,
         ctx: &mut Context,
-        _cfg: &Self::Config,
+        cfg: &Self::Config,
         net: crate::netlist::NetId,
     ) -> Result<(), super::RouterError> {
         let wire_penalty = FxHashMap::default();
-        route_net_impl(ctx, net, &wire_penalty)
+        route_net_impl(ctx, net, &wire_penalty, cfg.bb_margin)
     }
 
     fn route_nets(
@@ -145,52 +154,49 @@ impl super::Router for Router1 {
         let mut state = Router1State::new();
 
         // Phase 1: Parallel initial route computation.
-        // Reborrow ctx as &Context for shared read access across threads.
         let plans: Vec<Result<RoutePlan, RouterError>> = nets
             .par_iter()
-            .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty))
+            .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin))
             .collect();
 
-        // Phase 2: Serial apply.
+        // Phase 2: Serial apply + build wire→net reverse index.
         for plan in plans {
             let plan = plan?;
             if plan.source_wire.is_valid() {
                 apply_route_plan(ctx, &plan);
             }
-            add_wire_usage(ctx, &mut state.wire_usage, plan.net);
+            add_wire_usage(ctx, &mut state, plan.net);
         }
 
         // Phase 3: Rip-up-and-reroute loop.
         let net_set: FxHashSet<NetId> = nets.iter().copied().collect();
         for _iter in 0..cfg.max_iterations {
-            let congested_wires: Vec<WireId> = state
-                .wire_usage
-                .iter()
-                .filter_map(|(&w, &c)| (c > 1).then_some(w))
-                .collect();
-            let congested: Vec<NetId> = find_nets_touching_wires(ctx, &congested_wires)
-                .into_iter()
-                .filter(|n| net_set.contains(n))
-                .collect();
+            // Use the reverse index to find congested nets in O(congested_wires).
+            let congested = find_congested_nets_fast(&state, &net_set);
             if congested.is_empty() {
                 return Ok(());
             }
 
             // Increase penalties for congested wires.
+            let congested_wires: Vec<WireId> = state
+                .wire_usage
+                .iter()
+                .filter_map(|(&w, &c)| (c > 1).then_some(w))
+                .collect();
             for wire in &congested_wires {
                 *state.wire_penalty.entry(*wire).or_insert(0) += cfg.rip_up_penalty;
             }
 
             // Rip up congested nets.
             for &net in &congested {
-                remove_wire_usage(ctx, &mut state.wire_usage, net);
+                remove_wire_usage(ctx, &mut state, net);
                 unroute_net(ctx, net);
             }
 
             // Parallel reroute.
             let plans: Vec<Result<RoutePlan, RouterError>> = congested
                 .par_iter()
-                .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty))
+                .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin))
                 .collect();
 
             for plan in plans {
@@ -198,24 +204,16 @@ impl super::Router for Router1 {
                 if plan.source_wire.is_valid() {
                     apply_route_plan(ctx, &plan);
                 }
-                add_wire_usage(ctx, &mut state.wire_usage, plan.net);
+                add_wire_usage(ctx, &mut state, plan.net);
             }
         }
 
         // Check remaining congestion.
-        let remaining_congested: Vec<WireId> = state
-            .wire_usage
-            .iter()
-            .filter_map(|(&w, &c)| (c > 1).then_some(w))
-            .collect();
-        if remaining_congested.is_empty() {
+        let remaining = find_congested_nets_fast(&state, &net_set);
+        if remaining.is_empty() {
             Ok(())
         } else {
-            let congested_nets = find_nets_touching_wires(ctx, &remaining_congested)
-                .into_iter()
-                .filter(|n| net_set.contains(n))
-                .count();
-            Err(RouterError::Congestion(cfg.max_iterations, congested_nets))
+            Err(RouterError::Congestion(cfg.max_iterations, remaining.len()))
         }
     }
 }
@@ -235,16 +233,19 @@ pub fn route_net(
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
 ) -> Result<(), RouterError> {
-    route_net_impl(ctx, net, wire_penalty)
+    route_net_impl(ctx, net, wire_penalty, 0)
 }
 
 /// Pure computation function: compute a route plan for a single net without
 /// mutating the Context. The returned `RoutePlan` can later be applied via
 /// `apply_route_plan`.
+///
+/// Uses bounding-box pruning with `bb_margin` tiles of expansion (0 = no pruning).
 pub fn compute_route_r1(
     ctx: &Context,
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
+    bb_margin: i32,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
         Some(w) => w,
@@ -257,16 +258,22 @@ pub fn compute_route_r1(
         }
     };
 
+    let bbox = if bb_margin > 0 {
+        Some(compute_bbox(ctx, net, bb_margin))
+    } else {
+        None
+    };
+
     let sink_wires = collect_sink_wires(ctx, net);
 
-    // Track routing tree locally (no Context mutation).
-    let mut tree_wires: Vec<WireId> = vec![source_wire];
+    // Track routing tree locally using a HashSet for O(1) contains checks.
+    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    tree_wires.insert(source_wire);
     // Include already-routed wires from the net.
     tree_wires.extend(ctx.net(net).wire_ids());
 
     // For constant nets (GND/VCC), add all matching constant wires across the
-    // chip as additional source points. Each tile has local constant wires
-    // connected to the switch matrix, so routing can start from any of them.
+    // chip as additional source points.
     let const_val = source_wire_const_value(ctx, source_wire);
     if const_val != 0 {
         let const_wires = collect_constant_source_wires(ctx, const_val);
@@ -282,16 +289,23 @@ pub fn compute_route_r1(
             });
             continue;
         }
-        match astar_route(ctx, &tree_wires, sink_wire, wire_penalty) {
+        match astar_route(ctx, &tree_wires, sink_wire, wire_penalty, bbox.as_ref()) {
             Some(pips) => {
                 // Add destination wires of each PIP to tree.
                 for &pip in &pips {
-                    tree_wires.push(ctx.pip(pip).dst_wire().id());
+                    tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
                 }
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }
             None => {
                 let net_name = ctx.net(net).name_id();
+                let chipdb = ctx.chipdb();
+                let (sx, sy) = chipdb.tile_xy(source_wire.tile());
+                let (dx, dy) = chipdb.tile_xy(sink_wire.tile());
+                println!(
+                    "NO_PATH net={} src=({},{}) dst=({},{})",
+                    ctx.name_of(net_name), sx, sy, dx, dy,
+                );
                 return Err(RouterError::NoPath(ctx.name_of(net_name).to_owned()));
             }
         }
@@ -308,8 +322,9 @@ fn route_net_impl(
     ctx: &mut Context,
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
+    bb_margin: i32,
 ) -> Result<(), RouterError> {
-    let plan = compute_route_r1(ctx, net, wire_penalty)?;
+    let plan = compute_route_r1(ctx, net, wire_penalty, bb_margin)?;
     if plan.source_wire.is_valid() {
         apply_route_plan(ctx, &plan);
     }
@@ -320,7 +335,8 @@ fn route_net_impl(
 // A* search
 // ---------------------------------------------------------------------------
 
-/// Run A* search from multiple source wires to a single destination wire.
+/// Run A* search from multiple source wires to a single destination wire,
+/// with optional bounding-box pruning.
 ///
 /// Searches from all `src_wires` simultaneously, which allows the algorithm
 /// to find the shortest path from any wire already in the routing tree.
@@ -330,23 +346,20 @@ fn route_net_impl(
 /// destination), or `None` if no path exists.
 pub fn astar_route(
     ctx: &Context,
-    src_wires: &[WireId],
+    src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
+    bbox: Option<&BoundingBox>,
 ) -> Option<Vec<PipId>> {
-    let src_set: FxHashSet<WireId> = src_wires.iter().copied().collect();
-
     // Trivial case: destination is already in the source set.
-    if src_set.contains(&dst_wire) {
+    if src_wires.contains(&dst_wire) {
         return Some(Vec::new());
     }
 
+    let chipdb = ctx.chipdb();
     let init_capacity = src_wires.len().saturating_mul(8).max(16);
     let mut heap = BinaryHeap::with_capacity(init_capacity);
     // visited: wire -> (best cost, Option<pip>, came_from wire)
-    // For source wires: pip=None, came_from=self
-    // For pip edges: pip=Some(pip), came_from=pip.src_wire
-    // For node jumps: pip=None, came_from=source wire in the node
     let mut visited: FxHashMap<WireId, (DelayT, Option<PipId>, WireId)> =
         FxHashMap::with_capacity_and_hasher(init_capacity, Default::default());
 
@@ -381,14 +394,13 @@ pub fn astar_route(
                 match pip {
                     Some(p) => {
                         pips.push(p);
-                        current = ctx.pip(p).src_wire().id();
+                        current = chipdb.pip_src_wire(p);
                     }
                     None => {
-                        // Node jump or source wire.
                         if from == current {
-                            break; // Reached a source wire.
+                            break;
                         }
-                        current = from; // Follow node jump back.
+                        current = from;
                     }
                 }
             }
@@ -397,12 +409,20 @@ pub fn astar_route(
         }
 
         // Expand: iterate all downhill pips from this wire.
-        let wire_info = ctx.chipdb().wire_info(entry.wire);
+        let wire_info = chipdb.wire_info(entry.wire);
         let downhill_indices = wire_info.pips_downhill.get();
 
         for &pip_index in downhill_indices {
             let pip = PipId::new(entry.wire.tile(), pip_index);
-            let next_wire = ctx.pip(pip).dst_wire().id();
+            let next_wire = chipdb.pip_dst_wire(pip);
+
+            // Bounding box pruning.
+            if let Some(bb) = bbox {
+                let (wx, wy) = chipdb.tile_xy(next_wire.tile());
+                if !bb.contains(wx, wy) {
+                    continue;
+                }
+            }
 
             let pip_delay = ctx.pip(pip).delay().max_delay();
             let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
@@ -426,13 +446,10 @@ pub fn astar_route(
 
         // Node expansion: if this wire is part of a multi-tile node,
         // add all other wires in the same node as reachable at zero extra cost.
-        for nw in ctx.chipdb().node_wires(entry.wire) {
-            if nw == entry.wire {
-                continue;
-            }
+        chipdb.node_wires_cb(entry.wire, |nw| {
             if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
                 if entry.cost >= prev_cost {
-                    continue;
+                    return;
                 }
             }
             visited.insert(nw, (entry.cost, None, entry.wire));
@@ -442,7 +459,7 @@ pub fn astar_route(
                 cost: entry.cost,
                 estimate: entry.cost + h,
             });
-        }
+        });
     }
 
     None
@@ -452,32 +469,61 @@ pub fn astar_route(
 // Congestion detection
 // ---------------------------------------------------------------------------
 
-fn add_wire_usage(ctx: &Context, wire_usage: &mut FxHashMap<WireId, u32>, net_idx: NetId) {
+fn add_wire_usage(ctx: &Context, state: &mut Router1State, net_idx: NetId) {
     let net = ctx.net(net_idx);
     if !net.is_alive() {
         return;
     }
     for &wire in net.wires().keys() {
-        *wire_usage.entry(wire).or_default() += 1;
+        *state.wire_usage.entry(wire).or_default() += 1;
+        state.wire_nets.entry(wire).or_default().insert(net_idx);
     }
 }
 
-fn remove_wire_usage(ctx: &Context, wire_usage: &mut FxHashMap<WireId, u32>, net_idx: NetId) {
+fn remove_wire_usage(ctx: &Context, state: &mut Router1State, net_idx: NetId) {
     let net = ctx.net(net_idx);
     if !net.is_alive() {
         return;
     }
     for &wire in net.wires().keys() {
-        if let Some(count) = wire_usage.get_mut(&wire) {
+        if let Some(count) = state.wire_usage.get_mut(&wire) {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                wire_usage.remove(&wire);
+                state.wire_usage.remove(&wire);
+                state.wire_nets.remove(&wire);
+            } else if let Some(nets) = state.wire_nets.get_mut(&wire) {
+                nets.remove(&net_idx);
             }
         }
     }
 }
 
-fn find_nets_touching_wires(ctx: &Context, congested_wires: &[WireId]) -> Vec<NetId> {
+/// Use the wire→net reverse index to find congested nets in O(congested_wires)
+/// instead of O(all_nets).
+fn find_congested_nets_fast(
+    state: &Router1State,
+    net_set: &FxHashSet<NetId>,
+) -> Vec<NetId> {
+    let mut nets = FxHashSet::default();
+    for (&wire, &usage) in &state.wire_usage {
+        if usage > 1 {
+            if let Some(wire_nets) = state.wire_nets.get(&wire) {
+                for &net in wire_nets {
+                    if net_set.contains(&net) {
+                        nets.insert(net);
+                    }
+                }
+            }
+        }
+    }
+    nets.into_iter().collect()
+}
+
+/// Find all nets that use at least one congested wire.
+///
+/// Returns a deduplicated list of net indices.
+pub fn find_congested_nets(ctx: &Context) -> Vec<NetId> {
+    let congested_wires = find_congested_wires(ctx);
     if congested_wires.is_empty() {
         return Vec::new();
     }
@@ -496,13 +542,5 @@ fn find_nets_touching_wires(ctx: &Context, congested_wires: &[WireId]) -> Vec<Ne
     }
 
     nets.into_iter().collect()
-}
-
-/// Find all nets that use at least one congested wire.
-///
-/// Returns a deduplicated list of net indices.
-pub fn find_congested_nets(ctx: &Context) -> Vec<NetId> {
-    let congested_wires = find_congested_wires(ctx);
-    find_nets_touching_wires(ctx, &congested_wires)
 }
 

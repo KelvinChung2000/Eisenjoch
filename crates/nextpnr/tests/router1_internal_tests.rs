@@ -15,6 +15,11 @@ use nextpnr::router::router1::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BinaryHeap;
 
+/// Helper: create an FxHashSet from a slice of WireIds.
+fn wire_set(wires: &[WireId]) -> FxHashSet<WireId> {
+    wires.iter().copied().collect()
+}
+
 #[test]
 fn queue_entry_min_heap_ordering() {
     let mut heap = BinaryHeap::new();
@@ -59,7 +64,7 @@ fn astar_same_wire_returns_empty_path() {
     let ctx = common::make_context();
     let wire = WireId::new(0, 0);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, &[wire], wire, &penalty);
+    let path = astar_route(&ctx, &wire_set(&[wire]), wire, &penalty, None);
     assert!(path.is_some());
     assert!(path.unwrap().is_empty());
 }
@@ -70,7 +75,7 @@ fn astar_single_pip_path() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, &[src], dst, &penalty).unwrap();
+    let path = astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None).unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
 }
 
@@ -80,7 +85,7 @@ fn astar_verifies_pip_connectivity() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, &[src], dst, &penalty).unwrap();
+    let path = astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None).unwrap();
     let pip = path[0];
     assert_eq!(ctx.pip(pip).src_wire().id(), src);
     assert_eq!(ctx.pip(pip).dst_wire().id(), dst);
@@ -91,9 +96,10 @@ fn astar_no_path_returns_none() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
-        &[WireId::new(0, 1)],
+        &wire_set(&[WireId::new(0, 1)]),
         WireId::new(0, 0),
-        &FxHashMap::default()
+        &FxHashMap::default(),
+        None,
     )
     .is_none());
 }
@@ -103,9 +109,10 @@ fn astar_cross_tile_no_path() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
-        &[WireId::new(0, 0)],
+        &wire_set(&[WireId::new(0, 0)]),
         WireId::new(1, 0),
-        &FxHashMap::default()
+        &FxHashMap::default(),
+        None,
     )
     .is_none());
 }
@@ -117,7 +124,7 @@ fn astar_with_penalty_still_finds_path() {
     let dst = WireId::new(0, 1);
     let mut penalty = FxHashMap::default();
     penalty.insert(dst, 1000);
-    assert_eq!(astar_route(&ctx, &[src], dst, &penalty).unwrap().len(), 1);
+    assert_eq!(astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None).unwrap().len(), 1);
 }
 
 #[test]
@@ -125,9 +132,10 @@ fn astar_multi_source_picks_closest() {
     let ctx = common::make_context();
     let path = astar_route(
         &ctx,
-        &[WireId::new(0, 0), WireId::new(1, 0)],
+        &wire_set(&[WireId::new(0, 0), WireId::new(1, 0)]),
         WireId::new(0, 1),
         &FxHashMap::default(),
+        None,
     )
     .unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
@@ -136,7 +144,7 @@ fn astar_multi_source_picks_closest() {
 #[test]
 fn astar_empty_sources_returns_none() {
     let ctx = common::make_context();
-    assert!(astar_route(&ctx, &[], WireId::new(0, 1), &FxHashMap::default()).is_none());
+    assert!(astar_route(&ctx, &wire_set(&[]), WireId::new(0, 1), &FxHashMap::default(), None).is_none());
 }
 
 #[test]
@@ -401,7 +409,7 @@ fn compute_route_produces_valid_plan() {
     ctx.design.net_edit(net_idx).add_user(cell_idx, port);
 
     let penalty = FxHashMap::default();
-    let plan = compute_route_r1(&ctx, net_idx, &penalty).unwrap();
+    let plan = compute_route_r1(&ctx, net_idx, &penalty, 0).unwrap();
     assert_eq!(plan.net, net_idx);
     assert!(plan.source_wire.is_valid());
     // Driver and sink use the same wire, so sink_routes should have empty pips
@@ -463,7 +471,7 @@ fn compute_then_apply_matches_route_net() {
     let net_idx = ctx1.design.net_by_name(ctx1.id("test_net")).unwrap();
 
     // Method 1: compute + apply
-    let plan = compute_route_r1(&ctx1, net_idx, &penalty).unwrap();
+    let plan = compute_route_r1(&ctx1, net_idx, &penalty, 0).unwrap();
     if plan.source_wire.is_valid() {
         apply_route_plan(&mut ctx1, &plan);
     }
