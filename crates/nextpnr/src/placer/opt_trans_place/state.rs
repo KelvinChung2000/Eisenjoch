@@ -562,7 +562,7 @@ impl OptTransState {
     }
 
     /// Per-cell bilinear gradient of a 2D scalar field stored in row-major order.
-    fn field_gradient(&self, field: &[f64], w: usize) -> (Vec<f64>, Vec<f64>) {
+    pub(crate) fn field_gradient(&self, field: &[f64], w: usize) -> (Vec<f64>, Vec<f64>) {
         self.parallel_gradient(|i| {
             let (x0, y0, fx, fy) = self.bilinear_cell(self.cell_x[i], self.cell_y[i]);
             let row0 = y0 as usize * w;
@@ -822,7 +822,6 @@ impl OptTransState {
     ///
     /// Penalizes ALL deviation from capacity: overcrowded tiles push cells out,
     /// underfilled tiles pull cells in. Targets uniform capacity usage.
-    /// This is NOT electrostatic spreading (which penalizes ρ itself).
     pub fn density_energy(&self, ctx: &Context) -> f64 {
         let density = self.build_density_field(ctx);
         Self::density_energy_from_field(&density)
@@ -900,8 +899,7 @@ impl OptTransState {
     /// Potential at each tile: P[tile] = λ[tile] · (ρ[tile] - 1)²
     /// where λ is the per-tile Augmented Lagrangian multiplier.
     ///
-    /// Penalizes all deviation from capacity: overcrowded tiles push cells out,
-    /// underfilled tiles pull cells in. Matches the energy E = Σ (ρ-1)².
+    /// Penalizes all deviation from capacity.
     pub fn compute_density_gradient(
         &self,
         ctx: &Context,
@@ -924,7 +922,6 @@ impl OptTransState {
         let num_tiles = w * h;
 
         // Quadratic capacity deviation: P = λ · (ρ - 1)² for ALL tiles.
-        // Over-capacity tiles push cells out, under-capacity tiles pull cells in.
         let mut pressure = vec![0.0; num_tiles];
         for i in 0..num_tiles {
             let dev = density[i] - 1.0;
@@ -935,6 +932,7 @@ impl OptTransState {
         let blurred = gaussian_blur_2d(&pressure, w, h, sigma);
         self.field_gradient(&blurred, w)
     }
+
 }
 
 /// Separable Gaussian blur on a 2D grid.

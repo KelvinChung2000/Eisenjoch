@@ -180,7 +180,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
 
             let displacement = legalize_electro(ctx, &idx_to_cell, &cell_x, &cell_y)?;
             let hpwl = crate::metrics::wirelength::total_hpwl(ctx);
-            loop_state.record_metric(hpwl, &cell_x, &cell_y);
+            loop_state.record_metric(hpwl, &cell_x, &cell_y, iter);
 
             eprintln!(
                 "ElectroPlace iter {}: HPWL={:.0}, disp={:.1}, step=({:.4},{:.4}), density_p={:.3}, overlap={:.4}",

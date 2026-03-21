@@ -75,6 +75,12 @@ pub struct OptTransPlacerCfg {
     /// Pump gain for dynamic demand amplification of timing-violating nets (default: 10.0).
     /// Nets with high criticality get demand scaled by (1 + pump_gain * crit^2).
     pub pump_gain: f64,
+
+    /// Velocity field momentum decay (default: 0.85). Range [0, 1).
+    pub velocity_alpha: f64,
+
+    /// Helmholtz de-clustering step size relative to main step (default: 0.3).
+    pub helmholtz_eta_ratio: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -82,11 +88,11 @@ impl Default for OptTransPlacerCfg {
         Self {
             seed: 1,
             turbulence_beta: 4.0,
-            newton_iters: 2,
+            newton_iters: 1,
             cg_max_iters: 500,
-            cg_tolerance: 1e-6,
+            cg_tolerance: 1e-3,
             cfl_number: 0.5,
-            max_outer_iters: 500,
+            max_outer_iters: 200,
             report_interval: 5,
             timing_weight: 0.0,
             gas_temperature: 1.0,
@@ -101,6 +107,8 @@ impl Default for OptTransPlacerCfg {
             wl_coeff: 0.5,
             enable_expanding_box: true,
             pump_gain: 10.0,
+            velocity_alpha: 0.7,
+            helmholtz_eta_ratio: 0.15,
         }
     }
 }

@@ -15,25 +15,42 @@ pub struct SolveResult {
     pub iterations: usize,
 }
 
-/// Effective resistance with congestion feedback.
+/// Density penalty for a pipe: max overflow of its two endpoint tiles.
 ///
-/// R_eff = R_base * (1 + beta * min((Q/C)^2, 100))
-///
-/// Quadratic growth with cap at 100× to prevent numerical instability
-/// from extreme utilization spikes. This is much stronger than the
-/// original tanh which saturated at 1.0×.
-fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool) -> f64 {
-    let r_base = pipe.resistance.max(1e-12);
-    if !use_turbulence {
-        return r_base;
+/// Returns 0.0 when density_overflow is empty (iter 0 or disabled).
+/// Junction index / 4 = tile index (4 ports per tile).
+#[inline]
+fn pipe_density_penalty(pipe: &Pipe, density_overflow: &[f64]) -> f64 {
+    if density_overflow.is_empty() {
+        return 0.0;
     }
-    let util = if pipe.capacity > 0.0 {
-        pipe.flow.abs() / pipe.capacity
-    } else {
-        0.0
-    };
-    let penalty = (util * util).min(100.0);
-    r_base * (1.0 + turbulence_beta * penalty)
+    let of = density_overflow.get(pipe.from / 4).copied().unwrap_or(0.0);
+    let ot = density_overflow.get(pipe.to / 4).copied().unwrap_or(0.0);
+    of.max(ot)
+}
+
+/// Effective resistance with congestion and density feedback.
+///
+/// R_eff = R_base * (1 + beta * min((Q/C)^2, 100)) * (1 + density_penalty)
+///
+/// Quadratic flow-based growth with cap at 100× to prevent numerical instability.
+/// Density penalty increases resistance on pipes adjacent to overcrowded tiles,
+/// steering the Kirchhoff solver around congested regions (Benamou-Brenier coupling).
+fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool, density_penalty: f64) -> f64 {
+    let r_base = pipe.resistance.max(1e-12);
+    let mut r_eff = r_base;
+    if use_turbulence {
+        let util = if pipe.capacity > 0.0 {
+            pipe.flow.abs() / pipe.capacity
+        } else {
+            0.0
+        };
+        let penalty = (util * util).min(100.0);
+        r_eff *= 1.0 + turbulence_beta * penalty;
+    }
+    // Density coupling: overcrowded tiles make adjacent pipes more expensive.
+    r_eff *= 1.0 + density_penalty.min(10.0);
+    r_eff
 }
 
 /// Solve the Kirchhoff system on the pipe network.
@@ -51,6 +68,7 @@ pub fn kirchhoff_solve(
     newton_iters: usize,
     cg_max_iters: usize,
     cg_tol: f64,
+    density_overflow: &[f64],
 ) -> SolveResult {
     let n_j = network.num_junctions();
     let n_p = network.num_pipes();
@@ -76,7 +94,8 @@ pub fn kirchhoff_solve(
         let mut off_diag: Vec<(usize, usize, f64)> = Vec::with_capacity(n_p);
 
         for pipe in &network.pipes {
-            let conductance = 1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence);
+            let dp = pipe_density_penalty(pipe, density_overflow);
+            let conductance = 1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
             let i = pipe.from;
             let j = pipe.to;
             diag[i] += conductance;
@@ -104,7 +123,8 @@ pub fn kirchhoff_solve(
 
         // Compute flows: Q = (P[from] - P[to]) / R_eff.
         for pipe in &mut network.pipes {
-            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence);
+            let dp = pipe_density_penalty(pipe, density_overflow);
+            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff;
         }
     }
@@ -226,6 +246,7 @@ pub fn kirchhoff_solve_cropped(
     cg_max_iters: usize,
     cg_tol: f64,
     region: &CroppedRegion,
+    density_overflow: &[f64],
 ) -> SolveResult {
     let n_cropped = region.num_junctions();
 
@@ -259,8 +280,9 @@ pub fn kirchhoff_solve_cropped(
 
             // Only include pipes with BOTH endpoints in the cropped region.
             if let (Some(cf), Some(ct)) = (ci_from, ci_to) {
+                let dp = pipe_density_penalty(pipe, density_overflow);
                 let conductance =
-                    1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence);
+                    1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
                 diag[cf] += conductance;
                 diag[ct] += conductance;
                 let (lo, hi) = if cf < ct { (cf, ct) } else { (ct, cf) };
@@ -294,7 +316,8 @@ pub fn kirchhoff_solve_cropped(
                 .junction_map[pipe.to]
                 .map(|ci| pressure[ci])
                 .unwrap_or(0.0);
-            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence);
+            let dp = pipe_density_penalty(pipe, density_overflow);
+            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
             pipe.flow = (p_from - p_to) / r_eff;
         }
     }

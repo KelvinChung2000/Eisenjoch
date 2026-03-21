@@ -9,6 +9,7 @@ pub mod cg;
 pub mod lse;
 pub mod multigrid;
 pub mod nesterov;
+pub mod velocity;
 pub mod wa;
 
 pub use adam::AdamSolver;
@@ -16,6 +17,7 @@ pub use cg::{conjugate_gradient, spmv, SparseSystem};
 pub use lse::{lse_axis_grad, lse_axis_value, lse_gradient, lse_wirelength};
 pub use multigrid::MultigridSolver;
 pub use nesterov::NesterovSolver;
+pub use velocity::VelocityFieldSolver;
 pub use wa::{wa_axis_grad, wa_axis_value, wa_wirelength};
 
 /// Trait for linear system solvers used in analytical placement.

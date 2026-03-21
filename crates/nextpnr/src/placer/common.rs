@@ -440,6 +440,8 @@ pub(crate) struct NesterovLoopState {
     pub prev_grad_y: Vec<f64>,
     /// Best metric seen during legalization.
     pub best_metric: f64,
+    /// Iteration at which best_metric was last updated.
+    pub best_iter: usize,
     /// Cell x positions at the best metric.
     pub best_positions_x: Vec<f64>,
     /// Cell y positions at the best metric.
@@ -453,6 +455,7 @@ impl NesterovLoopState {
             prev_grad_x: vec![0.0; initial_x.len()],
             prev_grad_y: vec![0.0; initial_y.len()],
             best_metric: f64::INFINITY,
+            best_iter: 0,
             best_positions_x: initial_x.to_vec(),
             best_positions_y: initial_y.to_vec(),
         }
@@ -479,9 +482,10 @@ impl NesterovLoopState {
     }
 
     /// Record a legalization result. Returns true if this is a new best.
-    pub fn record_metric(&mut self, metric: f64, cell_x: &[f64], cell_y: &[f64]) -> bool {
+    pub fn record_metric(&mut self, metric: f64, cell_x: &[f64], cell_y: &[f64], iter: usize) -> bool {
         if metric < self.best_metric {
             self.best_metric = metric;
+            self.best_iter = iter;
             self.best_positions_x.copy_from_slice(cell_x);
             self.best_positions_y.copy_from_slice(cell_y);
             true

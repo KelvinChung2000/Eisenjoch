@@ -8,12 +8,13 @@
 //!   This is a convex relaxation of routing — flow splits across parallel paths,
 //!   automatically distributing demand and revealing congestion gradients.
 //!
-//! - E_density = Σ max(0, ρ-1)²: quadratic excess density penalty.
+//! - E_density = Σ (ρ-1)²: symmetric quadratic capacity deviation penalty.
 //!   Per-tile Augmented Lagrangian multipliers enforce capacity constraints:
-//!   λ[tile] grows at overcrowded tiles, stays zero at tiles below capacity.
+//!   λ[tile] grows at overcrowded tiles via fixed α=0.1 dual step.
 //!
-//! - Congestion: R_eff = R·(1 + β·tanh(Q/C)²) increases resistance on congested
-//!   edges, naturally steering demand away from overutilized channels.
+//! - Congestion: R_eff = R·(1 + β·(Q/C)²)·(1 + density_penalty) couples both
+//!   flow-based turbulence and density overflow into pipe resistance, steering
+//!   the Kirchhoff solver around congested regions (Benamou-Brenier coupling).
 //!
 //! The gradient ∂F/∂x drives cell motion via Adam optimizer.
 //! Kirchhoff gradient (asymmetric: drivers↓, sinks↑) minimizes transport energy.
@@ -35,7 +36,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{initial_placement, validate_all_placed, with_locked_others};
 use super::common::{NesterovLoopState, compute_pin_weights};
-use super::solver::AdamSolver;
+use super::solver::VelocityFieldSolver;
 use super::PlacerError;
 
 pub struct PlacerOptTrans;
@@ -109,12 +110,17 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let pin_weights = compute_pin_weights(ctx, &state.cell_to_idx, n);
     let mut loop_state = NesterovLoopState::new(&state.cell_x, &state.cell_y);
 
-    // Adam optimizer: per-cell adaptive step sizes, stable for non-smooth objectives.
-    // beta1=0.9 (momentum), beta2=0.999 (adaptive scaling).
-    let mut adam_x = AdamSolver::new(n, step_size);
-    let mut adam_y = AdamSolver::new(n, step_size);
-    adam_x.set_positions(&state.cell_x);
-    adam_y.set_positions(&state.cell_y);
+    // Velocity field solver: damped momentum without per-coordinate rescaling.
+    // Preserves gradient geometry so the Helmholtz de-clustering force
+    // can act as a truly decoupled operator-split correction.
+    let mut vel_x = VelocityFieldSolver::new(n, step_size);
+    let mut vel_y = VelocityFieldSolver::new(n, step_size);
+    vel_x.set_alpha(cfg.velocity_alpha);
+    vel_y.set_alpha(cfg.velocity_alpha);
+    vel_x.set_eta_helmholtz(step_size * cfg.helmholtz_eta_ratio);
+    vel_y.set_eta_helmholtz(step_size * cfg.helmholtz_eta_ratio);
+    vel_x.set_positions(&state.cell_x);
+    vel_y.set_positions(&state.cell_y);
     let max_x = (state.network.width - 1) as f64;
     let max_y = (state.network.height - 1) as f64;
 
@@ -125,6 +131,15 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let h = state.network.height as usize;
     let mut tile_lambda = vec![0.0; w * h];
     let al_alpha = 0.1; // AL dual update step size.
+    let mut helmholtz_cache = vec![0.0; w * h]; // warm-start for Helmholtz CG
+    let mut density_overflow_buf = vec![0.0; w * h]; // reusable buffer
+
+    // Pre-compute Helmholtz operator structure (geometry is constant).
+    // Only the diagonal kappa_sq term changes per iteration.
+    let helm_off_diag = helmholtz_off_diag(w, h);
+    let helm_neighbor_count = helmholtz_neighbor_count(w, h);
+    let mut helm_diag = vec![0.0_f64; w * h];
+    let mut helm_rhs = vec![0.0; w * h]; // reusable RHS buffer
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -153,10 +168,41 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             ctx, &criticality, cfg.timing_weight, io_boost, cfg.pump_gain,
         );
 
+        // 2b. Build density field (reused for Kirchhoff coupling, gradient, and AL update).
+        //     Helmholtz-smoothed overflow for resistance coupling: the Kirchhoff
+        //     solver sees a non-local congestion field.
+        let pre_density = state.build_density_field(ctx);
+        let density_overflow: &[f64] = if iter > 0 {
+            // Update Helmholtz diagonal for current kappa (off-diag is cached).
+            let screen_len = grid_diag / 3.0 * (1.0 - progress) + 5.0 * progress;
+            let kappa = 1.0 / screen_len;
+            let kappa_sq = kappa * kappa;
+            for i in 0..w * h {
+                helm_diag[i] = helm_neighbor_count[i] + kappa_sq;
+                helm_rhs[i] = kappa * (pre_density[i] - 1.0).max(0.0);
+            }
+            // Solve (-Δ + κ²)φ = κ·overflow → smoothed congestion field.
+            // Relaxed tolerance (1e-2) — this is a smoothing operation.
+            crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                &helm_diag, &helm_off_diag, &helm_rhs,
+                &mut helmholtz_cache,
+                1e-2, 20,
+            );
+            // Amplify 10x into reusable buffer.
+            for i in 0..w * h {
+                density_overflow_buf[i] = 10.0 * helmholtz_cache[i].max(0.0);
+            }
+            &density_overflow_buf
+        } else {
+            &[]
+        };
+
         // 3. Kirchhoff solve: L(R_eff) · P = demand.
+        //    Density overflow increases pipe resistance in congested regions.
         kirchhoff::kirchhoff_solve(
             &mut state.network, &demand, beta,
             cfg.newton_iters, cfg.cg_max_iters, cfg.cg_tolerance,
+            &density_overflow,
         );
 
         // 4. Pressure gradient at cell positions.
@@ -175,7 +221,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // 6. Density spreading via per-tile Augmented Lagrangian multipliers.
         //    P[tile] = λ[tile] * ρ[tile] — overcrowded tiles get increasing λ.
         let sigma = 2.0 * (1.0 - progress).max(0.5);
-        let pre_density = state.build_density_field(ctx);
         let (dx, dy) = state.density_gradient_from_field(&pre_density, sigma, &tile_lambda);
 
         let overlap = if iter > 0 {
@@ -184,14 +229,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             None
         };
 
-        for ((gx, gy), (ddx, ddy)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(dx.iter().zip(&dy)) {
-            *gx += ddx;
-            *gy += ddy;
-        }
-
         // 7. Steiner anchor: pull pins toward net routing centers.
         //    Keeps nets spatially compact, approximating Steiner junction topology.
-        let anchor_weight = 0.02; // tuned: best diffeq1 HPWL, ch insensitive
+        let anchor_weight = 0.02;
         let (ax, ay) = state.compute_anchor_gradient(ctx, anchor_weight);
         for ((gx, gy), (aax, aay)) in grad_x.iter_mut().zip(grad_y.iter_mut()).zip(ax.iter().zip(&ay)) {
             *gx += aax;
@@ -204,49 +244,78 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             criticality = timing_result.net_criticality;
         }
 
-        // 8. Viscosity preconditioner.
+        // 8. Viscosity preconditioner: scale Kirchhoff+anchor by pin_weight,
+        //    then add density gradient UNSCALED.
+        //    Kirchhoff gradient is ∝ degree (more pins = more demand = stronger pressure),
+        //    so dividing by pin_weight normalizes it across cells.
+        //    Density gradient is ∝ mass (equal for all cells) — scaling it by pin_weight
+        //    would attenuate spreading for high-degree cells, the exact ones forming clusters.
         let viscosity = state.compute_cell_viscosity(ctx, &criticality, cfg.timing_weight);
-        for ((gx, gy), (&pw, &v)) in grad_x.iter_mut().zip(grad_y.iter_mut())
-            .zip(pin_weights.iter().zip(&viscosity))
+        for ((gx, gy), ((&ddx, &ddy), (&pw, &v))) in grad_x.iter_mut().zip(grad_y.iter_mut())
+            .zip(dx.iter().zip(&dy).zip(pin_weights.iter().zip(&viscosity)))
         {
             let w = (pw + v).max(1.0);
             *gx /= w;
             *gy /= w;
+            *gx += ddx;
+            *gy += ddy;
         }
 
-        // 9. Adam step: per-cell adaptive step sizes, built-in momentum.
-        adam_x.step(&grad_x);
-        adam_y.step(&grad_y);
-        adam_x.clamp_positions_range(0.0, max_x);
-        adam_y.clamp_positions_range(0.0, max_y);
-        state.cell_x.copy_from_slice(adam_x.positions());
-        state.cell_y.copy_from_slice(adam_y.positions());
+        // 9. Velocity field step: damped momentum, geometry-preserving.
+        //    Soft gradient normalization: cap RMS to 1.0 to prevent overshooting
+        //    without losing relative magnitude information between cells.
+        {
+            let rms = ((grad_x.iter().map(|g| g * g).sum::<f64>()
+                + grad_y.iter().map(|g| g * g).sum::<f64>()) / (2 * n) as f64).sqrt();
+            if rms > 1.0 {
+                let scale = 1.0 / rms;
+                for g in grad_x.iter_mut() { *g *= scale; }
+                for g in grad_y.iter_mut() { *g *= scale; }
+            }
+        }
+        vel_x.step(&grad_x);
+        vel_y.step(&grad_y);
+
+        // 9b. Decoupled Helmholtz de-clustering: separate step size, bypasses viscosity.
+        //     Directly pushes cells away from smoothed congestion potential.
+        if iter > 0 && !helmholtz_cache.is_empty() {
+            let (hx, hy) = state.field_gradient(&helmholtz_cache, w);
+            vel_x.step_helmholtz(&hx);
+            vel_y.step_helmholtz(&hy);
+        }
+
+        vel_x.clamp_positions_range(0.0, max_x);
+        vel_y.clamp_positions_range(0.0, max_y);
+        state.cell_x.copy_from_slice(vel_x.positions());
+        state.cell_y.copy_from_slice(vel_y.positions());
 
         // 10. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
-        //     Also periodically reset Adam moments so cells can respond to the
-        //     growing density multipliers (Adam adapts to early gradient magnitudes
-        //     and ignores later changes without a reset).
-        let post_density = state.build_density_field(ctx);
+        //     Uses pre_density (before velocity step) as approximation to avoid
+        //     a second expensive build_density_field call. The velocity step is
+        //     small (~0.2 tiles) so the density field barely changes.
         {
             let num_tiles = w * h;
             for i in 0..num_tiles {
-                tile_lambda[i] = (tile_lambda[i] + al_alpha * (post_density[i] - 1.0)).max(0.0);
+                tile_lambda[i] = (tile_lambda[i] + al_alpha * (pre_density[i] - 1.0)).max(0.0);
             }
-            // Reset Adam every 50 iterations so cells re-adapt to new λ landscape.
+            // Dampen velocity periodically so cells re-adapt to the changed λ landscape.
+            // Halving (not zeroing) maintains trajectory continuity.
             if iter > 0 && iter % 50 == 0 {
-                adam_x.reset_moments();
-                adam_y.reset_moments();
+                vel_x.dampen(0.5);
+                vel_y.dampen(0.5);
             }
         }
 
-        // 11. Track best position using the same objective the optimizer minimizes:
-        //    score = chpwl + λ_avg · E_density where E_density = Σ max(0,ρ-1)².
-        //    This selects the position that best balances wirelength and legalizability.
+        // 11. Track best position: CHPWL with soft density penalty.
+        //     score = CHPWL × max(1, maxρ/target) — multiplicative so density
+        //     inflates wirelength cost in congested regions without dominating.
+        //     target_rho = 3.0: below this, pure CHPWL; above, proportional penalty.
         let chpwl_now = state.continuous_hpwl(ctx);
-        let e_density = state::OptTransState::density_energy_from_field(&post_density);
-        let avg_lambda = tile_lambda.iter().sum::<f64>() / (w * h) as f64;
-        let score = chpwl_now + avg_lambda.max(1.0) * e_density;
-        loop_state.record_metric(score, &state.cell_x, &state.cell_y);
+        let (_, max_rho, _) = overlap
+            .unwrap_or_else(|| state::OptTransState::overlap_metrics_from_field(&pre_density));
+        let target_rho = 3.0;
+        let score = chpwl_now * (max_rho / target_rho).max(1.0);
+        loop_state.record_metric(score, &state.cell_x, &state.cell_y, iter);
 
         // 12. Reporting + convergence.
         let is_report_iter = iter % cfg.report_interval == 0 || iter == cfg.max_outer_iters - 1;
@@ -256,15 +325,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
             eprintln!(
                 "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
-                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta max_qc,
+                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta,
             );
 
-            if iter > converge_patience {
-                let rel = (chpwl_now - loop_state.best_metric).abs() / loop_state.best_metric.max(1.0);
-                if rel < 0.005 {
-                    eprintln!("OptTrans placer converged at iteration {} (metric plateau)", iter);
-                    break;
-                }
+            // Converge if best metric hasn't improved for `patience` iterations.
+            let stale = iter as i64 - loop_state.best_iter as i64;
+            if stale > converge_patience as i64 {
+                eprintln!("OptTrans placer converged at iteration {} (no improvement for {} iters)", iter, stale);
+                break;
             }
 
             // Early termination: if overflow is low enough for legalization
@@ -291,4 +359,36 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     info!("OptTrans placement complete");
     Ok(())
+}
+
+/// Per-tile neighbor count for the Helmholtz Laplacian (Neumann BCs).
+/// Constant for a given grid — compute once, reuse across iterations.
+/// Stored as f64 to avoid per-iteration u8→f64 casts in the diagonal update.
+fn helmholtz_neighbor_count(w: usize, h: usize) -> Vec<f64> {
+    let mut counts = vec![0.0_f64; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut n = 0u32;
+            if x > 0 { n += 1; }
+            if x + 1 < w { n += 1; }
+            if y > 0 { n += 1; }
+            if y + 1 < h { n += 1; }
+            counts[y * w + x] = n as f64;
+        }
+    }
+    counts
+}
+
+/// Helmholtz operator off-diagonal: -1 for each grid edge (upper triangle).
+/// Constant for a given grid — compute once, reuse across iterations.
+fn helmholtz_off_diag(w: usize, h: usize) -> Vec<(usize, usize, f64)> {
+    let mut off = Vec::with_capacity(2 * w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let idx = y * w + x;
+            if x + 1 < w { off.push((idx, idx + 1, -1.0)); }
+            if y + 1 < h { off.push((idx, idx + w, -1.0)); }
+        }
+    }
+    off
 }
