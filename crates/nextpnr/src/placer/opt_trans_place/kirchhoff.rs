@@ -29,25 +29,44 @@ fn pipe_density_penalty(pipe: &Pipe, density_overflow: &[f64]) -> f64 {
     of.max(ot)
 }
 
-/// Effective resistance with congestion and density feedback.
+/// Effective resistance with Beckmann aggregate flow coupling and density feedback.
 ///
-/// R_eff = R_base * (1 + beta * min((Q/C)^2, 100)) * (1 + density_penalty)
-///
-/// Quadratic flow-based growth with cap at 100× to prevent numerical instability.
-/// Density penalty increases resistance on pipes adjacent to overcrowded tiles,
-/// steering the Kirchhoff solver around congested regions (Benamou-Brenier coupling).
-fn effective_resistance(pipe: &Pipe, turbulence_beta: f64, use_turbulence: bool, density_penalty: f64) -> f64 {
+/// R_eff = R_base
+///       * (1 + beta * min((Q_agg/C)^2, 100))   -- Beckmann: aggregate flow history
+///       * (1 + 0.5*beta * min((Q_inst/C)^2, 100)) -- Newton: instantaneous flow refinement
+///       * (1 + density_penalty)                   -- Spatial: tile overcrowding
+fn effective_resistance(
+    pipe: &Pipe,
+    turbulence_beta: f64,
+    use_turbulence: bool,
+    density_penalty: f64,
+    agg_flow_scale: f64,
+) -> f64 {
     let r_base = pipe.resistance.max(1e-12);
     let mut r_eff = r_base;
+
     if use_turbulence {
-        let util = if pipe.capacity > 0.0 {
-            pipe.flow.abs() / pipe.capacity
-        } else {
-            0.0
-        };
-        let penalty = (util * util).min(100.0);
-        r_eff *= 1.0 + turbulence_beta * penalty;
+        // Beckmann coupling: normalized aggregate utilization.
+        if pipe.capacity > 0.0 {
+            let raw_util = pipe.aggregate_flow / pipe.capacity;
+            // Divide by network-wide P95 so typical congested pipes have util ~ 1.0.
+            // Pipes ABOVE P95 get util > 1.0 -> strong penalty (actual bottlenecks).
+            // Pipes BELOW P95 get util < 1.0 -> weak penalty (acceptable congestion).
+            let util = raw_util / agg_flow_scale;
+            let penalty = (util * util).min(100.0);
+            r_eff *= 1.0 + turbulence_beta * penalty;
+        }
+
+        // Newton refinement: instantaneous flow from current/previous Newton step.
+        // Uses same scale for consistency.
+        if pipe.capacity > 0.0 {
+            let raw_inst = pipe.flow.abs() / pipe.capacity;
+            let inst_util = raw_inst / agg_flow_scale;
+            let inst_penalty = (inst_util * inst_util).min(100.0);
+            r_eff *= 1.0 + 0.5 * turbulence_beta * inst_penalty;
+        }
     }
+
     // Density coupling: overcrowded tiles make adjacent pipes more expensive.
     r_eff *= 1.0 + density_penalty.min(10.0);
     r_eff
@@ -82,12 +101,17 @@ pub fn kirchhoff_solve(
 
     let mut pressure: Vec<f64> = network.junctions.iter().map(|j| j.pressure).collect();
     let mut total_iters = 0;
+    let agg_scale = network.agg_flow_scale;
 
     // Newton iterations for nonlinear resistance.
     // Iteration 0 uses base resistance; subsequent iterations update R_eff from flow.
     let num_solves = newton_iters.max(1);
     for newton_iter in 0..num_solves {
-        let use_turbulence = newton_iter > 0;
+        // Enable turbulence when beta > 0 AND we have flow data from a previous
+        // solve (either a previous Newton step or warm-started from previous outer iter).
+        let has_flow_data = newton_iter > 0
+            || network.pipes.iter().any(|p| p.flow.abs() > 1e-15);
+        let use_turbulence = turbulence_beta > 1e-6 && has_flow_data;
 
         // Build Laplacian from pipe conductances.
         let mut diag = vec![0.0; n_j];
@@ -95,7 +119,7 @@ pub fn kirchhoff_solve(
 
         for pipe in &network.pipes {
             let dp = pipe_density_penalty(pipe, density_overflow);
-            let conductance = 1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
+            let conductance = 1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp, agg_scale);
             let i = pipe.from;
             let j = pipe.to;
             diag[i] += conductance;
@@ -124,7 +148,7 @@ pub fn kirchhoff_solve(
         // Compute flows: Q = (P[from] - P[to]) / R_eff.
         for pipe in &mut network.pipes {
             let dp = pipe_density_penalty(pipe, density_overflow);
-            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
+            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp, agg_scale);
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff;
         }
     }
@@ -267,9 +291,12 @@ pub fn kirchhoff_solve_cropped(
 
     let mut total_iters = 0;
     let num_solves = newton_iters.max(1);
+    let agg_scale = network.agg_flow_scale;
 
     for newton_iter in 0..num_solves {
-        let use_turbulence = newton_iter > 0;
+        let has_flow_data = newton_iter > 0
+            || network.pipes.iter().any(|p| p.flow.abs() > 1e-15);
+        let use_turbulence = turbulence_beta > 1e-6 && has_flow_data;
 
         let mut diag = vec![0.0; n_cropped];
         let mut off_diag: Vec<(usize, usize, f64)> = Vec::with_capacity(network.num_pipes());
@@ -282,7 +309,7 @@ pub fn kirchhoff_solve_cropped(
             if let (Some(cf), Some(ct)) = (ci_from, ci_to) {
                 let dp = pipe_density_penalty(pipe, density_overflow);
                 let conductance =
-                    1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
+                    1.0 / effective_resistance(pipe, turbulence_beta, use_turbulence, dp, agg_scale);
                 diag[cf] += conductance;
                 diag[ct] += conductance;
                 let (lo, hi) = if cf < ct { (cf, ct) } else { (ct, cf) };
@@ -317,7 +344,7 @@ pub fn kirchhoff_solve_cropped(
                 .map(|ci| pressure[ci])
                 .unwrap_or(0.0);
             let dp = pipe_density_penalty(pipe, density_overflow);
-            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp);
+            let r_eff = effective_resistance(pipe, turbulence_beta, use_turbulence, dp, agg_scale);
             pipe.flow = (p_from - p_to) / r_eff;
         }
     }

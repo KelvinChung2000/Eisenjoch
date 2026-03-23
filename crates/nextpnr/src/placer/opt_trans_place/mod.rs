@@ -153,8 +153,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     for iter in 0..cfg.max_outer_iters {
         let progress = iter as f64 / cfg.max_outer_iters as f64;
-        // Nonlinear resistance ramp: caps at 50% of configured beta.
-        let beta = (cfg.turbulence_beta * 0.5) * (1.0 - (-3.0 * progress).exp());
+        // Beckmann coupling strength ramp: starts at 0, grows to full beta.
+        let beta = cfg.turbulence_beta * (1.0 - (-3.0 * progress).exp());
 
         // 1. Optional expanding box constraint.
         if cfg.enable_expanding_box {
@@ -204,6 +204,32 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             cfg.newton_iters, cfg.cg_max_iters, cfg.cg_tolerance,
             &density_overflow,
         );
+
+        // 3b. Beckmann aggregate flow update + self-normalization.
+        {
+            let ema_alpha = 0.3;
+            for pipe in &mut state.network.pipes {
+                let current = pipe.flow.abs();
+                pipe.aggregate_flow = ema_alpha * pipe.aggregate_flow
+                    + (1.0 - ema_alpha) * current;
+            }
+
+            // Self-normalize: compute P95 of (aggregate_flow / capacity)
+            // over pipes with real routing capacity (capacity > 1, excludes
+            // NULL-tile pipes that have capacity=1 and skew the distribution).
+            // This keeps Beckmann utilization in [0, ~3] range, preserving
+            // RELATIVE differences while preventing penalty saturation.
+            let mut utils: Vec<f64> = state.network.pipes.iter()
+                .filter(|p| p.capacity > 1.0)
+                .map(|p| p.aggregate_flow / p.capacity)
+                .collect();
+            if !utils.is_empty() {
+                utils.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+                let p95_idx = (utils.len() as f64 * 0.95) as usize;
+                let p95 = utils[p95_idx.min(utils.len() - 1)].max(1e-6);
+                state.network.agg_flow_scale = p95;
+            }
+        }
 
         // 4. Pressure gradient at cell positions.
         let (px, py) = state.compute_pressure_gradient(0.0);
@@ -313,8 +339,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         let chpwl_now = state.continuous_hpwl(ctx);
         let (_, max_rho, _) = overlap
             .unwrap_or_else(|| state::OptTransState::overlap_metrics_from_field(&pre_density));
-        let target_rho = 3.0;
-        let score = chpwl_now * (max_rho / target_rho).max(1.0);
+        // Lexicographic scoring: strongly prefer low overflow, then minimize HPWL.
+        let target_rho = 1.5;
+        let score = if max_rho > target_rho {
+            let overflow_penalty = (max_rho / target_rho).powi(2);
+            chpwl_now * overflow_penalty
+        } else {
+            chpwl_now
+        };
         loop_state.record_metric(score, &state.cell_x, &state.cell_y, iter);
 
         // 12. Reporting + convergence.
@@ -323,9 +355,13 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let (overflow_ratio, max_rho, _) = overlap
                 .unwrap_or_else(|| state::OptTransState::overlap_metrics_from_field(&pre_density));
             let max_lambda = tile_lambda.iter().copied().fold(0.0_f64, f64::max);
+            let max_agg_util = state.network.pipes.iter()
+                .filter(|p| p.capacity > 0.0)
+                .map(|p| p.aggregate_flow / p.capacity / state.network.agg_flow_scale)
+                .fold(0.0_f64, f64::max);
             eprintln!(
-                "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}",
-                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta,
+                "OptTrans iter {}: chpwl={:.0}, maxλ={:.2}, overflow={:.1}%, maxρ={:.1}, β={:.2}, maxAggUtil={:.2}",
+                iter, chpwl_now, max_lambda, overflow_ratio * 100.0, max_rho, beta, max_agg_util,
             );
 
             // Converge if best metric hasn't improved for `patience` iterations.

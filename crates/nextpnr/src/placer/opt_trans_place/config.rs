@@ -88,7 +88,7 @@ impl Default for OptTransPlacerCfg {
         Self {
             seed: 1,
             turbulence_beta: 4.0,
-            newton_iters: 1,
+            newton_iters: 2,
             cg_max_iters: 500,
             cg_tolerance: 1e-3,
             cfl_number: 0.5,

@@ -51,6 +51,9 @@ pub struct Pipe {
     pub resistance: f64,
     pub capacity: f64,
     pub flow: f64,
+    /// Exponential moving average of |flow| across outer iterations.
+    /// Used by effective_resistance for Beckmann-style inter-net coupling.
+    pub aggregate_flow: f64,
     pub pipe_type: PipeType,
 }
 
@@ -65,6 +68,9 @@ pub struct PipeNetwork {
     pub y0: i32,
     /// Per tile-type Schur condensation matrices.
     pub schur_matrices: Vec<[[f64; 4]; 4]>,
+    /// Normalization factor: 95th percentile of aggregate_flow/capacity.
+    /// Computed each outer iteration to keep Beckmann utilization in [0, ~3] range.
+    pub agg_flow_scale: f64,
 }
 
 impl PipeNetwork {
@@ -155,6 +161,7 @@ impl PipeNetwork {
                                 resistance: 1.0 / conductance,
                                 capacity: n_bels.max(1.0),
                                 flow: 0.0,
+                                aggregate_flow: 0.0,
                                 pipe_type: PipeType::IntraTile,
                             });
                             junction_pipes[from].push(pipe_idx);
@@ -180,6 +187,7 @@ impl PipeNetwork {
                     resistance: compute_resistance(wire_count),
                     capacity: wire_count as f64,
                     flow: 0.0,
+                    aggregate_flow: 0.0,
                     pipe_type: PipeType::InterTile(Direction::East),
                 });
                 junction_pipes[from].push(pipe_idx);
@@ -201,6 +209,7 @@ impl PipeNetwork {
                     resistance: compute_resistance(wire_count),
                     capacity: wire_count as f64,
                     flow: 0.0,
+                    aggregate_flow: 0.0,
                     pipe_type: PipeType::InterTile(Direction::South),
                 });
                 junction_pipes[from].push(pipe_idx);
@@ -217,6 +226,7 @@ impl PipeNetwork {
             x0,
             y0,
             schur_matrices,
+            agg_flow_scale: 1.0,
         }
     }
 
@@ -231,7 +241,9 @@ impl PipeNetwork {
         }
         for p in &mut self.pipes {
             p.flow = 0.0;
+            p.aggregate_flow = 0.0;
         }
+        self.agg_flow_scale = 1.0;
     }
 
     pub fn num_junctions(&self) -> usize {
