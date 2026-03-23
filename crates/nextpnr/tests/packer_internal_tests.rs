@@ -6,7 +6,7 @@ use nextpnr::netlist::PortType;
 
 fn setup_simple_ctx(ctx: &mut nextpnr::context::Context) {
     let cell_name = ctx.id("my_cell");
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let port_o = ctx.id("O");
     let port_i = ctx.id("I");
     let net_name = ctx.id("my_net");
@@ -79,7 +79,7 @@ fn connect_port_to_net() {
 #[test]
 fn connect_port_as_driver() {
     let mut ctx = common::make_context();
-    let cell_idx = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT4"));
+    let cell_idx = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT6"));
     let net_idx = ctx.design.add_net(ctx.id("n1"));
     let port_o = ctx.id("O");
     ctx.design.cell_edit(cell_idx).add_port(port_o, PortType::Out);
@@ -116,7 +116,7 @@ fn rename_port_nonexistent_is_noop() {
 #[test]
 fn is_single_fanout_true() {
     let mut ctx = common::make_context();
-    let driver_idx = ctx.design.add_cell(ctx.id("driver"), ctx.id("LUT4"));
+    let driver_idx = ctx.design.add_cell(ctx.id("driver"), ctx.id("LUT6"));
     let sink_idx = ctx.design.add_cell(ctx.id("sink"), ctx.id("FF"));
     let net_idx = ctx.design.add_net(ctx.id("n1"));
     let port_o = ctx.id("O");
@@ -131,7 +131,7 @@ fn is_single_fanout_true() {
 #[test]
 fn is_single_fanout_false_multi() {
     let mut ctx = common::make_context();
-    let driver_idx = ctx.design.add_cell(ctx.id("driver"), ctx.id("LUT4"));
+    let driver_idx = ctx.design.add_cell(ctx.id("driver"), ctx.id("LUT6"));
     let sink1_idx = ctx.design.add_cell(ctx.id("sink1"), ctx.id("FF"));
     let sink2_idx = ctx.design.add_cell(ctx.id("sink2"), ctx.id("FF"));
     let net_idx = ctx.design.add_net(ctx.id("n1"));
@@ -222,7 +222,7 @@ fn pack_io_remaps_iobuf() {
 #[test]
 fn pack_io_leaves_non_io_cells_alone() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let cell_idx = ctx.design.add_cell(ctx.id("lut0"), lut_type);
     passes::pack_io(&mut ctx).unwrap();
     assert_eq!(ctx.design.cell(cell_idx).cell_type, lut_type);
@@ -236,7 +236,7 @@ fn pack_io_leaves_non_io_cells_alone() {
 fn remove_cell_marks_dead() {
     let mut ctx = common::make_context();
     let cell_name = ctx.id("doomed");
-    let _cell_idx = ctx.design.add_cell(cell_name, ctx.id("LUT4"));
+    let _cell_idx = ctx.design.add_cell(cell_name, ctx.id("LUT6"));
     assert!(ctx.design.cell_by_name(cell_name).is_some());
     ctx.design.remove_cell(cell_name);
     assert!(ctx.design.cell_by_name(cell_name).is_none());
@@ -260,10 +260,10 @@ use nextpnr::packer::extractor::{Extractor, TileTypeExtractor, SharedWireExtract
 #[test]
 fn tagger_extracts_compatible_tile_types_on_example_chipdb() {
     let mut ctx = common::make_example_context();
-    let cell_idx = ctx.design.add_cell(ctx.id("lut0"), ctx.id("LUT4"));
+    let cell_idx = ctx.design.add_cell(ctx.id("lut0"), ctx.id("LUT6"));
     let mut tags = CellTags::default();
     TileTypeExtractor.extract(&ctx, cell_idx, &mut tags);
-    // LUT4 should be found in at least one tile type
+    // LUT6 should be found in at least one tile type
     assert!(!tags.compatible_tile_types.is_empty());
 }
 
@@ -293,7 +293,7 @@ fn derive_rules_from_topology_on_example_chipdb() {
     let ctx = common::make_example_context();
     let derived = rules::derive_rules_from_topology(&ctx);
     // The example chipdb has shared wires (e.g., CLK wire connecting to
-    // both LUT4 and DFF bels), so topology derivation should find rules.
+    // both LUT6 and DFF bels), so topology derivation should find rules.
     // Even if it finds none, the function should not crash.
     // On a real chipdb with shared wires, we expect rules.
     // (The exact count depends on the chipdb content.)
@@ -313,8 +313,8 @@ fn shared_wire_validator_allows_same_net() {
     let mut ctx = common::make_context();
 
     // Use different cell types so site capacity validator doesn't reject
-    // (minimal chipdb has 1 LUT4 BEL per tile, so two LUT4s would exceed capacity)
-    let c1 = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT4"));
+    // (minimal chipdb has 1 LUT6 BEL per tile, so two LUT6s would exceed capacity)
+    let c1 = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT6"));
     let c2 = ctx.design.add_cell(ctx.id("c2"), ctx.id("DFF"));
 
     let mut tagger = CellTagger::new();
@@ -322,7 +322,7 @@ fn shared_wire_validator_allows_same_net() {
     tagger.tag_cell(&ctx, c2);
 
     // Should pass: no shared wire constraints and DFF has no compatible tile types
-    // in minimal chipdb (only LUT4 exists), so capacity check is skipped
+    // in minimal chipdb (only LUT6 exists), so capacity check is skipped
     assert!(tagger.check_packing(&ctx, c1, c2).is_ok());
 }
 
@@ -331,18 +331,18 @@ fn site_capacity_validator_allows_within_limit() {
     let mut ctx = common::make_context();
     let mut tagger = CellTagger::new();
 
-    let c1 = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT4"));
-    let c2 = ctx.design.add_cell(ctx.id("c2"), ctx.id("LUT4"));
+    let c1 = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT6"));
+    let c2 = ctx.design.add_cell(ctx.id("c2"), ctx.id("LUT6"));
 
     tagger.tag_cell(&ctx, c1);
     tagger.tag_cell(&ctx, c2);
 
-    // Minimal chipdb has 1 LUT4 BEL per tile type. c1 is not yet in a cluster,
-    // so the count of LUT4s in its cluster is effectively 0 or 1.
-    // The validator checks whether adding another LUT4 exceeds tile capacity.
+    // Minimal chipdb has 1 LUT6 BEL per tile type. c1 is not yet in a cluster,
+    // so the count of LUT6s in its cluster is effectively 0 or 1.
+    // The validator checks whether adding another LUT6 exceeds tile capacity.
     let result = tagger.check_packing(&ctx, c1, c2);
     // Whether this passes or fails depends on the minimal chipdb BEL count.
-    // With 1 LUT4 per tile, adding a second should be rejected.
+    // With 1 LUT6 per tile, adding a second should be rejected.
     // This verifies the validator actually runs.
     let _ = result;
 }
@@ -352,7 +352,7 @@ fn apply_packing_rule_creates_cluster() {
     use nextpnr::packer::rules::{CellTypePort, PackingRule};
 
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let ff_type = ctx.id("DFF");
     let port_o = ctx.id("O");
     let port_d = ctx.id("D");
@@ -404,8 +404,8 @@ fn full_pack_default_on_empty_design() {
 fn full_pack_default_with_cells_on_example_chipdb() {
     let mut ctx = common::make_example_context();
 
-    // Create a LUT4 driving a DFF via a shared output
-    let lut_type = ctx.id("LUT4");
+    // Create a LUT6 driving a DFF via a shared output
+    let lut_type = ctx.id("LUT6");
     let dff_type = ctx.id("DFF");
     let f_port = ctx.id("F");
     let d_port = ctx.id("D");
@@ -422,7 +422,7 @@ fn full_pack_default_with_cells_on_example_chipdb() {
     let result = pack_default(&mut ctx);
     assert!(result.is_ok());
 
-    // If the chipdb topology produces a rule for LUT4:F -> DFF:D,
+    // If the chipdb topology produces a rule for LUT6:F -> DFF:D,
     // these cells should be clustered. Otherwise they remain unclustered.
     // Either way, the packer should not crash.
 }
@@ -481,7 +481,7 @@ fn full_pack_creates_clusters_on_example_chipdb() {
 #[test]
 fn constraint_fields_default_to_zero() {
     let mut ctx = common::make_context();
-    let cell = ctx.design.add_cell(ctx.id("test"), ctx.id("LUT4"));
+    let cell = ctx.design.add_cell(ctx.id("test"), ctx.id("LUT6"));
     let cell_info = ctx.design.cell(cell);
     assert_eq!(cell_info.constr_x, 0);
     assert_eq!(cell_info.constr_y, 0);
@@ -492,7 +492,7 @@ fn constraint_fields_default_to_zero() {
 #[test]
 fn set_constraints_updates_fields() {
     let mut ctx = common::make_context();
-    let cell = ctx.design.add_cell(ctx.id("test"), ctx.id("LUT4"));
+    let cell = ctx.design.add_cell(ctx.id("test"), ctx.id("LUT6"));
     ctx.design.cell_edit(cell).set_constraints(1, 2, 3, true);
     let cell_info = ctx.design.cell(cell);
     assert_eq!(cell_info.constr_x, 1);
@@ -537,8 +537,8 @@ fn chipdb_shared_wires_in_tile_type() {
 #[test]
 fn chipdb_compatible_tile_types_for_bel_type() {
     let ctx = common::make_context();
-    let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("LUT4");
-    assert_eq!(compatible, vec![0]); // tile type 0 has LUT4
+    let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("LUT6");
+    assert_eq!(compatible, vec![0]); // tile type 0 has LUT6
 }
 
 #[test]
@@ -551,7 +551,7 @@ fn chipdb_compatible_tile_types_nonexistent() {
 #[test]
 fn chipdb_bel_count_in_tile_type() {
     let ctx = common::make_context();
-    assert_eq!(ctx.chipdb().bel_count_in_tile_type(0, "LUT4"), 1);
+    assert_eq!(ctx.chipdb().bel_count_in_tile_type(0, "LUT6"), 1);
     assert_eq!(ctx.chipdb().bel_count_in_tile_type(0, "NONEXISTENT"), 0);
 }
 
@@ -583,9 +583,9 @@ fn example_chipdb_shared_wires_exist() {
 }
 
 #[test]
-fn example_chipdb_lut4_compatible_tiles() {
+fn example_chipdb_lut6_compatible_tiles() {
     let ctx = common::make_example_context();
-    let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("LUT4");
-    assert!(!compatible.is_empty(), "LUT4 should be found in at least one tile type");
+    let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("LUT6");
+    assert!(!compatible.is_empty(), "LUT6 should be found in at least one tile type");
 }
 

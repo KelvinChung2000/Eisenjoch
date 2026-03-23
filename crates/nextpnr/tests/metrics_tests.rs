@@ -101,7 +101,7 @@ fn congestion_same_direction_nets() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let out_port = ctx.id("Q");
     let in_port = ctx.id("A");
 
@@ -186,7 +186,7 @@ fn congestion_perpendicular_nets() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let out_port = ctx.id("Q");
     let in_port = ctx.id("A");
 

@@ -2,7 +2,7 @@
 """Generate a chipdb with real Xilinx Series 7 routing but simplified BELs.
 
 Reads the xc7a50t routing graph from Project X-Ray and overlays simple
-LUT4/DFF/IOB BELs connected to the INT tile wires. This gives us
+LUT6/DFF/IOB BELs connected to the INT tile wires. This gives us
 a realistic routing fabric to benchmark against while using our
 existing synthetic-arch packer and placer.
 
@@ -12,7 +12,7 @@ Usage:
         --tileconn /path/to/prjxray-db/artix7/xc7a50t/tileconn.json \\
         --tilegrid /path/to/prjxray-db/artix7/xc7a50t/tilegrid.json
 
-The output uses our synthetic arch cell types (LUT4, DFF, IOB) so
+The output uses our synthetic arch cell types (LUT6, DFF, IOB) so
 existing benchmarks work without modification.
 """
 
@@ -36,7 +36,7 @@ FIXTURES_DIR = path.join(
 )
 
 # Our synthetic arch parameters
-K = 4  # LUT inputs
+K = 6  # LUT inputs
 N = 8  # SLICEs per logic tile
 N_IO = 2
 N_CLK = 2
@@ -117,7 +117,7 @@ def create_routing_tile(
 
                 # LUT BEL: use existing SLICE wires directly
                 lut_name = f"{sp}_{letter}_LUT"
-                lut = tt.create_bel(lut_name, "LUT4", z=slot)
+                lut = tt.create_bel(lut_name, "LUT6", z=slot)
                 for j, iw in enumerate(lut_in_wires[:K]):
                     tt.add_bel_pin(lut, f"I[{j}]", iw, PinType.INPUT)
                 tt.add_bel_pin(lut, "F", lut_out_wire, PinType.OUTPUT)

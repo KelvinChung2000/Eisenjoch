@@ -72,14 +72,14 @@ fn add_cells_with_net(
     }
 }
 
-/// Create a Context with n LUT4 cells wired together using the real example chipdb.
+/// Create a Context with n LUT6 cells wired together using the real example chipdb.
 ///
 /// cell_0 drives "F" output, cells 1..n consume via "I[0]" input.
 pub fn make_example_context_with_cells(n: usize) -> Context {
     let mut ctx = make_example_context();
     ctx.populate_bel_buckets();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let out_port = ctx.id("F");
     let in_port = ctx.id("I[0]");
     add_cells_with_net(&mut ctx, n, cell_type, out_port, in_port);
@@ -92,7 +92,7 @@ pub fn make_context_with_cells(n: usize) -> Context {
     let mut ctx = make_context();
     ctx.populate_bel_buckets();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let out_port = ctx.id("Q");
     let in_port = ctx.id("A");
     add_cells_with_net(&mut ctx, n, cell_type, out_port, in_port);

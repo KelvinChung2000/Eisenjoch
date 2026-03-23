@@ -120,7 +120,7 @@ fn chipdb_magic_and_version() {
 #[test]
 fn enumerate_bels_exact_counts() {
     let ctx = common::make_example_context();
-    let mut lut4_count = 0;
+    let mut lut6_count = 0;
     let mut dff_count = 0;
     let mut iob_count = 0;
     let mut bram_count = 0;
@@ -129,7 +129,7 @@ fn enumerate_bels_exact_counts() {
 
     for bel in ctx.bels() {
         match bel.bel_type() {
-            "LUT4" => lut4_count += 1,
+            "LUT6" => lut6_count += 1,
             "DFF" => dff_count += 1,
             "IOB" => iob_count += 1,
             "BRAM_512X16" => bram_count += 1,
@@ -143,8 +143,8 @@ fn enumerate_bels_exact_counts() {
     //   4 NULL corners: 1 GND_DRV + 1 VCC_DRV each
     //   32 IO edge tiles (non-corner): 2 IOBs each
     //   8 BRAM tiles (x=1..8, y=7): 1 BRAM_512X16 each
-    //   56 LOGIC tiles (8x8 interior minus 8 BRAM): 8 LUT4 + 8 DFF each
-    assert_eq!(lut4_count, 448, "56 LOGIC tiles * 8 LUT4");
+    //   56 LOGIC tiles (8x8 interior minus 8 BRAM): 8 LUT6 + 8 DFF each
+    assert_eq!(lut6_count, 448, "56 LOGIC tiles * 8 LUT6");
     assert_eq!(dff_count, 448, "56 LOGIC tiles * 8 DFF");
     assert_eq!(iob_count, 64, "32 IO tiles * 2 IOBs");
     assert_eq!(bram_count, 8, "8 BRAM tiles * 1 BRAM");
@@ -170,16 +170,16 @@ fn bel_names_are_meaningful() {
 // =====================================================================
 
 #[test]
-fn bind_lut4_to_bel() {
+fn bind_lut6_to_bel() {
     let mut ctx = common::make_example_context();
     ctx.populate_bel_buckets();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_name = ctx.id("test_lut");
     ctx.design.add_cell(cell_name, cell_type);
     let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
 
-    let lut_bel = find_bel(&ctx, "LUT4");
+    let lut_bel = find_bel(&ctx, "LUT6");
     assert!(ctx.bind_bel(lut_bel, cell_idx, PlaceStrength::Placer));
 
     // Verify the cell is now bound
@@ -195,12 +195,12 @@ fn bind_lut4_to_bel() {
 fn bind_and_unbind_bel() {
     let mut ctx = common::make_example_context();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_name = ctx.id("test_lut");
     ctx.design.add_cell(cell_name, cell_type);
     let cell_idx = ctx.design.cell_by_name(cell_name).unwrap();
 
-    let lut_bel = find_bel(&ctx, "LUT4");
+    let lut_bel = find_bel(&ctx, "LUT6");
     assert!(ctx.bind_bel(lut_bel, cell_idx, PlaceStrength::Placer));
     ctx.unbind_bel(lut_bel);
 
@@ -212,7 +212,7 @@ fn bind_and_unbind_bel() {
 fn double_bind_fails() {
     let mut ctx = common::make_example_context();
 
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let name_a = ctx.id("cell_a");
     let name_b = ctx.id("cell_b");
     ctx.design.add_cell(name_a, cell_type);
@@ -220,7 +220,7 @@ fn double_bind_fails() {
     let cell_a = ctx.design.cell_by_name(name_a).unwrap();
     let cell_b = ctx.design.cell_by_name(name_b).unwrap();
 
-    let lut_bel = find_bel(&ctx, "LUT4");
+    let lut_bel = find_bel(&ctx, "LUT6");
     assert!(ctx.bind_bel(lut_bel, cell_a, PlaceStrength::Placer));
     assert!(!ctx.bind_bel(lut_bel, cell_b, PlaceStrength::Placer));
 }
@@ -230,12 +230,12 @@ fn double_bind_fails() {
 // =====================================================================
 
 #[test]
-fn bel_pin_wire_resolves_lut4_pins() {
+fn bel_pin_wire_resolves_lut6_pins() {
     let ctx = common::make_example_context();
 
-    let lut_bel = find_bel(&ctx, "LUT4");
+    let lut_bel = find_bel(&ctx, "LUT6");
 
-    // LUT4 has pins I[0]..I[3] and F
+    // LUT6 has pins I[0]..I[3] and F
     let f_port = ctx.id("F");
     let bp = BelPin::new(lut_bel, f_port);
     let wire = ctx.bel_pin_wire(bp);
@@ -351,7 +351,7 @@ fn bel_buckets_contain_expected_types() {
     let buckets = ctx.bel_buckets();
     let bucket_names: Vec<&str> = buckets.iter().map(|b| ctx.name_of(*b)).collect();
 
-    assert!(bucket_names.contains(&"LUT4"), "should have LUT4 bucket");
+    assert!(bucket_names.contains(&"LUT6"), "should have LUT6 bucket");
     assert!(bucket_names.contains(&"DFF"), "should have DFF bucket");
     assert!(bucket_names.contains(&"IOB"), "should have IOB bucket");
     assert!(bucket_names.contains(&"BRAM_512X16"), "should have BRAM bucket");
@@ -362,9 +362,9 @@ fn bels_for_bucket_returns_correct_types() {
     let mut ctx = common::make_example_context();
     ctx.populate_bel_buckets();
 
-    let lut4_bucket = ctx.id("LUT4");
-    for bel in ctx.bels_for_bucket(lut4_bucket) {
-        assert_eq!(bel.bel_type(), "LUT4");
+    let lut6_bucket = ctx.id("LUT6");
+    for bel in ctx.bels_for_bucket(lut6_bucket) {
+        assert_eq!(bel.bel_type(), "LUT6");
     }
 }
 
@@ -492,10 +492,10 @@ fn exact_tile_type_counts() {
 // =====================================================================
 
 #[test]
-fn lut4_pin_directions() {
+fn lut6_pin_directions() {
     let ctx = common::make_example_context();
     let chipdb = ctx.chipdb();
-    let lut_bel = find_bel(&ctx, "LUT4");
+    let lut_bel = find_bel(&ctx, "LUT6");
     let bel_info = chipdb.bel_info(lut_bel);
 
     let mut input_count = 0;
@@ -509,21 +509,21 @@ fn lut4_pin_directions() {
                 // INPUT
                 assert!(
                     name.starts_with("I["),
-                    "LUT4 input pin should be I[n], got {name}"
+                    "LUT6 input pin should be I[n], got {name}"
                 );
                 input_count += 1;
             }
             1 => {
                 // OUTPUT
-                assert_eq!(name, "F", "LUT4 output pin should be F");
+                assert_eq!(name, "F", "LUT6 output pin should be F");
                 output_count += 1;
             }
-            _ => panic!("unexpected pin direction {dir} for LUT4 pin {name}"),
+            _ => panic!("unexpected pin direction {dir} for LUT6 pin {name}"),
         }
     }
 
-    assert_eq!(input_count, 4, "LUT4 should have 4 inputs (K=4)");
-    assert_eq!(output_count, 1, "LUT4 should have 1 output (F)");
+    assert_eq!(input_count, 6, "LUT6 should have 6 inputs (K=6)");
+    assert_eq!(output_count, 1, "LUT6 should have 1 output (F)");
 }
 
 #[test]
@@ -626,8 +626,8 @@ fn logic_tile_has_ff_data_pip_from_lut() {
         "L0_D should have PIP from L0_O, got sources: {sources:?}"
     );
     assert!(
-        sources.contains(&"L0_I3".to_string()),
-        "L0_D should have PIP from L0_I3, got sources: {sources:?}"
+        sources.contains(&"L0_I5".to_string()),
+        "L0_D should have PIP from L0_I5, got sources: {sources:?}"
     );
 }
 
@@ -746,27 +746,27 @@ fn bel_pin_wires_have_bel_pin_refs() {
 // =====================================================================
 
 #[test]
-fn lut4_combinational_delays() {
-    // LUT4 should have comb arcs I[0]->F: 150ps, I[1]->F: 165ps, I[2]->F: 180ps, I[3]->F: 195ps
+fn lut6_combinational_delays() {
+    // LUT6 should have comb arcs I[0]->F: 150ps, I[1]->F: 165ps, ..., I[5]->F: 225ps
     let ctx = common::make_example_context();
     let chipdb = ctx.chipdb();
     let sg = chipdb.speed_grade(0).unwrap();
 
-    let lut4_id = find_constid(chipdb, "LUT4");
+    let lut6_id = find_constid(chipdb, "LUT6");
     let f_id = find_constid(chipdb, "F");
-    let type_idx = chipdb.cell_timing_index(&sg, lut4_id).expect("LUT4 should have timing data");
+    let type_idx = chipdb.cell_timing_index(&sg, lut6_id).expect("LUT6 should have timing data");
 
-    let expected_delays = [(150, "I[0]"), (165, "I[1]"), (180, "I[2]"), (195, "I[3]")];
+    let expected_delays = [(150, "I[0]"), (165, "I[1]"), (180, "I[2]"), (195, "I[3]"), (210, "I[4]"), (225, "I[5]")];
     for (expected_ps, pin_name) in &expected_delays {
         let pin_id = find_constid(chipdb, pin_name);
         let delay = chipdb
             .cell_delay(&sg, type_idx, pin_id, f_id)
-            .unwrap_or_else(|| panic!("LUT4 should have {pin_name}->F delay"));
+            .unwrap_or_else(|| panic!("LUT6 should have {pin_name}->F delay"));
 
         assert_eq!(
             delay.max_delay(),
             *expected_ps,
-            "LUT4 {pin_name}->F delay should be {expected_ps}ps"
+            "LUT6 {pin_name}->F delay should be {expected_ps}ps"
         );
     }
 }
@@ -960,7 +960,7 @@ fn utilization_report_with_cells() {
     assert_eq!(report.total_cells, 10);
     assert_eq!(report.placed_cells, 0, "cells not yet placed");
 
-    let lut_row = report.rows.iter().find(|r| r.resource == "LUT4").unwrap();
+    let lut_row = report.rows.iter().find(|r| r.resource == "LUT6").unwrap();
     assert_eq!(lut_row.used, 10);
     assert_eq!(lut_row.available, 448, "10x10 grid has 56 LOGIC tiles * 8 LUTs");
 }
@@ -978,7 +978,7 @@ fn utilization_report_after_placement() {
     assert_eq!(report.total_cells, 4);
     assert_eq!(report.placed_cells, 4, "all cells should be placed");
 
-    let lut_row = report.rows.iter().find(|r| r.resource == "LUT4").unwrap();
+    let lut_row = report.rows.iter().find(|r| r.resource == "LUT6").unwrap();
     assert!(lut_row.percent() < 1.0, "4/448 is under 1%");
 }
 
@@ -989,7 +989,7 @@ fn utilization_report_format() {
     let text = report.to_string();
 
     assert!(text.contains("Resource Utilization"));
-    assert!(text.contains("LUT4"));
+    assert!(text.contains("LUT6"));
     assert!(text.contains("10")); // used count
     assert!(text.contains("448")); // available count
 }
@@ -1016,7 +1016,7 @@ fn clock_wire_exists_in_all_non_null_tiles() {
 // Routing on real chipdb
 // =====================================================================
 
-/// Find LUT4 BELs in a single LOGIC tile where routing from driver to consumers
+/// Find LUT6 BELs in a single LOGIC tile where routing from driver to consumers
 /// is possible within the tile's switch matrix.
 ///
 /// The example arch switch matrix has a staggered pattern:
@@ -1025,29 +1025,29 @@ fn clock_wire_exists_in_all_non_null_tiles() {
 ///
 /// Returns (driver_bel, consumer_bels) where driver_bel's F output can reach
 /// each consumer_bel's I[0] input through the intra-tile switch matrix.
-fn find_routable_lut4_bels(ctx: &Context) -> (BelId, Vec<BelId>) {
+fn find_routable_lut6_bels(ctx: &Context) -> (BelId, Vec<BelId>) {
     let chipdb = ctx.chipdb();
     let logic_tile = (0..chipdb.num_tiles())
         .find(|&t| chipdb.tile_type_name(t) == "LOGIC")
         .expect("should have a LOGIC tile");
 
-    let mut lut4_bels: Vec<BelId> = chipdb
+    let mut lut6_bels: Vec<BelId> = chipdb
         .bels()
-        .filter(|&bel| bel.tile() == logic_tile && chipdb.bel_type(bel) == "LUT4")
+        .filter(|&bel| bel.tile() == logic_tile && chipdb.bel_type(bel) == "LUT6")
         .collect();
-    lut4_bels.sort_by_key(|b| b.index());
+    lut6_bels.sort_by_key(|b| b.index());
 
     // Find a driver whose F output can reach other LUT I[0] inputs via the switch matrix.
     let f_port = ctx.id("F");
     let i0_port = ctx.id("I[0]");
-    for &driver_bel in &lut4_bels {
+    for &driver_bel in &lut6_bels {
         let src_wire = match ctx.bel_pin_wire(BelPin::new(driver_bel, f_port)) {
             Some(w) => w.id(),
             None => continue,
         };
         // Find which consumer BELs' I[0] pins are reachable from this driver
         let mut reachable = Vec::new();
-        for &consumer_bel in &lut4_bels {
+        for &consumer_bel in &lut6_bels {
             if consumer_bel == driver_bel {
                 continue;
             }
@@ -1074,7 +1074,7 @@ fn find_routable_lut4_bels(ctx: &Context) -> (BelId, Vec<BelId>) {
             return (driver_bel, reachable);
         }
     }
-    panic!("could not find any routable LUT4 driver->consumer pair in a single tile");
+    panic!("could not find any routable LUT6 driver->consumer pair in a single tile");
 }
 
 #[test]
@@ -1083,7 +1083,7 @@ fn route_single_net_on_real_chipdb() {
 
     // Place cells on BELs where the driver's F output can reach the
     // consumer's I[0] input through the intra-tile switch matrix.
-    let (driver_bel, consumers) = find_routable_lut4_bels(&ctx);
+    let (driver_bel, consumers) = find_routable_lut6_bels(&ctx);
     let cell0 = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
     let cell1 = ctx.design.cell_by_name(ctx.id("cell_1")).unwrap();
     assert!(ctx.bind_bel(driver_bel, cell0, PlaceStrength::Placer));
@@ -1111,7 +1111,7 @@ fn route_nets_subset() {
     let mut ctx = common::make_example_context_with_cells(4);
 
     // Place driver and consumers on BELs with intra-tile switch connectivity.
-    let (driver_bel, consumers) = find_routable_lut4_bels(&ctx);
+    let (driver_bel, consumers) = find_routable_lut6_bels(&ctx);
     let cell0 = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
     assert!(ctx.bind_bel(driver_bel, cell0, PlaceStrength::Placer));
     for (i, &consumer_bel) in consumers.iter().take(3).enumerate() {
@@ -1142,7 +1142,7 @@ fn route_all_via_trait() {
     let mut ctx = common::make_example_context_with_cells(4);
 
     // Place driver and consumers on BELs with intra-tile switch connectivity.
-    let (driver_bel, consumers) = find_routable_lut4_bels(&ctx);
+    let (driver_bel, consumers) = find_routable_lut6_bels(&ctx);
     let cell0 = ctx.design.cell_by_name(ctx.id("cell_0")).unwrap();
     assert!(ctx.bind_bel(driver_bel, cell0, PlaceStrength::Placer));
     for (i, &consumer_bel) in consumers.iter().take(3).enumerate() {

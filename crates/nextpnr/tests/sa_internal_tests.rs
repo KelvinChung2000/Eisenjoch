@@ -17,7 +17,7 @@ fn hpwl_no_driver_is_zero() {
 #[test]
 fn hpwl_no_users_is_zero() {
     let mut ctx = common::make_context();
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_idx = ctx.design.add_cell(ctx.id("drv"), cell_type);
     let net_idx = ctx.design.add_net(ctx.id("n0"));
     let q_port = ctx.id("Q");
@@ -32,7 +32,7 @@ fn hpwl_no_users_is_zero() {
 fn hpwl_adjacent_tiles() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let drv_idx = ctx.design.add_cell(ctx.id("drv"), cell_type);
     let usr_idx = ctx.design.add_cell(ctx.id("usr"), cell_type);
     ctx.bind_bel(BelId::new(0, 0), drv_idx, PlaceStrength::Placer);
@@ -59,7 +59,7 @@ fn hpwl_adjacent_tiles() {
 fn hpwl_diagonal_placement() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let drv_idx = ctx.design.add_cell(ctx.id("drv"), cell_type);
     let usr_idx = ctx.design.add_cell(ctx.id("usr"), cell_type);
     ctx.bind_bel(BelId::new(0, 0), drv_idx, PlaceStrength::Placer);
@@ -86,7 +86,7 @@ fn hpwl_diagonal_placement() {
 fn total_hpwl_sums_all_nets() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let ids: Vec<_> = (0..4)
         .map(|i| ctx.design.add_cell(ctx.id(&format!("c{}", i)), cell_type))
         .collect();
@@ -145,7 +145,7 @@ fn initial_placement_no_duplicate_bels() {
 fn initial_placement_too_many_cells_fails() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     for i in 0..5 {
         ctx.design
             .add_cell(ctx.id(&format!("cell_{}", i)), cell_type);

@@ -51,7 +51,7 @@ fn route_r2_design_with_no_routable_nets() {
 #[test]
 fn route_r2_design_with_no_users() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
 
     let cell_name = ctx.id("driver");
@@ -71,7 +71,7 @@ fn route_r2_design_with_no_users() {
 #[test]
 fn route_r2_same_pin_driver_and_sink() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port_name = ctx.id("I0");
 
     let cell_name = ctx.id("cell_a");

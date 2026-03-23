@@ -72,7 +72,7 @@ fn route_design_with_no_routable_nets() {
 #[test]
 fn route_design_with_no_users() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
 
     let cell_name = ctx.id("driver");

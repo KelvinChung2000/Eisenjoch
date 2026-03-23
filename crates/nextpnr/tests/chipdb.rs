@@ -150,7 +150,7 @@ fn bel_name_access() {
 fn bel_type_access() {
     let db = make_test_chipdb();
     let bel = BelId::new(0, 0);
-    assert_eq!(db.bel_type(bel), "LUT4");
+    assert_eq!(db.bel_type(bel), "LUT6");
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn all_tile_bels_have_same_info() {
     for tile in 0..4 {
         let bel = BelId::new(tile, 0);
         assert_eq!(db.bel_name(bel), "LUT0");
-        assert_eq!(db.bel_type(bel), "LUT4");
+        assert_eq!(db.bel_type(bel), "LUT6");
     }
 }
 
@@ -316,7 +316,7 @@ fn constid_lookup() {
     let db = make_test_chipdb();
     assert_eq!(db.constid_str(0), Some("LOGIC"));
     assert_eq!(db.constid_str(1), Some("LUT0"));
-    assert_eq!(db.constid_str(2), Some("LUT4"));
+    assert_eq!(db.constid_str(2), Some("LUT6"));
     assert_eq!(db.constid_str(3), Some("I0"));
     assert_eq!(db.constid_str(4), Some("W0"));
     assert_eq!(db.constid_str(5), Some("LOCAL"));
@@ -376,12 +376,12 @@ fn node_timing_class_accessible() {
 }
 
 #[test]
-fn cell_timing_has_lut4_comb_arc() {
+fn cell_timing_has_lut6_comb_arc() {
     use nextpnr::read_packed;
     let db = make_test_chipdb();
     let sg = db.speed_grade(0).unwrap();
-    // LUT4 type variant index
-    let ct_idx = db.cell_timing_index(sg, 2).unwrap(); // ID_LUT4 = 2
+    // LUT6 type variant index
+    let ct_idx = db.cell_timing_index(sg, 2).unwrap(); // ID_LUT6 = 2
     let ct = &sg.cell_types.get()[ct_idx];
     assert_eq!(ct.pins.len(), 1);
     let pin_tmg = &ct.pins.get()[0];

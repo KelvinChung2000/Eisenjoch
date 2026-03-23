@@ -15,10 +15,10 @@ fn checkpoint_save_load_roundtrip() {
         version: CHECKPOINT_VERSION,
         placements: vec![CellPlacement {
             cell_name: "cell_0".into(),
-            cell_type: "LUT4".into(),
+            cell_type: "LUT6".into(),
             bel_tile: 0,
             bel_index: 0,
-            bel_name: "LUT4_0".into(),
+            bel_name: "LUT6_0".into(),
             tile_name: "CLB_X0Y0".into(),
             tile_type: "CLB".into(),
             strength: 3,
@@ -34,7 +34,7 @@ fn checkpoint_save_load_roundtrip() {
         fingerprint: DesignFingerprint {
             cell_signatures: vec![CellSig {
                 name: "cell_0".into(),
-                cell_type: "LUT4".into(),
+                cell_type: "LUT6".into(),
                 port_count: 2,
             }],
             net_signatures: vec![NetSig {
@@ -100,7 +100,7 @@ fn diff_no_changes() {
     let fp = DesignFingerprint {
         cell_signatures: vec![CellSig {
             name: "c0".into(),
-            cell_type: "LUT4".into(),
+            cell_type: "LUT6".into(),
             port_count: 2,
         }],
         net_signatures: vec![NetSig {
@@ -124,7 +124,7 @@ fn diff_added_cell() {
     let new = DesignFingerprint {
         cell_signatures: vec![CellSig {
             name: "new_cell".into(),
-            cell_type: "LUT4".into(),
+            cell_type: "LUT6".into(),
             port_count: 1,
         }],
         net_signatures: vec![],
@@ -142,7 +142,7 @@ fn diff_removed_cell() {
     let old = DesignFingerprint {
         cell_signatures: vec![CellSig {
             name: "old_cell".into(),
-            cell_type: "LUT4".into(),
+            cell_type: "LUT6".into(),
             port_count: 1,
         }],
         net_signatures: vec![],
@@ -162,7 +162,7 @@ fn diff_changed_cell() {
     let old = DesignFingerprint {
         cell_signatures: vec![CellSig {
             name: "c0".into(),
-            cell_type: "LUT4".into(),
+            cell_type: "LUT6".into(),
             port_count: 2,
         }],
         net_signatures: vec![],
@@ -170,7 +170,7 @@ fn diff_changed_cell() {
     let new = DesignFingerprint {
         cell_signatures: vec![CellSig {
             name: "c0".into(),
-            cell_type: "LUT6".into(), // type changed
+            cell_type: "DFF".into(), // type changed
             port_count: 2,
         }],
         net_signatures: vec![],

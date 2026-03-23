@@ -2,10 +2,10 @@
 """Generate a parameterized example arch chipdb for benchmarking.
 
 Usage: python gen_chipdb.py <output.bba> [--size NxN]
-Default grid size is 100x100 (~71000 LUT4s).
+Default grid size is 100x100 (~71000 LUT6s).
 
 Architecture features:
-  - LUT4 + DFF + DLATCH per slice (8 slices per LOGIC tile)
+  - LUT6 + DFF + DLATCH per slice (8 slices per LOGIC tile)
   - Dual clock networks (CLK0 from IO tile 1,0; CLK1 from IO tile 2,0)
   - Per-FF clock mux (each FF/latch can select CLK0 or CLK1)
   - BRAM tiles every 15th row
@@ -22,7 +22,7 @@ sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
 
 # LUT input count
-K = 4
+K = 6
 # SLICEs per tile
 N = 8
 # IO BELs per IO tile
@@ -120,7 +120,7 @@ def create_logic_tiletype(chip):
             tt.create_pip(f"CLK{c}", f"L{i}_CLK")
 
         # LUT4
-        lut = tt.create_bel(f"L{i}_LUT", "LUT4", z=(i * 3 + 0))
+        lut = tt.create_bel(f"L{i}_LUT", "LUT6", z=(i * 3 + 0))
         for j in range(K):
             tt.add_bel_pin(lut, f"I[{j}]", f"L{i}_I{j}", PinType.INPUT)
         tt.add_bel_pin(lut, "F", f"L{i}_O", PinType.OUTPUT)
@@ -293,8 +293,8 @@ def set_timings(ch):
         in_cap=TimingValue(7000),
         out_res=TimingValue(1200),
     )
-    # LUT4 timing
-    lut = ch.timing.add_cell_variant(speed, "LUT4")
+    # LUT6 timing
+    lut = ch.timing.add_cell_variant(speed, "LUT6")
     for j in range(K):
         lut.add_comb_arc(f"I[{j}]", "F", TimingValue(150 + j * 15))
     # DFF timing (edge-triggered)
@@ -327,7 +327,7 @@ def main():
         and not (x == 0 or x == X - 1 or y == 0 or y == Y - 1)
         and not ((y % 15) == 7)
     )
-    print(f"Grid: {X}x{Y}, ~{logic_tiles * N} LUT4s, ~{logic_tiles * N} DFFs/DLATCHes")
+    print(f"Grid: {X}x{Y}, ~{logic_tiles * N} LUT6s, ~{logic_tiles * N} DFFs/DLATCHes")
 
     ch = Chip("example", "EX1", X, Y)
     ch.strs.read_constids(path.join(FIXTURES_DIR, "constids.inc"))

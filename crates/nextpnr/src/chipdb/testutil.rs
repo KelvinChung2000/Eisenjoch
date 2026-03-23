@@ -107,13 +107,13 @@ impl SyntheticChipDbBuilder {
 
     /// Build a minimal chipdb with:
     /// - 2x2 grid (4 tiles)
-    /// - 1 tile type with 1 bel ("LUT0" of type "LUT4"), 2 wires, 1 pip
+    /// - 1 tile type with 1 bel ("LUT0" of type "LUT6"), 2 wires, 1 pip
     /// - Each tile is an instance of that tile type
     /// - ConstIdData with all strings as bba_ids (known_id_count = 0)
     /// - Uniform timing: 1 speed grade ("DEFAULT") with:
     ///   - PIP timing class 0: 100/150ps delay (fast/slow)
     ///   - Node timing class 0: 50/75ps delay (fast/slow)
-    ///   - Cell timing for LUT4: I0→O combinational arc, 200/300ps (fast/slow)
+    ///   - Cell timing for LUT6: I0→O combinational arc, 200/300ps (fast/slow)
     pub fn build_minimal() -> Vec<u8> {
         let mut db = SyntheticChipDbBuilder { buf: Vec::new() };
 
@@ -136,7 +136,7 @@ impl SyntheticChipDbBuilder {
         // Constid indices (known_id_count = 0, so index = position in bba_ids):
         //   0: "LOGIC"    (tile type name)
         //   1: "LUT0"     (bel name)
-        //   2: "LUT4"     (bel type)
+        //   2: "LUT6"     (bel type)
         //   3: "I0"       (bel input pin name)
         //   4: "W0"       (wire 0 name)
         //   5: "LOCAL"    (wire type)
@@ -150,7 +150,7 @@ impl SyntheticChipDbBuilder {
         let str_offsets = [
             db.append_str("LOGIC"),
             db.append_str("LUT0"),
-            db.append_str("LUT4"),
+            db.append_str("LUT6"),
             db.append_str("I0"),
             db.append_str("W0"),
             db.append_str("LOCAL"),
@@ -166,7 +166,7 @@ impl SyntheticChipDbBuilder {
         // Constid indices
         const ID_LOGIC: i32 = 0;
         const ID_LUT0: i32 = 1;
-        const ID_LUT4: i32 = 2;
+        const ID_LUT6: i32 = 2;
         const ID_I0: i32 = 3;
         const ID_W0: i32 = 4;
         const ID_LOCAL: i32 = 5;
@@ -219,14 +219,14 @@ impl SyntheticChipDbBuilder {
         db.append_val(&bel_pin1);
 
         // =================================================================
-        // BelDataPod (1 bel: "LUT0" of type "LUT4", 2 pins)
+        // BelDataPod (1 bel: "LUT0" of type "LUT6", 2 pins)
         // =================================================================
         let bel_data_offset = db.buf.len();
         let bel_pins_field = bel_data_offset + 24; // name(4)+type(4)+z(2)+pad(2)+flags(4)+site(4)+checker_idx(4)=24
 
         let bel = BelDataPod {
             name: ID_LUT0,
-            bel_type: ID_LUT4,
+            bel_type: ID_LUT6,
             z: 0,
             padding: 0,
             flags: 0,
@@ -407,12 +407,12 @@ impl SyntheticChipDbBuilder {
         };
         db.append_val(&cell_pin_timing);
 
-        // CellTimingPod: LUT4 cell type
+        // CellTimingPod: LUT6 cell type
         let cell_timing_offset = db.buf.len();
         // Fields: type_variant(4) + pins(8) = 12
         let ct_pins_field = cell_timing_offset + 4;
         let cell_timing = CellTimingPod {
-            type_variant: ID_LUT4,
+            type_variant: ID_LUT6,
             pins: Self::make_relslice(ct_pins_field, cell_pin_timing_offset, 1),
         };
         db.append_val(&cell_timing);
@@ -477,13 +477,13 @@ impl SyntheticChipDbBuilder {
 ///
 /// Returns a `ChipDb` backed by a 2x2 grid with:
 /// - 1 tile type ("LOGIC") shared by all tiles
-/// - 1 bel per tile: "LUT0" of type "LUT4" with pins I0 (input) and O (output)
+/// - 1 bel per tile: "LUT0" of type "LUT6" with pins I0 (input) and O (output)
 /// - 2 wires per tile: "W0" (connected to I0) and "W1" (connected to O)
 /// - 1 pip per tile: W0 -> W1
 /// - 1 speed grade ("DEFAULT") with uniform timing:
 ///   - PIP delay: 100ps fast / 150ps slow
 ///   - Node delay: 50ps fast / 75ps slow
-///   - LUT4 I0→O: 200ps fast / 300ps slow
+///   - LUT6 I0→O: 200ps fast / 300ps slow
 ///
 /// # Safety
 /// This uses `from_bytes` internally which creates a temporary file for mmap.

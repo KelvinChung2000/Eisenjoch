@@ -17,7 +17,7 @@ fn make_comb_chain_design(pool: &IdStringPool) -> Design {
 
     // Cell types
     let io_type = pool.intern("IO");
-    let lut_type = pool.intern("LUT4");
+    let lut_type = pool.intern("LUT6");
 
     // Cell names
     let input_name = pool.intern("input_cell");
@@ -91,7 +91,7 @@ fn make_reg_to_reg_design(pool: &IdStringPool) -> (Design, IdString) {
     let mut d = Design::new();
 
     let ff_type = pool.intern("FF");
-    let lut_type = pool.intern("LUT4");
+    let lut_type = pool.intern("LUT6");
 
     let ff_a_name = pool.intern("ff_a");
     let lut_name = pool.intern("lut_mid");
@@ -166,7 +166,7 @@ fn make_two_domain_design(pool: &IdStringPool) -> Design {
     let mut d = Design::new();
 
     let ff_type = pool.intern("FF");
-    let lut_type = pool.intern("LUT4");
+    let lut_type = pool.intern("LUT6");
 
     let ff_a_name = pool.intern("ff_a");
     let lut_name = pool.intern("lut_mid");
@@ -347,7 +347,7 @@ fn sort_single_cell() {
     let pool = IdStringPool::new();
     let mut design = Design::new();
     let name = pool.intern("cell_a");
-    let ctype = pool.intern("LUT4");
+    let ctype = pool.intern("LUT6");
     let idx = design.add_cell(name, ctype);
 
     let sorted = topological_sort(&design);
@@ -363,7 +363,7 @@ fn sort_chain_of_three() {
     let a_name = pool.intern("a");
     let b_name = pool.intern("b");
     let c_name = pool.intern("c");
-    let lut = pool.intern("LUT4");
+    let lut = pool.intern("LUT6");
 
     let o = pool.intern("O");
     let i = pool.intern("I");
@@ -409,7 +409,7 @@ fn sort_fanout() {
     let pool = IdStringPool::new();
     let mut d = Design::new();
 
-    let lut = pool.intern("LUT4");
+    let lut = pool.intern("LUT6");
     let o = pool.intern("O");
     let i = pool.intern("I");
 
@@ -446,7 +446,7 @@ fn sort_dead_cells_excluded() {
     let pool = IdStringPool::new();
     let mut d = Design::new();
 
-    let lut = pool.intern("LUT4");
+    let lut = pool.intern("LUT6");
     let a_name = pool.intern("a");
     let b_name = pool.intern("b");
 

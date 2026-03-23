@@ -1,5 +1,5 @@
 # Yosys synthesis script for nextpnr-rust example architecture.
-# Maps a Verilog design to LUT4 + DFF + IOB primitives.
+# Maps a Verilog design to LUT6 + DFF + IOB primitives.
 
 # Read the design
 read_verilog blinky.v
@@ -11,8 +11,8 @@ synth -top top -flatten -noalumacc
 # Map FFs to DFF cells
 dfflibmap -liberty cells.lib
 
-# Map LUTs to LUT4 (4-input LUTs)
-abc -lut 4
+# Map LUTs to LUT6 (6-input LUTs)
+abc -lut 6
 
 # Map to our cell library
 techmap -map cells_map.v

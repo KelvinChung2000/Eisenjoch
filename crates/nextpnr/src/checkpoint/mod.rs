@@ -50,7 +50,7 @@ pub struct CellPlacement {
     pub bel_tile: i32,
     /// BEL index within the tile.
     pub bel_index: i32,
-    /// Human-readable BEL name (e.g., "LUT4_0").
+    /// Human-readable BEL name (e.g., "LUT6_0").
     #[serde(default)]
     pub bel_name: String,
     /// Human-readable tile name (e.g., "CLB_X1Y2").

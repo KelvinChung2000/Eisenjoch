@@ -82,7 +82,7 @@ fn compute_bbox_no_placed_cells() {
 #[test]
 fn compute_bbox_single_cell() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
     let cell_idx = ctx.design.add_cell(ctx.id("driver"), lut_type);
     ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
@@ -96,7 +96,7 @@ fn compute_bbox_single_cell() {
 #[test]
 fn compute_bbox_with_margin() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
     let cell_idx = ctx.design.add_cell(ctx.id("driver"), lut_type);
     ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);

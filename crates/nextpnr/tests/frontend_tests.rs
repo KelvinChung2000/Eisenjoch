@@ -112,7 +112,7 @@ const BLINKY_JSON: &str = r#"{
             "cells": {
                 "lut0": {
                     "hide_name": 0,
-                    "type": "LUT4",
+                    "type": "LUT6",
                     "parameters": {
                         "INIT": "0000000000001111"
                     },
@@ -187,10 +187,10 @@ fn test_blinky_lut_type() {
     let design = parse_json(BLINKY_JSON, &pool).unwrap();
 
     let lut0_id = pool.intern("lut0");
-    let lut4_type = pool.intern("LUT4");
+    let lut6_type = pool.intern("LUT6");
     let cell_idx = design.cell_by_name(lut0_id).unwrap();
     let cell = design.cell(cell_idx);
-    assert_eq!(cell.cell_type, lut4_type);
+    assert_eq!(cell.cell_type, lut6_type);
 }
 
 #[test]

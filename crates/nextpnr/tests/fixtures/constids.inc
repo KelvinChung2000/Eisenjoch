@@ -1,4 +1,5 @@
 X(LUT4)
+X(LUT6)
 X(DFF)
 X(CLK)
 X(D)

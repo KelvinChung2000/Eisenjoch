@@ -70,14 +70,14 @@ fn get_bel_name() {
 fn get_bel_type() {
     let ctx = common::make_context();
     let bel = BelId::new(0, 0);
-    assert_eq!(ctx.bel(bel).bel_type(), "LUT4");
+    assert_eq!(ctx.bel(bel).bel_type(), "LUT6");
 }
 
 #[test]
 fn get_bel_bucket() {
     let ctx = common::make_context();
     let bel = BelId::new(0, 0);
-    assert_eq!(ctx.bel(bel).bucket(), "LUT4");
+    assert_eq!(ctx.bel(bel).bucket(), "LUT6");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn bind_bel_success() {
     let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
     let cell_name = ctx.id("my_lut");
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type);
     assert!(ctx.bind_bel(bel, cell_idx, PlaceStrength::Placer));
     assert!(!ctx.bel(bel).is_available());
@@ -123,7 +123,7 @@ fn bind_bel_success() {
 fn bind_bel_updates_cell_info() {
     let mut ctx = common::make_context();
     let bel = BelId::new(1, 0);
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_name = ctx.id("my_lut");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type);
 
@@ -138,7 +138,7 @@ fn bind_bel_updates_cell_info() {
 fn bind_bel_duplicate_fails() {
     let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let name1 = ctx.id("cell1");
     let name2 = ctx.id("cell2");
     let idx1 = ctx.design.add_cell(name1, cell_type);
@@ -152,7 +152,7 @@ fn bind_bel_duplicate_fails() {
 fn unbind_bel() {
     let mut ctx = common::make_context();
     let bel = BelId::new(2, 0);
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let cell_name = ctx.id("my_lut");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type);
 
@@ -180,7 +180,7 @@ fn unbind_bel_not_bound_is_noop() {
 fn bind_rebind_bel() {
     let mut ctx = common::make_context();
     let bel = BelId::new(0, 0);
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let name1 = ctx.id("cell_a");
     let name2 = ctx.id("cell_b");
     let idx1 = ctx.design.add_cell(name1, cell_type);
@@ -207,7 +207,7 @@ fn bel_pin_view_exposes_associated_wire() {
 fn cell_pin_view_exposes_port_properties() {
     let mut ctx = common::make_context();
     let cell_name = ctx.id("sink");
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     let port_name = ctx.id("A");
     let net_name = ctx.id("net_a");
 
@@ -387,7 +387,7 @@ fn wire_delay_from_timing_data() {
 fn valid_bel_for_matching_type() {
     let ctx = common::make_context();
     let bel = BelId::new(0, 0);
-    let cell_type = ctx.id("LUT4");
+    let cell_type = ctx.id("LUT6");
     assert!(ctx.bel(bel).is_valid_for_cell_type(cell_type));
 }
 
@@ -418,7 +418,7 @@ fn populate_bel_buckets() {
     assert_eq!(buckets.len(), 1);
 
     let bucket_name = ctx.name_of(buckets[0]);
-    assert_eq!(bucket_name, "LUT4");
+    assert_eq!(bucket_name, "LUT6");
 }
 
 #[test]
@@ -426,7 +426,7 @@ fn get_bels_for_bucket() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
-    let lut_bucket = ctx.id("LUT4");
+    let lut_bucket = ctx.id("LUT6");
     let lut_bels: Vec<BelId> = ctx.bels_for_bucket(lut_bucket).map(|b| b.id()).collect();
     assert_eq!(lut_bels.len(), 4);
 
@@ -463,7 +463,7 @@ fn full_placement_flow() {
     let mut ctx = common::make_context();
     ctx.populate_bel_buckets();
 
-    let cell_type_id = ctx.id("LUT4");
+    let cell_type_id = ctx.id("LUT6");
     let cell_name = ctx.id("top/lut_0");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type_id);
 

@@ -48,7 +48,7 @@ pub fn parse_bit_value(val: &Value) -> Result<BitValue> {
 /// is missing from the Yosys JSON (common with BLIF import).
 fn infer_port_direction(cell_type: &str, port_name: &str) -> PortType {
     match cell_type {
-        "LUT4" => {
+        "LUT4" | "LUT6" => {
             if port_name == "F" { PortType::Out } else { PortType::In }
         }
         "CARRY4" => {

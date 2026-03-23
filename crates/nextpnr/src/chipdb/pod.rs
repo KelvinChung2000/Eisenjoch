@@ -31,7 +31,7 @@ pub struct BelPinPod {
 pub struct BelDataPod {
     /// BEL name (constid index).
     pub name: i32,
-    /// BEL type (constid index, e.g. "LUT4", "FF").
+    /// BEL type (constid index, e.g. "LUT6", "FF").
     pub bel_type: i32,
     /// Z position within the tile.
     pub z: i16,

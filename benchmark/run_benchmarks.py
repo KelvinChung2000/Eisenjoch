@@ -2,9 +2,9 @@
 
 Usage: python run_benchmarks.py [--size NxN] [--benchmarks name1,name2,...] [--placer heap|sa]
 
-Architecture: LUT4 + DFF + DLATCH, dual clock networks, fixed 100x100 grid (~71K LUTs).
+Architecture: LUT6 + DFF + DLATCH, dual clock networks, fixed 100x100 grid (~71K LUTs).
 Steps for each benchmark:
-  1. Yosys synthesis (Verilog -> LUT4+DFF+DLATCH -> JSON)
+  1. Yosys synthesis (Verilog -> LUT6+DFF+DLATCH -> JSON)
   2. Generate or reuse chipdb (default 100x100)
   3. nextpnr-rust pack -> place -> route -> timing
 """
@@ -55,7 +55,7 @@ def compute_grid_size(lut_count, io_count=0, headroom=2.0):
 
     Layout: NxN grid, IO on edges, BRAM every 15th row, corners are NULL.
     Logic tiles: (N-2)*(N-2) minus ~1/15 for BRAM rows.
-    Each logic tile has N_SLICES=8 LUT4s.
+    Each logic tile has N_SLICES=8 LUT6s.
     IO BELs: 4*(N-2)*2 on edges.
     Uses 2x headroom for comfortable routing.
     """
@@ -137,7 +137,7 @@ async2sync
 dfflegalize -cell $_DFF_P_ 01 -cell $_DLATCH_P_ 01
 dfflibmap -liberty {os.path.join(DEMO_DIR, "cells.lib")}
 techmap -map +/adff2dff.v
-abc -lut 4
+abc -lut 6
 techmap -map {os.path.join(DEMO_DIR, "cells_map.v")}
 clean -purge
 opt_clean
@@ -411,10 +411,10 @@ def main():
             print(f"    {err[:200]}")
             synth_results[name] = {"status": "synth_fail", "error": err[:200]}
         else:
-            luts = cell_types.get("LUT4", 0)
+            luts = cell_types.get("LUT6", 0)
             dffs = cell_types.get("DFF", 0)
             ios = cell_types.get("_io_count", 0)
-            print(f"OK  {luts} LUT4, {dffs} DFF, {ios} IOs ({elapsed:.1f}s)")
+            print(f"OK  {luts} LUT6, {dffs} DFF, {ios} IOs ({elapsed:.1f}s)")
             synth_results[name] = {
                 "status": "synth_ok",
                 "luts": luts,
@@ -507,7 +507,7 @@ def main():
 
 def print_synth_summary(results):
     print("=" * 72)
-    print(f"{'Benchmark':<20} {'Status':<10} {'LUT4':>8} {'DFF':>8}")
+    print(f"{'Benchmark':<20} {'Status':<10} {'LUT6':>8} {'DFF':>8}")
     print("-" * 72)
     for name, r in sorted(results.items()):
         status = r.get("status", "?")

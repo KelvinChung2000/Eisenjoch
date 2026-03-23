@@ -295,7 +295,7 @@ fn non_shared_wires_not_congested() {
 #[test]
 fn route_net_same_pin_driver_and_sink() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port_name = ctx.id("I0");
     let cell_idx = ctx.design.add_cell(ctx.id("cell_a"), lut_type);
     ctx.design
@@ -311,7 +311,7 @@ fn route_net_same_pin_driver_and_sink() {
 #[test]
 fn route_net_cross_tile_fails_in_minimal_chipdb() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
     let driver_idx = ctx.design.add_cell(ctx.id("driver"), lut_type);
     ctx.design
@@ -386,7 +386,7 @@ fn collect_routable_nets_skips_no_driver() {
 #[test]
 fn collect_routable_nets_finds_valid_net() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
     let cell_idx = ctx.design.add_cell(ctx.id("cell"), lut_type);
     ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
@@ -399,7 +399,7 @@ fn collect_routable_nets_finds_valid_net() {
 #[test]
 fn compute_route_produces_valid_plan() {
     let mut ctx = common::make_context();
-    let lut_type = ctx.id("LUT4");
+    let lut_type = ctx.id("LUT6");
     let port = ctx.id("I0");
     let cell_idx = ctx.design.add_cell(ctx.id("cell_a"), lut_type);
     ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);
@@ -457,7 +457,7 @@ fn compute_then_apply_matches_route_net() {
 
     // Setup: driver BEL(0,0), sink BEL(0,0) same pin
     for ctx in [&mut ctx1, &mut ctx2] {
-        let lut_type = ctx.id("LUT4");
+        let lut_type = ctx.id("LUT6");
         let port = ctx.id("I0");
         let cell_idx = ctx.design.add_cell(ctx.id("cell_a"), lut_type);
         ctx.design.cell_edit(cell_idx).add_port(port, PortType::Out);

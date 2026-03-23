@@ -18,7 +18,7 @@ from himbaechel_dbgen.chip import *  # noqa: E402
 X = 10
 Y = 10
 # LUT input count
-K = 4
+K = 6
 # SLICEs per tile
 N = 8
 # number of local wires
@@ -91,7 +91,7 @@ def create_logic_tiletype(chip: Chip):
     tt.create_wire("CLK", "TILE_CLK")
     for i in range(N):
         # LUT
-        lut = tt.create_bel(f"L{i}_LUT", "LUT4", z=(i * 2 + 0))
+        lut = tt.create_bel(f"L{i}_LUT", "LUT6", z=(i * 2 + 0))
         for j in range(K):
             tt.add_bel_pin(lut, f"I[{j}]", f"L{i}_I{j}", PinType.INPUT)
         tt.add_bel_pin(lut, "F", f"L{i}_O", PinType.OUTPUT)
@@ -238,7 +238,7 @@ def set_timings(ch):
         in_cap=TimingValue(7000),
         out_res=TimingValue(1200),
     )
-    lut = ch.timing.add_cell_variant(speed, "LUT4")
+    lut = ch.timing.add_cell_variant(speed, "LUT6")
     for j in range(K):
         lut.add_comb_arc(f"I[{j}]", "F", TimingValue(150 + j * 15))
     dff = ch.timing.add_cell_variant(speed, "DFF")

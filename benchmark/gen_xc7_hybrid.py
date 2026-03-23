@@ -1,13 +1,11 @@
 # ruff: noqa: E402, F403, F405
-"""Generate a hybrid chipdb: synthetic BELs + real Xilinx Series 7 routing.
+"""Generate a hybrid chipdb: real XC7 tile types + synthetic LUT6/DFF BELs.
 
-Uses our standard LUT4/DFF/IOB BELs and cell types (so existing benchmarks,
-packer, and placer work unchanged) but replaces the simple neighbor-hop
-switch matrix with the real Xilinx Artix-7 interconnect fabric (600 wires
-and 3737 PIPs per INT tile, plus long wires via tileconn nodes).
-
-The generated .bin is cached: re-running with the same inputs skips
-regeneration.  Delete the .bin (or its .hash sidecar) to force a rebuild.
+Copies all tile types from prjxray with their real wires and PIPs.
+For CLB tiles (CLBLL_L, CLBLM_R, etc.), replaces SLICEL/SLICEM sites
+with our synthetic LUT6/DFF/DLATCH BELs mapped to the real site pin wires.
+BRAM/DSP tiles are routing-only black boxes (wires + PIPs, no BELs).
+All other tile types get their tileconn-derived wires for BFS traversal.
 
 Usage:
     python gen_xc7_hybrid.py <output.bin> \\
@@ -26,7 +24,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from collections import defaultdict
 from os import path
@@ -41,9 +38,8 @@ ROOT = path.dirname(HERE)
 FIXTURES_DIR = path.join(ROOT, "crates", "nextpnr", "tests", "fixtures")
 CHIPDB_DIR = path.join(ROOT, "chip_database")
 
-# Synthetic arch parameters (must match existing benchmarks)
-K = 4
-N = 8
+# Synthetic arch parameters
+K = 6  # LUT6 to match real XC7 SLICEL
 N_IO = 2
 N_CLK = 2
 
@@ -58,18 +54,11 @@ def _input_hash(script_path, xray, tilegrid_path, tileconn_path, size):
     for fpath in (script_path, tilegrid_path, tileconn_path):
         with open(fpath, "rb") as f:
             h.update(f.read())
-    # Include INT_L / INT_R tile type data
-    for name in ("INT_L", "INT_R"):
-        fp = path.join(xray, f"tile_type_{name}.json")
-        if path.exists(fp):
-            with open(fp, "rb") as f:
-                h.update(f.read())
     h.update((size or "full").encode())
     return h.hexdigest()
 
 
 def _is_cached(output_bin, expected_hash):
-    """Return True if output_bin exists and its sidecar hash matches."""
     hash_path = output_bin + ".hash"
     if not path.exists(output_bin) or not path.exists(hash_path):
         return False
@@ -95,192 +84,95 @@ def load_tile_type_json(xray_root, name):
         return json.load(f)
 
 
-def add_int_routing(tt, int_data, prefix=""):
-    """Add real Xilinx INT tile wires and PIPs to a tile type."""
-    wires = int_data.get("wires", {})
-    pips = int_data.get("pips", {})
-    created_wires = set()
+def add_slice_bels(tt, site_data, z_offset):
+    """Replace one SLICEL/SLICEM site with 4× LUT6 + 4× DFF + 4× DLATCH BELs.
 
-    for wname in sorted(wires.keys()):
-        full = f"{prefix}{wname}"
-        tt.create_wire(full, "ROUTING")
-        created_wires.add(full)
-
-    for pip_name, pdata in pips.items():
-        src = f"{prefix}{pdata['src_wire']}"
-        dst = f"{prefix}{pdata['dst_wire']}"
-        if src in created_wires and dst in created_wires:
-            tt.create_pip(src, dst, timing_class="TILE_ROUTING")
-
-    return created_wires
-
-
-# Real Xilinx BYP wire -> FF D input mapping.
-# BYP_L{n} (sorted index in INT wires) -> our L{slot}_D
-# This gives each FF a dedicated bypass wire separate from the LUT inputs.
-REAL_BYP_MAP = {
-    0: 0,   # BYP_L0 -> L0_D
-    1: 4,   # BYP_L1 -> L4_D
-    2: 2,   # BYP_L2 -> L2_D
-    3: 6,   # BYP_L3 -> L6_D
-    4: 5,   # BYP_L4 -> L5_D
-    5: 1,   # BYP_L5 -> L1_D
-    6: 7,   # BYP_L6 -> L7_D
-    7: 3,   # BYP_L7 -> L3_D
-}
-
-# Real Xilinx xc7 CLBLL_L IMUX-to-LUT mapping (sorted IMUX indices).
-# Each slice column (LUT) has 6 dedicated IMUX wires for its 6 inputs.
-# Our K=4 LUT connects each input to ALL 6 IMUX in its slice, giving
-# the router flexibility to avoid congestion.
-REAL_IMUX_MAP = [
-    [0, 2, 23, 43, 44, 47],       # L0 (slice L, col A)
-    [5, 6, 8, 11, 18, 19],        # L1 (slice L, col B)
-    [13, 14, 16, 24, 27, 28],     # L2 (slice L, col C)
-    [30, 31, 33, 36, 37, 41],     # L3 (slice L, col D)
-    [1, 3, 12, 34, 45, 46],       # L4 (slice LL, col A)
-    [4, 7, 9, 10, 17, 20],        # L5 (slice LL, col B)
-    [15, 21, 22, 25, 26, 29],     # L6 (slice LL, col C)
-    [32, 35, 38, 39, 40, 42],     # L7 (slice LL, col D)
-]
-
-# Real Xilinx LOGIC_OUTS mapping: each LUT/FF has 3 dedicated outputs.
-# {slice_idx: {"lut": idx, "ff": idx, "mux": idx}}
-REAL_LO_MAP = [
-    {"lut": 22, "ff": 0, "mux": 8},   # L0
-    {"lut": 23, "ff": 1, "mux": 9},   # L1
-    {"lut": 2, "ff": 12, "mux": 10},  # L2
-    {"lut": 3, "ff": 17, "mux": 11},  # L3
-    {"lut": 4, "ff": 18, "mux": 13},  # L4
-    {"lut": 5, "ff": 19, "mux": 14},  # L5
-    {"lut": 6, "ff": 20, "mux": 15},  # L6
-    {"lut": 7, "ff": 21, "mux": 16},  # L7
-]
-
-
-def connect_bels_to_routing(tt, int_wires, prefix=""):
-    """Connect BEL pins to INT routing using the real Xilinx IMUX/LOGIC_OUTS mapping.
-
-    Each LUT input can reach any of the 6 IMUX wires assigned to its slice
-    (real Xilinx has 6 inputs per LUT; our K=4 picks 4 of 6).
-    Each LUT/FF output drives all 3 LOGIC_OUTS in its slice.
+    Maps BEL pins directly to real site pin wires from prjxray:
+    - LUT6 I[0..5] → A1..A6 (or B1..B6, C1..C6, D1..D6)
+    - LUT6 F → A (LUT output wire)
+    - DFF D → AX (bypass wire), CLK → CLK, Q → AQ
     """
-    imux = sorted([w for w in int_wires if "IMUX" in w])
-    logic_outs = sorted([w for w in int_wires if "LOGIC_OUTS" in w])
+    pins = site_data["site_pins"]
 
-    if imux and len(imux) >= 48:
-        for i in range(N):
-            slice_imux = [imux[idx] for idx in REAL_IMUX_MAP[i]]
-            for j in range(K):
-                pin = f"L{i}_I{j}"
-                for mux_wire in slice_imux:
-                    tt.create_pip(mux_wire, pin, timing_class="SWINPUT")
+    # Derive wire prefix from a known pin (e.g., "A1" → "CLBLL_L_A1" → "CLBLL_L_")
+    a1_wire = pins["A1"]["wire"]
+    prefix = a1_wire[: a1_wire.rfind("A1")]
 
-    if logic_outs and len(logic_outs) >= 24:
-        for i in range(N):
-            lo_map = REAL_LO_MAP[i]
-            # LUT output drives all 3 LOGIC_OUTS in its slice
-            for idx in (lo_map["lut"], lo_map["ff"], lo_map["mux"]):
-                tt.create_pip(f"L{i}_O", logic_outs[idx], timing_class="SWINPUT")
-                tt.create_pip(f"L{i}_Q", logic_outs[idx], timing_class="SWINPUT")
+    for i, letter in enumerate("ABCD"):
+        z = z_offset + i * 3
 
-    # FF data bypass: each FF D input gets a dedicated BYP wire from INT routing.
-    # This avoids sharing the LUT I[3] wire (which caused congestion).
-    # INT_L has BYP_L0..BYP_L7; INT_R has BYP0..BYP7 (no _L suffix).
-    byp_wires = sorted([
-        w for w in int_wires
-        if (w.startswith("BYP_L") or (w.startswith("BYP") and w[3:].isdigit()))
-        and "ALT" not in w and "BOUNCE" not in w
-    ])
-    if len(byp_wires) >= 8:
-        for byp_idx, slot in REAL_BYP_MAP.items():
-            if byp_idx < len(byp_wires):
-                tt.create_pip(byp_wires[byp_idx], f"L{slot}_D", timing_class="SWINPUT")
-
-    clk_wires = sorted([w for w in int_wires if "CLK" in w and "LOGIC" not in w])
-    for i in range(N):
-        for cw in clk_wires[: min(N_CLK, len(clk_wires))]:
-            tt.create_pip(cw, f"L{i}_CLK")
-
-
-def create_logic_tile(chip, int_data, suffix="LOGIC"):
-    """Create LOGIC tile with synthetic BELs + real INT routing."""
-    tt = chip.create_tile_type(suffix)
-
-    for i in range(N):
+        # LUT6: 6 inputs, 1 output
+        lut = tt.create_bel(f"{prefix}{letter}_LUT", "LUT6", z=z)
         for j in range(K):
-            tt.create_wire(f"L{i}_I{j}", "LUT_INPUT")
-        tt.create_wire(f"L{i}_D", "FF_DATA")
-        tt.create_wire(f"L{i}_O", "LUT_OUT")
-        tt.create_wire(f"L{i}_Q", "FF_OUT")
-        tt.create_wire(f"L{i}_CLK", "FF_CLK")
+            pin_name = f"{letter}{j + 1}"
+            tt.add_bel_pin(lut, f"I[{j}]", pins[pin_name]["wire"], PinType.INPUT)
+        tt.add_bel_pin(lut, "F", pins[letter]["wire"], PinType.OUTPUT)
 
-    for i in range(N):
-        lut = tt.create_bel(f"L{i}_LUT", "LUT4", z=(i * 3))
-        for j in range(K):
-            tt.add_bel_pin(lut, f"I[{j}]", f"L{i}_I{j}", PinType.INPUT)
-        tt.add_bel_pin(lut, "F", f"L{i}_O", PinType.OUTPUT)
+        # DFF: data from bypass (AX/BX/CX/DX), clock, output (AQ/BQ/CQ/DQ)
+        ff = tt.create_bel(f"{prefix}{letter}_FF", "DFF", z=z + 1)
+        tt.add_bel_pin(ff, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
+        tt.add_bel_pin(ff, "CLK", pins["CLK"]["wire"], PinType.INPUT)
+        tt.add_bel_pin(ff, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
 
-        tt.create_pip(f"L{i}_O", f"L{i}_D")
-        # In real Xilinx, the FF bypass (DI/BX/CX/DX) has its own
-        # dedicated IMUX wire separate from the LUT inputs.
-        # We use the BYP IMUX wires for this — connect_bels_to_routing
-        # will add IMUX→D PIPs for the FF data bypass.
+        # DLATCH: same pins as DFF
+        latch = tt.create_bel(f"{prefix}{letter}_LATCH", "DLATCH", z=z + 2)
+        tt.add_bel_pin(latch, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
+        tt.add_bel_pin(latch, "G", pins["CLK"]["wire"], PinType.INPUT)
+        tt.add_bel_pin(latch, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
 
-        ff = tt.create_bel(f"L{i}_FF", "DFF", z=(i * 3 + 1))
-        tt.add_bel_pin(ff, "D", f"L{i}_D", PinType.INPUT)
-        tt.add_bel_pin(ff, "CLK", f"L{i}_CLK", PinType.INPUT)
-        tt.add_bel_pin(ff, "Q", f"L{i}_Q", PinType.OUTPUT)
+        # LUT output → FF data bypass (so LUT can feed FF directly)
+        tt.create_pip(pins[letter]["wire"], pins[f"{letter}X"]["wire"])
 
-        latch = tt.create_bel(f"L{i}_LATCH", "DLATCH", z=(i * 3 + 2))
-        tt.add_bel_pin(latch, "D", f"L{i}_D", PinType.INPUT)
-        tt.add_bel_pin(latch, "G", f"L{i}_CLK", PinType.INPUT)
-        tt.add_bel_pin(latch, "Q", f"L{i}_Q", PinType.OUTPUT)
+    # GND/VCC to all BEL input pins
+    for letter in "ABCD":
+        for j in range(1, K + 1):
+            tt.create_pip("GND", pins[f"{letter}{j}"]["wire"])
+            tt.create_pip("VCC", pins[f"{letter}{j}"]["wire"])
+        tt.create_pip("GND", pins[f"{letter}X"]["wire"])
+        tt.create_pip("VCC", pins[f"{letter}X"]["wire"])
+    tt.create_pip("GND", pins["CLK"]["wire"])
+    tt.create_pip("VCC", pins["CLK"]["wire"])
 
-    int_wires = add_int_routing(tt, int_data)
-    connect_bels_to_routing(tt, int_wires)
 
-    # GND/VCC — connect to all BEL input pins
-    tt.create_wire("GND", "GND", const_value="GND")
-    tt.create_wire("VCC", "VCC", const_value="VCC")
-    for i in range(N):
-        tt.create_pip("GND", f"L{i}_CLK")
-        tt.create_pip("VCC", f"L{i}_CLK")
-        for j in range(K):
-            tt.create_pip("GND", f"L{i}_I{j}")
-            tt.create_pip("VCC", f"L{i}_I{j}")
-        tt.create_pip("GND", f"L{i}_D")
-        tt.create_pip("VCC", f"L{i}_D")
+def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
+    """Create a tile type by copying wires/PIPs from prjxray + tileconn wires.
 
-    # IO bridge wires: these exist in LOGIC tiles too, connected to
-    # IMUX/LOGIC_OUTS via PIPs.  Nodes link them to the IO tile's
-    # matching bridge wires.
-    imux = sorted([w for w in int_wires if "IMUX" in w])
-    logic_outs = sorted([w for w in int_wires if "LOGIC_OUTS" in w])
-    for i in range(N_IO):
-        tt.create_wire(f"IO_BRIDGE_IN{i}", "IO_BRIDGE")
-        tt.create_wire(f"IO_BRIDGE_OUT{i}", "IO_BRIDGE")
-        tt.create_wire(f"IO_BRIDGE_T{i}", "IO_BRIDGE")
-        # Bridge out (from IO pad) → can reach any IMUX (drives LUT inputs)
-        for mux_wire in imux:
-            tt.create_pip(f"IO_BRIDGE_OUT{i}", mux_wire)
-        # Any LOGIC_OUTS → bridge in (to IO pad, for driving outputs)
-        for lo_wire in logic_outs:
-            tt.create_pip(lo_wire, f"IO_BRIDGE_IN{i}")
-            tt.create_pip(lo_wire, f"IO_BRIDGE_T{i}")
+    Returns (tile_type, xray_data_or_None).
+    """
+    data = load_tile_type_json(xray_root, xc7_type)
+    tt = chip.create_tile_type(xc7_type)
+    created = set()
 
-    tt.create_group("SWITCHBOX", "SWITCHBOX")
-    return tt
+    # 1. Copy all wires from tile_type JSON
+    if data:
+        for wname in data.get("wires", {}):
+            tt.create_wire(wname, "ROUTING")
+            created.add(wname)
+
+    # 2. Add tileconn wires not already present
+    for wname in tc_wires:
+        if wname not in created:
+            tt.create_wire(wname, "ROUTING")
+            created.add(wname)
+
+    # 3. Copy all PIPs from tile_type JSON
+    if data:
+        for pdata in data.get("pips", {}).values():
+            src, dst = pdata["src_wire"], pdata["dst_wire"]
+            if src in created and dst in created:
+                tt.create_pip(src, dst)
+
+    # 4. GND/VCC
+    if "GND" not in created:
+        tt.create_wire("GND", "GND", const_value="GND")
+    if "VCC" not in created:
+        tt.create_wire("VCC", "VCC", const_value="VCC")
+
+    return tt, data, created
 
 
 def create_io_tile(chip, side="L"):
-    """Create IO tile with dedicated bridge wires to avoid IMUX/LOGIC_OUTS aliasing.
-
-    IO BEL pins connect to IO_BRIDGE wires via PIPs.  Separate nodes
-    link IO_BRIDGE wires to matching wires in the nearest LOGIC tile,
-    where PIPs connect them to IMUX/LOGIC_OUTS.  This avoids sharing
-    IMUX/LOGIC_OUTS between IO and LOGIC tiles.
-    """
+    """IO tile with IOB BELs and bridge wires to INT routing."""
     suffix = "IO_L" if side == "L" else "IO_R"
     tt = chip.create_tile_type(suffix)
 
@@ -302,23 +194,16 @@ def create_io_tile(chip, side="L"):
         if c < N_IO:
             tt.create_pip(f"IO{c}_O", f"GCLK{c}_OUT")
 
-    # Dedicated bridge wires — these will be linked to LOGIC tiles via nodes.
-    # IO_BRIDGE_IN{i}: signals entering from fabric to IO pad (output pins)
-    # IO_BRIDGE_OUT{i}: signals leaving IO pad into fabric (input pins)
     for i in range(N_IO):
         tt.create_wire(f"IO_BRIDGE_IN{i}", "IO_BRIDGE")
         tt.create_wire(f"IO_BRIDGE_OUT{i}", "IO_BRIDGE")
         tt.create_wire(f"IO_BRIDGE_T{i}", "IO_BRIDGE")
-        # BEL output (pad→fabric) → bridge out
         tt.create_pip(f"IO{i}_O", f"IO_BRIDGE_OUT{i}")
-        # Bridge in → BEL input (fabric→pad)
         tt.create_pip(f"IO_BRIDGE_IN{i}", f"IO{i}_I")
-        # Bridge T → BEL tristate
         tt.create_pip(f"IO_BRIDGE_T{i}", f"IO{i}_T")
 
     tt.create_wire("GND", "GND", const_value="GND")
     tt.create_wire("VCC", "VCC", const_value="VCC")
-    # GND/VCC for IO T pin (always drive / always tristate)
     for i in range(N_IO):
         tt.create_pip("GND", f"IO{i}_T")
         tt.create_pip("VCC", f"IO{i}_T")
@@ -344,14 +229,7 @@ def create_null_tile(chip):
 # ---------------------------------------------------------------------------
 
 def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=None):
-    """Generate the hybrid chipdb BBA file. Returns the BBA path."""
-    int_l_data = load_tile_type_json(xray, "INT_L")
-    int_r_data = load_tile_type_json(xray, "INT_R")
-    print(
-        f"INT_L: {len(int_l_data['wires'])} wires, {len(int_l_data['pips'])} PIPs; "
-        f"INT_R: {len(int_r_data['wires'])} wires, {len(int_r_data['pips'])} PIPs"
-    )
-
+    """Generate the hybrid chipdb BBA file."""
     with open(tilegrid_path) as f:
         tilegrid = json.load(f)
     with open(tileconn_path) as f:
@@ -378,42 +256,114 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
 
     int_types = {"INT_L", "INT_R"}
     io_types = {"LIOB33", "RIOB33", "LIOB33_SING", "RIOB33_SING"}
+    left_io = {"LIOB33", "LIOB33_SING"}
+    right_io = {"RIOB33", "RIOB33_SING"}
+    clb_types = {"CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R"}
 
+    # ------------------------------------------------------------------
+    # Derive wire sets from tileconn (for all tile types)
+    # ------------------------------------------------------------------
+    tc_wire_sets = defaultdict(set)
+    for conn in tileconn:
+        a_type, b_type = conn["tile_types"]
+        for wa, wb in conn["wire_pairs"]:
+            tc_wire_sets[a_type].add(wa)
+            tc_wire_sets[b_type].add(wb)
+
+    # ------------------------------------------------------------------
+    # Create tile types
+    # ------------------------------------------------------------------
     ch = Chip("xc7_hybrid", "XC7A50T", X, Y)
     ch.strs.read_constids(path.join(FIXTURES_DIR, "constids.inc"))
     ch.read_gfxids(path.join(FIXTURES_DIR, "gfxids.inc"))
 
-    create_logic_tile(ch, int_l_data, suffix="LOGIC_L")
-    create_logic_tile(ch, int_r_data, suffix="LOGIC_R")
+    # IO tiles (synthetic, with IOB BELs + bridge wires)
     create_io_tile(ch, side="L")
     create_io_tile(ch, side="R")
     create_null_tile(ch)
 
-    left_io = {"LIOB33", "LIOB33_SING"}
-    right_io = {"RIOB33", "RIOB33_SING"}
+    # All XC7 tile types present in the tilegrid
+    all_xc7_types = sorted(set(xc7_grid.values()) - {"NULL"} - io_types)
 
-    n_logic = n_io = n_null = 0
+    # Track which tile types we've created and their wire sets
+    tile_wire_sets = {}  # xc7_type -> set of wire names
+    n_clb_bels = 0
+
+    for xc7_type in all_xc7_types:
+        tc_wires = tc_wire_sets.get(xc7_type, set())
+        tt, data, created_wires = create_tile_from_xray(ch, xray, xc7_type, tc_wires)
+        tile_wire_sets[xc7_type] = created_wires
+
+        # CLB tiles: add LUT6/DFF/DLATCH BELs replacing SLICEL/SLICEM sites
+        if xc7_type in clb_types and data:
+            for idx, site in enumerate(data.get("sites", [])):
+                if site.get("type") in ("SLICEL", "SLICEM"):
+                    add_slice_bels(tt, site, z_offset=idx * 12)
+                    n_clb_bels += 4  # 4 LUT+FF per slice
+
+        # INT tiles: add IO bridge wires + PIPs for IO connectivity
+        if xc7_type in int_types:
+            imux = sorted([w for w in created_wires if "IMUX" in w])
+            logic_outs = sorted([w for w in created_wires if "LOGIC_OUTS" in w])
+            for i in range(N_IO):
+                for bname in (f"IO_BRIDGE_IN{i}", f"IO_BRIDGE_OUT{i}", f"IO_BRIDGE_T{i}"):
+                    tt.create_wire(bname, "IO_BRIDGE")
+                    created_wires.add(bname)
+                # Bridge out (from IO pad) → can reach any IMUX
+                for mux_wire in imux:
+                    tt.create_pip(f"IO_BRIDGE_OUT{i}", mux_wire)
+                # Any LOGIC_OUTS → bridge in (to IO pad)
+                for lo_wire in logic_outs:
+                    tt.create_pip(lo_wire, f"IO_BRIDGE_IN{i}")
+                    tt.create_pip(lo_wire, f"IO_BRIDGE_T{i}")
+
+    # n_clb_bels counts LUTs per tile type definition; multiply by tile instances later
+    bels_per_clb = {}  # xc7_type -> n_luts in that type
+    for xc7_type in clb_types:
+        bels_per_clb[xc7_type] = 0
+    # Recount from tile type data
+    for xc7_type in clb_types:
+        data = load_tile_type_json(xray, xc7_type)
+        if data:
+            for site in data.get("sites", []):
+                if site.get("type") in ("SLICEL", "SLICEM"):
+                    bels_per_clb[xc7_type] += 4  # 4 sub-LUTs per SLICE
+    print(f"Created {len(all_xc7_types)} tile types from prjxray")
+
+    # ------------------------------------------------------------------
+    # Tile assignment
+    # ------------------------------------------------------------------
+    n_int = n_clb = n_io = n_routing = n_null = 0
     for y in range(Y):
         for x in range(X):
             xc7_type = xc7_grid.get((x, y), "NULL")
-            if xc7_type == "INT_L":
-                ch.set_tile_type(x, y, "LOGIC_L")
-                n_logic += 1
-            elif xc7_type == "INT_R":
-                ch.set_tile_type(x, y, "LOGIC_R")
-                n_logic += 1
-            elif xc7_type in left_io:
+            if xc7_type in left_io:
                 ch.set_tile_type(x, y, "IO_L")
                 n_io += 1
             elif xc7_type in right_io:
                 ch.set_tile_type(x, y, "IO_R")
                 n_io += 1
+            elif xc7_type in tile_wire_sets:
+                ch.set_tile_type(x, y, xc7_type)
+                if xc7_type in int_types:
+                    n_int += 1
+                elif xc7_type in clb_types:
+                    n_clb += 1
+                else:
+                    n_routing += 1
             else:
                 ch.set_tile_type(x, y, "NULL")
                 n_null += 1
 
-    print(f"Tile assignment: {n_logic} LOGIC, {n_io} IO, {n_null} NULL")
-    print(f"Capacity: ~{n_logic * N} LUT4s, ~{n_logic * N} DFFs")
+    # Count total BELs across all tile instances
+    total_luts = 0
+    for y in range(Y):
+        for x in range(X):
+            xc7_type = xc7_grid.get((x, y), "NULL")
+            if xc7_type in bels_per_clb:
+                total_luts += bels_per_clb[xc7_type]
+    print(f"Tile assignment: {n_int} INT, {n_clb} CLB, {n_io} IO, {n_routing} routing, {n_null} NULL")
+    print(f"Capacity: ~{total_luts} LUT6s, ~{total_luts} DFFs")
 
     # ------------------------------------------------------------------
     # Inter-tile routing nodes from tileconn
@@ -424,26 +374,18 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     for (x, y), ttype in xc7_grid.items():
         tiles_by_xc7_type[ttype].append((x, y))
 
-    wire_set_cache = {}
+    # Load full wire sets for INT tiles from prjxray
+    int_l_data = load_tile_type_json(xray, "INT_L")
+    int_r_data = load_tile_type_json(xray, "INT_R")
+    int_l_wires = set(int_l_data["wires"].keys()) if int_l_data else set()
+    int_r_wires = set(int_r_data["wires"].keys()) if int_r_data else set()
 
-    def get_int_wire_set(ttype):
-        if ttype not in wire_set_cache:
-            data = load_tile_type_json(xray, ttype)
-            wire_set_cache[ttype] = set(data["wires"].keys()) if data else set()
-        return wire_set_cache[ttype]
+    # Wire sets for BFS: union of prjxray wires + tileconn wires per type
+    wire_sets = dict(tc_wire_sets)
+    wire_sets["INT_L"] = int_l_wires | tc_wire_sets.get("INT_L", set())
+    wire_sets["INT_R"] = int_r_wires | tc_wire_sets.get("INT_R", set())
 
-    int_l_wires = set(int_l_data["wires"].keys())
-    int_r_wires = set(int_r_data["wires"].keys())
-
-    wire_sets = {
-        "INT_L": int_l_wires,
-        "INT_R": int_r_wires,
-    }
-    # IO tiles use bridge wires (not INT wires), so they don't participate
-    # in the tileconn BFS.  IO-to-INT connectivity is handled separately
-    # via bridge nodes.
-
-    # Only INT tiles participate in the tileconn BFS.
+    # Only INT tiles are node endpoints (modeled types)
     modeled_types = int_types
 
     # Build tileconn adjacency
@@ -457,10 +399,8 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
             tc_adj[(a_type, wa)].append((b_type, wb, dx, dy))
             tc_adj[(b_type, wb)].append((a_type, wa, -dx, -dy))
 
-    # Union-Find to group wire instances that are on the same physical net.
-    # Each (x, y, wire_name) at a modeled tile is a node member.
-    # Tileconn entries define which members should be in the same group.
-    wire_parent = {}  # (x,y,wire) -> parent (x,y,wire)
+    # Union-Find for wire grouping
+    wire_parent = {}
 
     def uf_find(key):
         while wire_parent[key] != key:
@@ -481,8 +421,8 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 for w in tile_wires:
                     wire_parent[(tx, ty, w)] = (tx, ty, w)
 
-    # Process tileconn: for each concrete wire pair, union them if both
-    # endpoints land on modeled tiles.  BFS through intermediate tiles.
+    # BFS: for each INT wire instance, find all reachable INT wire instances
+    # through intermediate tile types (CLB, VBRK, INT_FEEDTHRU, etc.)
     processed_starts = set()
 
     for start_type in sorted(modeled_types):
@@ -496,7 +436,6 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     continue
                 processed_starts.add(start_key)
 
-                # BFS to find all reachable modeled-tile wire instances
                 frontier = [(sx, sy, start_type, start_wire)]
                 visited = {(sx, sy, start_wire)}
 
@@ -512,19 +451,17 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                                 continue
                             visited.add(nkey)
                             if ntype in modeled_types and nwire in wire_sets.get(ntype, set()):
-                                # Union this endpoint with the start
                                 uf_union(start_key, nkey)
                                 processed_starts.add(nkey)
                             next_frontier.append((nx, ny, ntype, nwire))
                     frontier = next_frontier
 
-    # Collect groups from union-find
+    # Collect groups and create nodes
     groups = defaultdict(list)
     for key in wire_parent:
         root = uf_find(key)
         groups[root].append(key)
 
-    # Create nodes for groups with 2+ members
     wires_in_nodes = set()
     node_count = 0
     for members in groups.values():
@@ -540,14 +477,9 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # ------------------------------------------------------------------
     # IO-to-INT bridge nodes
     # ------------------------------------------------------------------
-    # Link each IO tile's IO_BRIDGE wires to the matching bridge wires
-    # in the nearest LOGIC tile.  The bridge wires are separate from
-    # IMUX/LOGIC_OUTS, so IO routing doesn't create congestion with
-    # logic routing.
     print("Creating IO-to-INT bridge nodes...")
     io_node_count = 0
 
-    # Pre-index INT tile positions for fast lookup
     int_positions = {}
     for itype in ("INT_L", "INT_R"):
         for ix, iy in tiles_by_xc7_type.get(itype, []):
@@ -561,7 +493,6 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
             if not (0 <= io_x < X and 0 <= io_y < Y):
                 continue
 
-            # Find nearest INT tile of the right type
             best_int = None
             best_dist = 999
             for dy in range(0, 4):
@@ -577,7 +508,6 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 continue
 
             int_x, int_y = best_int
-            # Create node for each bridge wire
             for i in range(N_IO):
                 for bname in (f"IO_BRIDGE_IN{i}", f"IO_BRIDGE_OUT{i}", f"IO_BRIDGE_T{i}"):
                     io_key = (io_x, io_y, bname)
@@ -594,31 +524,12 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # ------------------------------------------------------------------
     # Clock distribution
     # ------------------------------------------------------------------
-    # Build a simple global clock network: for each clock, create a
-    # vertical chain of nodes connecting CLK wires in every INT column,
-    # plus horizontal spines so clocks can reach all columns.
-    #
-    # Pick CLK wires that exist in INT_L — filter for actual clock wires.
-    int_columns = defaultdict(list)
-    for (x, y), ttype in xc7_grid.items():
-        if ttype in int_types:
-            int_columns[x].append(y)
-    for x in int_columns:
-        int_columns[x].sort()
-
-    # Find clock-related wires in INT_L
     clk_int_wires = sorted([w for w in int_l_wires if "CLK" in w and "LOGIC" not in w])
     if not clk_int_wires:
         clk_int_wires = sorted([w for w in int_l_wires if "GCLK" in w])
-
-    # Use the first N_CLK clock wires for our clock networks
     clk_wire_names = clk_int_wires[:N_CLK] if clk_int_wires else []
     print(f"Clock wires: {clk_wire_names}")
 
-    # Vertical clock chains: connect adjacent INT_L tiles in each INT_L column.
-    # Only use INT_L columns since CLK_L* wires exist in INT_L/LOGIC_L tiles.
-    clk_node_count = 0
-    all_int_cols = sorted(int_columns.keys())
     int_l_columns = defaultdict(list)
     for (x, y), ttype in xc7_grid.items():
         if ttype == "INT_L":
@@ -626,6 +537,9 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     for x in int_l_columns:
         int_l_columns[x].sort()
 
+    clk_node_count = 0
+
+    # Vertical clock chains
     for c, cwire in enumerate(clk_wire_names):
         for col_x in sorted(int_l_columns.keys()):
             ys = int_l_columns[col_x]
@@ -639,7 +553,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     ch.add_node([NodeWire(col_x, y0, cwire), NodeWire(col_x, y1, cwire)])
                     clk_node_count += 1
 
-    # Horizontal clock spines: connect CLK wires across INT_L columns
+    # Horizontal clock spines
     SPINE_INTERVAL = 10
     int_l_col_list = sorted(int_l_columns.keys())
     for c, cwire in enumerate(clk_wire_names):
@@ -656,7 +570,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     ch.add_node([NodeWire(x0, y, cwire), NodeWire(x1, y, cwire)])
                     clk_node_count += 1
 
-    # Connect IO clock outputs to the nearest INT_L clock wire
+    # Connect IO clock outputs to nearest INT_L clock wire
     io_tiles = (tiles_by_xc7_type.get("LIOB33", [])
                 + tiles_by_xc7_type.get("RIOB33", [])
                 + tiles_by_xc7_type.get("LIOB33_SING", [])
@@ -746,7 +660,7 @@ def get_or_create_xc7_hybrid(output_bin, xray, tilegrid, tileconn, size=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate hybrid chipdb: synthetic BELs + real XC7 routing"
+        description="Generate hybrid chipdb: real XC7 tiles + synthetic LUT6/DFF BELs"
     )
     parser.add_argument(
         "output",

@@ -145,7 +145,7 @@ fn cell_pin_connected() {
 fn cell_info_new_defaults() {
     let pool = make_pool();
     let name = pool.intern("lut0");
-    let ctype = pool.intern("LUT4");
+    let ctype = pool.intern("LUT6");
     let ci = CellInfo::new(name, ctype);
 
     assert_eq!(ci.name, name);
@@ -414,7 +414,7 @@ fn design_add_cell() {
     let mut d = Design::new();
 
     let name = pool.intern("lut0");
-    let ctype = pool.intern("LUT4");
+    let ctype = pool.intern("LUT6");
     let idx = d.add_cell(name, ctype);
 
     assert_eq!(idx, CellIdx(0));
@@ -430,7 +430,7 @@ fn design_add_multiple_cells() {
     let pool = make_pool();
     let mut d = Design::new();
 
-    let idx0 = d.add_cell(pool.intern("a"), pool.intern("LUT4"));
+    let idx0 = d.add_cell(pool.intern("a"), pool.intern("LUT6"));
     let idx1 = d.add_cell(pool.intern("b"), pool.intern("FDRE"));
     let idx2 = d.add_cell(pool.intern("c"), pool.intern("IBUF"));
 
@@ -456,7 +456,7 @@ fn design_cell_by_name() {
     let mut d = Design::new();
 
     let name = pool.intern("cell0");
-    let idx = d.add_cell(name, pool.intern("LUT4"));
+    let idx = d.add_cell(name, pool.intern("LUT6"));
     assert_eq!(d.cell_by_name(name), Some(idx));
 
     let missing = pool.intern("nonexistent");
@@ -469,7 +469,7 @@ fn design_cell_mut() {
     let mut d = Design::new();
 
     let name = pool.intern("cell0");
-    let idx = d.add_cell(name, pool.intern("LUT4"));
+    let idx = d.add_cell(name, pool.intern("LUT6"));
 
     // Mutate cell
     d.cell_edit(idx)
@@ -485,7 +485,7 @@ fn design_remove_cell() {
     let mut d = Design::new();
 
     let name = pool.intern("to_remove");
-    let idx = d.add_cell(name, pool.intern("LUT4"));
+    let idx = d.add_cell(name, pool.intern("LUT6"));
 
     assert!(d.cell(idx).alive);
     assert_eq!(d.cell_by_name(name), Some(idx));
@@ -845,7 +845,7 @@ fn net_region_constraint() {
 fn cell_placement() {
     let pool = make_pool();
     let mut d = Design::new();
-    let idx = d.add_cell(pool.intern("placed"), pool.intern("LUT4"));
+    let idx = d.add_cell(pool.intern("placed"), pool.intern("LUT6"));
 
     // Initially unplaced
     assert!(d.cell(idx).bel.is_none());
@@ -871,7 +871,7 @@ fn design_large_scale_add() {
     for i in 0..n {
         let cname = pool.intern(&format!("cell_{}", i));
         let nname = pool.intern(&format!("net_{}", i));
-        let cidx = d.add_cell(cname, pool.intern("LUT4"));
+        let cidx = d.add_cell(cname, pool.intern("LUT6"));
         let nidx = d.add_net(nname);
         assert_eq!(cidx, CellIdx(i as u32));
         assert_eq!(nidx, NetIdx(i as u32));
@@ -955,7 +955,7 @@ fn remove_cell_then_add_with_same_name() {
     let mut d = Design::new();
 
     let name = pool.intern("reused");
-    let _idx1 = d.add_cell(name, pool.intern("LUT4"));
+    let _idx1 = d.add_cell(name, pool.intern("LUT6"));
     d.remove_cell(name);
 
     // Should be able to add a cell with the same name again
