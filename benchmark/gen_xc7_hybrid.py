@@ -84,6 +84,30 @@ def load_tile_type_json(xray_root, name):
         return json.load(f)
 
 
+def _pip_timing_class(src_wire, dst_wire):
+    """Classify a PIP's timing based on src/dst wire names.
+
+    The goal is to make deeply nested switch matrix paths expensive so the
+    A* router avoids exploring them unless necessary. Inter-tile span wires
+    are cheap (they advance position). Internal mux wires are expensive
+    (they explore the switch matrix without getting closer to the target).
+
+    Cost hierarchy (low → high):
+    - SPAN: inter-tile routing wires (EE, WW, NN, SS, BEG/END) — advance position
+    - DELIVER: final delivery to BEL pins (IMUX, LOGIC_OUTS, BYP, CLK)
+    - MUX: internal switch matrix (BOUNCE, FAN, GFAN) — deep mux nesting
+    """
+    # Check destination wire for classification
+    d = dst_wire
+    if any(d.startswith(p) for p in ("EE", "WW", "NN", "SS", "NE", "NW", "SE", "SW",
+                                      "EL", "ER", "NL", "NR", "SL", "SR", "WL", "WR")):
+        return "SPAN"
+    if "IMUX" in d or "LOGIC_OUTS" in d or "BYP" in d or "CLK" in d:
+        return "DELIVER"
+    # Internal mux wires: BOUNCE, FAN, GFAN, CTRL, etc.
+    return "MUX"
+
+
 def add_slice_bels(tt, site_data, z_offset):
     """Replace one SLICEL/SLICEM site with 4× LUT6 + 4× DFF + 4× DLATCH BELs.
 
@@ -155,11 +179,12 @@ def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
             tt.create_wire(wname, "ROUTING")
             created.add(wname)
 
-    # 3. Copy all PIPs from tile_type JSON
+    # 3. Copy all PIPs from tile_type JSON with wire-type costs.
     if data:
         for pdata in data.get("pips", {}).values():
             src, dst = pdata["src_wire"], pdata["dst_wire"]
             if src in created and dst in created:
+                
                 tt.create_pip(src, dst)
 
     # 4. GND/VCC
@@ -465,6 +490,51 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                             next_frontier.append((nx, ny, ntype, nwire))
                     frontier = next_frontier
 
+    # ------------------------------------------------------------------
+    # Synthetic bridge across CMT NULL gaps
+    # ------------------------------------------------------------------
+    # The xc7a50t has NULL tiles at x=7,8 (CMT region) that disconnect
+    # the IO-adjacent INT pair (x=4,5) from the main fabric (x=11+).
+    # Similarly, there may be gaps on the right side near x=106-107.
+    # Bridge isolated INT tiles to the nearest connected INT tile of the
+    # same type by unioning their shared wires.
+    clb_adjacent_int_cols = set()
+    for (x, y), t in xc7_grid.items():
+        if t in clb_types:
+            for dx in [-1, 1]:
+                if xc7_grid.get((x + dx, y)) in int_types:
+                    clb_adjacent_int_cols.add(x + dx)
+
+    bridge_count = 0
+    for y in range(Y):
+        row_int = [(x, xc7_grid[(x, y)]) for x in range(X)
+                   if xc7_grid.get((x, y)) in int_types]
+        if not row_int:
+            continue
+        isolated = [(x, t) for x, t in row_int if x not in clb_adjacent_int_cols]
+        connected = [(x, t) for x, t in row_int if x in clb_adjacent_int_cols]
+        if not isolated or not connected:
+            continue
+        for iso_x, iso_type in isolated:
+            best = None
+            best_dist = 999
+            for con_x, con_type in connected:
+                if con_type == iso_type and abs(con_x - iso_x) < best_dist:
+                    best_dist = abs(con_x - iso_x)
+                    best = con_x
+            if best is None:
+                continue
+            # Union shared wires (same name in both tiles)
+            shared = wire_sets.get(iso_type, set())
+            for w in shared:
+                iso_key = (iso_x, y, w)
+                con_key = (best, y, w)
+                if iso_key in wire_parent and con_key in wire_parent:
+                    uf_union(iso_key, con_key)
+                    bridge_count += 1
+
+    print(f"Bridged {bridge_count} wires across CMT gaps")
+
     # Collect groups and create nodes
     groups = defaultdict(list)
     for key in wire_parent:
@@ -622,20 +692,25 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # ------------------------------------------------------------------
     speed = "DEFAULT"
     tmg = ch.set_speed_grades([speed])
-    tmg.set_pip_class(
-        grade=speed,
-        name="SWINPUT",
-        delay=TimingValue(80),
-        in_cap=TimingValue(5000),
-        out_res=TimingValue(1000),
-    )
-    tmg.set_pip_class(
-        grade=speed,
-        name="TILE_ROUTING",
-        delay=TimingValue(100),
-        in_cap=TimingValue(5000),
-        out_res=TimingValue(1000),
-    )
+    # Differentiated PIP costs by wire type:
+    # - SPAN (inter-tile routing wires): cheap → A* prefers these
+    # - DELIVER (IMUX, LOGIC_OUTS, BYP): moderate → needed at endpoints
+    # - MUX (BOUNCE, FAN, internal): expensive → discourages deep switch exploration
+    # DELAY_SCALE=10 is admissible: span-1 PIP costs 10 and covers 1 tile.
+    for name, delay in [
+        ("SPAN", 10),
+        ("DELIVER", 50),
+        ("MUX", 150),
+        ("SWINPUT", 50),
+        ("TILE_ROUTING", 10),
+    ]:
+        tmg.set_pip_class(
+            grade=speed,
+            name=name,
+            delay=TimingValue(delay),
+            in_cap=TimingValue(5000),
+            out_res=TimingValue(1000),
+        )
 
     ch.strs.known_id_count = 0
     ch.write_bba(output_bba)

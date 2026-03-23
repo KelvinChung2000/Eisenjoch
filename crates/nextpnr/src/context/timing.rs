@@ -5,7 +5,7 @@ use crate::netlist::NetId;
 
 use super::Context;
 
-/// Delay scaling factor: picoseconds per Manhattan grid unit.
+/// Delay scaling factor: estimated cost per Manhattan grid unit.
 const DELAY_SCALE: i32 = 100;
 
 /// Compute Manhattan-distance delay between two tile locations.
@@ -36,6 +36,22 @@ impl Context {
         let src_loc = self.chipdb.tile_xy(src.into().tile());
         let dst_loc = self.chipdb.tile_xy(dst.into().tile());
         manhattan_delay(src_loc, dst_loc)
+    }
+
+    /// Node-aware delay estimate: considers the closest tile reachable
+    /// via the wire's routing node (if any). More expensive than
+    /// `estimate_delay` but gives tighter bounds for wires on long-range nodes.
+    pub fn estimate_delay_node_aware(&self, src: impl Into<WireId>, dst: impl Into<WireId>) -> DelayT {
+        let src_wire = src.into();
+        let dst_loc = self.chipdb.tile_xy(dst.into().tile());
+        let mut best = manhattan_delay(self.chipdb.tile_xy(src_wire.tile()), dst_loc);
+        self.chipdb.node_wires_cb(src_wire, |nw| {
+            let d = manhattan_delay(self.chipdb.tile_xy(nw.tile()), dst_loc);
+            if d < best {
+                best = d;
+            }
+        });
+        best
     }
 
     /// Estimate delay for a net based on placed driver/user BEL locations.

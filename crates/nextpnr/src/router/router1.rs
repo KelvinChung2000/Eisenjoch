@@ -67,6 +67,11 @@ pub struct QueueEntry {
     pub cost: DelayT,
     /// f(n) = g(n) + h(n): total estimated cost through this wire.
     pub estimate: DelayT,
+    /// Lazy PIP expansion: start index into downhill PIPs array.
+    /// 0 = first visit (expand nodes + first PIP batch).
+    /// >0 = continuation (expand next PIP batch only).
+    /// u16::MAX = fully expanded (skip PIP expansion).
+    pub pip_start: u16,
 }
 
 impl Eq for QueueEntry {}
@@ -280,6 +285,7 @@ pub fn compute_route_r1(
         tree_wires.extend(const_wires);
     }
 
+
     let mut sink_routes = Vec::new();
     for sink_wire in sink_wires {
         if tree_wires.contains(&sink_wire) {
@@ -363,6 +369,11 @@ pub fn astar_route(
     let mut visited: FxHashMap<WireId, (DelayT, Option<PipId>, WireId)> =
         FxHashMap::with_capacity_and_hasher(init_capacity, Default::default());
 
+    // Number of PIPs to expand per heap pop. Limits the branching factor
+    // for dense switch matrices (e.g., 3737 PIPs per XC7 INT tile).
+    // Remaining PIPs are deferred via re-push with advanced pip_start.
+    const PIP_BATCH: usize = 64;
+
     // Seed the search with all source wires.
     for &src in src_wires {
         let h = ctx.estimate_delay(src, dst_wire);
@@ -370,6 +381,7 @@ pub fn astar_route(
             wire: src,
             cost: 0,
             estimate: h,
+            pip_start: 0,
         });
         visited.insert(src, (0, None, src));
     }
@@ -408,58 +420,100 @@ pub fn astar_route(
             return Some(pips);
         }
 
-        // Expand: iterate all downhill pips from this wire.
-        let wire_info = chipdb.wire_info(entry.wire);
-        let downhill_indices = wire_info.pips_downhill.get();
-
-        for &pip_index in downhill_indices {
-            let pip = PipId::new(entry.wire.tile(), pip_index);
-            let next_wire = chipdb.pip_dst_wire(pip);
-
-            // Bounding box pruning.
+        // Node expansion: only on first visit (pip_start == 0).
+        // Add a small wire delay proportional to the hop distance.
+        // In reality, longer wires have higher RC delay. Without this,
+        // zero-cost node expansion floods the entire bounding box,
+        // causing the A* to visit all ~28K wires instead of following
+        // a directed path. The delay is set low enough (~10 per tile)
+        // that node hops are still much cheaper than PIP traversal (~100),
+        // but high enough to break ties between nearby and distant nodes.
+        if entry.pip_start == 0 {
+            let src_loc = chipdb.tile_xy(entry.wire.tile());
+            let mut expand_node = |nw: WireId| {
+                let nw_loc = chipdb.tile_xy(nw.tile());
+                let wire_delay: DelayT = 0;
+                let new_cost = entry.cost + wire_delay;
+                if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
+                    if new_cost >= prev_cost {
+                        return;
+                    }
+                }
+                visited.insert(nw, (new_cost, None, entry.wire));
+                let h = ctx.estimate_delay(nw, dst_wire);
+                heap.push(QueueEntry {
+                    wire: nw,
+                    cost: new_cost,
+                    estimate: new_cost + h,
+                    pip_start: 0,
+                });
+            };
             if let Some(bb) = bbox {
-                let (wx, wy) = chipdb.tile_xy(next_wire.tile());
-                if !bb.contains(wx, wy) {
-                    continue;
-                }
+                chipdb.node_wires_in_bbox_cb(entry.wire, bb, &mut expand_node);
+            } else {
+                chipdb.node_wires_cb(entry.wire, &mut expand_node);
             }
-
-            let pip_delay = ctx.pip(pip).delay().max_delay();
-            let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
-            let new_cost = entry.cost + pip_delay + penalty + 1;
-
-            if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
-                if new_cost >= prev_cost {
-                    continue;
-                }
-            }
-
-            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-
-            let h = ctx.estimate_delay(next_wire, dst_wire);
-            heap.push(QueueEntry {
-                wire: next_wire,
-                cost: new_cost,
-                estimate: new_cost + h,
-            });
         }
 
-        // Node expansion: if this wire is part of a multi-tile node,
-        // add all other wires in the same node as reachable at zero extra cost.
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
-                if entry.cost >= prev_cost {
-                    return;
+        // Lazy PIP expansion: process at most PIP_BATCH PIPs per pop.
+        // Skip PIP expansion if a node hop already advanced us closer to
+        // the target AND we're not near the destination. This prevents the
+        // A* from exploring all 600 wires per tile via PIP chains when a
+        // direct node hop is available, while still allowing switch matrix
+        // entry at source/destination tiles.
+        // Always expand PIPs near source or destination tiles (within 2 tiles).
+        // The source needs PIPs to enter the routing fabric (LOGIC_OUTS→span wires).
+        // Lazy PIP expansion: process at most PIP_BATCH PIPs per pop.
+        if entry.pip_start < u16::MAX {
+            let pip_batch = PIP_BATCH;
+            let wire_info = chipdb.wire_info(entry.wire);
+            let downhill_indices = wire_info.pips_downhill.get();
+            let start = entry.pip_start as usize;
+            let end = (start + pip_batch).min(downhill_indices.len());
+
+            for &pip_index in &downhill_indices[start..end] {
+                let pip = PipId::new(entry.wire.tile(), pip_index);
+                let next_wire = chipdb.pip_dst_wire(pip);
+
+                // Bounding box pruning.
+                if let Some(bb) = bbox {
+                    let (wx, wy) = chipdb.tile_xy(next_wire.tile());
+                    if !bb.contains(wx, wy) {
+                        continue;
+                    }
                 }
+
+                let pip_delay = ctx.pip(pip).delay().max_delay();
+                let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
+                let new_cost = entry.cost + pip_delay + penalty + 1;
+
+                if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
+                    if new_cost >= prev_cost {
+                        continue;
+                    }
+                }
+
+                visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
+
+                let h = ctx.estimate_delay(next_wire, dst_wire);
+                heap.push(QueueEntry {
+                    wire: next_wire,
+                    cost: new_cost,
+                    estimate: new_cost + h,
+                    pip_start: 0,
+                });
             }
-            visited.insert(nw, (entry.cost, None, entry.wire));
-            let h = ctx.estimate_delay(nw, dst_wire);
-            heap.push(QueueEntry {
-                wire: nw,
-                cost: entry.cost,
-                estimate: entry.cost + h,
-            });
-        });
+
+            // If there are more PIPs, re-push this wire for deferred expansion.
+            if end < downhill_indices.len() {
+                heap.push(QueueEntry {
+                    wire: entry.wire,
+                    cost: entry.cost,
+                    estimate: entry.estimate,
+                    pip_start: end as u16,
+                });
+            }
+        }
     }
 
     None

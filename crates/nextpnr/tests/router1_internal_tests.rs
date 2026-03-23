@@ -26,17 +26,17 @@ fn queue_entry_min_heap_ordering() {
     heap.push(QueueEntry {
         wire: WireId::new(0, 0),
         cost: 10,
-        estimate: 50,
+        estimate: 50, pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(0, 1),
         cost: 5,
-        estimate: 20,
+        estimate: 20, pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(1, 0),
         cost: 8,
-        estimate: 35,
+        estimate: 35, pip_start: 0,
     });
     assert_eq!(heap.pop().unwrap().estimate, 20);
     assert_eq!(heap.pop().unwrap().estimate, 35);
@@ -49,12 +49,12 @@ fn queue_entry_tiebreak_by_cost() {
     heap.push(QueueEntry {
         wire: WireId::new(0, 0),
         cost: 30,
-        estimate: 50,
+        estimate: 50, pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(0, 1),
         cost: 10,
-        estimate: 50,
+        estimate: 50, pip_start: 0,
     });
     assert_eq!(heap.pop().unwrap().cost, 10);
 }

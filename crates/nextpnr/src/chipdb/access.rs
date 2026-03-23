@@ -499,6 +499,23 @@ impl ChipDb {
         }
     }
 
+    /// Like `node_wires_cb` but only invokes `f` for wires whose tile falls
+    /// within the given bounding box. Avoids expanding distant node members
+    /// during bounded A* routing.
+    pub fn node_wires_in_bbox_cb<F: FnMut(WireId)>(
+        &self,
+        wire: WireId,
+        bbox: &crate::metrics::BoundingBox,
+        mut f: F,
+    ) {
+        self.node_wires_cb(wire, |nw| {
+            let (wx, wy) = self.tile_xy(nw.tile());
+            if bbox.contains(wx, wy) {
+                f(nw);
+            }
+        });
+    }
+
     /// Get all wires that belong to the same routing node as the given wire.
     ///
     /// Returns an empty Vec if the wire is tile-local (not part of a node).

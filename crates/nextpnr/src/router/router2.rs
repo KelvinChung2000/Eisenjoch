@@ -357,7 +357,7 @@ pub fn astar_route_r2(
         }
 
         // Node expansion for inter-tile routing nodes (allocation-free).
-        chipdb.node_wires_cb(entry.wire, |nw| {
+        chipdb.node_wires_in_bbox_cb(entry.wire, bbox, |nw| {
             if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
                 if entry.cost >= prev_cost {
                     return;
