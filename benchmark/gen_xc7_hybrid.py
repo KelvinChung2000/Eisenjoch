@@ -384,9 +384,18 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     wire_sets = dict(tc_wire_sets)
     wire_sets["INT_L"] = int_l_wires | tc_wire_sets.get("INT_L", set())
     wire_sets["INT_R"] = int_r_wires | tc_wire_sets.get("INT_R", set())
+    # Add full CLB wire sets (prjxray wires + tileconn wires)
+    for ct in clb_types:
+        clb_data = load_tile_type_json(xray, ct)
+        if clb_data:
+            wire_sets[ct] = set(clb_data["wires"].keys()) | tc_wire_sets.get(ct, set())
+        else:
+            wire_sets[ct] = tc_wire_sets.get(ct, set())
 
     # Only INT tiles are node endpoints (modeled types)
-    modeled_types = int_types
+    # INT and CLB tiles are node endpoints — CLB tiles have BELs whose
+    # pin wires need tileconn nodes to reach INT routing.
+    modeled_types = int_types | clb_types
 
     # Build tileconn adjacency
     tc_adj = defaultdict(list)
@@ -480,10 +489,20 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     print("Creating IO-to-INT bridge nodes...")
     io_node_count = 0
 
+    # Only use CLB-adjacent INT tiles for IO bridges (skip isolated IO-adjacent
+    # INT tiles that are separated from the main fabric by CMT NULL gaps).
+    clb_adjacent_int_cols = set()
+    for (x, y), t in xc7_grid.items():
+        if t in clb_types:
+            for dx in [-1, 1]:
+                if xc7_grid.get((x + dx, y)) in int_types:
+                    clb_adjacent_int_cols.add(x + dx)
+
     int_positions = {}
     for itype in ("INT_L", "INT_R"):
         for ix, iy in tiles_by_xc7_type.get(itype, []):
-            int_positions.setdefault(iy, []).append((ix, iy, itype))
+            if ix in clb_adjacent_int_cols:
+                int_positions.setdefault(iy, []).append((ix, iy, itype))
 
     for io_type in sorted(io_types):
         is_left = io_type in left_io
