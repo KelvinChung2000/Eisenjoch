@@ -266,6 +266,8 @@ pub fn multigrid_preconditioned_cg(
         rz_old = rz_new;
     }
 
+    eprintln!("  CG: hit max_iters={} on n={} system (residual={:.2e})",
+              max_iters, n, dot(&r, &r).sqrt() / rhs_norm);
     max_iters
 }
 

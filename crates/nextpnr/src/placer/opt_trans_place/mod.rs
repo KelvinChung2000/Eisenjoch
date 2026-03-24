@@ -151,10 +151,18 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         0.0
     };
 
+    let mut t_demand = 0.0f64;
+    let mut t_density = 0.0f64;
+    let mut t_kirchhoff = 0.0f64;
+    let mut t_gradient = 0.0f64;
+    let mut t_velocity = 0.0f64;
+    let mut t_other = 0.0f64;
+
     for iter in 0..cfg.max_outer_iters {
         let progress = iter as f64 / cfg.max_outer_iters as f64;
         // Beckmann coupling strength ramp: starts at 0, grows to full beta.
         let beta = cfg.turbulence_beta * (1.0 - (-3.0 * progress).exp());
+        let t_iter_start = std::time::Instant::now();
 
         // 1. Optional expanding box constraint.
         if cfg.enable_expanding_box {
@@ -163,11 +171,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             state.clamp_positions();
         }
 
+        let t0 = std::time::Instant::now();
         // 2. Build net demand vector (IO-boosted, timing-amplified).
         let demand = state.compute_net_demands(
             ctx, &criticality, cfg.timing_weight, io_boost, cfg.pump_gain,
         );
 
+        let t1 = std::time::Instant::now();
+        t_demand += (t1 - t0).as_secs_f64();
         // 2b. Build density field (reused for Kirchhoff coupling, gradient, and AL update).
         //     Helmholtz-smoothed overflow for resistance coupling: the Kirchhoff
         //     solver sees a non-local congestion field.
@@ -197,6 +208,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             &[]
         };
 
+        let t2 = std::time::Instant::now();
+        t_density += (t2 - t1).as_secs_f64();
         // 3. Kirchhoff solve: L(R_eff) · P = demand.
         //    Density overflow increases pipe resistance in congested regions.
         kirchhoff::kirchhoff_solve(
@@ -231,6 +244,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
+        let t3 = std::time::Instant::now();
+        t_kirchhoff += (t3 - t2).as_secs_f64();
         // 4. Pressure gradient at cell positions.
         let (px, py) = state.compute_pressure_gradient(0.0);
 
@@ -287,6 +302,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             *gy += ddy;
         }
 
+        let t4 = std::time::Instant::now();
+        t_gradient += (t4 - t3).as_secs_f64();
         // 9. Velocity field step: damped momentum, geometry-preserving.
         //    Soft gradient normalization: cap RMS to 1.0 to prevent overshooting
         //    without losing relative magnitude information between cells.
@@ -315,6 +332,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         state.cell_x.copy_from_slice(vel_x.positions());
         state.cell_y.copy_from_slice(vel_y.positions());
 
+        let t5 = std::time::Instant::now();
+        t_velocity += (t5 - t4).as_secs_f64();
         // 10. Augmented Lagrangian dual update: increase λ at overcrowded tiles.
         //     Uses pre_density (before velocity step) as approximation to avoid
         //     a second expensive build_density_field call. The velocity step is
@@ -386,10 +405,168 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
     }
 
-    // Restore best and final legalize.
+    // Restore best continuous positions.
+    // Print timing breakdown
+    let t_total = t_demand + t_density + t_kirchhoff + t_gradient + t_velocity;
+    eprintln!(
+        "Timing breakdown ({:.1}s total): demand={:.0}ms density={:.0}ms kirchhoff={:.0}ms gradient={:.0}ms velocity={:.0}ms",
+        t_total, t_demand*1000.0, t_density*1000.0, t_kirchhoff*1000.0, t_gradient*1000.0, t_velocity*1000.0,
+    );
+
     state.cell_x.copy_from_slice(&loop_state.best_positions_x);
     state.cell_y.copy_from_slice(&loop_state.best_positions_y);
+
+    // Snap continuous positions to nearest CLB column/row before legalization.
+    // The continuous placer works on the full tile grid, but BELs only exist
+    // on CLB tiles (~29% of columns). Snapping reduces legalization displacement
+    // from ~29 tiles to ~1 tile.
+    {
+        let chipdb = ctx.chipdb();
+        let net_w = state.network.width;
+        let net_h = state.network.height;
+        let x0 = state.network.x0;
+        let y0 = state.network.y0;
+
+        // Build sorted list of CLB x-columns and y-rows within the cropped grid.
+        let mut clb_xs: Vec<f64> = Vec::new();
+        let mut clb_ys: Vec<f64> = Vec::new();
+        let mut seen_x = std::collections::HashSet::new();
+        let mut seen_y = std::collections::HashSet::new();
+        for vy in 0..net_h {
+            for vx in 0..net_w {
+                let tile = chipdb.tile_by_xy(vx + x0, vy + y0);
+                let bel_count = chipdb.tile_type(tile).bels.len();
+                // Only count tiles with LUT/DFF BELs (not GND/VCC/IO)
+                if bel_count >= 4 {
+                    if seen_x.insert(vx) {
+                        clb_xs.push(vx as f64);
+                    }
+                    if seen_y.insert(vy) {
+                        clb_ys.push(vy as f64);
+                    }
+                }
+            }
+        }
+        clb_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        clb_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        if !clb_xs.is_empty() && !clb_ys.is_empty() {
+            for i in 0..state.num_cells() {
+                // Snap x to nearest CLB column
+                let cx = state.cell_x[i];
+                let best_x = clb_xs.iter().copied()
+                    .min_by(|a, b| (a - cx).abs().partial_cmp(&(b - cx).abs()).unwrap())
+                    .unwrap();
+                state.cell_x[i] = best_x;
+
+                // Snap y to nearest CLB row
+                let cy = state.cell_y[i];
+                let best_y = clb_ys.iter().copied()
+                    .min_by(|a, b| (a - cy).abs().partial_cmp(&(b - cy).abs()).unwrap())
+                    .unwrap();
+                state.cell_y[i] = best_y;
+            }
+            eprintln!(
+                "Snapped {} cells to {} CLB columns × {} CLB rows",
+                state.num_cells(), clb_xs.len(), clb_ys.len(),
+            );
+        }
+    }
+
+    // --- Pre-legalization diagnostics ---
+    let pre_chpwl = state.continuous_hpwl(ctx);
+    let pre_density = state.build_density_field(ctx);
+    let (pre_overflow, pre_max_rho, _) =
+        state::OptTransState::overlap_metrics_from_field(&pre_density);
+    eprintln!(
+        "Pre-legalization:  CHPWL={:.0}, overflow={:.1}%, maxρ={:.1}",
+        pre_chpwl, pre_overflow * 100.0, pre_max_rho,
+    );
+
     legalize::legalize_opt_trans(ctx, &state, cfg.lap_max_cells)?;
+
+    // --- Post-legalization diagnostics ---
+    // Compute displacement: for each cell, distance from continuous position
+    // to legalized BEL position.
+    let mut total_disp = 0.0f64;
+    let mut total_disp_x = 0.0f64;
+    let mut total_disp_y = 0.0f64;
+    let mut max_disp = 0.0f64;
+    let mut n_displaced = 0usize;
+    let x0 = state.network.x0 as f64;
+    let y0 = state.network.y0 as f64;
+    for (cell_id, &ci) in &state.cell_to_idx {
+        if let Some(bel_id) = ctx.cell(*cell_id).bel_id() {
+            let loc = ctx.chipdb().bel_loc(bel_id);
+            // cell_x/y are in virtual (cropped) coords; loc is physical.
+            let dx = (state.cell_x[ci] + x0) - loc.x as f64;
+            let dy = (state.cell_y[ci] + y0) - loc.y as f64;
+            let d = (dx * dx + dy * dy).sqrt();
+            total_disp += d;
+            total_disp_x += dx.abs();
+            total_disp_y += dy.abs();
+            if d > max_disp {
+                max_disp = d;
+            }
+            if d > 0.5 {
+                n_displaced += 1;
+            }
+        }
+    }
+    let avg_disp = if state.num_cells() > 0 {
+        total_disp / state.num_cells() as f64
+    } else {
+        0.0
+    };
+    // Post-legalization HPWL from actual placed positions.
+    let post_hpwl = {
+        let mut hpwl = 0.0f64;
+        for net_idx in ctx.design.iter_net_indices() {
+            let net = ctx.net(net_idx);
+            if !net.is_alive() {
+                continue;
+            }
+            let driver = match net.driver() {
+                Some(d) => d,
+                None => continue,
+            };
+            let mut min_x = i32::MAX;
+            let mut max_x = i32::MIN;
+            let mut min_y = i32::MAX;
+            let mut max_y = i32::MIN;
+            // Driver
+            if let Some(bel_id) = ctx.cell(driver.cell).bel_id() {
+                let loc = ctx.chipdb().bel_loc(bel_id);
+                let (x, y) = (loc.x, loc.y);
+                min_x = min_x.min(x); max_x = max_x.max(x);
+                min_y = min_y.min(y); max_y = max_y.max(y);
+            }
+            // Users
+            for user in net.users() {
+                if let Some(bel_id) = ctx.cell(user.cell).bel_id() {
+                    let loc = ctx.chipdb().bel_loc(bel_id);
+                    let (x, y) = (loc.x, loc.y);
+                    min_x = min_x.min(x); max_x = max_x.max(x);
+                    min_y = min_y.min(y); max_y = max_y.max(y);
+                }
+            }
+            if min_x <= max_x {
+                hpwl += (max_x - min_x + max_y - min_y) as f64;
+            }
+        }
+        hpwl
+    };
+    let avg_disp_x = if state.num_cells() > 0 { total_disp_x / state.num_cells() as f64 } else { 0.0 };
+    let avg_disp_y = if state.num_cells() > 0 { total_disp_y / state.num_cells() as f64 } else { 0.0 };
+    eprintln!(
+        "Post-legalization: HPWL={:.0}, displaced={}/{} (avg={:.1}, max={:.1} tiles, avg_dx={:.1}, avg_dy={:.1})",
+        post_hpwl, n_displaced, state.num_cells(), avg_disp, max_disp, avg_disp_x, avg_disp_y,
+    );
+    eprintln!(
+        "Legalization cost: ΔHPWL={:+.0} ({:+.1}%)",
+        post_hpwl - pre_chpwl,
+        (post_hpwl - pre_chpwl) / pre_chpwl.max(1.0) * 100.0,
+    );
 
     validate_all_placed(ctx)?;
 
