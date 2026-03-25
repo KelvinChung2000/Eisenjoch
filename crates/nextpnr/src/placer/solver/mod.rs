@@ -1,37 +1,22 @@
 //! Solver module for analytical placement.
 //!
-//! Provides the `Solver` trait, a Jacobi-preconditioned Conjugate Gradient
-//! implementation (`SparseSystem`), Nesterov accelerated gradient descent,
-//! and a multigrid V-cycle solver for grid Laplacians.
+//! Provides backend-swappable linear solvers (CPU: faer, future: GPU),
+//! gradient optimizers, and wirelength approximation functions.
 
-pub mod adam;
-pub mod amg;
-pub mod cg;
-pub mod cholesky;
-pub mod direct;
-pub mod lse;
-pub mod multigrid;
-pub mod nesterov;
-pub mod ordering;
-pub mod sparse;
-pub mod velocity;
-pub mod wa;
+pub mod backend;
+pub mod faer_backend;
+pub mod optimizer;
+pub mod system;
+pub mod wirelength;
 
-pub use adam::AdamSolver;
-pub use cg::{conjugate_gradient, dot, jacobi_preconditioner, spmv, SparseSystem};
-pub use direct::DirectSolver;
-pub use lse::{lse_axis_grad, lse_axis_value, lse_gradient, lse_wirelength};
-pub use multigrid::MultigridSolver;
-pub use nesterov::NesterovSolver;
-pub use velocity::VelocityFieldSolver;
-pub use wa::{wa_axis_grad, wa_axis_value, wa_wirelength};
+// Re-exports for backwards compatibility
+pub use backend::{IterativeLinearSolver, LinearSolver};
+pub use faer_backend::{faer_cg, FaerDirectSolver};
+pub use optimizer::{AdamSolver, NesterovSolver, VelocityFieldSolver};
+pub use system::{Solver, SparseSystemBuilder};
+pub use wirelength::{lse_axis_grad, lse_axis_value, lse_gradient, lse_wirelength};
+pub use wirelength::{wa_axis_grad, wa_axis_value, wa_wirelength};
 
-/// Trait for linear system solvers used in analytical placement.
-///
-/// Implementors solve A*x = b where A is a symmetric positive-definite matrix.
-pub trait Solver {
-    /// Solve the system, writing the solution into `x`.
-    ///
-    /// Returns the number of iterations used.
-    fn solve(&self, x: &mut [f64], tol: f64, max_iters: usize) -> usize;
-}
+// Module re-exports for callers that reference solver::wa or solver::lse directly.
+pub use wirelength::wa;
+pub use wirelength::lse;

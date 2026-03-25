@@ -21,6 +21,9 @@ rustfft = "6"
 rustdct = "0.7"
 ndarray = { workspace = true }
 lapjv = { workspace = true }
+faer = { version = "0.24", features = ["sparse"] }
+argmin = "0.11"
+argmin-math = "0.5"
 
 [dev-dependencies]
 petgraph = "0.6"

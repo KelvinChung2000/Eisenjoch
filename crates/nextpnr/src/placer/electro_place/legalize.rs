@@ -6,6 +6,21 @@ use crate::netlist::CellId;
 use crate::placer::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
+/// Simple greedy nearest-BEL legalization.
+pub struct GreedyLegalizer;
+
+impl crate::placer::legalize::Legalizer for GreedyLegalizer {
+    fn legalize(
+        &self,
+        ctx: &mut Context,
+        idx_to_cell: &[CellId],
+        cell_x: &[f64],
+        cell_y: &[f64],
+    ) -> Result<f64, PlacerError> {
+        legalize_electro(ctx, idx_to_cell, cell_x, cell_y)
+    }
+}
+
 pub(super) fn legalize_electro(
     ctx: &mut Context,
     idx_to_cell: &[CellId],

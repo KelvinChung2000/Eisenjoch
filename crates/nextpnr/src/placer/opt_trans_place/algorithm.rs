@@ -6,11 +6,10 @@ use rustc_hash::FxHashMap;
 use crate::context::Context;
 use crate::netlist::NetId;
 use crate::placer::common::{compute_pin_weights, NesterovLoopState};
-use crate::placer::solver::{DirectSolver, VelocityFieldSolver};
+use crate::placer::solver::{FaerDirectSolver, VelocityFieldSolver};
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
 
-use super::boundary::lock_boundary_cells;
 use super::config::{KirchhoffSolver, OptTransPlacerCfg};
 use super::helmholtz::{helmholtz_neighbor_count, helmholtz_off_diag};
 use super::kirchhoff;
@@ -19,12 +18,6 @@ use super::timing;
 
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
-
-    // Lock IO cells at their initial placement. IO BELs are only at the chip
-    // boundary and cannot participate in the continuous fluid solve. Locking
-    // them makes them fixed anchors that attract connected logic cells toward
-    // the boundary via the Kirchhoff pressure gradient.
-    lock_boundary_cells(ctx);
 
     let mut state = OptTransState::new(ctx, cfg.init_strategy);
 
@@ -117,21 +110,13 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let n_junctions = state.network.num_junctions();
 
     let mut direct_solver = if matches!(cfg.kirchhoff_solver, KirchhoffSolver::Direct) {
-        Some(DirectSolver::new(n_junctions, &pipe_endpoints, w, h))
+        Some(FaerDirectSolver::new(n_junctions, &pipe_endpoints, w, h))
     } else {
         None
     };
 
-    let mut amg_solver = if matches!(cfg.kirchhoff_solver, KirchhoffSolver::AmgCG) {
-        let amg_structure = crate::placer::solver::amg::AmgStructure::new(n_junctions, &pipe_endpoints);
-        let dummy_diag = vec![1.0; n_junctions];
-        let dummy_offdiag: Vec<(usize, usize, f64)> = pipe_endpoints.iter().map(|&(a,b)| (a, b, -1.0)).collect();
-        Some(crate::placer::solver::amg::AmgPreconditioner::new(
-            amg_structure, &dummy_diag, &dummy_offdiag,
-        ))
-    } else {
-        None
-    };
+    // AMG preconditioner removed: faer_cg with Jacobi is used for all iterative paths.
+    let mut amg_solver: Option<()> = None;
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -186,7 +171,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
             // Solve (-Δ + κ²)φ = κ·overflow → smoothed congestion field.
             // Relaxed tolerance (1e-2) — this is a smoothing operation.
-            crate::placer::solver::cg::preconditioned_conjugate_gradient(
+            crate::placer::solver::faer_cg(
                 &helm_diag, &helm_off_diag, &helm_rhs,
                 &mut helmholtz_cache,
                 1e-2, 20,

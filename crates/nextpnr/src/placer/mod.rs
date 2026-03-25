@@ -14,6 +14,7 @@ pub use config::PlacerChoice;
 pub use electro_place::PlacerElectro;
 pub use heap::PlacerHeap;
 pub use opt_trans_place::PlacerOptTrans;
+pub use legalize::Legalizer;
 pub use pipeline::{PlacerPipeline, PlacerSetup};
 pub use sa::PlacerSa;
 

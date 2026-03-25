@@ -21,7 +21,6 @@
 //! Density gradient (symmetric: always repulsive) spreads overcrowded cells.
 
 mod algorithm;
-mod boundary;
 pub mod config;
 mod helmholtz;
 pub mod kirchhoff;

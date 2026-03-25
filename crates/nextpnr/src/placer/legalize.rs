@@ -13,6 +13,39 @@ use crate::placer::PlacerError;
 use ndarray::Array2;
 use rustc_hash::FxHashMap;
 
+/// Trait for converting continuous cell positions to discrete BEL assignments.
+///
+/// All implementations unbind movable cells, find the nearest valid BEL
+/// for each cell, bind them, and handle cluster children.
+/// Returns total squared displacement.
+pub trait Legalizer {
+    fn legalize(
+        &self,
+        ctx: &mut Context,
+        idx_to_cell: &[CellId],
+        cell_x: &[f64],
+        cell_y: &[f64],
+    ) -> Result<f64, PlacerError>;
+}
+
+/// Optimal bipartite matching legalization using LAPJV.
+pub struct BipartiteLegalizer {
+    pub cost: Box<dyn LegalizeCost>,
+    pub lap_max_cells: usize,
+}
+
+impl Legalizer for BipartiteLegalizer {
+    fn legalize(
+        &self,
+        ctx: &mut Context,
+        idx_to_cell: &[CellId],
+        cell_x: &[f64],
+        cell_y: &[f64],
+    ) -> Result<f64, PlacerError> {
+        legalize_bipartite(ctx, idx_to_cell, cell_x, cell_y, &*self.cost, self.lap_max_cells)
+    }
+}
+
 /// Cost function trait for legalization.
 ///
 /// `cell_x` and `cell_y` are the continuous solver positions, indexed by solver index.

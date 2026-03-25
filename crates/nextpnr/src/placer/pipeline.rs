@@ -28,6 +28,7 @@ impl PlacerPipeline {
     pub fn prepare(ctx: &mut Context, seed: u64) -> Result<PlacerSetup, PlacerError> {
         ctx.reseed_rng(seed);
         common::initial_placement(ctx)?;
+        common::lock_boundary_cells(ctx);
         let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
         let mut cell_x = vec![0.0; idx_to_cell.len()];
         let mut cell_y = vec![0.0; idx_to_cell.len()];
@@ -44,6 +45,7 @@ impl PlacerPipeline {
     pub fn prepare_discrete(ctx: &mut Context, seed: u64) -> Result<(), PlacerError> {
         ctx.reseed_rng(seed);
         common::initial_placement(ctx)?;
+        common::lock_boundary_cells(ctx);
         Ok(())
     }
 

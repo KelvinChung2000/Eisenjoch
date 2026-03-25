@@ -1,5 +1,5 @@
 use crate::context::Context;
-use crate::placer::solver::{Solver, SparseSystem};
+use crate::placer::solver::{Solver, SparseSystemBuilder};
 use crate::placer::PlacerError;
 use log::debug;
 use rustc_hash::FxHashSet;
@@ -18,8 +18,8 @@ impl HeapState {
             return Ok(());
         }
 
-        let mut sys_x = SparseSystem::new(n);
-        let mut sys_y = SparseSystem::new(n);
+        let mut sys_x = SparseSystemBuilder::new(n);
+        let mut sys_y = SparseSystemBuilder::new(n);
 
         let weight = self.cfg.beta;
 

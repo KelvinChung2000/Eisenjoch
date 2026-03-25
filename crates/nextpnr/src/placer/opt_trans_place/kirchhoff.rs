@@ -9,8 +9,7 @@
 
 use super::config::KirchhoffSolver;
 use super::network::{Pipe, PipeNetwork};
-use crate::placer::solver::amg::AmgPreconditioner;
-use crate::placer::solver::DirectSolver;
+use crate::placer::solver::FaerDirectSolver;
 
 pub struct SolveResult {
     pub converged: bool,
@@ -23,8 +22,9 @@ pub struct SolverCtx<'a> {
     pub solver_type: KirchhoffSolver,
     pub cg_max_iters: usize,
     pub cg_tol: f64,
-    pub direct: Option<&'a mut DirectSolver>,
-    pub amg: Option<&'a mut AmgPreconditioner>,
+    pub direct: Option<&'a mut FaerDirectSolver>,
+    /// Placeholder for removed AMG preconditioner. Kept for struct compatibility.
+    pub amg: Option<&'a mut ()>,
 }
 
 // ---- Internal helpers ----
@@ -92,44 +92,25 @@ fn dispatch_solve(
     off_diag: &[(usize, usize, f64)],
     rhs: &[f64],
     pressure: &mut [f64],
-    grid_width: usize,
-    grid_height: usize,
+    _grid_width: usize,
+    _grid_height: usize,
 ) -> usize {
     match ctx.solver_type {
         KirchhoffSolver::Direct => {
             if let Some(ref mut ds) = ctx.direct {
                 ds.solve(diag, off_diag, rhs, pressure);
                 1
-            } else if let Some(ref mut amg) = ctx.amg {
-                crate::placer::solver::amg::amg_preconditioned_cg_cached(
-                    amg, diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
-                )
             } else {
-                crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                crate::placer::solver::faer_cg(
                     diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
                 )
             }
         }
-        KirchhoffSolver::AmgCG => {
-            if let Some(ref mut amg) = ctx.amg {
-                crate::placer::solver::amg::amg_preconditioned_cg_cached(
-                    amg, diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
-                )
-            } else {
-                crate::placer::solver::amg::amg_preconditioned_cg(
-                    diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
-                )
-            }
-        }
-        KirchhoffSolver::JacobiCG => {
-            crate::placer::solver::cg::preconditioned_conjugate_gradient(
+        KirchhoffSolver::AmgCG | KirchhoffSolver::JacobiCG | KirchhoffSolver::MultigridCG => {
+            // AMG and multigrid preconditioners removed; all iterative paths
+            // now use Jacobi-preconditioned CG via faer_cg.
+            crate::placer::solver::faer_cg(
                 diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
-            )
-        }
-        KirchhoffSolver::MultigridCG => {
-            crate::placer::solver::cg::multigrid_preconditioned_cg(
-                diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
-                grid_width, grid_height,
             )
         }
     }
