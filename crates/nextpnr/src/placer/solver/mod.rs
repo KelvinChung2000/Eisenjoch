@@ -10,7 +10,7 @@ pub mod system;
 pub mod wirelength;
 
 // Re-exports for backwards compatibility
-pub use backend::{IterativeLinearSolver, LinearSolver};
+pub use backend::LinearSolver;
 pub use faer_backend::{faer_cg, FaerDirectSolver};
 pub use optimizer::{AdamSolver, NesterovSolver, VelocityFieldSolver};
 pub use system::{Solver, SparseSystemBuilder};

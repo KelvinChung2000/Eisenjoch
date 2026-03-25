@@ -1,12 +1,10 @@
 //! Router trait and implementations.
 
 pub mod common;
-pub mod config;
 pub mod maze;
 pub mod negotiation;
 pub mod traits;
 
-pub use config::RouterChoice;
 pub use maze::Router1;
 pub use negotiation::Router2;
 pub use traits::Router;

@@ -37,11 +37,16 @@ impl FaerDirectSolver {
     pub fn new(
         n: usize,
         pipe_endpoints: &[(usize, usize)],
-        _grid_width: usize,
-        _grid_height: usize,
     ) -> Self {
         // Build a dummy CSC matrix to get the symbolic structure.
-        let triplets = build_triplets_from_pipes(n, pipe_endpoints);
+        let dummy_off_diag: Vec<(usize, usize, f64)> = pipe_endpoints
+            .iter()
+            .map(|&(from, to)| {
+                let (lo, hi) = if from < to { (from, to) } else { (to, from) };
+                (lo, hi, -1.0)
+            })
+            .collect();
+        let triplets = build_upper_triplets(n, None, &dummy_off_diag);
         let mat = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets)
             .expect("failed to build sparse matrix from pipe endpoints");
 
@@ -75,7 +80,7 @@ impl FaerDirectSolver {
         );
 
         // Build upper-triangle CSC matrix from diag + off_diag.
-        let triplets = build_triplets_from_system(self.n, diag, off_diag);
+        let triplets = build_upper_triplets(self.n, Some(diag), off_diag);
         let mat = SparseColMat::<usize, f64>::try_new_from_triplets(self.n, self.n, &triplets)
             .expect("failed to build sparse matrix");
 
@@ -183,39 +188,40 @@ pub fn faer_cg(
     // Build faer sparse operator for A*x.
     let operator = FaerSparseOperator::from_symmetric(n, diag, off_diag);
 
-    // Apply Jacobi preconditioning: scale the system by M^{-1/2} where M = diag(A).
-    // Transform: A' = M^{-1/2} A M^{-1/2}, b' = M^{-1/2} b, x' = M^{1/2} x
-    // This is equivalent to left-preconditioning in unpreconditioned CG.
-    //
-    // argmin's CG is unpreconditioned, so we apply Jacobi preconditioning
-    // externally by transforming the system: solve M^{-1}Ax = M^{-1}b using
-    // a wrapper operator that computes M^{-1}(A*x).
+    // Left-preconditioning: solve M^{-1}Ax = M^{-1}b via argmin CG,
+    // where M = diag(A). The wrapper operator computes M^{-1}(A*x).
     let inv_diag: Vec<f64> = diag
         .iter()
         .map(|&d| if d.abs() > 1e-12 { 1.0 / d } else { 1.0 })
         .collect();
 
-    let precond_operator = JacobiPreconditionedOperator {
-        inner: operator,
-        inv_diag: inv_diag.clone(),
-    };
-
-    // Preconditioned RHS: b' = M^{-1} * b
+    // Preconditioned RHS: b' = M^{-1} * b (computed before moving inv_diag)
     let precond_rhs: Vec<f64> = rhs
         .iter()
         .zip(inv_diag.iter())
         .map(|(&b, &inv_d)| b * inv_d)
         .collect();
 
+    let precond_operator = JacobiPreconditionedOperator {
+        inner: operator,
+        inv_diag,
+    };
+
     // Run argmin CG.
     use argmin::core::{Executor, State};
     use argmin::solver::conjugategradient::ConjugateGradient;
 
-    let cg: ConjugateGradient<Vec<f64>, f64> = ConjugateGradient::new(precond_rhs);
+    let cg: ConjugateGradient<Vec<f64>, f64> = ConjugateGradient::new(precond_rhs.clone());
     let init_x: Vec<f64> = x.to_vec();
 
+    // argmin CG sets cost = rtr (squared residual norm) each iteration.
+    // target_cost stops CG when ||r||^2 <= tol^2 * ||b'||^2, giving
+    // relative residual tolerance on the preconditioned system.
+    let precond_rhs_norm_sq: f64 = precond_rhs.iter().map(|&b| b * b).sum::<f64>().max(1e-24);
+    let target_cost = tol * tol * precond_rhs_norm_sq;
+
     let result = Executor::new(precond_operator, cg)
-        .configure(|state| state.param(init_x).max_iters(max_iters as u64))
+        .configure(|state| state.param(init_x).max_iters(max_iters as u64).target_cost(target_cost))
         .ctrlc(false)
         .run();
 
@@ -256,46 +262,30 @@ impl argmin::core::Operator for JacobiPreconditionedOperator {
 // Triplet builders
 // ---------------------------------------------------------------------------
 
-/// Build faer Triplets for an upper-triangle symmetric matrix from pipe endpoints.
-/// Used for symbolic factorization (dummy values).
-fn build_triplets_from_pipes(
+/// Build faer Triplets for an upper-triangle symmetric matrix.
+///
+/// If `diag` is `None`, uses 1.0 for all diagonal entries and -1.0 for
+/// off-diagonal (suitable for symbolic factorization with dummy values).
+/// If `diag` is `Some`, uses actual diagonal values and the f64 in each
+/// off-diagonal entry.
+fn build_upper_triplets(
     n: usize,
-    pipe_endpoints: &[(usize, usize)],
-) -> Vec<Triplet<usize, usize, f64>> {
-    let mut triplets = Vec::with_capacity(n + pipe_endpoints.len());
-
-    // Diagonal entries.
-    for i in 0..n {
-        triplets.push(Triplet::new(i, i, 1.0));
-    }
-
-    // Upper-triangle off-diagonal entries.
-    for &(from, to) in pipe_endpoints {
-        let (lo, hi) = if from < to { (from, to) } else { (to, from) };
-        triplets.push(Triplet::new(lo, hi, -1.0));
-    }
-
-    triplets
-}
-
-/// Build faer Triplets for a full upper-triangle symmetric matrix from
-/// diagonal values and off-diagonal entries.
-fn build_triplets_from_system(
-    n: usize,
-    diag: &[f64],
+    diag: Option<&[f64]>,
     off_diag: &[(usize, usize, f64)],
 ) -> Vec<Triplet<usize, usize, f64>> {
     let mut triplets = Vec::with_capacity(n + off_diag.len());
 
     // Diagonal entries.
     for i in 0..n {
-        triplets.push(Triplet::new(i, i, diag[i]));
+        let d = diag.map_or(1.0, |v| v[i]);
+        triplets.push(Triplet::new(i, i, d));
     }
 
-    // Upper-triangle off-diagonal entries (lo < hi).
+    // Upper-triangle off-diagonal entries.
     for &(lo, hi, val) in off_diag {
+        let v = if diag.is_some() { val } else { -1.0 };
         debug_assert!(lo < hi, "off_diag entries must have lo < hi");
-        triplets.push(Triplet::new(lo, hi, val));
+        triplets.push(Triplet::new(lo, hi, v));
     }
 
     triplets
@@ -344,7 +334,7 @@ mod tests {
     #[test]
     fn direct_solver_basic() {
         // A = [[4, -1], [-1, 4]], b = (3, 3) => x = (1, 1)
-        let mut solver = FaerDirectSolver::new(2, &[(0, 1)], 1, 1);
+        let mut solver = FaerDirectSolver::new(2, &[(0, 1)]);
         let diag = vec![4.0, 4.0];
         let off_diag = vec![(0, 1, -1.0)];
         let rhs = vec![3.0, 3.0];
@@ -359,7 +349,7 @@ mod tests {
         // 4x4 tridiagonal: A[i,i] = 4, A[i,i+1] = -1
         let n = 4;
         let pipes: Vec<(usize, usize)> = (0..n - 1).map(|i| (i, i + 1)).collect();
-        let mut solver = FaerDirectSolver::new(n, &pipes, 2, 2);
+        let mut solver = FaerDirectSolver::new(n, &pipes);
 
         let diag = vec![4.0; n];
         let off_diag: Vec<(usize, usize, f64)> =

@@ -21,17 +21,3 @@ pub trait LinearSolver: Send {
         x: &mut [f64],
     );
 }
-
-/// Iterative solver for Ax=b (CG-based).
-pub trait IterativeLinearSolver: Send {
-    /// Solve using iterative method. Returns iteration count.
-    fn solve_iterative(
-        &self,
-        diag: &[f64],
-        off_diag: &[(usize, usize, f64)],
-        rhs: &[f64],
-        x: &mut [f64],
-        tol: f64,
-        max_iters: usize,
-    ) -> usize;
-}

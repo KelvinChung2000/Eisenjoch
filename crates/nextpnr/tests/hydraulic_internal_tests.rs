@@ -8,7 +8,7 @@ use nextpnr::placer::opt_trans_place::network::{
 
 fn make_solver_ctx(max_iters: usize, tol: f64) -> SolverCtx<'static> {
     SolverCtx {
-        solver_type: KirchhoffSolver::JacobiCG,
+        solver_type: KirchhoffSolver::CG,
         cg_max_iters: max_iters,
         cg_tol: tol,
         direct: None,

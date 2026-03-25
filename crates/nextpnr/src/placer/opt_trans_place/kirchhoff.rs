@@ -92,8 +92,6 @@ fn dispatch_solve(
     off_diag: &[(usize, usize, f64)],
     rhs: &[f64],
     pressure: &mut [f64],
-    _grid_width: usize,
-    _grid_height: usize,
 ) -> usize {
     match ctx.solver_type {
         KirchhoffSolver::Direct => {
@@ -106,9 +104,7 @@ fn dispatch_solve(
                 )
             }
         }
-        KirchhoffSolver::AmgCG | KirchhoffSolver::JacobiCG | KirchhoffSolver::MultigridCG => {
-            // AMG and multigrid preconditioners removed; all iterative paths
-            // now use Jacobi-preconditioned CG via faer_cg.
+        KirchhoffSolver::CG => {
             crate::placer::solver::faer_cg(
                 diag, off_diag, rhs, pressure, ctx.cg_tol, ctx.cg_max_iters,
             )
@@ -164,7 +160,6 @@ pub fn kirchhoff_solve(
 
         total_iters += dispatch_solve(
             solver, &diag, &off_diag, &rhs, &mut pressure,
-            network.width as usize, network.height as usize,
         );
 
         // Compute flows: Q = (P[from] - P[to]) / R_eff.
@@ -310,7 +305,6 @@ pub fn kirchhoff_solve_cropped(
 
         total_iters += dispatch_solve(
             solver, &diag, &off_diag, &cropped_demand, &mut pressure,
-            region.grid_width(), region.grid_height(),
         );
 
         for pipe in &mut network.pipes {

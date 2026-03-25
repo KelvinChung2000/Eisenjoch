@@ -165,7 +165,7 @@ fn cg_32x32_grid() {
 #[test]
 fn direct_solver_4x4_grid() {
     let (n, diag, off_diag, endpoints) = make_4port_grid(4, 4);
-    let mut solver = FaerDirectSolver::new(n, &endpoints, 4, 4);
+    let mut solver = FaerDirectSolver::new(n, &endpoints);
     let mut rhs = vec![0.0; n]; rhs[0] = 1.0;
     let mut x = vec![0.0; n];
     solver.solve(&diag, &off_diag, &rhs, &mut x);
@@ -175,7 +175,7 @@ fn direct_solver_4x4_grid() {
 #[test]
 fn direct_solver_8x8_grid() {
     let (n, diag, off_diag, endpoints) = make_4port_grid(8, 8);
-    let mut solver = FaerDirectSolver::new(n, &endpoints, 8, 8);
+    let mut solver = FaerDirectSolver::new(n, &endpoints);
     let rhs: Vec<f64> = (0..n).map(|i| (i as f64 * 0.3).sin()).collect();
     let mut x = vec![0.0; n];
     solver.solve(&diag, &off_diag, &rhs, &mut x);
@@ -185,7 +185,7 @@ fn direct_solver_8x8_grid() {
 #[test]
 fn direct_solver_reuse_values() {
     let (n, mut diag, off_diag, endpoints) = make_4port_grid(4, 4);
-    let mut solver = FaerDirectSolver::new(n, &endpoints, 4, 4);
+    let mut solver = FaerDirectSolver::new(n, &endpoints);
     let rhs = vec![1.0; n];
     let mut x1 = vec![0.0; n];
     solver.solve(&diag, &off_diag, &rhs, &mut x1);
@@ -203,7 +203,7 @@ fn direct_solver_reuse_values() {
 #[test]
 fn direct_solver_matches_cg() {
     let (n, diag, off_diag, endpoints) = make_4port_grid(5, 5);
-    let mut solver = FaerDirectSolver::new(n, &endpoints, 5, 5);
+    let mut solver = FaerDirectSolver::new(n, &endpoints);
     let rhs: Vec<f64> = (0..n).map(|i| (i as f64 * 0.5).sin()).collect();
     let mut x_direct = vec![0.0; n];
     solver.solve(&diag, &off_diag, &rhs, &mut x_direct);
@@ -219,7 +219,7 @@ fn direct_solver_high_anchor_weight() {
     let (diag, off_diag) = make_grid_laplacian(8, 8);
     let endpoints: Vec<_> = off_diag.iter().map(|&(i, j, _)| (i, j)).collect();
     let n = diag.len();
-    let mut solver = FaerDirectSolver::new(n, &endpoints, 8, 8);
+    let mut solver = FaerDirectSolver::new(n, &endpoints);
     let rhs: Vec<f64> = (0..n).map(|i| if i == 0 { 0.0 } else { (i as f64).sin() }).collect();
     let mut x = vec![0.0; n];
     solver.solve(&diag, &off_diag, &rhs, &mut x);

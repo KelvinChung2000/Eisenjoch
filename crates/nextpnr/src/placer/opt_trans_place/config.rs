@@ -3,15 +3,9 @@
 /// Which linear solver to use for the Kirchhoff pressure system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KirchhoffSolver {
-    /// Jacobi-preconditioned CG. Simple, works for well-conditioned systems.
-    JacobiCG,
-    /// Geometric multigrid-preconditioned CG. Fast for uniform grids but
-    /// breaks when turbulence creates non-uniform conductances.
-    MultigridCG,
-    /// Algebraic multigrid-preconditioned CG. Handles non-uniform conductances
-    /// from turbulence by building coarsening from actual matrix structure.
-    AmgCG,
-    /// Sparse Cholesky direct solver. Exact, no iteration, but O(n^1.5) memory/time.
+    /// Jacobi-preconditioned CG via faer sparse spmv + argmin CG.
+    CG,
+    /// Sparse Cholesky direct solver via faer (AMD ordering). Exact, no iteration.
     Direct,
 }
 
@@ -38,7 +32,7 @@ pub struct OptTransPlacerCfg {
     pub turbulence_beta: f64,
     /// Newton iterations per pressure solve for nonlinear resistance updates (default: 2).
     pub newton_iters: usize,
-    /// Which solver to use for the Kirchhoff pressure system (default: AmgCG).
+    /// Which solver to use for the Kirchhoff pressure system (default: CG).
     pub kirchhoff_solver: KirchhoffSolver,
     /// Maximum CG solver iterations per pressure solve (default: 2000).
     pub cg_max_iters: usize,
@@ -106,7 +100,7 @@ impl Default for OptTransPlacerCfg {
             seed: 1,
             turbulence_beta: 4.0,
             newton_iters: 2,
-            kirchhoff_solver: KirchhoffSolver::AmgCG,
+            kirchhoff_solver: KirchhoffSolver::CG,
             cg_max_iters: 2000,
             cg_tolerance: 1e-3,
             cfl_number: 0.5,

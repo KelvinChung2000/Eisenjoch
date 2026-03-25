@@ -110,7 +110,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let n_junctions = state.network.num_junctions();
 
     let mut direct_solver = if matches!(cfg.kirchhoff_solver, KirchhoffSolver::Direct) {
-        Some(FaerDirectSolver::new(n_junctions, &pipe_endpoints, w, h))
+        Some(FaerDirectSolver::new(n_junctions, &pipe_endpoints))
     } else {
         None
     };
