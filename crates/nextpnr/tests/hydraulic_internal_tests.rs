@@ -12,7 +12,6 @@ fn make_solver_ctx(max_iters: usize, tol: f64) -> SolverCtx<'static> {
         cg_max_iters: max_iters,
         cg_tol: tol,
         direct: None,
-        amg: None,
     }
 }
 

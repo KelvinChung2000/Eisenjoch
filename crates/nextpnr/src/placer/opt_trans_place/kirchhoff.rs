@@ -23,8 +23,6 @@ pub struct SolverCtx<'a> {
     pub cg_max_iters: usize,
     pub cg_tol: f64,
     pub direct: Option<&'a mut FaerDirectSolver>,
-    /// Placeholder for removed AMG preconditioner. Kept for struct compatibility.
-    pub amg: Option<&'a mut ()>,
 }
 
 // ---- Internal helpers ----

@@ -115,9 +115,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         None
     };
 
-    // AMG preconditioner removed: faer_cg with Jacobi is used for all iterative paths.
-    let mut amg_solver: Option<()> = None;
-
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
         let mut ta = crate::timing::TimingAnalyser::new();
@@ -195,7 +192,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                 cg_max_iters: cfg.cg_max_iters,
                 cg_tol: cfg.cg_tolerance,
                 direct: direct_solver.as_mut(),
-                amg: amg_solver.as_mut(),
             };
             kirchhoff::kirchhoff_solve(
                 &mut state.network, &demand, beta,
