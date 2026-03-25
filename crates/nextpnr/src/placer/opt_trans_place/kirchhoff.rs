@@ -7,8 +7,10 @@
 //! Turbulence: R_eff = R_base * (1 + beta * tanh((Q/C)^2)).
 //! Pump energy: E = Σ |P_driver - P_sinks| per net.
 
+use super::config::KirchhoffSolver;
 use super::network::{Pipe, PipeNetwork};
-use crate::placer::solver::cg::multigrid_preconditioned_cg;
+use crate::placer::solver::amg::AmgPreconditioner;
+use crate::placer::solver::DirectSolver;
 
 pub struct SolveResult {
     pub converged: bool,
@@ -88,6 +90,9 @@ pub fn kirchhoff_solve(
     cg_max_iters: usize,
     cg_tol: f64,
     density_overflow: &[f64],
+    solver_type: KirchhoffSolver,
+    mut direct_solver: Option<&mut DirectSolver>,
+    mut amg_solver: Option<&mut AmgPreconditioner>,
 ) -> SolveResult {
     let n_j = network.num_junctions();
     let n_p = network.num_pipes();
@@ -128,21 +133,59 @@ pub fn kirchhoff_solve(
             off_diag.push((lo, hi, -conductance));
         }
 
+        // Regularization: add small ground conductance to prevent floating
+        // potentials from turbulence. Without this, CG condition number
+        // can reach 10^7 when turbulence drives pipes to near-zero conductance.
+        let avg_diag = diag.iter().sum::<f64>() / n_j as f64;
+        let epsilon = 0.01 * avg_diag.max(1e-6);
+        for d in diag.iter_mut() {
+            *d += epsilon;
+        }
+
         // Pin junction 0 as pressure reference (P[0] = 0).
-        diag[0] = 1e10;
+        diag[0] += 1e10;
         let mut rhs = demand.to_vec();
         rhs[0] = 0.0;
 
-        let iters = multigrid_preconditioned_cg(
-            &diag,
-            &off_diag,
-            &rhs,
-            &mut pressure,
-            cg_tol,
-            cg_max_iters,
-            network.width as usize,
-            network.height as usize,
-        );
+        // Dispatch to configured solver.
+        let iters = match solver_type {
+            KirchhoffSolver::Direct => {
+                if let Some(ref mut ds) = direct_solver {
+                    ds.solve(&diag, &off_diag, &rhs, &mut pressure);
+                    1
+                } else if let Some(ref mut amg) = amg_solver {
+                    crate::placer::solver::amg::amg_preconditioned_cg_cached(
+                        amg, &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                } else {
+                    crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                        &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                }
+            }
+            KirchhoffSolver::AmgCG => {
+                if let Some(ref mut amg) = amg_solver {
+                    crate::placer::solver::amg::amg_preconditioned_cg_cached(
+                        amg, &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                } else {
+                    crate::placer::solver::amg::amg_preconditioned_cg(
+                        &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                }
+            }
+            KirchhoffSolver::JacobiCG => {
+                crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                    &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                )
+            }
+            KirchhoffSolver::MultigridCG => {
+                crate::placer::solver::cg::multigrid_preconditioned_cg(
+                    &diag, &off_diag, &rhs, &mut pressure, cg_tol, cg_max_iters,
+                    network.width as usize, network.height as usize,
+                )
+            }
+        };
         total_iters += iters;
 
         // Compute flows: Q = (P[from] - P[to]) / R_eff.
@@ -271,6 +314,9 @@ pub fn kirchhoff_solve_cropped(
     cg_tol: f64,
     region: &CroppedRegion,
     density_overflow: &[f64],
+    solver_type: KirchhoffSolver,
+    mut direct_solver: Option<&mut DirectSolver>,
+    mut amg_solver: Option<&mut AmgPreconditioner>,
 ) -> SolveResult {
     let n_cropped = region.num_junctions();
 
@@ -317,20 +363,53 @@ pub fn kirchhoff_solve_cropped(
             }
         }
 
-        // Pin junction 0 (in cropped space) as reference.
-        diag[0] = 1e10;
+        // Regularization + pin junction 0.
+        let avg_diag = diag.iter().sum::<f64>() / n_cropped as f64;
+        let epsilon = 0.01 * avg_diag.max(1e-6);
+        for d in diag.iter_mut() {
+            *d += epsilon;
+        }
+        diag[0] += 1e10;
         cropped_demand[0] = 0.0;
 
-        let iters = multigrid_preconditioned_cg(
-            &diag,
-            &off_diag,
-            &cropped_demand,
-            &mut pressure,
-            cg_tol,
-            cg_max_iters,
-            region.grid_width(),
-            region.grid_height(),
-        );
+        let iters = match solver_type {
+            KirchhoffSolver::Direct => {
+                if let Some(ref mut ds) = direct_solver {
+                    ds.solve(&diag, &off_diag, &cropped_demand, &mut pressure);
+                    1
+                } else if let Some(ref mut amg) = amg_solver {
+                    crate::placer::solver::amg::amg_preconditioned_cg_cached(
+                        amg, &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                } else {
+                    crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                        &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                }
+            }
+            KirchhoffSolver::AmgCG => {
+                if let Some(ref mut amg) = amg_solver {
+                    crate::placer::solver::amg::amg_preconditioned_cg_cached(
+                        amg, &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                } else {
+                    crate::placer::solver::amg::amg_preconditioned_cg(
+                        &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                    )
+                }
+            }
+            KirchhoffSolver::JacobiCG => {
+                crate::placer::solver::cg::preconditioned_conjugate_gradient(
+                    &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                )
+            }
+            KirchhoffSolver::MultigridCG => {
+                crate::placer::solver::cg::multigrid_preconditioned_cg(
+                    &diag, &off_diag, &cropped_demand, &mut pressure, cg_tol, cg_max_iters,
+                    region.grid_width(), region.grid_height(),
+                )
+            }
+        };
         total_iters += iters;
 
         // Compute flows for ALL pipes (not just cropped).

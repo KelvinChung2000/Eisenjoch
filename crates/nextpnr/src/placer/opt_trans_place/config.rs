@@ -1,5 +1,20 @@
 //! Configuration for the optimal transport placer (Kirchhoff resistive network model).
 
+/// Which linear solver to use for the Kirchhoff pressure system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KirchhoffSolver {
+    /// Jacobi-preconditioned CG. Simple, works for well-conditioned systems.
+    JacobiCG,
+    /// Geometric multigrid-preconditioned CG. Fast for uniform grids but
+    /// breaks when turbulence creates non-uniform conductances.
+    MultigridCG,
+    /// Algebraic multigrid-preconditioned CG. Handles non-uniform conductances
+    /// from turbulence by building coarsening from actual matrix structure.
+    AmgCG,
+    /// Sparse Cholesky direct solver. Exact, no iteration, but O(n^1.5) memory/time.
+    Direct,
+}
+
 /// How to initialize cell positions before the optimization loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InitStrategy {
@@ -23,9 +38,11 @@ pub struct OptTransPlacerCfg {
     pub turbulence_beta: f64,
     /// Newton iterations per pressure solve for nonlinear resistance updates (default: 2).
     pub newton_iters: usize,
-    /// Maximum CG solver iterations per pressure solve (default: 500).
+    /// Which solver to use for the Kirchhoff pressure system (default: AmgCG).
+    pub kirchhoff_solver: KirchhoffSolver,
+    /// Maximum CG solver iterations per pressure solve (default: 2000).
     pub cg_max_iters: usize,
-    /// CG convergence tolerance (default: 1e-6).
+    /// CG convergence tolerance (default: 1e-3).
     pub cg_tolerance: f64,
     /// Unused. Kept for Python API backward compatibility.
     pub cfl_number: f64,
@@ -89,7 +106,8 @@ impl Default for OptTransPlacerCfg {
             seed: 1,
             turbulence_beta: 4.0,
             newton_iters: 2,
-            cg_max_iters: 500,
+            kirchhoff_solver: KirchhoffSolver::AmgCG,
+            cg_max_iters: 2000,
             cg_tolerance: 1e-3,
             cfl_number: 0.5,
             max_outer_iters: 200,
@@ -101,7 +119,7 @@ impl Default for OptTransPlacerCfg {
             star_weight: 1.0,
             pressure_weight_start: 0.0,
             pressure_weight_end: 2.0,
-            io_boost: 4.0,
+            io_boost: 3.0,
             nesterov_step_size: 0.1,
             momentum: None,
             wl_coeff: 0.5,

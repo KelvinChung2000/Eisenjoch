@@ -156,13 +156,9 @@ pub fn conjugate_gradient(
 
         let alpha = rz_old / p_ap;
 
-        // x = x + alpha * p
+        // Fused update: x += alpha*p, r -= alpha*A*p
         for i in 0..n {
             x[i] += alpha * p[i];
-        }
-
-        // r = r - alpha * A*p
-        for i in 0..n {
             r[i] -= alpha * ap[i];
         }
 

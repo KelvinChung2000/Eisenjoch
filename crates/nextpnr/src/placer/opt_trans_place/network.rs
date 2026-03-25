@@ -313,9 +313,20 @@ fn compute_schur_matrices(ctx: &Context, num_tile_types: usize) -> Vec<[[f64; 4]
         let n_bels = tt.bels.len();
 
         if n_bels == 0 {
+            // Non-CLB tiles (BRAM, DSP, routing-only): near-zero internal
+            // conductance. Flow can transit through inter-tile pipes but
+            // cannot accumulate inside. This prevents the continuous solver
+            // from parking cells on non-placeable tiles.
+            let g_pass = 0.001; // just enough to avoid singular sub-blocks
             let mut m = [[0.0; 4]; 4];
             for i in 0..4 {
-                m[i][i] = 1.0;
+                for j in 0..4 {
+                    if i == j {
+                        m[i][j] = 3.0 * g_pass;
+                    } else {
+                        m[i][j] = -g_pass;
+                    }
+                }
             }
             matrices.push(m);
             continue;

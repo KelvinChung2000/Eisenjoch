@@ -111,7 +111,19 @@ impl OptTransState {
         // Pre-compute per-tile BEL capacity and average BEL density.
         let w = network.width as usize;
         let h = network.height as usize;
-        let mut tile_bel_cap = vec![1e6_f64; w * h]; // sentinel for empty tiles
+
+        // Count distinct movable cell types to compute per-type capacity.
+        let mut cell_type_set = rustc_hash::FxHashSet::default();
+        for &cell_id in &idx_to_cell {
+            cell_type_set.insert(ctx.design.cell(cell_id).cell_type);
+        }
+        let n_cell_types = cell_type_set.len().max(1);
+
+        // Per-tile capacity = total BELs / number of cell types.
+        // This ensures the continuous density field prevents any single type
+        // from exceeding its fair share of BELs at each tile.
+        // Tiles without BELs get tiny capacity (0.01) to repel cells.
+        let mut tile_bel_cap = vec![0.01_f64; w * h];
         let mut total_bels = 0usize;
         let mut occupied_tiles = 0usize;
         for y in 0..network.height {
@@ -119,11 +131,11 @@ impl OptTransState {
                 let tile = ctx.chipdb().tile_by_xy(x + network.x0, y + network.y0);
                 let bel_count = ctx.chipdb().tile_type(tile).bels.len();
                 if bel_count > 0 {
-                    tile_bel_cap[y as usize * w + x as usize] = bel_count as f64;
+                    tile_bel_cap[y as usize * w + x as usize] =
+                        bel_count as f64 / n_cell_types as f64;
                     total_bels += bel_count;
                     occupied_tiles += 1;
                 }
-                // else: stays at 1e6 sentinel — density will be ~0
             }
         }
         let avg_bels = (total_bels as f64 / occupied_tiles.max(1) as f64).max(1.0);

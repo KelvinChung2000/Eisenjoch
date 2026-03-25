@@ -36,7 +36,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{initial_placement, validate_all_placed, with_locked_others};
 use super::common::{NesterovLoopState, compute_pin_weights};
-use super::solver::VelocityFieldSolver;
+use super::solver::{DirectSolver, VelocityFieldSolver};
 use super::PlacerError;
 
 pub struct PlacerOptTrans;
@@ -59,11 +59,74 @@ impl super::Placer for PlacerOptTrans {
     }
 }
 
+/// Lock cells whose BELs only exist on boundary/IO tiles.
+///
+/// These cells (IOB, clock buffers, etc.) cannot benefit from the continuous
+/// solve because their valid positions are sparse and fixed at the chip edge.
+/// Locking them makes them fixed anchors in the Kirchhoff system, naturally
+/// pulling connected logic toward the boundary via pressure gradients.
+fn lock_boundary_cells(ctx: &mut Context) {
+    use crate::common::PlaceStrength;
+    use rustc_hash::FxHashSet;
+
+    // Collect all cell types present in the design.
+    let mut cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
+    for (_id, cell) in ctx.design.iter_alive_cells() {
+        cell_types.insert(cell.cell_type);
+    }
+
+    // For each cell type, check if its BELs are on CLB tiles (>= 4 BELs per tile).
+    // Cell types with NO BELs on CLB tiles are boundary/IO types.
+    let mut clb_cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
+    for &ct in &cell_types {
+        let on_clb = ctx.bels_for_bucket(ct).any(|b| {
+            let loc = b.loc();
+            let tile = ctx.chipdb().tile_by_xy(loc.x, loc.y);
+            ctx.chipdb().tile_type(tile).bels.len() >= 4
+        });
+        if on_clb {
+            clb_cell_types.insert(ct);
+        }
+    }
+
+    let mut locked_count = 0usize;
+    let cell_ids: Vec<_> = ctx
+        .design
+        .iter_alive_cells()
+        .map(|(id, _)| id)
+        .collect();
+
+    for cell_id in cell_ids {
+        let cell = ctx.design.cell(cell_id);
+        if cell.bel_strength.is_locked() {
+            continue;
+        }
+        if clb_cell_types.contains(&cell.cell_type) {
+            continue;
+        }
+        if cell.bel.is_some() {
+            ctx.design.cell_mut(cell_id).bel_strength = PlaceStrength::Locked;
+            locked_count += 1;
+        }
+    }
+
+    if locked_count > 0 {
+        eprintln!("Locked {} boundary/IO cells as fixed anchors", locked_count);
+    }
+}
+
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     ctx.reseed_rng(cfg.seed);
 
     initial_placement(ctx)?;
     ctx.populate_bel_buckets();
+
+    // Lock IO cells at their initial placement. IO BELs are only at the chip
+    // boundary and cannot participate in the continuous fluid solve. Locking
+    // them makes them fixed anchors that attract connected logic cells toward
+    // the boundary via the Kirchhoff pressure gradient.
+    lock_boundary_cells(ctx);
+
     let mut state = state::OptTransState::new(ctx, cfg.init_strategy);
 
     if state.num_cells() == 0 {
@@ -89,9 +152,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let grid_diag = ((state.network.width as f64).powi(2)
         + (state.network.height as f64).powi(2)).sqrt();
 
-    // IO boost: amplify boundary pressure for low utilization designs.
-    // Low utilization designs need stronger IO pull to gather cells.
-    let io_boost = cfg.io_boost * (1.0 + 2.0 * (1.0 - utilization).max(0.0));
+    // IO boost: amplify demand on nets with a fixed (locked/IO) pin.
+    // With IO cells locked as fixed anchors, a mild boost is enough —
+    // the Kirchhoff pressure gradient already pulls logic toward IOs.
+    let io_boost = cfg.io_boost;
 
     // Step size: scale with grid diagonal for proportional movement.
     let step_size = cfg.nesterov_step_size * grid_diag / 50.0;
@@ -140,6 +204,32 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let helm_neighbor_count = helmholtz_neighbor_count(w, h);
     let mut helm_diag = vec![0.0_f64; w * h];
     let mut helm_rhs = vec![0.0; w * h]; // reusable RHS buffer
+
+    // Build solver infrastructure (cached structures, one-time cost).
+    let pipe_endpoints: Vec<(usize, usize)> = state
+        .network
+        .pipes
+        .iter()
+        .map(|p| (p.from, p.to))
+        .collect();
+    let n_junctions = state.network.num_junctions();
+
+    // Direct solver: symbolic Cholesky factorization (used if solver_type == Direct).
+    let mut direct_solver = DirectSolver::new(n_junctions, &pipe_endpoints, w, h);
+
+    // AMG solver: structural setup — C/F splitting + interpolation patterns.
+    // Sorted (lo, hi) pairs for the AMG structure builder.
+    let amg_pairs: Vec<(usize, usize)> = pipe_endpoints
+        .iter()
+        .map(|&(a, b)| if a < b { (a, b) } else { (b, a) })
+        .collect();
+    let amg_structure = crate::placer::solver::amg::AmgStructure::new(n_junctions, &amg_pairs);
+    // Initialize AMG with dummy values; will be updated each solve call.
+    let dummy_diag = vec![1.0; n_junctions];
+    let dummy_offdiag: Vec<(usize, usize, f64)> = amg_pairs.iter().map(|&(a,b)| (a, b, -1.0)).collect();
+    let mut amg_solver = crate::placer::solver::amg::AmgPreconditioner::new(
+        amg_structure, &dummy_diag, &dummy_offdiag,
+    );
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -216,6 +306,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             &mut state.network, &demand, beta,
             cfg.newton_iters, cfg.cg_max_iters, cfg.cg_tolerance,
             &density_overflow,
+            cfg.kirchhoff_solver,
+            Some(&mut direct_solver),
+            Some(&mut amg_solver),
         );
 
         // 3b. Beckmann aggregate flow update + self-normalization.
@@ -451,6 +544,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         clb_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
         if !clb_xs.is_empty() && !clb_ys.is_empty() {
+            let mut snap_max_disp = 0.0f64;
+            let mut snap_total_disp = 0.0f64;
             for i in 0..state.num_cells() {
                 // Snap x to nearest CLB column
                 let cx = state.cell_x[i];
@@ -465,11 +560,113 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                     .min_by(|a, b| (a - cy).abs().partial_cmp(&(b - cy).abs()).unwrap())
                     .unwrap();
                 state.cell_y[i] = best_y;
+                let d = ((best_x - cx).powi(2) + (best_y - cy).powi(2)).sqrt();
+                snap_total_disp += d;
+                snap_max_disp = snap_max_disp.max(d);
             }
+            let snap_avg = snap_total_disp / state.num_cells().max(1) as f64;
             eprintln!(
-                "Snapped {} cells to {} CLB columns × {} CLB rows",
-                state.num_cells(), clb_xs.len(), clb_ys.len(),
+                "Snapped {} cells to {} CLB columns × {} CLB rows (avg_disp={:.1}, max_disp={:.1})",
+                state.num_cells(), clb_xs.len(), clb_ys.len(), snap_avg, snap_max_disp,
             );
+
+            // Post-snap per-type spreading: ensure no CLB tile has more cells
+            // of each type than that type's fair share of BELs.
+            use crate::common::IdString;
+
+            // Count distinct cell types.
+            let mut cell_types_present: FxHashSet<IdString> = FxHashSet::default();
+            for i in 0..state.num_cells() {
+                let ct = ctx.design.cell(state.idx_to_cell[i]).cell_type;
+                cell_types_present.insert(ct);
+            }
+            let n_types = cell_types_present.len().max(1);
+
+            // Per-tile capacity = total BELs / number of cell types (fair share).
+            let mut tile_cap: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+            for &cx in &clb_xs {
+                for &cy in &clb_ys {
+                    let vx = cx as i32;
+                    let vy = cy as i32;
+                    let tile = chipdb.tile_by_xy(vx + x0, vy + y0);
+                    let total_bels = chipdb.tile_type(tile).bels.len();
+                    tile_cap.insert((vx, vy), total_bels / n_types);
+                }
+            }
+
+            // Group cells by (type, snap position).
+            let mut type_tile_cells: FxHashMap<(IdString, i32, i32), Vec<usize>> = FxHashMap::default();
+            for i in 0..state.num_cells() {
+                let ct = ctx.design.cell(state.idx_to_cell[i]).cell_type;
+                let tx = state.cell_x[i].round() as i32;
+                let ty = state.cell_y[i].round() as i32;
+                type_tile_cells.entry((ct, tx, ty)).or_default().push(i);
+            }
+
+            // Per-type remaining capacity (each type gets its fair share).
+            let mut remaining_cap: FxHashMap<(IdString, i32, i32), usize> = FxHashMap::default();
+            for &ct in &cell_types_present {
+                for (&(vx, vy), &cap) in &tile_cap {
+                    remaining_cap.insert((ct, vx, vy), cap);
+                }
+            }
+
+            let mut spread_count = 0usize;
+            let mut spread_max_disp = 0.0f64;
+
+            let mut groups: Vec<_> = type_tile_cells.into_iter().collect();
+            groups.sort_by_key(|(_, cells)| std::cmp::Reverse(cells.len()));
+
+            for ((ct, tx, ty), cells) in &groups {
+                let cap = remaining_cap.get(&(*ct, *tx, *ty)).copied().unwrap_or(0);
+                if cells.len() <= cap {
+                    if let Some(c) = remaining_cap.get_mut(&(*ct, *tx, *ty)) {
+                        *c = c.saturating_sub(cells.len());
+                    }
+                    continue;
+                }
+
+                let mut cell_dists: Vec<(usize, f64)> = cells
+                    .iter()
+                    .map(|&ci| {
+                        let dx = state.cell_x[ci] - *tx as f64;
+                        let dy = state.cell_y[ci] - *ty as f64;
+                        (ci, dx * dx + dy * dy)
+                    })
+                    .collect();
+                cell_dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+                remaining_cap.insert((*ct, *tx, *ty), 0);
+
+                for &(ci, _) in cell_dists.iter().skip(cap) {
+                    let mut best: Option<(i32, i32, f64)> = None;
+                    for (&(bt, bx, by), cap_left) in &remaining_cap {
+                        if bt != *ct || *cap_left == 0 {
+                            continue;
+                        }
+                        let dx = (bx - tx) as f64;
+                        let dy = (by - ty) as f64;
+                        let d = dx * dx + dy * dy;
+                        if best.is_none() || d < best.unwrap().2 {
+                            best = Some((bx, by, d));
+                        }
+                    }
+                    if let Some((bx, by, d)) = best {
+                        state.cell_x[ci] = bx as f64;
+                        state.cell_y[ci] = by as f64;
+                        *remaining_cap.get_mut(&(*ct, bx, by)).unwrap() -= 1;
+                        spread_count += 1;
+                        spread_max_disp = spread_max_disp.max(d.sqrt());
+                    }
+                }
+            }
+
+            if spread_count > 0 {
+                eprintln!(
+                    "Spread {} cells from overcrowded tiles (max_disp={:.1})",
+                    spread_count, spread_max_disp,
+                );
+            }
         }
     }
 

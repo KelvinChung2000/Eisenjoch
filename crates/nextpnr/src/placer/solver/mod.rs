@@ -5,15 +5,21 @@
 //! and a multigrid V-cycle solver for grid Laplacians.
 
 pub mod adam;
+pub mod amg;
 pub mod cg;
+pub mod cholesky;
+pub mod direct;
 pub mod lse;
 pub mod multigrid;
 pub mod nesterov;
+pub mod ordering;
+pub mod sparse;
 pub mod velocity;
 pub mod wa;
 
 pub use adam::AdamSolver;
 pub use cg::{conjugate_gradient, spmv, SparseSystem};
+pub use direct::DirectSolver;
 pub use lse::{lse_axis_grad, lse_axis_value, lse_gradient, lse_wirelength};
 pub use multigrid::MultigridSolver;
 pub use nesterov::NesterovSolver;
