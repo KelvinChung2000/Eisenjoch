@@ -18,7 +18,7 @@ pub mod velocity;
 pub mod wa;
 
 pub use adam::AdamSolver;
-pub use cg::{conjugate_gradient, spmv, SparseSystem};
+pub use cg::{conjugate_gradient, dot, jacobi_preconditioner, spmv, SparseSystem};
 pub use direct::DirectSolver;
 pub use lse::{lse_axis_grad, lse_axis_value, lse_gradient, lse_wirelength};
 pub use multigrid::MultigridSolver;

@@ -152,53 +152,15 @@ pub fn legalize_opt_trans(
 
             let dx = bx as f64 - phys_x[solver_idx];
             let dy = by as f64 - phys_y[solver_idx];
-            let d = (dx * dx + dy * dy).sqrt();
             total_displacement += dx * dx + dy * dy;
-
-            if d > 5.0 {
-                eprintln!(
-                    "    OUTLIER: {} disp={:.1} target=({:.1},{:.1}) bel=({},{})",
-                    ctx.name_of(ctx.design.cell(cell_id).name),
-                    d, phys_x[solver_idx], phys_y[solver_idx], bx, by,
-                );
-            }
 
             place_cluster_children(ctx, cell_id, bel_id)?;
         }
-
-        // Per-type displacement stats.
-        let mut type_max_disp = 0.0f64;
-        let mut type_total_disp = 0.0f64;
-        for &(si, _) in &sorted_cells {
-            let bx = phys_x[si].round() as i32;
-            let by = phys_y[si].round() as i32;
-            if let Some(bel_id) = ctx.cell(state.idx_to_cell[si]).bel_id() {
-                let loc = ctx.chipdb().bel_loc(bel_id);
-                let dx = (loc.x - bx) as f64;
-                let dy = (loc.y - by) as f64;
-                let d = (dx * dx + dy * dy).sqrt();
-                type_total_disp += d;
-                type_max_disp = type_max_disp.max(d);
-            }
-        }
-        let type_avg = if n_cells > 0 { type_total_disp / n_cells as f64 } else { 0.0 };
-
-        let t_group = std::time::Instant::now();
-        eprintln!(
-            "  Legalize {}: {} cells → {} BELs in {:.0}ms (avg_disp={:.1}, max_disp={:.1})",
-            ctx.name_of(cell_type),
-            n_cells,
-            n_bels,
-            (t_group - t_start).as_secs_f64() * 1000.0,
-            type_avg,
-            type_max_disp,
-        );
     }
 
-    let t_end = std::time::Instant::now();
     eprintln!(
-        "  Legalization total: {:.0}ms",
-        (t_end - t_start).as_secs_f64() * 1000.0,
+        "  Legalization: {:.0}ms",
+        t_start.elapsed().as_secs_f64() * 1000.0,
     );
 
     Ok(total_displacement)

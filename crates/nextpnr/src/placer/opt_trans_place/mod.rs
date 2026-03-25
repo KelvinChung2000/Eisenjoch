@@ -205,31 +205,34 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let mut helm_diag = vec![0.0_f64; w * h];
     let mut helm_rhs = vec![0.0; w * h]; // reusable RHS buffer
 
-    // Build solver infrastructure (cached structures, one-time cost).
+    // Build solver infrastructure (one-time cost, gated on config).
     let pipe_endpoints: Vec<(usize, usize)> = state
         .network
         .pipes
         .iter()
-        .map(|p| (p.from, p.to))
+        .map(|p| {
+            let (a, b) = (p.from, p.to);
+            if a < b { (a, b) } else { (b, a) }
+        })
         .collect();
     let n_junctions = state.network.num_junctions();
 
-    // Direct solver: symbolic Cholesky factorization (used if solver_type == Direct).
-    let mut direct_solver = DirectSolver::new(n_junctions, &pipe_endpoints, w, h);
+    let mut direct_solver = if matches!(cfg.kirchhoff_solver, config::KirchhoffSolver::Direct) {
+        Some(DirectSolver::new(n_junctions, &pipe_endpoints, w, h))
+    } else {
+        None
+    };
 
-    // AMG solver: structural setup — C/F splitting + interpolation patterns.
-    // Sorted (lo, hi) pairs for the AMG structure builder.
-    let amg_pairs: Vec<(usize, usize)> = pipe_endpoints
-        .iter()
-        .map(|&(a, b)| if a < b { (a, b) } else { (b, a) })
-        .collect();
-    let amg_structure = crate::placer::solver::amg::AmgStructure::new(n_junctions, &amg_pairs);
-    // Initialize AMG with dummy values; will be updated each solve call.
-    let dummy_diag = vec![1.0; n_junctions];
-    let dummy_offdiag: Vec<(usize, usize, f64)> = amg_pairs.iter().map(|&(a,b)| (a, b, -1.0)).collect();
-    let mut amg_solver = crate::placer::solver::amg::AmgPreconditioner::new(
-        amg_structure, &dummy_diag, &dummy_offdiag,
-    );
+    let mut amg_solver = if matches!(cfg.kirchhoff_solver, config::KirchhoffSolver::AmgCG) {
+        let amg_structure = crate::placer::solver::amg::AmgStructure::new(n_junctions, &pipe_endpoints);
+        let dummy_diag = vec![1.0; n_junctions];
+        let dummy_offdiag: Vec<(usize, usize, f64)> = pipe_endpoints.iter().map(|&(a,b)| (a, b, -1.0)).collect();
+        Some(crate::placer::solver::amg::AmgPreconditioner::new(
+            amg_structure, &dummy_diag, &dummy_offdiag,
+        ))
+    } else {
+        None
+    };
 
     // Extract target clock period from timing analyser.
     let target_period = if cfg.timing_weight > 0.0 {
@@ -302,14 +305,19 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         t_density += (t2 - t1).as_secs_f64();
         // 3. Kirchhoff solve: L(R_eff) · P = demand.
         //    Density overflow increases pipe resistance in congested regions.
-        kirchhoff::kirchhoff_solve(
-            &mut state.network, &demand, beta,
-            cfg.newton_iters, cfg.cg_max_iters, cfg.cg_tolerance,
-            &density_overflow,
-            cfg.kirchhoff_solver,
-            Some(&mut direct_solver),
-            Some(&mut amg_solver),
-        );
+        {
+            let mut solver_ctx = kirchhoff::SolverCtx {
+                solver_type: cfg.kirchhoff_solver,
+                cg_max_iters: cfg.cg_max_iters,
+                cg_tol: cfg.cg_tolerance,
+                direct: direct_solver.as_mut(),
+                amg: amg_solver.as_mut(),
+            };
+            kirchhoff::kirchhoff_solve(
+                &mut state.network, &demand, beta,
+                cfg.newton_iters, &density_overflow, &mut solver_ctx,
+            );
+        }
 
         // 3b. Beckmann aggregate flow update + self-normalization.
         {

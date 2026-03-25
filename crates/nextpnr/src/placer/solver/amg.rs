@@ -48,6 +48,7 @@ struct LevelWork {
     x: Vec<f64>,
     r: Vec<f64>,
     rhs: Vec<f64>,
+    scratch: Vec<f64>, // reusable scratch for Jacobi smoother
 }
 
 /// Cached AMG structure: C/F splitting and interpolation patterns.
@@ -239,6 +240,7 @@ impl AmgPreconditioner {
                 x: vec![0.0; ls.n],
                 r: vec![0.0; ls.n],
                 rhs: vec![0.0; ls.n],
+                scratch: vec![0.0; ls.n],
             });
         }
 
@@ -387,7 +389,7 @@ impl AmgPreconditioner {
             for _ in 0..100 {
                 let (ls, nm) = (&self.structure.level_structs[level], &self.numerics[level]);
                 let wrk = &mut self.work[level];
-                jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, n);
+                jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
             }
             return;
         }
@@ -396,7 +398,7 @@ impl AmgPreconditioner {
         for _ in 0..SMOOTH_ITERS {
             let (ls, nm) = (&self.structure.level_structs[level], &self.numerics[level]);
             let wrk = &mut self.work[level];
-            jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, n);
+            jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
         }
 
         // Residual.
@@ -444,7 +446,7 @@ impl AmgPreconditioner {
         for _ in 0..SMOOTH_ITERS {
             let (ls, nm) = (&self.structure.level_structs[level], &self.numerics[level]);
             let wrk = &mut self.work[level];
-            jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, n);
+            jacobi_smooth(&nm.diag, &ls.offdiag_pattern, &nm.off_diag_values, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
         }
     }
 
@@ -453,7 +455,7 @@ impl AmgPreconditioner {
 }
 
 /// Weighted Jacobi: x += ω * M^{-1} * (rhs - A*x).
-/// Uses split pattern/values representation.
+/// `scratch` must have length >= n. Reused across calls to avoid allocation.
 fn jacobi_smooth(
     diag: &[f64],
     offdiag_pattern: &[(usize, usize)],
@@ -461,19 +463,19 @@ fn jacobi_smooth(
     inv_diag: &[f64],
     x: &mut [f64],
     rhs: &[f64],
+    scratch: &mut [f64],
     n: usize,
 ) {
-    let mut r = vec![0.0; n];
     for i in 0..n {
-        r[i] = rhs[i] - diag[i] * x[i];
+        scratch[i] = rhs[i] - diag[i] * x[i];
     }
     for (idx, &(i, j)) in offdiag_pattern.iter().enumerate() {
         let w = offdiag_values[idx];
-        r[i] -= w * x[j];
-        r[j] -= w * x[i];
+        scratch[i] -= w * x[j];
+        scratch[j] -= w * x[i];
     }
     for i in 0..n {
-        x[i] += OMEGA * inv_diag[i] * r[i];
+        x[i] += OMEGA * inv_diag[i] * scratch[i];
     }
 }
 
@@ -513,24 +515,26 @@ pub fn amg_preconditioned_cg_cached(
     // Update AMG numerics from new matrix values.
     amg.update(diag, off_diag);
 
-    let rhs_norm = rhs.iter().map(|r| r * r).sum::<f64>().sqrt().max(1e-12);
+    use super::cg::{dot, spmv};
+
+    let rhs_norm = dot(rhs, rhs).sqrt().max(1e-12);
 
     let mut r = vec![0.0; n];
     let mut ax = vec![0.0; n];
-    super::cg::spmv(diag, off_diag, x, &mut ax);
+    spmv(diag, off_diag, x, &mut ax);
     for i in 0..n { r[i] = rhs[i] - ax[i]; }
 
-    if r.iter().map(|ri| ri * ri).sum::<f64>().sqrt() / rhs_norm < tol { return 0; }
+    if dot(&r, &r).sqrt() / rhs_norm < tol { return 0; }
 
     let mut z = vec![0.0; n];
     amg.v_cycle(&r, &mut z);
     let mut p = z.clone();
-    let mut rz_old: f64 = r.iter().zip(z.iter()).map(|(ri, zi)| ri * zi).sum();
+    let mut rz_old = dot(&r, &z);
     let mut ap = vec![0.0; n];
 
     for iter in 0..max_iters {
-        super::cg::spmv(diag, off_diag, &p, &mut ap);
-        let p_ap: f64 = p.iter().zip(ap.iter()).map(|(pi, ai)| pi * ai).sum();
+        spmv(diag, off_diag, &p, &mut ap);
+        let p_ap = dot(&p, &ap);
         let alpha = rz_old / p_ap.max(1e-16);
 
         for i in 0..n {
@@ -538,12 +542,12 @@ pub fn amg_preconditioned_cg_cached(
             r[i] -= alpha * ap[i];
         }
 
-        if r.iter().map(|ri| ri * ri).sum::<f64>().sqrt() / rhs_norm < tol {
+        if dot(&r, &r).sqrt() / rhs_norm < tol {
             return iter + 1;
         }
 
         amg.v_cycle(&r, &mut z);
-        let rz_new: f64 = r.iter().zip(z.iter()).map(|(ri, zi)| ri * zi).sum();
+        let rz_new = dot(&r, &z);
         let beta = rz_new / rz_old;
         for i in 0..n { p[i] = z[i] + beta * p[i]; }
         rz_old = rz_new;

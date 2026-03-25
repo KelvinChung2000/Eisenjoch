@@ -89,13 +89,6 @@ impl DirectSolver {
         // Symbolic factorization on the permuted matrix.
         let symbolic = symbolic_cholesky(&permuted_csc);
 
-        eprintln!(
-            "DirectSolver: n={}, A_nnz={}, L_nnz={}, fill_ratio={:.1}x, L_mem={:.1}MB",
-            n, n + 2 * off_diag.len(), symbolic.l_nnz(),
-            symbolic.l_nnz() as f64 / off_diag.len().max(1) as f64,
-            (symbolic.l_nnz() * 16) as f64 / 1024.0 / 1024.0, // row_idx + value per entry
-        );
-
         // Build scatter map: for each diag[i] and off_diag[idx], find the
         // corresponding position in the permuted CSC values array.
         let scatter_map = build_scatter_map(

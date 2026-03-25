@@ -80,13 +80,13 @@ pub fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &
 }
 
 /// Dot product of two vectors.
-fn dot(a: &[f64], b: &[f64]) -> f64 {
+pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
     a.iter().zip(b.iter()).map(|(ai, bi)| ai * bi).sum()
 }
 
 /// Compute Jacobi preconditioner: inv_diag[i] = 1 / diag[i], with safeguard for near-zero.
-fn jacobi_preconditioner(diag: &[f64]) -> Vec<f64> {
+pub fn jacobi_preconditioner(diag: &[f64]) -> Vec<f64> {
     diag.iter()
         .map(|&d| if d.abs() > 1e-12 { 1.0 / d } else { 1.0 })
         .collect()
