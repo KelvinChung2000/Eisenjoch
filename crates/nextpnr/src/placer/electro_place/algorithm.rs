@@ -7,7 +7,7 @@ use crate::placer::common::{
     add_wa_wirelength_gradient, clamp_positions, compute_pin_weights,
     NesterovLoopState,
 };
-use crate::placer::solver::NesterovSolver;
+use crate::solver::NesterovSolver;
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
 

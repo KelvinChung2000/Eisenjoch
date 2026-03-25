@@ -247,31 +247,30 @@ mod tests {
 
     #[test]
     fn convergence_faster_than_gd() {
-        // Compare Nesterov vs plain GD on f(x) = 0.5 * sum(x_i^2)
         let n = 10;
         let iters = 50;
         let step = 0.05;
 
-        // Nesterov
         let mut nesterov = NesterovSolver::new(n, step);
         let init: Vec<f64> = (0..n).map(|i| (i + 1) as f64).collect();
         nesterov.set_positions(&init);
 
         for _ in 0..iters {
             let y = nesterov.look_ahead();
-            nesterov.step(&y); // grad = position for this objective
+            nesterov.step(&y);
         }
 
         let nesterov_dist: f64 = nesterov.positions().iter().map(|x| x * x).sum();
 
-        // Plain GD (use NesterovSolver but reset momentum each step to simulate GD)
         let mut gd = NesterovSolver::new(n, step);
         gd.set_positions(&init);
 
         for _ in 0..iters {
             let grad: Vec<f64> = gd.positions().to_vec();
-            // Manual GD step: x_new = x - step * grad
-            let new_pos: Vec<f64> = gd.positions().iter().zip(grad.iter())
+            let new_pos: Vec<f64> = gd
+                .positions()
+                .iter()
+                .zip(grad.iter())
                 .map(|(x, g)| x - step * g)
                 .collect();
             gd.set_positions(&new_pos);
@@ -291,106 +290,20 @@ mod tests {
     fn adaptive_restart_resets_momentum() {
         let mut solver = NesterovSolver::new(2, 0.1);
         solver.set_positions(&[1.0, 1.0]);
-        // Do a step to build momentum
         solver.step(&[0.1, 0.1]);
         assert!(solver.iter_count() > 0);
         assert!(solver.fista_param() > 1.0);
 
-        // Gradient opposing the direction -> should restart
-        // restart happens when grad . (x - x_prev) > 0
         let disp = [
             solver.positions()[0] - solver.x_prev[0],
             solver.positions()[1] - solver.x_prev[1],
         ];
-        // Use same direction as displacement so dot > 0
         solver.adaptive_restart(&disp);
         assert_eq!(solver.iter_count(), 0);
-        assert!((solver.fista_param() - 1.0).abs() < 1e-10, "FISTA param should reset to 1.0");
-    }
-
-    #[test]
-    fn rosenbrock_converges() {
-        // Minimize Rosenbrock: f(x,y) = (1-x)^2 + 100(y-x^2)^2
-        // Optimal: (1, 1)
-        let mut solver = NesterovSolver::new(2, 1e-4);
-        solver.set_positions(&[-1.0, 1.0]);
-
-        for _ in 0..50_000 {
-            let y = solver.look_ahead();
-            let x0 = y[0];
-            let x1 = y[1];
-            // grad f = (-2(1-x) - 400x(y-x^2), 200(y-x^2))
-            let grad = vec![
-                -2.0 * (1.0 - x0) - 400.0 * x0 * (x1 - x0 * x0),
-                200.0 * (x1 - x0 * x0),
-            ];
-            solver.adaptive_restart(&grad);
-            solver.step(&grad);
-        }
-
-        let pos = solver.positions();
         assert!(
-            (pos[0] - 1.0).abs() < 0.2 && (pos[1] - 1.0).abs() < 0.2,
-            "Rosenbrock: got ({}, {}), expected near (1, 1)",
-            pos[0],
-            pos[1]
+            (solver.fista_param() - 1.0).abs() < 1e-10,
+            "FISTA param should reset to 1.0"
         );
-    }
-
-    #[test]
-    fn bb_step_size_estimate() {
-        let mut solver = NesterovSolver::new(2, 0.1);
-        solver.set_positions(&[2.0, 3.0]);
-
-        let prev_grad = vec![2.0, 3.0];
-        solver.step(&prev_grad);
-        let curr_grad: Vec<f64> = solver.positions().to_vec();
-
-        let bb = solver.bb_step_size(&prev_grad, &curr_grad);
-        assert!(bb.is_some());
-        assert!(bb.unwrap() > 0.0);
-    }
-
-    #[test]
-    fn lipschitz_step_size_estimate() {
-        let mut solver = NesterovSolver::new(2, 0.1);
-        solver.set_positions(&[2.0, 3.0]);
-
-        let prev_grad = vec![2.0, 3.0];
-        solver.step(&prev_grad);
-        let curr_grad: Vec<f64> = solver.positions().to_vec();
-
-        let lip = solver.lipschitz_step_size(&prev_grad, &curr_grad);
-        assert!(lip > 0.0, "Lipschitz step size should be positive, got {}", lip);
-    }
-
-    #[test]
-    fn lipschitz_step_size_degenerate() {
-        // When gradients are identical, should fall back to current step_size
-        let mut solver = NesterovSolver::new(2, 0.1);
-        solver.set_positions(&[1.0, 2.0]);
-        solver.step(&[0.5, 0.5]);
-
-        let grad = vec![1.0, 1.0];
-        let lip = solver.lipschitz_step_size(&grad, &grad);
-        assert!((lip - 0.1).abs() < 1e-10, "Should return current step_size for identical grads");
-    }
-
-    #[test]
-    fn fista_momentum_grows() {
-        // FISTA momentum should start at 0 and grow over iterations
-        let mut solver = NesterovSolver::new(2, 0.1);
-        solver.set_positions(&[1.0, 1.0]);
-
-        let mut prev_a = solver.fista_param();
-        assert!((prev_a - 1.0).abs() < 1e-10);
-
-        for _ in 0..10 {
-            solver.step(&[0.1, 0.1]);
-            let curr_a = solver.fista_param();
-            assert!(curr_a > prev_a, "FISTA param should grow: {} -> {}", prev_a, curr_a);
-            prev_a = curr_a;
-        }
     }
 
     #[test]

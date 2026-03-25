@@ -265,7 +265,7 @@ pub(crate) fn add_wa_wirelength_gradient(
     grad_y: &mut [f64],
     net_weights: Option<&FxHashMap<crate::netlist::NetId, f64>>,
 ) {
-    use super::solver::wa;
+    use crate::solver::wa;
 
     let mut pin_xs = Vec::new();
     let mut pin_ys = Vec::new();
@@ -517,8 +517,8 @@ impl NesterovLoopState {
     /// Update Lipschitz-based step sizes from consecutive gradients.
     pub fn update_step_sizes(
         &mut self,
-        nesterov_x: &mut super::solver::NesterovSolver,
-        nesterov_y: &mut super::solver::NesterovSolver,
+        nesterov_x: &mut crate::solver::NesterovSolver,
+        nesterov_y: &mut crate::solver::NesterovSolver,
         grad_x: &[f64],
         grad_y: &[f64],
     ) {

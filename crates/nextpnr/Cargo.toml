@@ -22,8 +22,7 @@ rustdct = "0.7"
 ndarray = { workspace = true }
 lapjv = { workspace = true }
 faer = { version = "0.24", features = ["sparse"] }
-argmin = "0.11"
-argmin-math = "0.5"
+dyn-stack = { version = "0.13", features = ["alloc"] }
 
 [dev-dependencies]
 petgraph = "0.6"
@@ -99,15 +98,6 @@ name = "incremental_tests"
 path = "tests/incremental_tests.rs"
 required-features = ["test-utils"]
 
-[[test]]
-name = "opt_trans_tests"
-path = "tests/opt_trans_tests.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "opt_trans_internal_tests"
-path = "tests/hydraulic_internal_tests.rs"
-required-features = ["test-utils"]
 
 [[test]]
 name = "electro_place_tests"

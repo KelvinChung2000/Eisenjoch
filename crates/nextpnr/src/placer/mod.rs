@@ -4,14 +4,11 @@ pub mod common;
 pub mod electro_place;
 pub mod legalize;
 pub mod heap;
-pub mod opt_trans_place;
 pub mod pipeline;
 pub mod sa;
-pub mod solver;
 
 pub use electro_place::PlacerElectro;
 pub use heap::PlacerHeap;
-pub use opt_trans_place::PlacerOptTrans;
 pub use legalize::Legalizer;
 pub use pipeline::{PlacerPipeline, PlacerSetup};
 pub use sa::PlacerSa;

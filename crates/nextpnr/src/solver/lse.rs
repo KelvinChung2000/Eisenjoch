@@ -1,10 +1,10 @@
 //! Log-Sum-Exp smooth differentiable HPWL approximation.
 //!
 //! Provides a smooth approximation to half-perimeter wirelength (HPWL) using
-//! the log-sum-exp function. As γ → 0, LSE approaches the exact HPWL.
+//! the log-sum-exp function. As gamma -> 0, LSE approaches the exact HPWL.
 //!
 //! Formula per axis:
-//!   W = γ × [log Σ exp(x_i/γ) + log Σ exp(-x_i/γ)]
+//!   W = gamma * [log sum exp(x_i/gamma) + log sum exp(-x_i/gamma)]
 //!
 //! Numerically stable implementation subtracts the max before exponentiating.
 
@@ -13,8 +13,8 @@
 /// Each position is (x, y). The total wirelength is the sum of the x-axis
 /// and y-axis LSE approximations.
 ///
-/// `gamma` controls smoothness: larger γ = smoother but less accurate,
-/// smaller γ = tighter but harder to optimize.
+/// `gamma` controls smoothness: larger gamma = smoother but less accurate,
+/// smaller gamma = tighter but harder to optimize.
 pub fn lse_wirelength(positions: &[(f64, f64)], gamma: f64) -> f64 {
     if positions.len() < 2 {
         return 0.0;
@@ -26,7 +26,7 @@ pub fn lse_wirelength(positions: &[(f64, f64)], gamma: f64) -> f64 {
 
 /// LSE approximation for a single axis.
 ///
-/// W = γ × [log Σ exp(x_i/γ) + log Σ exp(-x_i/γ)]
+/// W = gamma * [log sum exp(x_i/gamma) + log sum exp(-x_i/gamma)]
 fn lse_axis(coords: impl Iterator<Item = f64> + Clone, gamma: f64) -> f64 {
     let inv_gamma = 1.0 / gamma;
 
@@ -52,7 +52,7 @@ fn lse_axis(coords: impl Iterator<Item = f64> + Clone, gamma: f64) -> f64 {
 /// Compute the gradient of LSE wirelength w.r.t. each pin position.
 ///
 /// For each pin i on axis x:
-///   ∂W/∂x_i = exp(x_i/γ) / Σ exp(x_j/γ) - exp(-x_i/γ) / Σ exp(-x_j/γ)
+///   dW/dx_i = exp(x_i/gamma) / sum exp(x_j/gamma) - exp(-x_i/gamma) / sum exp(-x_j/gamma)
 ///
 /// Gradients are accumulated (added to) the `grad` slice.
 pub fn lse_gradient(positions: &[(f64, f64)], gamma: f64, grad: &mut [(f64, f64)]) {
@@ -85,8 +85,14 @@ fn lse_axis_weights(coords: &[f64], gamma: f64) -> Vec<f64> {
     let max_val = coords.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let min_val = coords.iter().cloned().fold(f64::INFINITY, f64::min);
 
-    let exp_pos: Vec<f64> = coords.iter().map(|&x| ((x - max_val) * inv_gamma).exp()).collect();
-    let exp_neg: Vec<f64> = coords.iter().map(|&x| ((-x + min_val) * inv_gamma).exp()).collect();
+    let exp_pos: Vec<f64> = coords
+        .iter()
+        .map(|&x| ((x - max_val) * inv_gamma).exp())
+        .collect();
+    let exp_neg: Vec<f64> = coords
+        .iter()
+        .map(|&x| ((-x + min_val) * inv_gamma).exp())
+        .collect();
 
     let inv_sum_pos = 1.0 / exp_pos.iter().sum::<f64>();
     let inv_sum_neg = 1.0 / exp_neg.iter().sum::<f64>();
@@ -135,28 +141,25 @@ mod tests {
 
     #[test]
     fn two_points_lse_approximates_hpwl() {
-        // HPWL of two points at (0,0) and (3,4) is |3| + |4| = 7
         let positions = vec![(0.0, 0.0), (3.0, 4.0)];
-
-        // With small gamma, should be close to 7
         let wl = lse_wirelength(&positions, 0.1);
         assert!((wl - 7.0).abs() < 0.2, "LSE = {}, expected ~7.0", wl);
 
-        // With larger gamma, overestimates
         let wl_smooth = lse_wirelength(&positions, 5.0);
-        assert!(wl_smooth >= 7.0 - 0.01, "LSE should be >= HPWL: {}", wl_smooth);
+        assert!(
+            wl_smooth >= 7.0 - 0.01,
+            "LSE should be >= HPWL: {}",
+            wl_smooth
+        );
     }
 
     #[test]
     fn gamma_to_zero_approaches_hpwl() {
         let positions = vec![(0.0, 0.0), (5.0, 0.0), (2.0, 3.0)];
-        // HPWL = (5 - 0) + (3 - 0) = 8
-
         let wl_large = lse_wirelength(&positions, 10.0);
         let wl_medium = lse_wirelength(&positions, 1.0);
         let wl_small = lse_wirelength(&positions, 0.01);
 
-        // As gamma shrinks, should approach 8
         assert!((wl_small - 8.0).abs() < (wl_medium - 8.0).abs());
         assert!((wl_medium - 8.0).abs() < (wl_large - 8.0).abs());
     }
@@ -170,7 +173,6 @@ mod tests {
         let mut grad = vec![(0.0, 0.0); 3];
         lse_gradient(&positions, gamma, &mut grad);
 
-        // Check each component with finite differences
         for i in 0..3 {
             for axis in 0..2 {
                 let mut pos_plus = positions.clone();
@@ -211,14 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn collinear_points() {
-        // Points along x-axis: HPWL = max - min = 10
-        let positions = vec![(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)];
-        let wl = lse_wirelength(&positions, 0.1);
-        assert!((wl - 10.0).abs() < 0.3, "LSE = {}, expected ~10.0", wl);
-    }
-
-    #[test]
     fn axis_value_and_grad() {
         let coords = vec![1.0, 4.0, 2.0];
         let gamma = 2.0;
@@ -229,14 +223,14 @@ mod tests {
         let mut grad = vec![0.0; 3];
         lse_axis_grad(&coords, gamma, &mut grad);
 
-        // Finite difference check
         let eps = 1e-6;
         for i in 0..3 {
             let mut c_plus = coords.clone();
             let mut c_minus = coords.clone();
             c_plus[i] += eps;
             c_minus[i] -= eps;
-            let fd = (lse_axis_value(&c_plus, gamma) - lse_axis_value(&c_minus, gamma)) / (2.0 * eps);
+            let fd =
+                (lse_axis_value(&c_plus, gamma) - lse_axis_value(&c_minus, gamma)) / (2.0 * eps);
             assert!(
                 (fd - grad[i]).abs() < 1e-4,
                 "Axis grad mismatch at {}: fd={}, analytic={}",

@@ -1,8 +1,7 @@
 mod common;
 
 use nextpnr::placer::heap::{count_bels_in_region, place_heap, HeapState, PlacerHeapCfg};
-use nextpnr::placer::solver::faer_backend::faer_cg;
-use nextpnr::placer::solver::{Solver, SparseSystemBuilder};
+use nextpnr::solver::{Solver, SparseSystemBuilder};
 
 /// Local spmv for tests: A*x where A is diag + symmetric off_diag.
 fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &mut [f64]) {
@@ -14,6 +13,33 @@ fn spmv(diag: &[f64], off_diag: &[(usize, usize, f64)], x: &[f64], result: &mut 
         result[i] += w * x[j];
         result[j] += w * x[i];
     }
+}
+
+/// Helper: solve Ax=b using Jacobi-preconditioned CG via the new solver module.
+/// Returns the number of iterations.
+fn solve_cg_simple(
+    diag: &[f64],
+    off_diag: &[(usize, usize, f64)],
+    rhs: &[f64],
+    x: &mut [f64],
+    tol: f64,
+    max_iters: usize,
+) -> usize {
+    let n = diag.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut mat = nextpnr::solver::SparseMatrix::new(n);
+    for (i, &d) in diag.iter().enumerate() {
+        mat.set_diag(i, d);
+    }
+    for &(lo, hi, val) in off_diag {
+        mat.add_entry(lo, hi, val);
+    }
+    let op = nextpnr::solver::sparse_matrix::SparseMatrixOp::from_matrix(&mut mat);
+    let precond = nextpnr::solver::JacobiPreconditioner::new(diag);
+    let result = nextpnr::solver::solve_cg(&op, &precond, rhs, x, tol, max_iters);
+    result.iterations
 }
 
 #[test]
@@ -78,39 +104,39 @@ fn sparse_system_solve_with_connections() {
 #[test]
 fn cg_identity_system() {
     let mut x = vec![0.0, 0.0, 0.0];
-    let iters = faer_cg(&[1.0, 1.0, 1.0], &[], &[3.0, 7.0, -2.0], &mut x, 1e-10, 100);
-    assert!((x[0] - 3.0).abs() < 1e-6);
-    assert!((x[1] - 7.0).abs() < 1e-6);
-    assert!((x[2] + 2.0).abs() < 1e-6);
+    let iters = solve_cg_simple(&[1.0, 1.0, 1.0], &[], &[3.0, 7.0, -2.0], &mut x, 1e-10, 100);
+    assert!((x[0] - 3.0_f64).abs() < 1e-6);
+    assert!((x[1] - 7.0_f64).abs() < 1e-6);
+    assert!((x[2] + 2.0_f64).abs() < 1e-6);
     assert!(iters <= 3);
 }
 
 #[test]
 fn cg_diagonal_system() {
     let mut x = vec![0.0, 0.0, 0.0];
-    faer_cg(&[2.0, 3.0, 5.0], &[], &[4.0, 9.0, 25.0], &mut x, 1e-10, 100);
-    assert!((x[0] - 2.0).abs() < 1e-6);
-    assert!((x[1] - 3.0).abs() < 1e-6);
-    assert!((x[2] - 5.0).abs() < 1e-6);
+    solve_cg_simple(&[2.0, 3.0, 5.0], &[], &[4.0, 9.0, 25.0], &mut x, 1e-10, 100);
+    assert!((x[0] - 2.0_f64).abs() < 1e-6);
+    assert!((x[1] - 3.0_f64).abs() < 1e-6);
+    assert!((x[2] - 5.0_f64).abs() < 1e-6);
 }
 
 #[test]
 fn cg_empty_system() {
     let mut x: Vec<f64> = vec![];
-    assert_eq!(faer_cg(&[], &[], &[], &mut x, 1e-10, 100), 0);
+    assert_eq!(solve_cg_simple(&[], &[], &[], &mut x, 1e-10, 100), 0);
 }
 
 #[test]
 fn cg_single_variable() {
     let mut x = vec![0.0];
-    faer_cg(&[4.0], &[], &[12.0], &mut x, 1e-10, 100);
-    assert!((x[0] - 3.0).abs() < 1e-6);
+    solve_cg_simple(&[4.0], &[], &[12.0], &mut x, 1e-10, 100);
+    assert!((x[0] - 3.0_f64).abs() < 1e-6);
 }
 
 #[test]
 fn cg_with_off_diagonal() {
     let mut x = vec![0.0, 0.0];
-    faer_cg(
+    solve_cg_simple(
         &[4.0, 4.0],
         &[(0, 1, -1.0)],
         &[3.0, 3.0],
@@ -118,8 +144,8 @@ fn cg_with_off_diagonal() {
         1e-10,
         100,
     );
-    assert!((x[0] - 1.0).abs() < 1e-6);
-    assert!((x[1] - 1.0).abs() < 1e-6);
+    assert!((x[0] - 1.0_f64).abs() < 1e-6);
+    assert!((x[1] - 1.0_f64).abs() < 1e-6);
 }
 
 #[test]
@@ -225,7 +251,7 @@ fn cg_jacobi_preconditioned_fewer_iters() {
     // A diagonally-dominant system where Jacobi preconditioning should help.
     // A = [[10, -1], [-1, 10]], b = [9, 9] => x = [1, 1]
     let mut x_precond = vec![0.0, 0.0];
-    let iters = faer_cg(
+    let iters = solve_cg_simple(
         &[10.0, 10.0],
         &[(0, 1, -1.0)],
         &[9.0, 9.0],
@@ -233,8 +259,8 @@ fn cg_jacobi_preconditioned_fewer_iters() {
         1e-10,
         100,
     );
-    assert!((x_precond[0] - 1.0).abs() < 1e-6);
-    assert!((x_precond[1] - 1.0).abs() < 1e-6);
+    assert!((x_precond[0] - 1.0_f64).abs() < 1e-6);
+    assert!((x_precond[1] - 1.0_f64).abs() < 1e-6);
     // Preconditioned CG on a 2x2 system should converge very quickly.
     assert!(iters <= 2, "expected <= 2 iters, got {}", iters);
 }
