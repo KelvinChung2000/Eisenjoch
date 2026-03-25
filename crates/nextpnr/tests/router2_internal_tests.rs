@@ -5,7 +5,7 @@ use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
 use nextpnr::metrics::{BoundingBox, compute_bbox};
-use nextpnr::router::router2::{
+use nextpnr::router::negotiation::{
     astar_route_r2, R2QueueEntry, Router2Cfg, Router2State,
 };
 use rustc_hash::FxHashSet;

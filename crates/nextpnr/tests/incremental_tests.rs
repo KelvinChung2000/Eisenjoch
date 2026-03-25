@@ -4,7 +4,7 @@ use nextpnr::checkpoint;
 use nextpnr::placer::heap::PlacerHeapCfg;
 use nextpnr::placer::sa::PlacerSaCfg;
 use nextpnr::placer::{Placer, PlacerHeap, PlacerSa};
-use nextpnr::router::router1::{Router1, Router1Cfg};
+use nextpnr::router::maze::{Router1, Router1Cfg};
 use nextpnr::router::Router;
 
 // =============================================================

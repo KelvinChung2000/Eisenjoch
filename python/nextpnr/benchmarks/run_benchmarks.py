@@ -18,8 +18,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-VERILOG_DIR = os.path.join(HERE, "verilog")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))  # python/nextpnr/benchmarks -> repo root
+VERILOG_DIR = os.path.join(ROOT, "benchmark", "verilog")
 DEMO_DIR = os.path.join(ROOT, "demo")
 BBASM = "/home/kelvin/nextpnr/build/bba/bbasm"
 RAM_PRIMITIVES = os.path.join(VERILOG_DIR, "ram_primitives.v")

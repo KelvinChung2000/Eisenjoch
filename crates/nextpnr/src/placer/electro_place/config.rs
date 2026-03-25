@@ -1,7 +1,7 @@
 //! Configuration for the ElectroPlace (RePlAce-style) placer.
 
 /// Configuration for the ElectroPlace analytical placer.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ElectroPlaceCfg {
     /// RNG seed for reproducibility.
     pub seed: u64,

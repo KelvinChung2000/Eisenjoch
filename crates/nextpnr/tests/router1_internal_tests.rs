@@ -8,7 +8,7 @@ use nextpnr::router::common::{
     apply_route_plan, bind_route, collect_routable_nets, find_congested_wires, unroute_net,
     RoutePlan, SinkRoute,
 };
-use nextpnr::router::router1::{
+use nextpnr::router::maze::{
     astar_route, compute_route_r1, find_congested_nets, route_net, QueueEntry, Router1Cfg,
     Router1State,
 };

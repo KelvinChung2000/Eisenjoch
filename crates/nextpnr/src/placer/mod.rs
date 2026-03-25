@@ -1,16 +1,20 @@
 //! Placer trait and implementations.
 
 pub mod common;
+pub mod config;
 pub mod electro_place;
 pub mod legalize;
 pub mod heap;
 pub mod opt_trans_place;
+pub mod pipeline;
 pub mod sa;
 pub mod solver;
 
+pub use config::PlacerChoice;
 pub use electro_place::PlacerElectro;
 pub use heap::PlacerHeap;
 pub use opt_trans_place::PlacerOptTrans;
+pub use pipeline::{PlacerPipeline, PlacerSetup};
 pub use sa::PlacerSa;
 
 use crate::context::Context;

@@ -32,7 +32,7 @@ use super::RouterError;
 // ---------------------------------------------------------------------------
 
 /// Configuration parameters for the Router2 (negotiation-based) algorithm.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Router2Cfg {
     /// Maximum number of negotiation iterations.
     pub max_iterations: usize,

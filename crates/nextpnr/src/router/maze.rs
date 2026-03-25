@@ -28,6 +28,7 @@ use super::RouterError;
 // ---------------------------------------------------------------------------
 
 /// Configuration parameters for the Router1 algorithm.
+#[derive(Debug, Clone)]
 pub struct Router1Cfg {
     /// Maximum number of rip-up-and-reroute iterations.
     pub max_iterations: usize,

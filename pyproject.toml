@@ -20,3 +20,4 @@ nextpnr-himbaechel = "nextpnr_cli:cli"
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]
+benchmark = ["matplotlib", "numpy"]

@@ -4,7 +4,7 @@ use crate::netlist::{CellId, CellPin, Design, NetId};
 use crate::netlist::Property;
 use rustc_hash::FxHashMap;
 
-use super::views::{Bel, BelPin, BelPinView, Cell, CellPinView, IdStringView, Net, Pip, Wire};
+use super::views::{Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView, Wire};
 use super::Context;
 
 impl Context {
@@ -25,6 +25,22 @@ impl Context {
     #[inline]
     pub fn chipdb(&self) -> &ChipDb {
         &self.chipdb
+    }
+
+    /// Read-only view of chip database + string interning.
+    pub fn chip_view(&self) -> ChipView<'_> {
+        ChipView {
+            chipdb: &self.chipdb,
+            id_pool: &self.id_pool,
+        }
+    }
+
+    /// Read-only view of placement state.
+    pub fn placement_view(&self) -> PlacementView<'_> {
+        PlacementView {
+            chipdb: &self.chipdb,
+            bel_to_cell: &self.bel_to_cell,
+        }
     }
 
     /// Split borrow: returns mutable design + immutable chipdb + immutable id pool.

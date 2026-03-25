@@ -12,8 +12,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-OUTPUT_DIR = os.path.join(HERE, "output")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+OUTPUT_DIR = os.path.join(ROOT, "benchmark", "output")
 
 
 def run_comparison(benchmark, chipdb_path, placer, congestion_weight):

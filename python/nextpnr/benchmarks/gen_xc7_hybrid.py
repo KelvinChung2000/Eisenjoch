@@ -34,7 +34,7 @@ sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
 
 HERE = path.dirname(path.abspath(__file__))
-ROOT = path.dirname(HERE)
+ROOT = path.dirname(path.dirname(path.dirname(HERE)))
 FIXTURES_DIR = path.join(ROOT, "crates", "nextpnr", "tests", "fixtures")
 CHIPDB_DIR = path.join(ROOT, "chip_database")
 

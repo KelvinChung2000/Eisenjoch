@@ -1,5 +1,7 @@
 use super::*;
+use super::chip::{build_constid_table, validate_and_follow_root_relptr};
 use crate::read_packed;
+use memmap2::Mmap;
 use std::path::Path;
 
 impl ChipDb {

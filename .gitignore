@@ -25,3 +25,4 @@ benchmark/output
 build
 **/__pycache__/**
 *.json
+*.so

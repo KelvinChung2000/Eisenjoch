@@ -1,9 +1,20 @@
 mod common;
 
-use nextpnr::placer::opt_trans_place::kirchhoff;
+use nextpnr::placer::opt_trans_place::config::KirchhoffSolver;
+use nextpnr::placer::opt_trans_place::kirchhoff::{self, SolverCtx};
 use nextpnr::placer::opt_trans_place::network::{
     Direction, Junction, Pipe, PipeNetwork, PipeType, Port,
 };
+
+fn make_solver_ctx(max_iters: usize, tol: f64) -> SolverCtx<'static> {
+    SolverCtx {
+        solver_type: KirchhoffSolver::JacobiCG,
+        cg_max_iters: max_iters,
+        cg_tol: tol,
+        direct: None,
+        amg: None,
+    }
+}
 
 // =====================================================================
 // Kirchhoff solver tests
@@ -52,7 +63,8 @@ fn make_2_node_network() -> (PipeNetwork, Vec<f64>) {
 #[test]
 fn kirchhoff_2_node_pressure_drop() {
     let (mut network, demand) = make_2_node_network();
-    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-8, &[]);
+    let mut solver = make_solver_ctx(500, 1e-8);
+    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, &[], &mut solver);
     assert!(result.converged);
 
     let p0 = network.junctions[0].pressure;
@@ -74,7 +86,8 @@ fn kirchhoff_2_node_pressure_drop() {
 fn kirchhoff_zero_demand_zero_pressure() {
     let (mut network, _) = make_2_node_network();
     let demand = vec![0.0, 0.0];
-    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-8, &[]);
+    let mut solver = make_solver_ctx(500, 1e-8);
+    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, &[], &mut solver);
     assert!(result.converged);
     for j in &network.junctions {
         assert!(j.pressure.abs() < 1e-6, "Zero demand -> zero pressure");
@@ -87,11 +100,13 @@ fn kirchhoff_turbulence_increases_resistance() {
     let (mut net_turb, demand_turb) = make_2_node_network();
 
     // Laminar solve.
-    kirchhoff::kirchhoff_solve(&mut net_lam, &demand, 0.0, 1, 500, 1e-8, &[]);
+    let mut solver = make_solver_ctx(500, 1e-8);
+    kirchhoff::kirchhoff_solve(&mut net_lam, &demand, 0.0, 1, &[], &mut solver);
 
     // Pre-seed flow to trigger turbulence in Newton iteration.
     net_turb.pipes[0].flow = 5.0;
-    kirchhoff::kirchhoff_solve(&mut net_turb, &demand_turb, 10.0, 3, 500, 1e-8, &[]);
+    let mut solver2 = make_solver_ctx(500, 1e-8);
+    kirchhoff::kirchhoff_solve(&mut net_turb, &demand_turb, 10.0, 3, &[], &mut solver2);
 
     // Turbulence should increase effective resistance -> larger pressure drop.
     let dp_lam = (net_lam.junctions[0].pressure - net_lam.junctions[1].pressure).abs();
@@ -159,7 +174,8 @@ fn kirchhoff_flow_conservation_3_node() {
         y0: 0,
     };
     let demand = vec![1.0, -0.5, -0.5];
-    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-8, &[]);
+    let mut solver = make_solver_ctx(500, 1e-8);
+    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, &[], &mut solver);
     assert!(result.converged);
     // Flow should be positive (fluid flows from high to low pressure).
     assert!(network.pipes[0].flow > 0.0, "Flow 0->1 should be positive");
@@ -288,7 +304,8 @@ fn kirchhoff_2x2_with_demand() {
     let mut network = make_congested_2x2();
     // Net: driver at (0,0), sink at (1,1).
     let demand = vec![1.0, 0.0, 0.0, -1.0];
-    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-6, &[]);
+    let mut solver = make_solver_ctx(500, 1e-6);
+    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, &[], &mut solver);
     assert!(result.converged);
     // Non-zero pressure field.
     let max_p = network
@@ -317,7 +334,8 @@ fn kirchhoff_empty_network() {
         y0: 0,
     };
     let demand = vec![];
-    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, 500, 1e-6, &[]);
+    let mut solver = make_solver_ctx(500, 1e-6);
+    let result = kirchhoff::kirchhoff_solve(&mut network, &demand, 0.0, 1, &[], &mut solver);
     assert!(result.converged);
     assert_eq!(result.iterations, 0);
 }

@@ -3,7 +3,7 @@ mod common;
 use nextpnr::chipdb::BelId;
 use nextpnr::common::PlaceStrength;
 use nextpnr::netlist::PortType;
-use nextpnr::router::router2::Router2Cfg;
+use nextpnr::router::negotiation::Router2Cfg;
 use nextpnr::router::{Router, Router2};
 
 // =====================================================================

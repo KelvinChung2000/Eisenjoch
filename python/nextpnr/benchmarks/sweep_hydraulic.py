@@ -19,8 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "python"))
+ROOT = HERE.parent.parent.parent
 
 import nextpnr  # noqa: E402
 

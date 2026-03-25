@@ -26,14 +26,9 @@ CPP_NEXTPNR = "/home/kelvin/nextpnr"
 sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
 
-FIXTURES_DIR = path.join(
-    path.dirname(path.abspath(__file__)),
-    "..",
-    "crates",
-    "nextpnr",
-    "tests",
-    "fixtures",
-)
+HERE = path.dirname(path.abspath(__file__))
+ROOT = path.dirname(path.dirname(path.dirname(HERE)))
+FIXTURES_DIR = path.join(ROOT, "crates", "nextpnr", "tests", "fixtures")
 
 # Our synthetic arch parameters
 K = 6  # LUT inputs

@@ -28,7 +28,7 @@ pub enum InitStrategy {
     RadialCapacity,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct OptTransPlacerCfg {
     /// RNG seed for reproducibility.
     pub seed: u64,
