@@ -12,12 +12,12 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::opt_trans_place::config::InitStrategy;
-use ::nextpnr::placer::opt_trans_place::{OptTransPlacerCfg, PlacerOptTrans};
+use ::nextpnr::placer::opt_trans::config::InitStrategy;
+use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
-use ::nextpnr::router::router1::{Router1, Router1Cfg};
-use ::nextpnr::router::router2::{Router2, Router2Cfg};
+use ::nextpnr::router::maze::{Router1, Router1Cfg};
+use ::nextpnr::router::negotiation::{Router2, Router2Cfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::timing::{DelayT, TimingAnalyser};
 use std::path::Path;
@@ -215,32 +215,25 @@ impl PyContext {
     /// Run a placer on the design.
     ///
     /// Args:
-    ///     placer: Placer algorithm name ("heap", "sa", "opt_trans", "hydraulic", or "electro"). Default "heap".
+    ///     placer: Placer algorithm name ("heap", "sa", "opt_trans", or "electro"). Default "heap".
     ///     seed: RNG seed for reproducibility. Default 1.
     ///     max_iters: Maximum iterations (default varies by placer).
-    ///     congestion_weight: Weight for congestion cost. Default 0.5.
-    ///     turbulence_beta: Nonlinear resistance coefficient for optimal transport placer. Default 4.0.
-    ///     newton_iters: Newton iterations for nonlinear resistance (optimal transport). Default 2.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, turbulence_beta=4.0, newton_iters=2, star_weight=1.0, pressure_weight_start=0.0, pressure_weight_end=2.0, io_boost=3.0, nesterov_step_size=0.1, wl_coeff=0.5, momentum=None, init_strategy="centroid", enable_expanding_box=true, gas_temperature=1.0, pump_gain=10.0))]
+    ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 0.5.
+    ///     io_boost: IO net demand amplification (opt_trans). Default 3.0.
+    ///     interference_weight: Flow interference weight for spreading (opt_trans). Default 1.0.
+    ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
+    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=3.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel"))]
     fn place(
         &mut self,
         placer: &str,
         seed: u64,
         max_iters: Option<usize>,
         congestion_weight: f64,
-        turbulence_beta: f64,
-        newton_iters: usize,
-        star_weight: f64,
-        pressure_weight_start: f64,
-        pressure_weight_end: f64,
         io_boost: f64,
-        nesterov_step_size: f64,
-        wl_coeff: f64,
-        momentum: Option<f64>,
+        interference_weight: f64,
+        timing_weight: f64,
         init_strategy: &str,
-        enable_expanding_box: bool,
-        gas_temperature: f64,
-        pump_gain: f64,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -262,29 +255,19 @@ impl PyContext {
             "opt_trans" | "hydraulic" => {
                 let mut cfg = OptTransPlacerCfg::default();
                 cfg.seed = seed;
-                cfg.turbulence_beta = turbulence_beta;
-                cfg.newton_iters = newton_iters;
-                cfg.star_weight = star_weight;
-                cfg.pressure_weight_start = pressure_weight_start;
-                cfg.pressure_weight_end = pressure_weight_end;
                 cfg.io_boost = io_boost;
-                cfg.nesterov_step_size = nesterov_step_size;
-                cfg.wl_coeff = wl_coeff;
-                cfg.momentum = momentum;
-                cfg.enable_expanding_box = enable_expanding_box;
-                cfg.gas_temperature = gas_temperature;
-                cfg.pump_gain = pump_gain;
+                cfg.interference_weight = interference_weight;
+                cfg.timing_weight = timing_weight;
                 cfg.init_strategy = match init_strategy {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
                     "random_bel" => InitStrategy::RandomBel,
-                    "radial" => InitStrategy::RadialCapacity,
                     other => return Err(PyValueError::new_err(format!(
-                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel, radial", other
+                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
                     ))),
                 };
                 if let Some(iters) = max_iters {
-                    cfg.max_outer_iters = iters;
+                    cfg.max_iters = iters;
                 }
                 PlacerOptTrans
                     .place(&mut self.ctx, &cfg)
