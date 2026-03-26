@@ -76,6 +76,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let grid_diag = ((max_x * max_x + max_y * max_y) as f64).sqrt();
     let mut step_limit = grid_diag * 0.1;
     let mut stagnant_count = 0usize;
+    let mut cached_amg: Option<AmgPreconditioner> = None;
 
     // 5. Main loop.
     for iter in 0..cfg.max_iters {
@@ -148,12 +149,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                 solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters)
             }
             PreconditionerType::Amg => {
-                let precond = AmgPreconditioner::setup(
-                    n_nodes,
-                    laplacian.diag(),
-                    laplacian.off_diag(),
-                );
-                solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters)
+                // Reuse AMG structure across iterations — only rebuild numerics.
+                let amg = cached_amg.get_or_insert_with(|| {
+                    AmgPreconditioner::setup(n_nodes, laplacian.diag(), laplacian.off_diag())
+                });
+                if iter > 0 {
+                    amg.update_values(laplacian.diag(), laplacian.off_diag());
+                }
+                solve_cg(&op, amg, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters)
             }
         };
 
