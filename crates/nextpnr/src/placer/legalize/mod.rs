@@ -8,6 +8,7 @@ pub mod common;
 pub mod greedy;
 pub mod ring;
 pub mod snap;
+pub mod sorted;
 
 use crate::context::Context;
 use crate::netlist::CellId;
@@ -17,6 +18,7 @@ pub use bipartite::{BipartiteLegalizer, DistanceCost, LegalizeCost};
 pub use greedy::{legalize_electro, GreedyLegalizer};
 pub use ring::{legalize_ring, RingLegalizer};
 pub use snap::snap_to_clb_grid;
+pub use sorted::{sorted_legalize, SortedLegalizer};
 
 /// Trait for converting continuous cell positions to discrete BEL assignments.
 ///
