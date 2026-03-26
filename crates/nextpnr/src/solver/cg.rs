@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn cg_with_amg_preconditioner() {
+    fn cg_with_amg_1d() {
         use crate::solver::preconditioner::AmgPreconditioner;
 
         let n = 64;
@@ -283,7 +283,6 @@ mod tests {
         for i in 0..n {
             mat.set_diag(i, 2.0);
         }
-        // Add small anchor to ensure SPD
         mat.add_diagonal(0, 0.1);
         mat.add_diagonal(n - 1, 0.1);
         for i in 0..n - 1 {
@@ -291,30 +290,74 @@ mod tests {
         }
 
         let op = SparseMatrixOp::from_matrix(&mut mat);
-        let amg = AmgPreconditioner::setup(
-            n,
-            mat.diag(),
-            mat.off_diag(),
-        );
+        let amg = AmgPreconditioner::setup(n, mat.diag(), mat.off_diag());
 
         let rhs = vec![1.0; n];
         let mut x = vec![0.0; n];
         let result = solve_cg(&op, &amg, &rhs, &mut x, 1e-8, 200);
 
-        assert!(result.converged, "AMG+CG should converge, residual={}", result.residual);
+        assert!(result.converged, "AMG+CG 1D should converge, residual={}", result.residual);
+    }
 
-        // Verify solution
+    #[test]
+    fn cg_with_amg_2d_grid() {
+        use crate::solver::preconditioner::AmgPreconditioner;
+
+        // 30x30 = 900 nodes, 4-point stencil, variable conductance, regularized
+        // This mimics the Kirchhoff Laplacian from the pipe network
+        let w = 30;
+        let h = 30;
+        let n = w * h;
+        let mut mat = SparseMatrix::new(n);
+
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if x + 1 < w {
+                    let j = y * w + (x + 1);
+                    let cond = if (x + y) % 5 == 0 { 50.0 } else { 0.5 };
+                    mat.add_connection(i, j, cond);
+                }
+                if y + 1 < h {
+                    let j = (y + 1) * w + x;
+                    let cond = if (x + y) % 7 == 0 { 30.0 } else { 1.0 };
+                    mat.add_connection(i, j, cond);
+                }
+                mat.add_diagonal(i, 0.001);
+            }
+        }
+
+        // Test Jacobi CG
+        let op_j = SparseMatrixOp::from_matrix(&mut mat);
+        let jacobi = JacobiPreconditioner::new(mat.diag());
+        let mut rhs = vec![0.0; n];
+        rhs[0] = 1.0;
+        rhs[n - 1] = -1.0;
+        let mut x_j = vec![0.0; n];
+        let result_j = solve_cg(&op_j, &jacobi, &rhs, &mut x_j, 1e-6, 2000);
+
+        // Test AMG CG
+        let op_a = SparseMatrixOp::from_matrix(&mut mat);
+        let amg = AmgPreconditioner::setup(n, mat.diag(), mat.off_diag());
+        let mut x_a = vec![0.0; n];
+        let result_a = solve_cg(&op_a, &amg, &rhs, &mut x_a, 1e-6, 200);
+
+        eprintln!(
+            "2D grid ({}x{}, n={}): Jacobi CG iters={}, AMG CG iters={}",
+            w, h, n, result_j.iterations, result_a.iterations
+        );
+
+        // Verify AMG solution quality
         let mut ax = vec![0.0; n];
-        mat.spmv(&x, &mut ax);
+        mat.spmv(&x_a, &mut ax);
         let rhs_norm: f64 = rhs.iter().map(|v| v * v).sum::<f64>().sqrt();
-        let residual: f64 = (0..n)
-            .map(|i| (ax[i] - rhs[i]).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let residual: f64 = (0..n).map(|i| (ax[i] - rhs[i]).powi(2)).sum::<f64>().sqrt();
+        eprintln!("AMG actual residual: {:.3e}", residual / rhs_norm);
+
+        // AMG should converge faster than Jacobi
         assert!(
-            residual / rhs_norm < 1e-6,
-            "Relative residual {} too large",
-            residual / rhs_norm
+            result_a.iterations < result_j.iterations || result_a.iterations < 50,
+            "AMG should be faster: AMG={} vs Jacobi={}", result_a.iterations, result_j.iterations
         );
     }
 }

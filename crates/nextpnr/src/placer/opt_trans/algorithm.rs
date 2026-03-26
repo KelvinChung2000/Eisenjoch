@@ -98,7 +98,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             laplacian.add_diagonal(i, epsilon);
         }
 
-        // c. Solve L*P = S via faer Jacobi-preconditioned CG.
+        // c. Solve L*P = S via Jacobi-preconditioned CG.
+        //    TODO: AMG preconditioning works on regular 2D grids (42 iters vs 375
+        //    Jacobi iters on 30x30) but fails on the pipe network's 4-port-per-tile
+        //    Schur condensation structure. Needs AMG coarsening adapted for this
+        //    graph topology.
         let op = SparseMatrixOp::from_matrix(&mut laplacian);
         let precond = JacobiPreconditioner::new(laplacian.diag());
         let mut pressure = vec![0.0; n_j];
