@@ -11,7 +11,6 @@
 mod algorithm;
 pub mod config;
 pub mod density;
-mod legalize;
 
 pub use algorithm::place_electro;
 pub use config::ElectroPlaceCfg;

@@ -3,6 +3,7 @@ pub mod chipdb;
 pub mod common;
 pub mod context;
 pub mod frontend;
+pub mod legalize;
 pub mod metrics;
 pub mod netlist;
 pub mod packer;

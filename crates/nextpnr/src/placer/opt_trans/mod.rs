@@ -10,11 +10,10 @@
 //! Uses Anderson-accelerated fixed-point iteration (~20-30 Kirchhoff solves).
 
 pub mod config;
-mod network;
+pub(crate) mod network;
 mod resistance;
 mod demand;
 mod anderson;
-pub mod legalize;
 
 pub use config::OptTransPlacerCfg;
 
@@ -216,11 +215,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     eprintln!("Pre-legalization: CHPWL={:.0}", pre_chpwl);
 
     // 7. CLB snap + legalize.
-    legalize::snap_to_clb_grid(ctx, &mut cell_x, &mut cell_y, &idx_to_cell, &network);
+    crate::legalize::snap_to_clb_grid(ctx, &mut cell_x, &mut cell_y, &idx_to_cell, &network);
 
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
-    legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
+    crate::legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
 
     // 8. Post-legalization HPWL.
     let post_hpwl = compute_placed_hpwl(ctx);

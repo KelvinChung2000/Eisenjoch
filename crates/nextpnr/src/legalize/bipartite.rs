@@ -7,26 +7,13 @@ use crate::chipdb::BelId;
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::common::{place_cluster_children, unbind_movable_cells};
+use crate::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use ndarray::Array2;
 use rustc_hash::FxHashMap;
 
-/// Trait for converting continuous cell positions to discrete BEL assignments.
-///
-/// All implementations unbind movable cells, find the nearest valid BEL
-/// for each cell, bind them, and handle cluster children.
-/// Returns total squared displacement.
-pub trait Legalizer {
-    fn legalize(
-        &self,
-        ctx: &mut Context,
-        idx_to_cell: &[CellId],
-        cell_x: &[f64],
-        cell_y: &[f64],
-    ) -> Result<f64, PlacerError>;
-}
+use super::Legalizer;
 
 /// Optimal bipartite matching legalization using LAPJV.
 pub struct BipartiteLegalizer {

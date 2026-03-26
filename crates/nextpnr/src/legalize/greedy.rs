@@ -1,15 +1,17 @@
-//! Legalization for ElectroPlace.
+//! Simple greedy nearest-BEL legalization for ElectroPlace.
 
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::common::{place_cluster_children, unbind_movable_cells};
+use crate::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
+
+use super::Legalizer;
 
 /// Simple greedy nearest-BEL legalization.
 pub struct GreedyLegalizer;
 
-impl crate::placer::legalize::Legalizer for GreedyLegalizer {
+impl Legalizer for GreedyLegalizer {
     fn legalize(
         &self,
         ctx: &mut Context,
@@ -21,7 +23,7 @@ impl crate::placer::legalize::Legalizer for GreedyLegalizer {
     }
 }
 
-pub(super) fn legalize_electro(
+pub fn legalize_electro(
     ctx: &mut Context,
     idx_to_cell: &[CellId],
     cell_x: &[f64],

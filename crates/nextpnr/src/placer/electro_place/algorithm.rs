@@ -13,7 +13,7 @@ use crate::placer::PlacerPipeline;
 
 use super::config::ElectroPlaceCfg;
 use super::density;
-use super::legalize::legalize_electro;
+use crate::legalize::legalize_electro;
 
 const DENSITY_NORM_EPSILON: f64 = 1e-30;
 /// Initial density penalty ratio: eta * (wl_norm / den_norm).
