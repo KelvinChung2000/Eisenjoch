@@ -64,6 +64,8 @@ pub struct OptTransPlacerCfg {
     pub subtile_resolution: usize,
     /// Preconditioner for the Kirchhoff CG solve.
     pub preconditioner: PreconditionerType,
+    /// Weight for congestion repulsion force.
+    pub congestion_repulsion_weight: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -83,6 +85,7 @@ impl Default for OptTransPlacerCfg {
             init_strategy: InitStrategy::default(),
             subtile_resolution: 2,
             preconditioner: PreconditionerType::Amg,
+            congestion_repulsion_weight: 0.0,
         }
     }
 }

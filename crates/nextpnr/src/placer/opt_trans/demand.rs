@@ -270,6 +270,67 @@ pub fn compute_displacement(
     (dx, dy)
 }
 
+/// Compute congestion repulsion: push cells away from high-utilization regions.
+///
+/// Builds a utilization density field on the subtile grid from pipe flows,
+/// then computes -grad(utilization) at each cell position. Cells are pushed
+/// down the utilization gradient, away from congested areas.
+pub fn compute_congestion_repulsion(
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+) -> (Vec<f64>, Vec<f64>) {
+    let num_cells = cell_x.len();
+    let mut dx = vec![0.0; num_cells];
+    let mut dy = vec![0.0; num_cells];
+
+    let n = network.resolution;
+    let n_nodes = network.num_nodes();
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    // Build utilization density at each subtile node.
+    // Each pipe's utilization (|flow|/capacity) is distributed to its endpoint nodes.
+    let mut util_field = vec![0.0f64; n_nodes];
+    let mut node_degree = vec![0u32; n_nodes];
+
+    for pipe in &network.pipes {
+        let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
+        util_field[pipe.from] += util;
+        util_field[pipe.to] += util;
+        node_degree[pipe.from] += 1;
+        node_degree[pipe.to] += 1;
+    }
+
+    // Normalize by degree to get average utilization at each node.
+    for i in 0..n_nodes {
+        if node_degree[i] > 0 {
+            util_field[i] /= node_degree[i] as f64;
+        }
+    }
+
+    // Compute -grad(utilization) at each cell position via bilinear interpolation.
+    for i in 0..num_cells {
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+        let u00 = util_field[subtile_grid_index(gx0, gy0, tile_w, n)];
+        let u10 = util_field[subtile_grid_index(gx0 + 1, gy0, tile_w, n)];
+        let u01 = util_field[subtile_grid_index(gx0, gy0 + 1, tile_w, n)];
+        let u11 = util_field[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)];
+
+        let (gx, gy) = bilinear_gradient(fx, fy, u00, u10, u01, u11);
+
+        // Push away from congestion: -grad(util), scaled by N for subtile→tile coords.
+        dx[i] = -gx * n as f64;
+        dy[i] = -gy * n as f64;
+    }
+
+    (dx, dy)
+}
+
 /// Update net_count on pipes based on current cell positions.
 ///
 /// For each net, determines which pipes its bounding box covers and

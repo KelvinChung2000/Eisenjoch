@@ -169,8 +169,17 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement from pressure differences between connected pins.
+        // e. Compute displacement: attraction (pressure differences) + repulsion (congestion).
         let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+
+        // Add congestion repulsion: push cells away from high-utilization regions.
+        if cfg.congestion_repulsion_weight > 0.0 {
+            let (rx, ry) = demand::compute_congestion_repulsion(&cell_x, &cell_y, &network);
+            for i in 0..n {
+                dx[i] += cfg.congestion_repulsion_weight * rx[i];
+                dy[i] += cfg.congestion_repulsion_weight * ry[i];
+            }
+        }
 
         // Clamp per-cell displacement to prevent blowup.
         let max_step = step_limit;
