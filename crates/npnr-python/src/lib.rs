@@ -12,7 +12,7 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::opt_trans::config::InitStrategy;
+use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType};
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
@@ -223,7 +223,9 @@ impl PyContext {
     ///     interference_weight: Flow interference weight for spreading (opt_trans). Default 1.0.
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=3.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel"))]
+    ///     subtile_resolution: Subtile grid resolution N (NxN per tile, opt_trans). Default 2.
+    ///     preconditioner: CG preconditioner ("jacobi" or "amg", opt_trans). Default "jacobi".
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=3.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="jacobi"))]
     fn place(
         &mut self,
         placer: &str,
@@ -234,6 +236,8 @@ impl PyContext {
         interference_weight: f64,
         timing_weight: f64,
         init_strategy: &str,
+        subtile_resolution: usize,
+        preconditioner: &str,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -258,6 +262,14 @@ impl PyContext {
                 cfg.io_boost = io_boost;
                 cfg.interference_weight = interference_weight;
                 cfg.timing_weight = timing_weight;
+                cfg.subtile_resolution = subtile_resolution;
+                cfg.preconditioner = match preconditioner {
+                    "jacobi" => PreconditionerType::Jacobi,
+                    "amg" => PreconditionerType::Amg,
+                    other => return Err(PyValueError::new_err(format!(
+                        "Unknown preconditioner: {}. Available: jacobi, amg", other
+                    ))),
+                };
                 cfg.init_strategy = match init_strategy {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,

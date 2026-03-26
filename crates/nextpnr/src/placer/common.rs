@@ -251,6 +251,63 @@ pub(crate) fn init_positions_from_bels(
     }
 }
 
+/// Initialize continuous positions by dropping all movable cells at the centroid
+/// of fixed/IO anchor pins, with small deterministic jitter to break symmetry.
+///
+/// This creates a compact initial placement suitable for force-directed or
+/// pressure-based placers that spread cells outward from a dense cluster.
+/// Falls back to the grid center if no fixed cells exist.
+pub(crate) fn init_positions_center_drop(
+    ctx: &Context,
+    idx_to_cell: &[CellId],
+    cell_x: &mut [f64],
+    cell_y: &mut [f64],
+) {
+    let w = ctx.chipdb().width();
+    let h = ctx.chipdb().height();
+
+    // Compute centroid of all locked/fixed cells.
+    let mut cx_sum = 0.0f64;
+    let mut cy_sum = 0.0f64;
+    let mut n_fixed = 0usize;
+    for (_cell_id, cell) in ctx.design.iter_alive_cells() {
+        if !cell.bel_strength.is_locked() {
+            continue;
+        }
+        if let Some(bel) = cell.bel {
+            let loc = ctx.bel(bel).loc();
+            cx_sum += loc.x as f64;
+            cy_sum += loc.y as f64;
+            n_fixed += 1;
+        }
+    }
+
+    let (center_x, center_y) = if n_fixed > 0 {
+        (cx_sum / n_fixed as f64, cy_sum / n_fixed as f64)
+    } else {
+        (w as f64 / 2.0, h as f64 / 2.0)
+    };
+
+    // Place all movable cells at centroid with small deterministic jitter.
+    let n = idx_to_cell.len();
+    for i in 0..n {
+        let hash_x = ((i as u64).wrapping_mul(2654435761)) as f64 / u64::MAX as f64;
+        let hash_y = (((i as u64 + 1).wrapping_mul(2246822519))) as f64 / u64::MAX as f64;
+        cell_x[i] = center_x + (hash_x - 0.5) * 2.0;
+        cell_y[i] = center_y + (hash_y - 0.5) * 2.0;
+    }
+
+    // Clamp to grid bounds.
+    let max_x = (w - 1) as f64;
+    let max_y = (h - 1) as f64;
+    clamp_positions(cell_x, cell_y, max_x, max_y);
+
+    eprintln!(
+        "  center-drop init: centroid=({:.1},{:.1}), n_fixed={}, n_movable={}",
+        center_x, center_y, n_fixed, n,
+    );
+}
+
 /// Compute WA wirelength gradient for all nets, accumulating into grad_x/grad_y.
 ///
 /// Same pattern as `add_wirelength_gradient` but uses WA instead of LSE.

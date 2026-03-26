@@ -1,5 +1,20 @@
 //! Configuration for the Beckmann optimal transport placer.
 
+/// Preconditioner for the CG solver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreconditionerType {
+    /// Diagonal (Jacobi) preconditioner. Simple, always works.
+    Jacobi,
+    /// Algebraic Multigrid. Fast convergence on regular grids (~40 iters vs ~200 Jacobi).
+    Amg,
+}
+
+impl Default for PreconditionerType {
+    fn default() -> Self {
+        Self::Jacobi
+    }
+}
+
 /// Initialization strategy for cell positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitStrategy {
@@ -44,13 +59,18 @@ pub struct OptTransPlacerCfg {
     pub lap_max_cells: usize,
     /// Initialization strategy.
     pub init_strategy: InitStrategy,
+    /// Subtile resolution: each tile is decomposed into N×N subtile nodes.
+    /// Higher values give finer pressure gradients but more nodes.
+    pub subtile_resolution: usize,
+    /// Preconditioner for the Kirchhoff CG solve.
+    pub preconditioner: PreconditionerType,
 }
 
 impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            max_iters: 30,
+            max_iters: 80,
             cg_max_iters: 200,
             cg_tol: 1e-4,
             congestion_exponent: 2.0,
@@ -61,6 +81,8 @@ impl Default for OptTransPlacerCfg {
             report_interval: 5,
             lap_max_cells: 10000,
             init_strategy: InitStrategy::default(),
+            subtile_resolution: 2,
+            preconditioner: PreconditionerType::Amg,
         }
     }
 }

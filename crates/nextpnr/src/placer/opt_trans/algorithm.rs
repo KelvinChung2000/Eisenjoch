@@ -7,11 +7,11 @@ use crate::placer::common;
 use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
 use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
-use crate::solver::preconditioner::JacobiPreconditioner;
+use crate::solver::preconditioner::{JacobiPreconditioner, AmgPreconditioner};
 use crate::solver::cg::solve_cg;
 
 use super::anderson::AndersonAccelerator;
-use super::config::OptTransPlacerCfg;
+use super::config::{OptTransPlacerCfg, PreconditionerType};
 use super::demand;
 use super::network::PipeNetwork;
 use super::resistance::ResistanceModel;
@@ -20,8 +20,8 @@ use super::resistance::ResistanceModel;
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
 
-    // 1. Build pipe network from chipdb.
-    let mut network = PipeNetwork::from_context(ctx);
+    // 1. Build subtile pipe network from chipdb.
+    let mut network = PipeNetwork::from_context(ctx, cfg.subtile_resolution);
 
     // 2. Collect movable cells, init positions.
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
@@ -36,7 +36,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let mut cell_y = vec![0.0; n];
     common::init_positions_from_bels(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
 
-    // Convert to virtual grid coords.
+    // Convert to virtual grid coords (offset by grid origin).
     for x in cell_x.iter_mut() {
         *x -= network.x0 as f64;
     }
@@ -44,11 +44,17 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         *y -= network.y0 as f64;
     }
 
+    let max_x = (network.width - 1) as f64;
+    let max_y = (network.height - 1) as f64;
+
     info!(
-        "OptTrans placer: {} movable cells, {}x{} grid, {} pipes",
+        "OptTrans placer: {} movable cells, {}x{} grid ({}x{} subtile, N={}), {} pipes",
         n,
         network.width,
         network.height,
+        network.subtile_width(),
+        network.subtile_height(),
+        network.resolution,
         network.num_pipes(),
     );
 
@@ -62,25 +68,23 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // 4. Anderson accelerator.
     let mut anderson = AndersonAccelerator::new(cfg.anderson_depth, n * 2);
 
-    let max_x = (network.width - 1) as f64;
-    let max_y = (network.height - 1) as f64;
-
-
-    // Track best positions.
+    // Track best positions and adaptive step size.
     let mut best_chpwl = f64::INFINITY;
     let mut best_x = cell_x.clone();
     let mut best_y = cell_y.clone();
     let mut best_iter = 0usize;
+    let grid_diag = ((max_x * max_x + max_y * max_y) as f64).sqrt();
+    let mut step_limit = grid_diag * 0.1;
+    let mut stagnant_count = 0usize;
 
     // 5. Main loop.
     for iter in 0..cfg.max_iters {
         // a. Build demand from cell positions.
         let rhs = demand::build_demands(ctx, &cell_to_idx, &cell_x, &cell_y, &network, cfg);
+        let n_nodes = network.num_nodes();
 
-        // b. Update pipe resistances from flows + interference.
-        //    Also build the Kirchhoff Laplacian.
-        let n_j = network.num_junctions();
-        let mut laplacian = SparseMatrix::new(n_j);
+        // b. Build the Kirchhoff Laplacian from pipe conductances.
+        let mut laplacian = SparseMatrix::new(n_nodes);
 
         for pipe in &network.pipes {
             let r_eff = resistance_model.effective_resistance(pipe, 0.0);
@@ -88,40 +92,221 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             laplacian.add_connection(pipe.from, pipe.to, conductance);
         }
 
-        // Regularize: Kirchhoff Laplacian has a zero eigenvalue (constant
-        // vector in nullspace). Add ε·I to all nodes to make it strictly SPD.
-        // ε should be small relative to the smallest nonzero eigenvalue but
-        // large enough for CG to converge. Use 1e-4 × average diagonal.
-        let avg_diag = laplacian.diag().iter().sum::<f64>() / n_j as f64;
+        // Matrix diagnostics (first iteration only).
+        if iter == 0 {
+            let diag = laplacian.diag();
+            let diag_min = diag.iter().cloned().fold(f64::INFINITY, f64::min);
+            let diag_max = diag.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let n_zero_diag = diag.iter().filter(|&&d| d == 0.0).count();
+
+            // Off-diagonal: check for positive values (should all be negative for Kirchhoff)
+            let off = laplacian.off_diag();
+            let off_min = off.iter().map(|&(_, _, v)| v).fold(f64::INFINITY, f64::min);
+            let off_max = off.iter().map(|&(_, _, v)| v).fold(f64::NEG_INFINITY, f64::max);
+            let n_positive_offdiag = off.iter().filter(|&&(_, _, v)| v > 0.0).count();
+
+            // Conductance range (from pipes)
+            let cond_min = network.pipes.iter()
+                .map(|p| 1.0 / resistance_model.effective_resistance(p, 0.0).max(1e-12))
+                .fold(f64::INFINITY, f64::min);
+            let cond_max = network.pipes.iter()
+                .map(|p| 1.0 / resistance_model.effective_resistance(p, 0.0).max(1e-12))
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            // Row sum check (should be ~0 for Kirchhoff before regularization)
+            let mut row_sums = vec![0.0f64; n_nodes];
+            for i in 0..n_nodes {
+                row_sums[i] += diag[i];
+            }
+            for &(lo, hi, val) in off {
+                row_sums[lo] += val;
+                row_sums[hi] += val;
+            }
+            let row_sum_max = row_sums.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            let row_sum_avg = row_sums.iter().map(|v| v.abs()).sum::<f64>() / n_nodes as f64;
+
+            eprintln!("  MATRIX: n={}, nnz_offdiag={}", n_nodes, off.len());
+            eprintln!("  diag: [{:.3e}, {:.3e}], zero_diag={}", diag_min, diag_max, n_zero_diag);
+            eprintln!("  offdiag: [{:.3e}, {:.3e}], positive_offdiag={}", off_min, off_max, n_positive_offdiag);
+            eprintln!("  conductance: [{:.3e}, {:.3e}], ratio={:.1e}", cond_min, cond_max, cond_max / cond_min.max(1e-30));
+            eprintln!("  row_sum (pre-reg): max={:.3e}, avg={:.3e}", row_sum_max, row_sum_avg);
+        }
+
+        // Regularize: add ε·I to make strictly SPD.
+        let avg_diag = laplacian.diag().iter().sum::<f64>() / n_nodes as f64;
         let epsilon = 1e-4 * avg_diag;
-        for i in 0..n_j {
+        for i in 0..n_nodes {
             laplacian.add_diagonal(i, epsilon);
         }
 
-        // c. Solve L*P = S via Jacobi-preconditioned CG.
-        //    TODO: AMG preconditioning works on regular 2D grids (42 iters vs 375
-        //    Jacobi iters on 30x30) but fails on the pipe network's 4-port-per-tile
-        //    Schur condensation structure. Needs AMG coarsening adapted for this
-        //    graph topology.
+        // c. Solve L*P = S via preconditioned CG.
         let op = SparseMatrixOp::from_matrix(&mut laplacian);
-        let precond = JacobiPreconditioner::new(laplacian.diag());
-        let mut pressure = vec![0.0; n_j];
-        let cg_result = solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters);
+        let mut pressure = vec![0.0; n_nodes];
+        let cg_result = match cfg.preconditioner {
+            PreconditionerType::Jacobi => {
+                let precond = JacobiPreconditioner::new(laplacian.diag());
+                solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters)
+            }
+            PreconditionerType::Amg => {
+                let precond = AmgPreconditioner::setup(
+                    n_nodes,
+                    laplacian.diag(),
+                    laplacian.off_diag(),
+                );
+                solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters)
+            }
+        };
 
-        // d. Update junction pressures and pipe flows.
-        for (i, j) in network.junctions.iter_mut().enumerate() {
-            j.pressure = pressure[i];
+        // d. Update node pressures and pipe flows.
+        for (i, node) in network.nodes.iter_mut().enumerate() {
+            node.pressure = pressure[i];
         }
         for pipe in &mut network.pipes {
             let r_eff = resistance_model.effective_resistance(pipe, 0.0);
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement: -grad(P) at cell positions.
-        let (dx, dy) = demand::compute_displacement(&cell_x, &cell_y, &network);
+        // e. Compute displacement from pressure differences between connected pins.
+        let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
 
-        // f. Anderson acceleration.
-        //    Current position vector and target (position + displacement).
+        // Clamp per-cell displacement to prevent blowup.
+        let max_step = step_limit;
+        for i in 0..n {
+            let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
+            if mag > max_step {
+                let scale = max_step / mag;
+                dx[i] *= scale;
+                dy[i] *= scale;
+            }
+        }
+
+        // Diagnostics.
+        {
+            let rhs_max = rhs.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            let rhs_l1: f64 = rhs.iter().map(|v| v.abs()).sum();
+            let p_min = pressure.iter().cloned().fold(f64::INFINITY, f64::min);
+            let p_max = pressure.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let dx_max = dx.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+            let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
+            eprintln!(
+                "  [{}] P=[{:.1e},{:.1e}] dx_max={:.4} dy_max={:.4} rms={:.4}",
+                iter, p_min, p_max, dx_max, dy_max, disp_rms,
+            );
+
+            // Dump field and cell data at iter 0 for visualization.
+            if iter == 0 {
+                let near_zero = (0..n).filter(|&i| dx[i].abs() < 0.01 && dy[i].abs() < 0.01).count();
+                eprintln!("    near-zero displacement: {}/{}", near_zero, n);
+
+                // Dump pressure field as tile-averaged grid.
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::File::create("/tmp/pressure_field.csv") {
+                    let res = network.resolution;
+                    let tw = network.width as usize;
+                    let th = network.height as usize;
+                    writeln!(f, "tx,ty,pressure,demand").ok();
+                    for ty in 0..th {
+                        for tx in 0..tw {
+                            let mut p_sum = 0.0;
+                            let mut d_sum = 0.0;
+                            for sy in 0..res {
+                                for sx in 0..res {
+                                    let ni = network.node_index(tx as i32, ty as i32, sx, sy);
+                                    p_sum += pressure[ni];
+                                    d_sum += rhs[ni];
+                                }
+                            }
+                            let n_sub = (res * res) as f64;
+                            writeln!(f, "{},{},{:.6},{:.6}", tx, ty, p_sum / n_sub, d_sum).ok();
+                        }
+                    }
+                }
+                // Dump cell positions + raw displacement vectors.
+                if let Ok(mut f) = std::fs::File::create("/tmp/cell_disp.csv") {
+                    writeln!(f, "cell_idx,x,y,dx,dy").ok();
+                    for ci in 0..n {
+                        writeln!(f, "{},{:.2},{:.2},{:.6},{:.6}", ci, cell_x[ci], cell_y[ci], dx[ci], dy[ci]).ok();
+                    }
+                }
+                // Dump fixed/IO cell positions.
+                if let Ok(mut f) = std::fs::File::create("/tmp/fixed_cells.csv") {
+                    writeln!(f, "x,y").ok();
+                    for (_cell_id, cell) in ctx.design.iter_alive_cells() {
+                        if !cell.bel_strength.is_locked() { continue; }
+                        if let Some(bel) = cell.bel {
+                            let loc = ctx.bel(bel).loc();
+                            writeln!(f, "{},{}", loc.x - network.x0, loc.y - network.y0).ok();
+                        }
+                    }
+                }
+                // Build per-cell IO target centroids from net connectivity.
+                // For each net, find fixed pins and associate them with movable cells on the same net.
+                let mut cell_io_x: Vec<f64> = vec![0.0; n];
+                let mut cell_io_y: Vec<f64> = vec![0.0; n];
+                let mut cell_io_count: Vec<usize> = vec![0; n];
+                let mut cell_net_count: Vec<usize> = vec![0; n];
+
+                for (_net_id, net) in ctx.design.iter_alive_nets() {
+                    let Some(dp) = net.driver() else { continue };
+
+                    // Collect fixed pin positions on this net.
+                    let mut fixed_pins: Vec<(f64, f64)> = Vec::new();
+                    let mut movable_indices: Vec<usize> = Vec::new();
+
+                    let dc = ctx.design.cell(dp.cell);
+                    if dc.bel_strength.is_locked() {
+                        if let Some(bel) = dc.bel {
+                            let loc = ctx.bel(bel).loc();
+                            fixed_pins.push(((loc.x - network.x0) as f64, (loc.y - network.y0) as f64));
+                        }
+                    } else if let Some(&ci) = cell_to_idx.get(&dp.cell) {
+                        movable_indices.push(ci);
+                    }
+
+                    for user in net.users() {
+                        if !user.is_valid() { continue; }
+                        let uc = ctx.design.cell(user.cell);
+                        if uc.bel_strength.is_locked() {
+                            if let Some(bel) = uc.bel {
+                                let loc = ctx.bel(bel).loc();
+                                fixed_pins.push(((loc.x - network.x0) as f64, (loc.y - network.y0) as f64));
+                            }
+                        } else if let Some(&ci) = cell_to_idx.get(&user.cell) {
+                            movable_indices.push(ci);
+                        }
+                    }
+
+                    // Associate fixed pins with movable cells on this net.
+                    for &ci in &movable_indices {
+                        cell_net_count[ci] += 1;
+                        for &(fx, fy) in &fixed_pins {
+                            cell_io_x[ci] += fx;
+                            cell_io_y[ci] += fy;
+                            cell_io_count[ci] += 1;
+                        }
+                    }
+                }
+
+                if let Ok(mut f) = std::fs::File::create("/tmp/cell_connectivity.csv") {
+                    writeln!(f, "cell_idx,x,y,dx,dy,io_cx,io_cy,n_io_pins,n_nets").ok();
+                    for ci in 0..n {
+                        let (io_cx, io_cy) = if cell_io_count[ci] > 0 {
+                            (cell_io_x[ci] / cell_io_count[ci] as f64,
+                             cell_io_y[ci] / cell_io_count[ci] as f64)
+                        } else {
+                            (f64::NAN, f64::NAN)
+                        };
+                        writeln!(f, "{},{:.2},{:.2},{:.6},{:.6},{:.2},{:.2},{},{}",
+                            ci, cell_x[ci], cell_y[ci], dx[ci], dy[ci], io_cx, io_cy,
+                            cell_io_count[ci], cell_net_count[ci]).ok();
+                    }
+                }
+                eprintln!("    dumped /tmp/pressure_field.csv, /tmp/cell_disp.csv, /tmp/fixed_cells.csv, /tmp/cell_connectivity.csv");
+            }
+        }
+
+        // g. Anderson acceleration.
         let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
         let target: Vec<f64> = cell_x
             .iter()
@@ -139,29 +324,47 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         cell_x.copy_from_slice(&next[..n]);
         cell_y.copy_from_slice(&next[n..]);
 
-        // g. Clamp to grid.
+        // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
 
-        // h. Update net counts for interference.
+        // i. Update net counts for interference.
         demand::update_net_counts(&cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
 
-        // i. Track best positions.
+        // j. Track best positions + adaptive step size.
         let chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
         if chpwl < best_chpwl {
             best_chpwl = chpwl;
             best_x.copy_from_slice(&cell_x);
             best_y.copy_from_slice(&cell_y);
             best_iter = iter;
+            stagnant_count = 0;
+        } else {
+            stagnant_count += 1;
+            // CHPWL isn't improving — reduce step size to fine-tune.
+            if stagnant_count >= 5 {
+                step_limit *= 0.7;
+                stagnant_count = 0;
+                // Restore best positions to continue from best known state.
+                cell_x.copy_from_slice(&best_x);
+                cell_y.copy_from_slice(&best_y);
+                anderson = AndersonAccelerator::new(cfg.anderson_depth, n * 2);
+            }
         }
 
-        // j. Report + convergence.
+        // Early stop: step size too small to make progress.
+        if step_limit < 0.5 {
+            eprintln!("OptTrans: step_limit below 0.5, stopping at iter {}", iter);
+            break;
+        }
+
+        // k. Report + convergence.
         let is_report = iter % cfg.report_interval == 0 || iter == cfg.max_iters - 1;
         if is_report {
             let resid = anderson.residual_norm();
             let max_util = network.max_utilization();
             eprintln!(
-                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, max_util={:.2}, cg={}",
-                iter, chpwl, resid, max_util, cg_result.iterations,
+                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, max_util={:.2}, cg={} cg_resid={:.3e}",
+                iter, chpwl, resid, max_util, cg_result.iterations, cg_result.residual,
             );
         }
 

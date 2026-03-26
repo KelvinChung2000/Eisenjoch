@@ -1,8 +1,8 @@
 //! Net demand computation and bilinear interpolation for the Beckmann placer.
 //!
-//! - `build_demands`: injects flow demand at junction nodes from cell positions
-//! - `compute_displacement`: computes cell movement from pressure gradients
-//! - `update_net_counts`: tracks number of distinct nets per pipe for interference
+//! All interpolation operates on the subtile grid: a regular (W·N) × (H·N) lattice
+//! where N is the subtile resolution. Cell positions in tile coordinates are mapped
+//! to subtile coordinates for demand injection and pressure gradient extraction.
 
 use rustc_hash::FxHashMap;
 
@@ -10,38 +10,46 @@ use crate::context::Context;
 use crate::netlist::CellId;
 
 use super::config::OptTransPlacerCfg;
-use super::network::{PipeNetwork, Port};
+use super::network::PipeNetwork;
 
-const ALL_PORTS: [Port; 4] = [Port::North, Port::East, Port::South, Port::West];
-
-/// Clamp and compute bilinear interpolation coordinates.
+/// Convert tile-coordinate position to subtile-grid coordinate.
 ///
-/// Returns (x0, y0, fx, fy) where x0/y0 are lower-left tile indices
-/// and fx/fy are fractional offsets in [0, 1].
+/// Subtile node (gx, gy) has its center at tile position ((gx+0.5)/N, (gy+0.5)/N).
+/// Inverting: subtile_coord = tile_coord * N - 0.5.
 #[inline]
-fn bilinear_cell(x: f64, y: f64, width: i32, height: i32) -> (i32, i32, f64, f64) {
-    let max_x = (width - 1) as f64;
-    let max_y = (height - 1) as f64;
-    let x = x.clamp(0.0, max_x);
-    let y = y.clamp(0.0, max_y);
-
-    let x0 = (x.floor() as i32).clamp(0, width - 2);
-    let y0 = (y.floor() as i32).clamp(0, height - 2);
-    let fx = x - x0 as f64;
-    let fy = y - y0 as f64;
-    (x0, y0, fx, fy)
+fn to_subtile_coord(tile_pos: f64, resolution: usize) -> f64 {
+    tile_pos * resolution as f64 - 0.5
 }
 
-/// Bilinear weights: maps continuous (x, y) to 4 surrounding tiles with weights.
-/// Returns [(tile_x, tile_y, weight); 4].
+/// Clamp and compute bilinear interpolation coordinates on the subtile grid.
+///
+/// Input: position in subtile coordinates.
+/// Returns (gx0, gy0, fx, fy) where gx0/gy0 are lower-left subtile indices
+/// and fx/fy are fractional offsets in [0, 1].
 #[inline]
-fn bilinear_weights(x: f64, y: f64, width: i32, height: i32) -> [(i32, i32, f64); 4] {
-    let (x0, y0, fx, fy) = bilinear_cell(x, y, width, height);
+fn bilinear_cell(sx: f64, sy: f64, sw: usize, sh: usize) -> (usize, usize, f64, f64) {
+    let max_x = (sw - 1) as f64;
+    let max_y = (sh - 1) as f64;
+    let sx = sx.clamp(0.0, max_x);
+    let sy = sy.clamp(0.0, max_y);
+
+    let gx0 = (sx.floor() as usize).min(sw - 2);
+    let gy0 = (sy.floor() as usize).min(sh - 2);
+    let fx = sx - gx0 as f64;
+    let fy = sy - gy0 as f64;
+    (gx0, gy0, fx, fy)
+}
+
+/// Bilinear weights on subtile grid: maps continuous position to 4 surrounding
+/// subtile nodes with weights. Returns [(gx, gy, weight); 4].
+#[inline]
+fn bilinear_weights(sx: f64, sy: f64, sw: usize, sh: usize) -> [(usize, usize, f64); 4] {
+    let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
     [
-        (x0, y0, (1.0 - fx) * (1.0 - fy)),
-        (x0 + 1, y0, fx * (1.0 - fy)),
-        (x0, y0 + 1, (1.0 - fx) * fy),
-        (x0 + 1, y0 + 1, fx * fy),
+        (gx0, gy0, (1.0 - fx) * (1.0 - fy)),
+        (gx0 + 1, gy0, fx * (1.0 - fy)),
+        (gx0, gy0 + 1, (1.0 - fx) * fy),
+        (gx0 + 1, gy0 + 1, fx * fy),
     ]
 }
 
@@ -57,7 +65,23 @@ fn bilinear_gradient(fx: f64, fy: f64, f00: f64, f10: f64, f01: f64, f11: f64) -
     (gx, gy)
 }
 
-/// Get position of a pin (movable or fixed) in virtual grid coordinates.
+/// Subtile grid index from subtile-grid coordinates (gx, gy).
+///
+/// The subtile grid is stored in tile-major order:
+///   node_index(tx, ty, sx, sy) = (ty*W + tx) * N² + sy*N + sx
+///
+/// Given global subtile coords (gx, gy):
+///   tx = gx / N, sx = gx % N, ty = gy / N, sy = gy % N
+#[inline]
+fn subtile_grid_index(gx: usize, gy: usize, tile_w: usize, n: usize) -> usize {
+    let tx = gx / n;
+    let sx = gx % n;
+    let ty = gy / n;
+    let sy = gy % n;
+    (ty * tile_w + tx) * (n * n) + sy * n + sx
+}
+
+/// Get position of a pin (movable or fixed) in virtual tile coordinates.
 fn pin_pos(
     ctx: &Context,
     cell_id: CellId,
@@ -82,11 +106,10 @@ fn pin_pos(
     }
 }
 
-/// Build junction demand vector from cell positions.
+/// Build node demand vector from cell positions.
 ///
-/// For each net, the driver injects +demand at its position and each sink
-/// extracts -demand/fanout, both bilinearly interpolated across the 4
-/// surrounding tile junctions.
+/// For each net, the driver injects +demand and each sink extracts -demand/fanout,
+/// both bilinearly interpolated on the subtile grid.
 pub fn build_demands(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
@@ -95,8 +118,12 @@ pub fn build_demands(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
 ) -> Vec<f64> {
-    let n_j = network.num_junctions();
-    let mut demand = vec![0.0; n_j];
+    let n_nodes = network.num_nodes();
+    let mut demand = vec![0.0; n_nodes];
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
 
     for (_net_id, net) in ctx.design.iter_alive_nets() {
         let Some(dp) = net.driver() else { continue };
@@ -118,24 +145,23 @@ pub fn build_demands(
         let (dx, dy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
         let fanout = sink_positions.len() as f64;
         let io_factor = if has_fixed_pin { cfg.io_boost } else { 1.0 };
-        let port_share = 0.25 * io_factor;
 
-        // Driver injects +demand, bilinearly spread across 4 junction ports.
-        for (tx, ty, bw) in bilinear_weights(dx, dy, network.width, network.height) {
-            let share = port_share * bw;
-            for &port in &ALL_PORTS {
-                demand[network.junction_index(tx, ty, port)] += share;
-            }
+        // Driver injects +demand, bilinearly spread across 4 subtile nodes.
+        let dsx = to_subtile_coord(dx, n);
+        let dsy = to_subtile_coord(dy, n);
+        for (gx, gy, bw) in bilinear_weights(dsx, dsy, sw, sh) {
+            let ni = subtile_grid_index(gx, gy, tile_w, n);
+            demand[ni] += io_factor * bw;
         }
 
         // Each sink extracts -demand/fanout.
-        let sink_share = port_share / fanout;
+        let sink_weight = io_factor / fanout;
         for &(sx, sy) in &sink_positions {
-            for (tx, ty, bw) in bilinear_weights(sx, sy, network.width, network.height) {
-                let share = sink_share * bw;
-                for &port in &ALL_PORTS {
-                    demand[network.junction_index(tx, ty, port)] -= share;
-                }
+            let ssx = to_subtile_coord(sx, n);
+            let ssy = to_subtile_coord(sy, n);
+            for (gx, gy, bw) in bilinear_weights(ssx, ssy, sw, sh) {
+                let ni = subtile_grid_index(gx, gy, tile_w, n);
+                demand[ni] -= sink_weight * bw;
             }
         }
     }
@@ -143,51 +169,106 @@ pub fn build_demands(
     demand
 }
 
-/// Compute cell displacement from the pressure field.
+/// Interpolate pressure at a tile-coordinate position using bilinear interpolation
+/// on the subtile grid.
+fn pressure_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    let sx = to_subtile_coord(x, n);
+    let sy = to_subtile_coord(y, n);
+    let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+    let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
+    let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
+    let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
+    let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+
+    (1.0 - fx) * (1.0 - fy) * p00
+        + fx * (1.0 - fy) * p10
+        + (1.0 - fx) * fy * p01
+        + fx * fy * p11
+}
+
+/// Compute cell displacement from pressure differences between connected pins.
 ///
-/// For each cell, computes -grad(P) at the cell position using bilinear
-/// interpolation of junction pressures. Returns (dx, dy) per cell.
+/// For each net, the pressure difference between the cell and each other pin
+/// tells the cell which direction to move through the network. The displacement
+/// is the sum over all connected pins of:
+///   (P_other - P_self) * unit_direction_to_other
+///
+/// This avoids self-interaction: a cell's own demand doesn't affect its
+/// displacement because P_self cancels out in the difference.
 pub fn compute_displacement(
+    ctx: &Context,
+    cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
 ) -> (Vec<f64>, Vec<f64>) {
-    let n = cell_x.len();
-    let mut dx = vec![0.0; n];
-    let mut dy = vec![0.0; n];
+    let num_cells = cell_x.len();
+    let mut dx = vec![0.0; num_cells];
+    let mut dy = vec![0.0; num_cells];
 
-    // Build a tile-level pressure field by averaging the 4 port pressures per tile.
-    let w = network.width as usize;
-    let h = network.height as usize;
-    let mut tile_pressure = vec![0.0; w * h];
-    for ty in 0..h {
-        for tx in 0..w {
-            let mut sum = 0.0;
-            for &port in &ALL_PORTS {
-                let ji = network.junction_index(tx as i32, ty as i32, port);
-                sum += network.junctions[ji].pressure;
-            }
-            tile_pressure[ty * w + tx] = sum * 0.25;
+    for (_net_id, net) in ctx.design.iter_alive_nets() {
+        let Some(dp) = net.driver() else { continue };
+        if net.num_users() == 0 {
+            continue;
         }
-    }
 
-    // For each cell, compute -grad(P) via bilinear interpolation.
-    for i in 0..n {
-        let (x0, y0, fx, fy) = bilinear_cell(cell_x[i], cell_y[i], network.width, network.height);
-        let col0 = x0 as usize;
-        let col1 = (x0 + 1) as usize;
-        let row0 = y0 as usize * w;
-        let row1 = (y0 + 1) as usize * w;
+        // Collect all pin positions on this net.
+        let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new(); // (x, y, movable_idx)
 
-        let f00 = tile_pressure[row0 + col0];
-        let f10 = tile_pressure[row0 + col1];
-        let f01 = tile_pressure[row1 + col0];
-        let f11 = tile_pressure[row1 + col1];
+        let (dpx, dpy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
+        let dp_idx = cell_to_idx.get(&dp.cell).copied();
+        pins.push((dpx, dpy, dp_idx));
 
-        let (gx, gy) = bilinear_gradient(fx, fy, f00, f10, f01, f11);
-        // Cells move along -grad(P).
-        dx[i] = -gx;
-        dy[i] = -gy;
+        for user in net.users() {
+            if !user.is_valid() {
+                continue;
+            }
+            let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+            let u_idx = cell_to_idx.get(&user.cell).copied();
+            pins.push((ux, uy, u_idx));
+        }
+
+        if pins.len() < 2 {
+            continue;
+        }
+
+        // For each movable pin, compute displacement from pressure differences
+        // with all other pins on this net.
+        for i in 0..pins.len() {
+            let Some(ci) = pins[i].2 else { continue }; // skip fixed pins
+            let (xi, yi, _) = pins[i];
+            let p_self = pressure_at(xi, yi, network);
+
+            for j in 0..pins.len() {
+                if i == j {
+                    continue;
+                }
+                let (xj, yj, _) = pins[j];
+                let dir_x = xj - xi;
+                let dir_y = yj - yi;
+                let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                if dist < 0.1 {
+                    continue; // pins coincident, no force
+                }
+
+                let p_other = pressure_at(xj, yj, network);
+                // Pressure difference: positive means other pin has higher pressure,
+                // so flow wants to go from other → self. Cell should move toward other.
+                let dp = p_other - p_self;
+
+                // Weight by 1/dist to normalize direction, but keep pressure difference
+                // as the force magnitude.
+                let weight = dp / dist;
+                dx[ci] += weight * dir_x;
+                dy[ci] += weight * dir_y;
+            }
+        }
     }
 
     (dx, dy)
@@ -196,8 +277,7 @@ pub fn compute_displacement(
 /// Update net_count on pipes based on current cell positions.
 ///
 /// For each net, determines which pipes its bounding box covers and
-/// increments net_count. This is an approximation: a net "uses" all
-/// pipes within the bounding box of its pins.
+/// increments net_count.
 pub fn update_net_counts(
     cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
@@ -205,7 +285,6 @@ pub fn update_net_counts(
     network: &mut PipeNetwork,
     ctx: &Context,
 ) {
-    // Reset all net counts.
     for pipe in &mut network.pipes {
         pipe.net_count = 0;
     }
@@ -218,10 +297,9 @@ pub fn update_net_counts(
             continue;
         }
 
-        // Compute bounding box of the net in virtual coords.
-        let (dx, dy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
-        let (mut min_x, mut max_x) = (dx, dx);
-        let (mut min_y, mut max_y) = (dy, dy);
+        let (dxx, dyy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
+        let (mut min_x, mut max_x) = (dxx, dxx);
+        let (mut min_y, mut max_y) = (dyy, dyy);
 
         for user in net.users() {
             if !user.is_valid() {
@@ -239,18 +317,17 @@ pub fn update_net_counts(
         let y0 = (min_y.floor() as i32).max(0);
         let y1 = (max_y.ceil() as i32).min(network.height - 1);
 
+        let n_per_tile = network.nodes_per_tile();
+
         // Increment net_count for all pipes in tiles within the bounding box.
         for ty in y0..=y1 {
             for tx in x0..=x1 {
-                let base = ((ty * w + tx) * 4) as usize;
-                // All junction pipes for this tile's 4 ports.
-                for port_offset in 0..4 {
-                    let ji = base + port_offset;
-                    if ji < network.junction_pipes.len() {
-                        for &pipe_idx in &network.junction_pipes[ji] {
-                            // Avoid double-counting: only increment from the
-                            // lower junction to avoid counting each pipe twice.
-                            if network.pipes[pipe_idx].from == ji {
+                let base = ((ty * w + tx) as usize) * n_per_tile;
+                for offset in 0..n_per_tile {
+                    let ni = base + offset;
+                    if ni < network.node_pipes.len() {
+                        for &pipe_idx in &network.node_pipes[ni] {
+                            if network.pipes[pipe_idx].from == ni {
                                 network.pipes[pipe_idx].net_count += 1;
                             }
                         }
