@@ -6,7 +6,7 @@ use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use rustc_hash::FxHashMap;
