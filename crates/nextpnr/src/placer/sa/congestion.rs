@@ -1,7 +1,7 @@
 //! Congestion cache for incremental demand tracking during SA.
 
 use crate::context::Context;
-use crate::metrics::bresenham_line;
+use crate::metrics::{bresenham_line, compute_tile_capacities};
 use crate::netlist::NetId;
 use rustc_hash::FxHashMap;
 
@@ -46,18 +46,7 @@ impl CongestionCache {
         let wu = grid_w as usize;
         let hu = grid_h as usize;
 
-        let mut h_capacity = vec![vec![0.0f64; wu]; hu];
-        let mut v_capacity = vec![vec![0.0f64; wu]; hu];
-        for ty in 0..grid_h {
-            for tx in 0..grid_w {
-                let tile_idx = ty * grid_w + tx;
-                let tt = ctx.chipdb().tile_type(tile_idx);
-                let nwires = tt.wires.get().len() as f64;
-                let cap = (nwires / 4.0).max(1.0);
-                h_capacity[ty as usize][tx as usize] = cap;
-                v_capacity[ty as usize][tx as usize] = cap;
-            }
-        }
+        let (h_capacity, v_capacity) = compute_tile_capacities(ctx);
 
         let mut cache = Self {
             h_demand: vec![vec![0.0; wu]; hu],

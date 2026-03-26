@@ -3,6 +3,7 @@
 use log::info;
 
 use crate::context::Context;
+use crate::metrics::total_hpwl;
 use crate::placer::common::{
     add_wa_wirelength_gradient, clamp_positions, compute_pin_weights,
     NesterovLoopState,
@@ -142,7 +143,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
             clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
 
             let displacement = legalize_electro(ctx, &idx_to_cell, &cell_x, &cell_y)?;
-            let hpwl = crate::metrics::wirelength::total_hpwl(ctx);
+            let hpwl = total_hpwl(ctx);
             loop_state.record_metric(hpwl, &cell_x, &cell_y, iter);
 
             eprintln!(

@@ -84,6 +84,33 @@ pub fn bresenham_line(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32)> {
     points
 }
 
+/// Compute per-tile capacity grids from wire counts.
+///
+/// Returns `(h_capacity, v_capacity)` where each entry is
+/// `max(nwires / 4, 1.0)`.  `h_capacity[y][x]` represents the east-edge
+/// capacity of tile (x, y) and `v_capacity[y][x]` the south-edge capacity.
+pub fn compute_tile_capacities(ctx: &Context) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let w = ctx.chipdb().width();
+    let h = ctx.chipdb().height();
+    let wu = w as usize;
+    let hu = h as usize;
+
+    let mut h_capacity = vec![vec![0.0f64; wu]; hu];
+    let mut v_capacity = vec![vec![0.0f64; wu]; hu];
+    for ty in 0..h {
+        for tx in 0..w {
+            let tile_idx = ty * w + tx;
+            let tt = ctx.chipdb().tile_type(tile_idx);
+            let nwires = tt.wires.get().len() as f64;
+            let cap = (nwires / 4.0).max(1.0);
+            h_capacity[ty as usize][tx as usize] = cap;
+            v_capacity[ty as usize][tx as usize] = cap;
+        }
+    }
+
+    (h_capacity, v_capacity)
+}
+
 /// Estimate routing congestion using edge-based demand with Bresenham lines.
 ///
 /// For each alive net with a placed driver and sinks, draws Bresenham lines
@@ -100,20 +127,7 @@ pub fn estimate_congestion(ctx: &Context, threshold: f64) -> CongestionReport {
     let wu = w as usize;
     let hu = h as usize;
 
-    // Build capacity grids.
-    // Use total_wires / 4 as per-direction capacity estimate.
-    let mut h_capacity = vec![vec![0.0f64; wu]; hu];
-    let mut v_capacity = vec![vec![0.0f64; wu]; hu];
-    for ty in 0..h {
-        for tx in 0..w {
-            let tile_idx = ty * w + tx;
-            let tt = ctx.chipdb().tile_type(tile_idx);
-            let nwires = tt.wires.get().len() as f64;
-            let cap = (nwires / 4.0).max(1.0);
-            h_capacity[ty as usize][tx as usize] = cap;
-            v_capacity[ty as usize][tx as usize] = cap;
-        }
-    }
+    let (h_capacity, v_capacity) = compute_tile_capacities(ctx);
 
     // Collect net indices for parallel iteration.
     let net_indices: Vec<NetId> = ctx
@@ -235,6 +249,25 @@ pub fn compute_congestion_ratios(
     };
 
     result
+}
+
+/// Build demand grids by iterating all alive nets and tracing Bresenham lines.
+///
+/// Returns `(h_demand, v_demand)` grids of size `[grid_h][grid_w]`.
+pub fn compute_net_demand(ctx: &Context) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let w = ctx.chipdb().width();
+    let h = ctx.chipdb().height();
+    let wu = w as usize;
+    let hu = h as usize;
+
+    let mut h_demand = vec![vec![0.0f64; wu]; hu];
+    let mut v_demand = vec![vec![0.0f64; wu]; hu];
+
+    for (net_idx, _) in ctx.design.iter_alive_nets() {
+        accumulate_net_demand(ctx, net_idx, w, h, &mut h_demand, &mut v_demand);
+    }
+
+    (h_demand, v_demand)
 }
 
 /// Accumulate demand from a single net into local demand grids.

@@ -8,8 +8,9 @@ pub mod wirelength;
 
 pub use bbox::{compute_bbox, BoundingBox};
 pub use congestion::{
-    accumulate_edge_crossings, bresenham_line, compute_congestion_ratios, estimate_congestion,
-    Axis, CongestionRatios, CongestionReport,
+    accumulate_edge_crossings, bresenham_line, compute_congestion_ratios,
+    compute_net_demand, compute_tile_capacities, estimate_congestion, Axis, CongestionRatios,
+    CongestionReport,
 };
 pub use density::{compute_sliding_window_density, placement_density, DensityReport};
 pub use utilization::{utilization_report, ResourceRow, UtilizationReport};

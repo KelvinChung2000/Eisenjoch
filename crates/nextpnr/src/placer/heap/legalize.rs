@@ -1,8 +1,9 @@
 use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::metrics::{accumulate_edge_crossings, bresenham_line};
+use crate::metrics::{compute_net_demand, compute_tile_capacities};
 use crate::netlist::CellId;
+use crate::placer::legalize::common::place_cluster_children;
 use crate::placer::PlacerError;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -65,6 +66,8 @@ impl HeapState {
             cell_region: Option<u32>,
             target_x: f64,
             target_y: f64,
+            /// True when this cell is a cluster child (placed by its root).
+            is_cluster_child: bool,
         }
 
         let cell_infos: Vec<CellLegalizeInfo> = order
@@ -72,6 +75,9 @@ impl HeapState {
             .map(|&idx| {
                 let cell_idx = self.movable_cells[idx];
                 let cell = ctx.cell(cell_idx);
+                let is_cluster_child = cell
+                    .cluster()
+                    .map_or(false, |root_id| root_id != cell_idx);
                 CellLegalizeInfo {
                     idx,
                     cell_idx,
@@ -81,6 +87,7 @@ impl HeapState {
                     cell_region: self.cell_region[idx],
                     target_x: self.cell_x[idx],
                     target_y: self.cell_y[idx],
+                    is_cluster_child,
                 }
             })
             .collect();
@@ -151,7 +158,13 @@ impl HeapState {
             .collect();
 
         // Phase B (sequential): assign cells to nearest available BEL.
+        // Cluster children are skipped here; they are placed by
+        // `place_cluster_children` after their root is bound.
         for (i, info) in cell_infos.iter().enumerate() {
+            if info.is_cluster_child {
+                continue;
+            }
+
             let candidates = &sorted_candidates[i];
 
             if candidates.is_empty() {
@@ -170,6 +183,7 @@ impl HeapState {
                     let loc = ctx.bel(bel).loc();
                     self.cell_x[info.idx] = loc.x as f64;
                     self.cell_y[info.idx] = loc.y as f64;
+                    place_cluster_children(ctx, info.cell_idx, bel)?;
                     bound = true;
                     break;
                 }
@@ -200,50 +214,10 @@ impl HeapState {
         let congestion_weight = self.cfg.congestion_weight;
 
         // Build capacity grids (total_wires / 4 per direction).
-        let mut h_capacity = vec![vec![1.0f64; wu]; hu];
-        let mut v_capacity = vec![vec![1.0f64; wu]; hu];
-        for ty in 0..grid_h {
-            for tx in 0..grid_w {
-                let tile_idx = ty * grid_w + tx;
-                let tt = ctx.chipdb().tile_type(tile_idx);
-                let nwires = tt.wires.get().len() as f64;
-                let cap = (nwires / 4.0).max(1.0);
-                h_capacity[ty as usize][tx as usize] = cap;
-                v_capacity[ty as usize][tx as usize] = cap;
-            }
-        }
+        let (h_capacity, v_capacity) = compute_tile_capacities(ctx);
 
         // Build demand grids by iterating all alive nets and tracing Bresenham lines.
-        let mut h_demand = vec![vec![0.0f64; wu]; hu];
-        let mut v_demand = vec![vec![0.0f64; wu]; hu];
-
-        for (_net_idx, net) in ctx.design.iter_alive_nets() {
-            if !net.driver.is_connected() || net.users.is_empty() {
-                continue;
-            }
-
-            let drv_cell = ctx.cell(net.driver.cell);
-            let Some(drv_bel) = drv_cell.bel() else {
-                continue;
-            };
-            let drv_loc = drv_bel.loc();
-
-            for user in &net.users {
-                if !user.is_connected() {
-                    continue;
-                }
-                let user_cell = ctx.cell(user.cell);
-                let Some(user_bel) = user_cell.bel() else {
-                    continue;
-                };
-                let user_loc = user_bel.loc();
-
-                let points = bresenham_line(drv_loc.x, drv_loc.y, user_loc.x, user_loc.y);
-                accumulate_edge_crossings(
-                    &points, grid_w, grid_h, &mut h_demand, &mut v_demand, 1.0,
-                );
-            }
-        }
+        let (h_demand, v_demand) = compute_net_demand(ctx);
 
         // Compute per-cell congestion displacement targets.
         let max_x = (grid_w - 1) as f64;
