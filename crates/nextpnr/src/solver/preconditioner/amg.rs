@@ -17,6 +17,7 @@ use std::cell::UnsafeCell;
 
 use dyn_stack::{MemStack, StackReq};
 use faer::matrix_free::LinOp;
+use faer::sparse::{SparseColMat, Triplet};
 
 
 /// Cached structural information for one AMG level.
@@ -45,6 +46,10 @@ struct LevelNumeric {
     inv_diag: Vec<f64>,
     /// Interpolation weights (parallel to interp_indices).
     interp_weights: Vec<Vec<f64>>,
+    /// Full symmetric operator as faer CSC, for spmv via faer.
+    operator_csc: Option<SparseColMat<usize, f64>>,
+    /// Prolongation operator P (fine x coarse) as faer CSC.
+    interp_csc: Option<SparseColMat<usize, f64>>,
 }
 
 struct LevelWork {
@@ -270,6 +275,8 @@ impl AmgPreconditioner {
                     .iter()
                     .map(|ii| vec![0.0; ii.len()])
                     .collect(),
+                operator_csc: None,
+                interp_csc: None,
             });
             work.push(LevelWork {
                 x: vec![0.0; ls.n],
@@ -457,6 +464,41 @@ impl AmgPreconditioner {
             }
         }
 
+        // Build faer CSC matrices for each level.
+        for level in 0..num_levels {
+            let ls = &self.structure.level_structs[level];
+            let nm = &self.numerics[level];
+            let n = ls.n;
+
+            // Build operator CSC from diag + off_diag (full symmetric).
+            let mut triplets = Vec::with_capacity(n + ls.offdiag_pattern.len() * 2);
+            for i in 0..n {
+                triplets.push(Triplet { row: i, col: i, val: nm.diag[i] });
+            }
+            for (idx, &(i, j)) in ls.offdiag_pattern.iter().enumerate() {
+                let v = nm.off_diag_values[idx];
+                triplets.push(Triplet { row: i, col: j, val: v });
+                triplets.push(Triplet { row: j, col: i, val: v });
+            }
+            self.numerics[level].operator_csc =
+                Some(SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).unwrap());
+
+            // Build interpolation P CSC (fine x coarse) for non-coarsest levels.
+            if level < num_levels - 1 {
+                let n_coarse = ls.n_coarse;
+                let mut p_triplets = Vec::new();
+                for i in 0..n {
+                    for (k, &cj) in ls.interp_indices[i].iter().enumerate() {
+                        let w = self.numerics[level].interp_weights[i][k];
+                        p_triplets.push(Triplet { row: i, col: cj, val: w });
+                    }
+                }
+                self.numerics[level].interp_csc = Some(
+                    SparseColMat::<usize, f64>::try_new_from_triplets(n, n_coarse, &p_triplets)
+                        .unwrap(),
+                );
+            }
+        }
     }
 
     /// Apply one AMG V-cycle: z = M^{-1} r (mutable version).
@@ -477,113 +519,95 @@ impl AmgPreconditioner {
         level: usize,
     ) {
         let n = structure.level_structs[level].n;
+        let nm = &numerics[level];
+        let csc = nm.operator_csc.as_ref().unwrap();
 
         if level == structure.level_structs.len() - 1 {
-            // Coarsest level: use direct solver if available, else Jacobi fallback.
-            let ls = &structure.level_structs[level];
-            let nm = &numerics[level];
+            // Coarsest level: many Jacobi iterations as approximate solve.
             let wrk = &mut work[level];
-            // Use many Jacobi iterations as an approximate solve on the coarsest level.
-            // This is simpler and more robust than direct solve, which can fail if the
-            // Galerkin coarsening produces a poorly conditioned operator.
             let iters = n.max(200);
             for _ in 0..iters {
-                jacobi_smooth(
-                    &nm.diag,
-                    &ls.offdiag_pattern,
-                    &nm.off_diag_values,
-                    &nm.inv_diag,
-                    &mut wrk.x,
-                    &wrk.rhs,
-                    &mut wrk.scratch,
-                    n,
-                );
+                jacobi_smooth_faer(csc, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
             }
             return;
         }
 
+        let p_csc = nm.interp_csc.as_ref().unwrap();
+
         // Pre-smooth.
         for _ in 0..SMOOTH_ITERS {
-            let ls = &structure.level_structs[level];
-            let nm = &numerics[level];
             let wrk = &mut work[level];
-            jacobi_smooth(
-                &nm.diag,
-                &ls.offdiag_pattern,
-                &nm.off_diag_values,
-                &nm.inv_diag,
-                &mut wrk.x,
-                &wrk.rhs,
-                &mut wrk.scratch,
-                n,
-            );
+            jacobi_smooth_faer(csc, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
         }
 
-        // Residual.
+        // Residual: r = rhs - A*x.
         {
-            let ls = &structure.level_structs[level];
-            let nm = &numerics[level];
             let wrk = &mut work[level];
-            compute_residual(
-                &nm.diag,
-                &ls.offdiag_pattern,
-                &nm.off_diag_values,
-                &wrk.x,
-                &wrk.rhs,
-                &mut wrk.r,
-                n,
+            // scratch = A*x via faer spmv
+            let x_col = faer::MatRef::from_column_major_slice(&wrk.x, n, 1);
+            let mut r_col = faer::MatMut::from_column_major_slice_mut(&mut wrk.r, n, 1);
+            faer::sparse::linalg::matmul::sparse_dense_matmul(
+                r_col.as_mut(),
+                faer::Accum::Replace,
+                csc.as_ref(),
+                x_col,
+                1.0,
+                faer::Par::Seq,
             );
+            // r = rhs - A*x
+            for i in 0..n {
+                wrk.r[i] = wrk.rhs[i] - wrk.r[i];
+            }
         }
 
-        // Restrict: rhs_coarse = P^T * r.
+        // Restrict: rhs_coarse = P^T * r_fine.
         {
-            let ls = &structure.level_structs[level];
+            let n_coarse = structure.level_structs[level].n_coarse;
             let (work_fine, work_rest) = work.split_at_mut(level + 1);
             let wrk_fine = &work_fine[level];
             let wrk_coarse = &mut work_rest[0];
-            wrk_coarse.rhs.fill(0.0);
             wrk_coarse.x.fill(0.0);
-            for i in 0..n {
-                let ri = wrk_fine.r[i];
-                for (k, &cj) in ls.interp_indices[i].iter().enumerate() {
-                    let w = numerics[level].interp_weights[i][k];
-                    wrk_coarse.rhs[cj] += w * ri;
-                }
-            }
+
+            // P^T * r: transpose of CSC is CSR, which implements SparseDenseMatMul.
+            let r_col = faer::MatRef::from_column_major_slice(&wrk_fine.r, n, 1);
+            let mut rhs_coarse_col =
+                faer::MatMut::from_column_major_slice_mut(&mut wrk_coarse.rhs, n_coarse, 1);
+            faer::sparse::linalg::matmul::sparse_dense_matmul(
+                rhs_coarse_col.as_mut(),
+                faer::Accum::Replace,
+                p_csc.as_ref().transpose(),
+                r_col,
+                1.0,
+                faer::Par::Seq,
+            );
         }
 
         // Recurse.
         Self::v_cycle_level(structure, numerics, work, level + 1);
 
-        // Prolongate: x += P * x_coarse.
+        // Prolongate: x_fine += P * x_coarse.
         {
-            let ls = &structure.level_structs[level];
+            let n_coarse = structure.level_structs[level].n_coarse;
             let (work_fine, work_rest) = work.split_at_mut(level + 1);
             let wrk_fine = &mut work_fine[level];
             let wrk_coarse = &work_rest[0];
-            for i in 0..n {
-                for (k, &cj) in ls.interp_indices[i].iter().enumerate() {
-                    let w = numerics[level].interp_weights[i][k];
-                    wrk_fine.x[i] += w * wrk_coarse.x[cj];
-                }
-            }
+
+            let xc_col = faer::MatRef::from_column_major_slice(&wrk_coarse.x, n_coarse, 1);
+            let mut xf_col = faer::MatMut::from_column_major_slice_mut(&mut wrk_fine.x, n, 1);
+            faer::sparse::linalg::matmul::sparse_dense_matmul(
+                xf_col.as_mut(),
+                faer::Accum::Add,
+                p_csc.as_ref(),
+                xc_col,
+                1.0,
+                faer::Par::Seq,
+            );
         }
 
         // Post-smooth.
         for _ in 0..SMOOTH_ITERS {
-            let ls = &structure.level_structs[level];
-            let nm = &numerics[level];
             let wrk = &mut work[level];
-            jacobi_smooth(
-                &nm.diag,
-                &ls.offdiag_pattern,
-                &nm.off_diag_values,
-                &nm.inv_diag,
-                &mut wrk.x,
-                &wrk.rhs,
-                &mut wrk.scratch,
-                n,
-            );
+            jacobi_smooth_faer(csc, &nm.inv_diag, &mut wrk.x, &wrk.rhs, &mut wrk.scratch, n);
         }
     }
 
@@ -698,46 +722,29 @@ impl faer::matrix_free::Precond<f64> for AmgPreconditioner {
     }
 }
 
-/// Weighted Jacobi: x += omega * M^{-1} * (rhs - A*x).
-fn jacobi_smooth(
-    diag: &[f64],
-    offdiag_pattern: &[(usize, usize)],
-    offdiag_values: &[f64],
+/// Weighted Jacobi smoother using faer spmv: x += omega * D^{-1} * (rhs - A*x).
+fn jacobi_smooth_faer(
+    operator_csc: &SparseColMat<usize, f64>,
     inv_diag: &[f64],
     x: &mut [f64],
     rhs: &[f64],
     scratch: &mut [f64],
     n: usize,
 ) {
+    // scratch = A*x via faer
+    let x_col = faer::MatRef::from_column_major_slice(x, n, 1);
+    let mut s_col = faer::MatMut::from_column_major_slice_mut(scratch, n, 1);
+    faer::sparse::linalg::matmul::sparse_dense_matmul(
+        s_col.as_mut(),
+        faer::Accum::Replace,
+        operator_csc.as_ref(),
+        x_col,
+        1.0,
+        faer::Par::Seq,
+    );
+    // x += omega * D^{-1} * (rhs - A*x)
     for i in 0..n {
-        scratch[i] = rhs[i] - diag[i] * x[i];
-    }
-    for (idx, &(i, j)) in offdiag_pattern.iter().enumerate() {
-        let w = offdiag_values[idx];
-        scratch[i] -= w * x[j];
-        scratch[j] -= w * x[i];
-    }
-    for i in 0..n {
-        x[i] += OMEGA * inv_diag[i] * scratch[i];
-    }
-}
-
-fn compute_residual(
-    diag: &[f64],
-    offdiag_pattern: &[(usize, usize)],
-    offdiag_values: &[f64],
-    x: &[f64],
-    rhs: &[f64],
-    r: &mut [f64],
-    n: usize,
-) {
-    for i in 0..n {
-        r[i] = rhs[i] - diag[i] * x[i];
-    }
-    for (idx, &(i, j)) in offdiag_pattern.iter().enumerate() {
-        let w = offdiag_values[idx];
-        r[i] -= w * x[j];
-        r[j] -= w * x[i];
+        x[i] += OMEGA * inv_diag[i] * (rhs[i] - scratch[i]);
     }
 }
 
