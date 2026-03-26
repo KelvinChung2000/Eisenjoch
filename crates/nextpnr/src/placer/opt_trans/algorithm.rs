@@ -6,9 +6,8 @@ use crate::metrics::total_hpwl;
 use crate::placer::common;
 use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
-use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
-use crate::solver::preconditioner::JacobiPreconditioner;
-use crate::solver::cg::solve_cg;
+use crate::solver::sparse_matrix::SparseMatrix;
+use crate::solver::direct::FaerDirectSolver;
 
 use super::anderson::AndersonAccelerator;
 use super::config::OptTransPlacerCfg;
@@ -65,6 +64,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let max_x = (network.width - 1) as f64;
     let max_y = (network.height - 1) as f64;
 
+    // Direct solver - symbolic factorization cached, numeric refactored each iteration.
+    let mut direct_solver: Option<FaerDirectSolver> = None;
+
     // Track best positions.
     let mut best_chpwl = f64::INFINITY;
     let mut best_x = cell_x.clone();
@@ -91,11 +93,25 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // rank-deficient by 1 since pressures are only defined up to a constant).
         laplacian.add_diagonal(0, 1e-6);
 
-        // c. Solve L*P = S via CG with Jacobi preconditioner.
-        let op = SparseMatrixOp::from_matrix(&mut laplacian);
-        let precond = JacobiPreconditioner::new(laplacian.diag());
+        // c. Solve L*P = S via direct sparse Cholesky.
+        //    Build or reuse symbolic factorization (AMD ordering + elimination tree).
+        let pipe_endpoints: Vec<(usize, usize)> = network
+            .pipes
+            .iter()
+            .map(|p| if p.from < p.to { (p.from, p.to) } else { (p.to, p.from) })
+            .collect();
+
+        if direct_solver.is_none() {
+            direct_solver = Some(FaerDirectSolver::new(n_j, &pipe_endpoints));
+        }
+
         let mut pressure = vec![0.0; n_j];
-        let cg_result = solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters);
+        direct_solver.as_mut().unwrap().solve(
+            laplacian.diag(),
+            laplacian.off_diag(),
+            &rhs,
+            &mut pressure,
+        );
 
         // d. Update junction pressures and pipe flows.
         for (i, j) in network.junctions.iter_mut().enumerate() {
@@ -149,8 +165,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let resid = anderson.residual_norm();
             let max_util = network.max_utilization();
             eprintln!(
-                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, cg_iters={}, max_util={:.2}, converged={}",
-                iter, chpwl, resid, cg_result.iterations, max_util, cg_result.converged,
+                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, max_util={:.2}",
+                iter, chpwl, resid, max_util,
             );
         }
 
