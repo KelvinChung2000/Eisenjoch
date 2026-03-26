@@ -258,12 +258,8 @@ pub fn compute_displacement(
                 }
 
                 let p_other = pressure_at(xj, yj, network);
-                // Pressure difference: positive means other pin has higher pressure,
-                // so flow wants to go from other → self. Cell should move toward other.
                 let dp = p_other - p_self;
 
-                // Weight by 1/dist to normalize direction, but keep pressure difference
-                // as the force magnitude.
                 let weight = dp / dist;
                 dx[ci] += weight * dir_x;
                 dy[ci] += weight * dir_y;

@@ -76,7 +76,7 @@ impl Default for OptTransPlacerCfg {
             congestion_exponent: 2.0,
             interference_weight: 1.0,
             timing_weight: 0.0,
-            io_boost: 3.0,
+            io_boost: 1.0,
             anderson_depth: 3,
             report_interval: 5,
             lap_max_cells: 10000,
