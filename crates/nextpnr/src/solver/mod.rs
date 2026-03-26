@@ -12,6 +12,7 @@
 
 pub mod sparse_matrix;
 pub mod cg;
+pub mod pcg;
 pub mod preconditioner;
 pub mod optimizer;
 pub mod direct;
@@ -21,6 +22,7 @@ pub mod lse;
 
 pub use sparse_matrix::SparseMatrix;
 pub use cg::solve_cg;
+pub use pcg::pcg_solve;
 pub use preconditioner::{JacobiPreconditioner, AmgPreconditioner};
 pub use direct::FaerDirectSolver;
 pub use system::{SparseSystemBuilder, Solver};

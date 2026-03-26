@@ -56,13 +56,21 @@ pub fn solve_cg(
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
+    let iter_count = std::cell::Cell::new(0usize);
     match conjugate_gradient(
         x_mat.as_mut(),
         precond,
         mat,
         rhs_mat,
         params,
-        |_| {},
+        |x_current| {
+            let i = iter_count.get();
+            if i < 5 || i % 100 == 0 {
+                let x_norm: f64 = (0..n).map(|j| x_current[(j, 0)] * x_current[(j, 0)]).sum::<f64>().sqrt();
+                eprintln!("  CG iter {}: ||x|| = {:.6e}", i, x_norm);
+            }
+            iter_count.set(i + 1);
+        },
         faer::Par::Seq,
         &mut stack,
     ) {
@@ -76,10 +84,21 @@ pub fn solve_cg(
             converged: false,
             residual: rel_residual,
         },
-        Err(_) => CgResult {
-            iterations: max_iters,
-            converged: false,
-            residual: f64::MAX,
+        Err(CgError::NonPositiveDefiniteOperator) => {
+            eprintln!("CG ERROR: NonPositiveDefiniteOperator detected!");
+            CgResult {
+                iterations: 0,
+                converged: false,
+                residual: f64::MAX,
+            }
+        },
+        Err(CgError::NonPositiveDefinitePreconditioner) => {
+            eprintln!("CG ERROR: NonPositiveDefinitePreconditioner detected!");
+            CgResult {
+                iterations: 0,
+                converged: false,
+                residual: f64::MAX,
+            }
         },
     }
 }
