@@ -6,8 +6,9 @@ use crate::metrics::total_hpwl;
 use crate::placer::common;
 use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
-use crate::solver::sparse_matrix::SparseMatrix;
-use crate::solver::pcg::pcg_solve;
+use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
+use crate::solver::preconditioner::JacobiPreconditioner;
+use crate::solver::cg::solve_cg;
 
 use super::anderson::AndersonAccelerator;
 use super::config::OptTransPlacerCfg;
@@ -97,9 +98,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             laplacian.add_diagonal(i, epsilon);
         }
 
-        // c. Solve L*P = S via Jacobi-preconditioned CG.
+        // c. Solve L*P = S via faer Jacobi-preconditioned CG.
+        let op = SparseMatrixOp::from_matrix(&mut laplacian);
+        let precond = JacobiPreconditioner::new(laplacian.diag());
         let mut pressure = vec![0.0; n_j];
-        let pcg_result = pcg_solve(&mut laplacian, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters);
+        let cg_result = solve_cg(&op, &precond, &rhs, &mut pressure, cfg.cg_tol, cfg.cg_max_iters);
 
         // d. Update junction pressures and pipe flows.
         for (i, j) in network.junctions.iter_mut().enumerate() {
@@ -153,9 +156,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let resid = anderson.residual_norm();
             let max_util = network.max_utilization();
             eprintln!(
-                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, max_util={:.2}, cg={}/{}",
-                iter, chpwl, resid, max_util,
-                pcg_result.iterations, if pcg_result.converged { "ok" } else { "no" },
+                "OptTrans iter {}: chpwl={:.0}, residual={:.3e}, max_util={:.2}, cg={}",
+                iter, chpwl, resid, max_util, cg_result.iterations,
             );
         }
 

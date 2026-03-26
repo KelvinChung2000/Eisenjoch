@@ -56,21 +56,13 @@ pub fn solve_cg(
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
-    let iter_count = std::cell::Cell::new(0usize);
     match conjugate_gradient(
         x_mat.as_mut(),
         precond,
         mat,
         rhs_mat,
         params,
-        |x_current| {
-            let i = iter_count.get();
-            if i < 5 || i % 100 == 0 {
-                let x_norm: f64 = (0..n).map(|j| x_current[(j, 0)] * x_current[(j, 0)]).sum::<f64>().sqrt();
-                eprintln!("  CG iter {}: ||x|| = {:.6e}", i, x_norm);
-            }
-            iter_count.set(i + 1);
-        },
+        |_| {},
         faer::Par::Seq,
         &mut stack,
     ) {
@@ -181,6 +173,105 @@ mod tests {
                 rhs[i]
             );
         }
+    }
+
+    #[test]
+    fn cg_graph_laplacian() {
+        // 10-node chain Laplacian with regularization (mimics Kirchhoff)
+        let n = 10;
+        let mut mat = SparseMatrix::new(n);
+        for i in 0..n - 1 {
+            mat.add_connection(i, i + 1, 1.0); // diag += 1, off = -1
+        }
+        // Global regularization (like Kirchhoff anchor)
+        for i in 0..n {
+            mat.add_diagonal(i, 0.01);
+        }
+
+        let op = SparseMatrixOp::from_matrix(&mut mat);
+        let precond = JacobiPreconditioner::new(mat.diag());
+
+        let mut rhs = vec![0.0; n];
+        rhs[0] = 1.0;
+        rhs[n - 1] = -1.0;
+        let mut x = vec![0.0; n];
+        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-6, 200);
+
+        eprintln!("graph laplacian CG: iters={}, converged={}, residual={:.3e}",
+            result.iterations, result.converged, result.residual);
+
+        assert!(result.converged, "Laplacian CG should converge, residual={}", result.residual);
+    }
+
+    #[test]
+    fn cg_large_graph_laplacian() {
+        // 1000-node chain with variable conductance (mimics heterogeneous Kirchhoff)
+        let n = 1000;
+        let mut mat = SparseMatrix::new(n);
+        for i in 0..n - 1 {
+            let cond = if i % 3 == 0 { 10.0 } else { 0.1 }; // 100x variation
+            mat.add_connection(i, i + 1, cond);
+        }
+        for i in 0..n {
+            mat.add_diagonal(i, 0.001);
+        }
+
+        let op = SparseMatrixOp::from_matrix(&mut mat);
+        let precond = JacobiPreconditioner::new(mat.diag());
+
+        let mut rhs = vec![0.0; n];
+        rhs[0] = 1.0;
+        rhs[n - 1] = -1.0;
+        let mut x = vec![0.0; n];
+        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-4, 2000);
+
+        eprintln!("large laplacian CG: iters={}, converged={}, residual={:.3e}",
+            result.iterations, result.converged, result.residual);
+
+        assert!(result.converged, "Large Laplacian CG should converge, residual={}", result.residual);
+    }
+
+    #[test]
+    fn cg_2d_grid_laplacian() {
+        // 50x50 = 2500 node grid with 4-point stencil + variable conductance
+        let w = 50;
+        let h = 50;
+        let n = w * h;
+        let mut mat = SparseMatrix::new(n);
+
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                // Right neighbor
+                if x + 1 < w {
+                    let j = y * w + (x + 1);
+                    let cond = if (x + y) % 5 == 0 { 50.0 } else { 0.5 }; // 100x variation
+                    mat.add_connection(i, j, cond);
+                }
+                // Bottom neighbor
+                if y + 1 < h {
+                    let j = (y + 1) * w + x;
+                    let cond = if (x + y) % 7 == 0 { 30.0 } else { 1.0 };
+                    mat.add_connection(i, j, cond);
+                }
+                // Regularization
+                mat.add_diagonal(i, 0.001);
+            }
+        }
+
+        let op = SparseMatrixOp::from_matrix(&mut mat);
+        let precond = JacobiPreconditioner::new(mat.diag());
+
+        let mut rhs = vec![0.0; n];
+        rhs[0] = 1.0;
+        rhs[n - 1] = -1.0;
+        let mut x = vec![0.0; n];
+        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-4, 5000);
+
+        eprintln!("2D grid CG: n={}, iters={}, converged={}, residual={:.3e}",
+            n, result.iterations, result.converged, result.residual);
+
+        assert!(result.converged, "2D grid CG should converge, residual={}", result.residual);
     }
 
     #[test]
