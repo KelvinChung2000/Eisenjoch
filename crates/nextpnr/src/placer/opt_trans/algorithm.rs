@@ -332,14 +332,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Anderson acceleration. Residual = displacement scaled by step_size.
-        //    Per-cell magnitude is preserved (cells far from equilibrium move more).
-        let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
-        let residual: Vec<f64> = dx.iter().chain(dy.iter()).map(|&d| d * step_size).collect();
-
-        let next = anderson.step(&current_pos, &residual);
-        cell_x.copy_from_slice(&next[..n]);
-        cell_y.copy_from_slice(&next[n..]);
+        // f. Direct step: move each cell by direction * step_size.
+        for i in 0..n {
+            cell_x[i] += dx[i] * step_size;
+            cell_y[i] += dy[i] * step_size;
+        }
 
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
@@ -357,24 +354,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             best_y.copy_from_slice(&cell_y);
             best_iter = iter;
             stagnant_count = 0;
-        } else if iter >= 20 {
-            // Only start step reduction after warmup phase.
-            // Early iterations may worsen HPWL as cells rearrange — that's expected.
-            stagnant_count += 1;
-            if stagnant_count >= 5 {
-                step_limit *= 0.7;
-                stagnant_count = 0;
-                // Restore best positions to continue from best known state.
-                cell_x.copy_from_slice(&best_x);
-                cell_y.copy_from_slice(&best_y);
-                anderson = AndersonAccelerator::new(cfg.anderson_depth, n * 2);
-            }
-        }
-
-        // Early stop: step size too small to make progress.
-        if step_limit < 0.5 {
-            eprintln!("OptTrans: step_limit below 0.5, stopping at iter {}", iter);
-            break;
         }
 
         // k. Report + convergence.

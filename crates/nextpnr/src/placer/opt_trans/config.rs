@@ -72,7 +72,7 @@ impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            max_iters: 80,
+            max_iters: 150,
             cg_max_iters: 200,
             cg_tol: 1e-4,
             congestion_exponent: 2.0,
