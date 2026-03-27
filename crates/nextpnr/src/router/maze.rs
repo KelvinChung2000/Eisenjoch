@@ -159,6 +159,30 @@ impl super::Router for Router1 {
 
         let mut state = Router1State::new();
 
+        // Diagnostic: check pip delay distribution on first tile with PIPs.
+        {
+            let chipdb = ctx.chipdb();
+            let mut delay_counts: std::collections::BTreeMap<DelayT, usize> = std::collections::BTreeMap::new();
+            let mut sampled = 0usize;
+            'outer: for tile in 0..(chipdb.width() * chipdb.height()) {
+                let tt = chipdb.tile_type(tile);
+                let n_pips = tt.pips.len();
+                if n_pips > 100 {
+                    for pip_idx in 0..n_pips.min(200) {
+                        let pip = crate::chipdb::PipId::new(tile, pip_idx as i32);
+                        let delay = ctx.pip(pip).delay().max_delay();
+                        *delay_counts.entry(delay).or_insert(0) += 1;
+                        sampled += 1;
+                    }
+                    break 'outer;
+                }
+            }
+            eprintln!("Router1: pip delay distribution (sampled {} PIPs):", sampled);
+            for (delay, count) in &delay_counts {
+                eprintln!("  delay={}: {} PIPs", delay, count);
+            }
+        }
+
         // Phase 1: Parallel initial route computation.
         let plans: Vec<Result<RoutePlan, RouterError>> = nets
             .par_iter()
