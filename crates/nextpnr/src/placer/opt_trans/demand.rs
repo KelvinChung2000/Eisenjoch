@@ -258,17 +258,12 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
-/// Compute cell displacement: attraction magnitude from pressure differences,
-/// direction from the flow field (-grad P).
+/// Compute cell displacement as unit direction from superposition of:
+/// 1. -grad(P): flow field direction (congestion-aware, from Kirchhoff solve)
+/// 2. Pin-to-pin pressure differences: direct attraction to connected pins
 ///
-/// For each cell:
-/// 1. Compute attraction strength from pin-to-pin pressure differences (|dp|/dist)
-///    summed over all connected pins — this gives how hard the cell should move.
-/// 2. Compute direction from -grad(P) at the cell position — this gives which way
-///    to move, following the flow field that respects congestion.
-///
-/// The result: cells move toward their connected pins (attraction) but follow
-/// congestion-aware paths (flow direction).
+/// Both forces are summed per cell and normalized to a unit vector.
+/// The caller (Anderson acceleration) controls the step size.
 pub fn compute_displacement(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
@@ -277,16 +272,15 @@ pub fn compute_displacement(
     network: &PipeNetwork,
 ) -> (Vec<f64>, Vec<f64>) {
     let num_cells = cell_x.len();
+    let mut dx = vec![0.0; num_cells];
+    let mut dy = vec![0.0; num_cells];
+
     let n = network.resolution;
     let sw = network.subtile_width();
     let sh = network.subtile_height();
     let tile_w = network.width as usize;
 
-    // 1. Compute -grad(P) direction at each cell position.
-    let mut flow_dx = vec![0.0; num_cells];
-    let mut flow_dy = vec![0.0; num_cells];
-    let mut flow_mag = vec![0.0; num_cells];
-
+    // 1. -grad(P) component: flow field direction.
     for i in 0..num_cells {
         let sx = to_subtile_coord(cell_x[i], n);
         let sy = to_subtile_coord(cell_y[i], n);
@@ -298,33 +292,34 @@ pub fn compute_displacement(
         let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
 
         let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
-        // -grad(P) in tile coords.
-        flow_dx[i] = -gx * n as f64;
-        flow_dy[i] = -gy * n as f64;
-        flow_mag[i] = (flow_dx[i] * flow_dx[i] + flow_dy[i] * flow_dy[i]).sqrt();
+        dx[i] += -gx * n as f64;
+        dy[i] += -gy * n as f64;
     }
 
-    // 2. Compute per-cell displacement from pin-to-pin pressure differences,
-    //    but blend direction with the local flow field.
-    let mut dx = vec![0.0; num_cells];
-    let mut dy = vec![0.0; num_cells];
+    // Normalize -grad(P) to unit magnitude before adding pin attraction,
+    // so neither component dominates by raw scale.
+    let grad_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
+    for i in 0..num_cells {
+        dx[i] /= grad_rms;
+        dy[i] /= grad_rms;
+    }
+
+    // 2. Pin-to-pin pressure difference component: direct attraction.
+    let mut attr_dx = vec![0.0; num_cells];
+    let mut attr_dy = vec![0.0; num_cells];
 
     for (_net_id, net) in ctx.design.iter_alive_nets() {
         let Some(drv) = net.driver() else { continue };
-        if net.num_users() == 0 {
-            continue;
-        }
+        if net.num_users() == 0 { continue; }
 
         let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
         let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
         pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
-
         for user in net.users() {
             if !user.is_valid() { continue; }
             let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
             pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
         }
-
         if pins.len() < 2 { continue; }
 
         for i in 0..pins.len() {
@@ -335,43 +330,32 @@ pub fn compute_displacement(
             for j in 0..pins.len() {
                 if i == j { continue; }
                 let (xj, yj, _) = pins[j];
-                let pin_dx = xj - xi;
-                let pin_dy = yj - yi;
-                let dist = (pin_dx * pin_dx + pin_dy * pin_dy).sqrt();
+                let dir_x = xj - xi;
+                let dir_y = yj - yi;
+                let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
                 if dist < 0.1 { continue; }
 
                 let p_other = pressure_at(xj, yj, network);
                 let dp = p_other - p_self;
-                let attract_mag = dp.abs() / dist;
-
-                // Pin direction (unit vector toward the other pin).
-                let pin_ux = pin_dx / dist;
-                let pin_uy = pin_dy / dist;
-
-                // Blend pin direction with flow direction.
-                // When flow agrees with pin direction (dot > 0), lean toward flow
-                // (congestion-aware path). When they disagree, use pin direction
-                // (direct attraction wins over irrelevant global flow).
-                if flow_mag[ci] > 1e-12 {
-                    let flow_ux = flow_dx[ci] / flow_mag[ci];
-                    let flow_uy = flow_dy[ci] / flow_mag[ci];
-                    let dot = pin_ux * flow_ux + pin_uy * flow_uy;
-
-                    // Blend factor: 0.0 = pure pin direction, 1.0 = pure flow direction.
-                    // Use flow direction more when it agrees with pin direction.
-                    let blend = dot.max(0.0).min(1.0) * 0.8;
-                    let dir_x = (1.0 - blend) * pin_ux + blend * flow_ux;
-                    let dir_y = (1.0 - blend) * pin_uy + blend * flow_uy;
-
-                    dx[ci] += attract_mag * dir_x;
-                    dy[ci] += attract_mag * dir_y;
-                } else {
-                    // No flow direction available — use pin direction.
-                    dx[ci] += attract_mag * pin_ux;
-                    dy[ci] += attract_mag * pin_uy;
-                }
+                let weight = dp / dist;
+                attr_dx[ci] += weight * dir_x;
+                attr_dy[ci] += weight * dir_y;
             }
         }
+    }
+
+    // Normalize attraction to same scale as flow component.
+    let attr_rms = ((attr_dx.iter().map(|v| v*v).sum::<f64>() + attr_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
+    for i in 0..num_cells {
+        attr_dx[i] /= attr_rms;
+        attr_dy[i] /= attr_rms;
+    }
+
+    // 3. Superpose: attraction is the primary force (3x weight),
+    //    -grad(P) steers direction (1x weight).
+    for i in 0..num_cells {
+        dx[i] += 3.0 * attr_dx[i];
+        dy[i] += 3.0 * attr_dy[i];
     }
 
     (dx, dy)

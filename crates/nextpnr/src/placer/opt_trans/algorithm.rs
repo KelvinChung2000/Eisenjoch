@@ -172,32 +172,16 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement: attraction from pressure differences, direction from -grad(P).
-        let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        // e. Compute displacement: superposition of -grad(P) and pin attraction,
+        //    normalized to unit direction per cell.
+        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
 
-        // f. Scale displacement by utilization and HPWL ratio.
-        //    Normalize raw gradient RMS to target step size, then clamp.
+        // Compute step size for this iteration.
         let n_tiles = (network.width * network.height) as usize;
         let n_clb_tiles = (n_tiles - network.num_zero_bel_tiles()) as f64;
         let util = (n as f64) / n_clb_tiles.max(1.0);
-        let raw_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt().max(1e-12);
-
-        // Target RMS: large moves when HPWL is high and utilization low.
         let hpwl_ratio = chpwl_prev / initial_hpwl;
-        let target_rms = (1.0 - util).max(0.05) * hpwl_ratio.sqrt() * 5.0;
-        let gradient_scale = target_rms / raw_rms;
-
-        let max_step = step_limit.min(target_rms * 3.0);
-        for i in 0..n {
-            dx[i] *= gradient_scale;
-            dy[i] *= gradient_scale;
-            let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
-            if mag > max_step {
-                let scale = max_step / mag;
-                dx[i] *= scale;
-                dy[i] *= scale;
-            }
-        }
+        let step_size = ((1.0 - util).max(0.05) * hpwl_ratio.sqrt() * 5.0).min(step_limit);
 
         // Diagnostics.
         {
@@ -209,8 +193,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
             let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
             eprintln!(
-                "  [{}] P=[{:.1e},{:.1e}] dx_max={:.4} dy_max={:.4} rms={:.4}",
-                iter, p_min, p_max, dx_max, dy_max, disp_rms,
+                "  [{}] step={:.2} P=[{:.1e},{:.1e}] dx_max={:.3} dy_max={:.3} rms={:.3}",
+                iter, step_size, p_min, p_max, dx_max, dy_max, disp_rms,
             );
 
             // Congestion diagnostics every 10 iters.
@@ -348,11 +332,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // g. Direct gradient step (no Anderson mixing).
-        for i in 0..n {
-            cell_x[i] += dx[i];
-            cell_y[i] += dy[i];
-        }
+        // f. Anderson acceleration. Residual = displacement scaled by step_size.
+        //    Per-cell magnitude is preserved (cells far from equilibrium move more).
+        let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
+        let residual: Vec<f64> = dx.iter().chain(dy.iter()).map(|&d| d * step_size).collect();
+
+        let next = anderson.step(&current_pos, &residual);
+        cell_x.copy_from_slice(&next[..n]);
+        cell_y.copy_from_slice(&next[n..]);
 
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
