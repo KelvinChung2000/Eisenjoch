@@ -169,6 +169,44 @@ pub fn build_demands(
     demand
 }
 
+/// Compute cell displacement from -grad(P) at each cell position.
+///
+/// Cells move along the flow direction. When congestion reroutes flow,
+/// the gradient changes and cells follow the rerouted path.
+pub fn compute_displacement_gradient(
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+) -> (Vec<f64>, Vec<f64>) {
+    let num_cells = cell_x.len();
+    let mut dx = vec![0.0; num_cells];
+    let mut dy = vec![0.0; num_cells];
+
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    for i in 0..num_cells {
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+        let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
+        let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
+        let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
+        let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+
+        let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
+
+        // -grad(P) in tile coords (scale by N for subtile→tile).
+        dx[i] = -gx * n as f64;
+        dy[i] = -gy * n as f64;
+    }
+
+    (dx, dy)
+}
+
 /// Interpolate pressure at a tile-coordinate position using bilinear interpolation
 /// on the subtile grid.
 fn pressure_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {

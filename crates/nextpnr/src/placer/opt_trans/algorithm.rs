@@ -70,6 +70,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let mut anderson = AndersonAccelerator::new(cfg.anderson_depth, n * 2);
 
     // Track best positions and adaptive step size.
+    let initial_hpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network).max(1.0);
+    let mut chpwl_prev = initial_hpwl;
     let mut best_chpwl = f64::INFINITY;
     let mut best_x = cell_x.clone();
     let mut best_y = cell_y.clone();
@@ -170,21 +172,25 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement: attraction (pressure differences) + repulsion (congestion).
-        let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        // e. Compute displacement from -grad(P): cells move along flow direction.
+        let (mut dx, mut dy) = demand::compute_displacement_gradient(&cell_x, &cell_y, &network);
 
-        // Add congestion repulsion: push cells away from high-utilization regions.
-        if cfg.congestion_repulsion_weight > 0.0 {
-            let (rx, ry) = demand::compute_congestion_repulsion(&cell_x, &cell_y, &network);
-            for i in 0..n {
-                dx[i] += cfg.congestion_repulsion_weight * rx[i];
-                dy[i] += cfg.congestion_repulsion_weight * ry[i];
-            }
-        }
+        // f. Scale displacement by utilization and HPWL ratio.
+        //    Normalize raw gradient RMS to target step size, then clamp.
+        let n_tiles = (network.width * network.height) as usize;
+        let n_clb_tiles = (n_tiles - network.num_zero_bel_tiles()) as f64;
+        let util = (n as f64) / n_clb_tiles.max(1.0);
+        let raw_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt().max(1e-12);
 
-        // Clamp per-cell displacement to prevent blowup.
-        let max_step = step_limit;
+        // Target RMS: large moves when HPWL is high and utilization low.
+        let hpwl_ratio = chpwl_prev / initial_hpwl;
+        let target_rms = (1.0 - util).max(0.05) * hpwl_ratio.sqrt() * 5.0;
+        let gradient_scale = target_rms / raw_rms;
+
+        let max_step = step_limit.min(target_rms * 3.0);
         for i in 0..n {
+            dx[i] *= gradient_scale;
+            dy[i] *= gradient_scale;
             let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
             if mag > max_step {
                 let scale = max_step / mag;
@@ -342,23 +348,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // g. Anderson acceleration.
-        let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
-        let target: Vec<f64> = cell_x
-            .iter()
-            .zip(&dx)
-            .map(|(x, d)| x + d)
-            .chain(cell_y.iter().zip(&dy).map(|(y, d)| y + d))
-            .collect();
-        let residual: Vec<f64> = target
-            .iter()
-            .zip(&current_pos)
-            .map(|(t, c)| t - c)
-            .collect();
-
-        let next = anderson.step(&current_pos, &residual);
-        cell_x.copy_from_slice(&next[..n]);
-        cell_y.copy_from_slice(&next[n..]);
+        // g. Direct gradient step (no Anderson mixing).
+        for i in 0..n {
+            cell_x[i] += dx[i];
+            cell_y[i] += dy[i];
+        }
 
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
@@ -369,15 +363,17 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
         // j. Track best positions + adaptive step size.
         let chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        chpwl_prev = chpwl;
         if chpwl < best_chpwl {
             best_chpwl = chpwl;
             best_x.copy_from_slice(&cell_x);
             best_y.copy_from_slice(&cell_y);
             best_iter = iter;
             stagnant_count = 0;
-        } else {
+        } else if iter >= 20 {
+            // Only start step reduction after warmup phase.
+            // Early iterations may worsen HPWL as cells rearrange — that's expected.
             stagnant_count += 1;
-            // CHPWL isn't improving — reduce step size to fine-tune.
             if stagnant_count >= 5 {
                 step_limit *= 0.7;
                 stagnant_count = 0;
@@ -424,8 +420,53 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         best_iter, best_chpwl,
     );
 
-    // 6. Pre-legalization diagnostics.
+    // 6. Pre-legalization diagnostics: rebuild demand/flow at best position to inspect.
     let pre_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+    {
+        let final_rhs = demand::build_demands(ctx, &cell_to_idx, &cell_x, &cell_y, &network, cfg);
+        let rhs_l1: f64 = final_rhs.iter().map(|v| v.abs()).sum();
+
+        // Demand per tile column (sum absolute demand in each x-column).
+        let res = network.resolution;
+        let tw = network.width as usize;
+        let th = network.height as usize;
+        let mut col_demand = vec![0.0f64; tw];
+        let mut col_cells = vec![0u32; tw];
+        for i in 0..n {
+            let tx = (cell_x[i] as usize).min(tw - 1);
+            col_cells[tx] += 1;
+        }
+        for ty in 0..th {
+            for tx in 0..tw {
+                for sy in 0..res {
+                    for sx in 0..res {
+                        let ni = network.node_index(tx as i32, ty as i32, sx, sy);
+                        col_demand[tx] += final_rhs[ni].abs();
+                    }
+                }
+            }
+        }
+
+        // Flow stats per x-column.
+        let mut col_flow = vec![0.0f64; tw];
+        let mut col_max_flow = vec![0.0f64; tw];
+        for pipe in &network.pipes {
+            let from_node = &network.nodes[pipe.from];
+            let tx = from_node.tile_x as usize;
+            let flow = pipe.flow.abs();
+            col_flow[tx] += flow;
+            col_max_flow[tx] = col_max_flow[tx].max(flow);
+        }
+
+        eprintln!("  final state: rhs_l1={:.1}, max_util={:.2}", rhs_l1, network.max_utilization());
+        eprintln!("  x-column breakdown (cells | demand | total_flow | max_pipe_flow):");
+        for tx in 0..tw {
+            if col_cells[tx] > 0 || col_demand[tx] > 0.1 || col_flow[tx] > 0.5 {
+                eprintln!("    x={:3}: cells={:3} demand={:6.1} flow={:8.1} max_flow={:.2}",
+                    tx, col_cells[tx], col_demand[tx], col_flow[tx], col_max_flow[tx]);
+            }
+        }
+    }
     eprintln!("Pre-legalization: CHPWL={:.0}", pre_chpwl);
 
     // 7. CLB snap + legalize.
