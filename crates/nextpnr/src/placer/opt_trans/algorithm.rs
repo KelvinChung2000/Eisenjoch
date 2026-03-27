@@ -172,8 +172,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement from pressure differences, density-damped.
+        // e. Compute displacement: superposed -grad(P) + dp/dist, RMS-normalized.
+        //    Per-cell magnitude preserved for Anderson to use.
         let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        let step_size = step_limit; // for diagnostics
 
         // Diagnostics.
         {
@@ -185,7 +187,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
             let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
             eprintln!(
-                "  [{}] P=[{:.1e},{:.1e}] dx_max={:.3} dy_max={:.3} rms={:.3}",
+                "  [{}] P=[{:.1e},{:.1e}] dx={:.3} dy={:.3} rms={:.3}",
                 iter, p_min, p_max, dx_max, dy_max, disp_rms,
             );
 
@@ -324,12 +326,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Anderson acceleration.
+        // f. Anderson acceleration. Residual = raw displacement (per-cell magnitude preserved).
         let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
-        let target: Vec<f64> = cell_x.iter().zip(&dx).map(|(x, d)| x + d)
-            .chain(cell_y.iter().zip(&dy).map(|(y, d)| y + d))
-            .collect();
-        let residual: Vec<f64> = target.iter().zip(&current_pos).map(|(t, c)| t - c).collect();
+        let residual: Vec<f64> = dx.iter().chain(dy.iter()).copied().collect();
 
         let next = anderson.step(&current_pos, &residual);
         cell_x.copy_from_slice(&next[..n]);

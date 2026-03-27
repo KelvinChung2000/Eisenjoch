@@ -258,11 +258,14 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
-/// Compute cell displacement from pressure differences between connected pins,
-/// damped by local cell density to prevent overcrowding.
+/// Compute cell displacement from superposition of pressure field and flow field,
+/// normalized per cell.
 ///
-/// For each cell, sum (P_other - P_self) * direction / dist for all connected pins.
-/// In dense regions, damp the force to encourage spreading.
+/// 1. -grad(P): flow direction from Kirchhoff solve (congestion-aware)
+/// 2. dp/dist: pin-to-pin attraction from pressure differences
+///
+/// Both are RMS-normalized independently, superposed, then the result is
+/// normalized per cell to a unit direction vector. Anderson controls step size.
 pub fn compute_displacement(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
@@ -271,8 +274,36 @@ pub fn compute_displacement(
     network: &PipeNetwork,
 ) -> (Vec<f64>, Vec<f64>) {
     let num_cells = cell_x.len();
-    let mut dx = vec![0.0; num_cells];
-    let mut dy = vec![0.0; num_cells];
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    // 1. -grad(P) component.
+    let mut grad_dx = vec![0.0; num_cells];
+    let mut grad_dy = vec![0.0; num_cells];
+    for i in 0..num_cells {
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+        let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
+        let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
+        let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
+        let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+
+        let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
+        grad_dx[i] = -gx * n as f64;
+        grad_dy[i] = -gy * n as f64;
+    }
+
+    // Normalize -grad(P) by its RMS.
+    let grad_rms = ((grad_dx.iter().map(|v| v*v).sum::<f64>()
+        + grad_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
+
+    // 2. dp/dist pin attraction component.
+    let mut attr_dx = vec![0.0; num_cells];
+    let mut attr_dy = vec![0.0; num_cells];
 
     for (_net_id, net) in ctx.design.iter_alive_nets() {
         let Some(drv) = net.driver() else { continue };
@@ -281,20 +312,17 @@ pub fn compute_displacement(
         let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
         let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
         pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
-
         for user in net.users() {
             if !user.is_valid() { continue; }
             let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
             pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
         }
-
         if pins.len() < 2 { continue; }
 
         for i in 0..pins.len() {
             let Some(ci) = pins[i].2 else { continue };
             let (xi, yi, _) = pins[i];
             let p_self = pressure_at(xi, yi, network);
-            let d_self = density_at(xi, yi, network);
 
             for j in 0..pins.len() {
                 if i == j { continue; }
@@ -306,12 +334,24 @@ pub fn compute_displacement(
 
                 let p_other = pressure_at(xj, yj, network);
                 let dp = p_other - p_self;
-                let density_factor = 1.0 + 0.5 * d_self * d_self;
-                let weight = dp / (dist * density_factor);
-                dx[ci] += weight * dir_x;
-                dy[ci] += weight * dir_y;
+                let weight = dp / dist;
+                attr_dx[ci] += weight * dir_x;
+                attr_dy[ci] += weight * dir_y;
             }
         }
+    }
+
+    // Normalize dp/dist by its RMS.
+    let attr_rms = ((attr_dx.iter().map(|v| v*v).sum::<f64>()
+        + attr_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
+
+    // 3. Superpose with equal RMS weight. Per-cell magnitude preserved —
+    //    cells far from equilibrium have larger displacement.
+    let mut dx = vec![0.0; num_cells];
+    let mut dy = vec![0.0; num_cells];
+    for i in 0..num_cells {
+        dx[i] = grad_dx[i] / grad_rms + attr_dx[i] / attr_rms;
+        dy[i] = grad_dy[i] / grad_rms + attr_dy[i] / attr_rms;
     }
 
     (dx, dy)
