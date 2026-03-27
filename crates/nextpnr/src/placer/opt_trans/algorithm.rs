@@ -172,8 +172,26 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement from configurable superposition.
-        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network, cfg);
+        // e. Compute displacement from -grad(P) with off-center sampling + scaling.
+        let sample_offset = 2.0;
+        let (mut dx, mut dy) = demand::compute_displacement(&cell_x, &cell_y, &network, sample_offset);
+
+        // Scale displacement so RMS matches a target step size.
+        // The raw gradient is O(0.01) on this grid; we need O(1-5) for convergence.
+        let raw_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt().max(1e-12);
+        let target_rms = 3.0; // tiles per iteration
+        let scale = target_rms / raw_rms;
+        let max_step = target_rms * 4.0;
+        for i in 0..n {
+            dx[i] *= scale;
+            dy[i] *= scale;
+            let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
+            if mag > max_step {
+                let s = max_step / mag;
+                dx[i] *= s;
+                dy[i] *= s;
+            }
+        }
 
         // Diagnostics.
         {
@@ -327,7 +345,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // f. Step: Anderson acceleration or direct gradient step.
         if cfg.use_anderson {
             let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
-            let residual: Vec<f64> = dx.iter().chain(dy.iter()).copied().collect();
+            let target: Vec<f64> = cell_x.iter().zip(&dx).map(|(x, d)| x + d)
+                .chain(cell_y.iter().zip(&dy).map(|(y, d)| y + d))
+                .collect();
+            let residual: Vec<f64> = target.iter().zip(&current_pos).map(|(t, c)| t - c).collect();
             let next = anderson.step(&current_pos, &residual);
             cell_x.copy_from_slice(&next[..n]);
             cell_y.copy_from_slice(&next[n..]);

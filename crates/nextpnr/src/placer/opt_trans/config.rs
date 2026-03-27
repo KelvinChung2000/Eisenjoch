@@ -124,10 +124,10 @@ impl Default for OptTransPlacerCfg {
             subtile_resolution: 2,
             preconditioner: PreconditionerType::Amg,
             congestion_repulsion_weight: 0.0,
-            // Displacement model: equal weight superposition with RMS normalization.
+            // Displacement model: IO-only -grad(P), no pin attraction.
             grad_weight: 1.0,
-            attraction_weight: 1.0,
-            cell_normalization: CellNormalization::Rms,
+            attraction_weight: 0.0,
+            cell_normalization: CellNormalization::Raw,
             // Iteration control.
             use_anderson: true,
             step_scale: 5.0,
