@@ -254,74 +254,96 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
-/// Compute cell displacement from -grad(P).
+/// Compute cell displacement from congestion-aware pressure differences.
 ///
-/// When `sample_offset > 0`, samples the gradient at offset positions to
-/// break the self-trapping symmetry. The gradient at the exact cell position
-/// is near-zero due to the cell's own demand creating a symmetric pressure feature.
-/// Sampling slightly off-center captures the gradient of the REMOTE field.
+/// For each cell, the force from each connected pin is:
+///   F = (P_pin - P_cell) / R_local / dist * direction
+///
+/// Dividing by R_local (average congestion resistance near the cell) converts
+/// the pressure drop into a flow-proportional force. Congested regions have
+/// high R_local, which WEAKENS the pull — cells are repelled from congestion
+/// rather than attracted to it.
 pub fn compute_displacement(
+    ctx: &Context,
+    cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
-    sample_offset: f64,
 ) -> (Vec<f64>, Vec<f64>) {
     let num_cells = cell_x.len();
     let mut dx = vec![0.0; num_cells];
     let mut dy = vec![0.0; num_cells];
 
+    // Precompute local congestion resistance at each cell position.
+    // Average R_eff of pipes touching the nearest subtile nodes.
     let n = network.resolution;
     let sw = network.subtile_width();
     let sh = network.subtile_height();
     let tile_w = network.width as usize;
-    let w = network.width as f64;
-    let h = network.height as f64;
 
+    let mut cell_r_local = vec![1.0f64; num_cells];
     for i in 0..num_cells {
-        if sample_offset > 0.0 {
-            // Sample gradient at 4 offset positions and average.
-            // This breaks the self-demand symmetry by reading the field
-            // away from the cell's own pressure peak.
-            let offsets = [
-                (sample_offset, 0.0),
-                (-sample_offset, 0.0),
-                (0.0, sample_offset),
-                (0.0, -sample_offset),
-            ];
-            let mut sum_gx = 0.0;
-            let mut sum_gy = 0.0;
-            for (ox, oy) in offsets {
-                let cx = (cell_x[i] + ox).clamp(0.0, w - 1.0);
-                let cy = (cell_y[i] + oy).clamp(0.0, h - 1.0);
-                let sx = to_subtile_coord(cx, n);
-                let sy = to_subtile_coord(cy, n);
-                let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        let (gx0, gy0, _fx, _fy) = bilinear_cell(sx, sy, sw, sh);
 
-                let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
-                let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
-                let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
-                let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
-
-                let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
-                sum_gx += -gx * n as f64;
-                sum_gy += -gy * n as f64;
+        let mut r_sum = 0.0;
+        let mut r_count = 0usize;
+        for &(gx, gy) in &[(gx0, gy0), (gx0 + 1, gy0), (gx0, gy0 + 1), (gx0 + 1, gy0 + 1)] {
+            let ni = subtile_grid_index(gx, gy, tile_w, n);
+            if ni < network.node_pipes.len() {
+                for &pi in &network.node_pipes[ni] {
+                    let pipe = &network.pipes[pi];
+                    // Use congestion-derived resistance: 1 + (|flow|/capacity)^2
+                    let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
+                    r_sum += 1.0 + util * util;
+                    r_count += 1;
+                }
             }
-            dx[i] = sum_gx * 0.25;
-            dy[i] = sum_gy * 0.25;
-        } else {
-            // Standard: sample at exact cell position.
-            let sx = to_subtile_coord(cell_x[i], n);
-            let sy = to_subtile_coord(cell_y[i], n);
-            let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+        }
+        if r_count > 0 {
+            cell_r_local[i] = r_sum / r_count as f64;
+        }
+    }
 
-            let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
-            let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
-            let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
-            let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+    // Compute per-cell displacement from connected pins.
+    for (_net_id, net) in ctx.design.iter_alive_nets() {
+        let Some(drv) = net.driver() else { continue };
+        if net.num_users() == 0 { continue; }
 
-            let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
-            dx[i] = -gx * n as f64;
-            dy[i] = -gy * n as f64;
+        let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
+        let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
+        pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
+        for user in net.users() {
+            if !user.is_valid() { continue; }
+            let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+            pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
+        }
+        if pins.len() < 2 { continue; }
+
+        for i in 0..pins.len() {
+            let Some(ci) = pins[i].2 else { continue };
+            let (xi, yi, _) = pins[i];
+            let p_self = pressure_at(xi, yi, network);
+            let r_local = cell_r_local[ci];
+
+            for j in 0..pins.len() {
+                if i == j { continue; }
+                let (xj, yj, _) = pins[j];
+                let dir_x = xj - xi;
+                let dir_y = yj - yi;
+                let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                if dist < 0.1 { continue; }
+
+                let p_other = pressure_at(xj, yj, network);
+                let dp = p_other - p_self;
+
+                // Flow-proportional force: dp / R_local / dist.
+                // High congestion at cell → high R_local → weaker pull.
+                let weight = dp / (r_local * dist);
+                dx[ci] += weight * dir_x;
+                dy[ci] += weight * dir_y;
+            }
         }
     }
 

@@ -172,26 +172,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement from -grad(P) with off-center sampling + scaling.
-        let sample_offset = 2.0;
-        let (mut dx, mut dy) = demand::compute_displacement(&cell_x, &cell_y, &network, sample_offset);
-
-        // Scale displacement so RMS matches a target step size.
-        // The raw gradient is O(0.01) on this grid; we need O(1-5) for convergence.
-        let raw_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt().max(1e-12);
-        let target_rms = 3.0; // tiles per iteration
-        let scale = target_rms / raw_rms;
-        let max_step = target_rms * 4.0;
-        for i in 0..n {
-            dx[i] *= scale;
-            dy[i] *= scale;
-            let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
-            if mag > max_step {
-                let s = max_step / mag;
-                dx[i] *= s;
-                dy[i] *= s;
-            }
-        }
+        // e. Compute congestion-aware displacement from pin-to-pin pressure differences.
+        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
 
         // Diagnostics.
         {
