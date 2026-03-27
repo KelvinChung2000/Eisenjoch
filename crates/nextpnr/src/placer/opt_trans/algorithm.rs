@@ -172,10 +172,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement: superposed -grad(P) + dp/dist, RMS-normalized.
-        //    Per-cell magnitude preserved for Anderson to use.
-        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-        let step_size = step_limit; // for diagnostics
+        // e. Compute displacement from configurable superposition.
+        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network, cfg);
 
         // Diagnostics.
         {
@@ -187,7 +185,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
             let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
             eprintln!(
-                "  [{}] P=[{:.1e},{:.1e}] dx={:.3} dy={:.3} rms={:.3}",
+                "  [{}] P=[{:.1e},{:.1e}] dx={:.4} dy={:.4} rms={:.4}",
                 iter, p_min, p_max, dx_max, dy_max, disp_rms,
             );
 
@@ -326,13 +324,20 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Anderson acceleration. Residual = raw displacement (per-cell magnitude preserved).
-        let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
-        let residual: Vec<f64> = dx.iter().chain(dy.iter()).copied().collect();
-
-        let next = anderson.step(&current_pos, &residual);
-        cell_x.copy_from_slice(&next[..n]);
-        cell_y.copy_from_slice(&next[n..]);
+        // f. Step: Anderson acceleration or direct gradient step.
+        if cfg.use_anderson {
+            let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
+            let residual: Vec<f64> = dx.iter().chain(dy.iter()).copied().collect();
+            let next = anderson.step(&current_pos, &residual);
+            cell_x.copy_from_slice(&next[..n]);
+            cell_y.copy_from_slice(&next[n..]);
+        } else {
+            let scale = cfg.step_scale;
+            for i in 0..n {
+                cell_x[i] += scale * dx[i];
+                cell_y[i] += scale * dy[i];
+            }
+        }
 
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
@@ -350,10 +355,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             best_y.copy_from_slice(&cell_y);
             best_iter = iter;
             stagnant_count = 0;
-        } else if iter >= 20 {
+        } else if iter >= cfg.stagnation_warmup {
             stagnant_count += 1;
-            if stagnant_count >= 5 {
-                step_limit *= 0.7;
+            if stagnant_count >= cfg.stagnation_patience {
+                step_limit *= cfg.step_decay;
                 stagnant_count = 0;
                 cell_x.copy_from_slice(&best_x);
                 cell_y.copy_from_slice(&best_y);

@@ -32,12 +32,29 @@ impl Default for InitStrategy {
     }
 }
 
+/// Per-cell displacement normalization strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellNormalization {
+    /// Keep raw per-cell magnitudes (no normalization).
+    Raw,
+    /// Normalize each cell's displacement to unit vector.
+    Unit,
+    /// RMS-normalize each component independently before superposition (default).
+    Rms,
+}
+
+impl Default for CellNormalization {
+    fn default() -> Self {
+        Self::Rms
+    }
+}
+
 /// Configuration for the Beckmann optimal transport placer.
 #[derive(Debug, Clone)]
 pub struct OptTransPlacerCfg {
     /// Random seed.
     pub seed: u64,
-    /// Maximum Anderson fixed-point iterations.
+    /// Maximum outer iterations.
     pub max_iters: usize,
     /// CG maximum iterations per Kirchhoff solve.
     pub cg_max_iters: usize,
@@ -60,12 +77,33 @@ pub struct OptTransPlacerCfg {
     /// Initialization strategy.
     pub init_strategy: InitStrategy,
     /// Subtile resolution: each tile is decomposed into N×N subtile nodes.
-    /// Higher values give finer pressure gradients but more nodes.
     pub subtile_resolution: usize,
     /// Preconditioner for the Kirchhoff CG solve.
     pub preconditioner: PreconditionerType,
     /// Weight for congestion repulsion force.
     pub congestion_repulsion_weight: f64,
+
+    // --- Displacement model ---
+
+    /// Weight for -grad(P) flow field component.
+    pub grad_weight: f64,
+    /// Weight for dp/dist pin attraction component.
+    pub attraction_weight: f64,
+    /// Per-cell normalization strategy.
+    pub cell_normalization: CellNormalization,
+
+    // --- Iteration control ---
+
+    /// Use Anderson acceleration (true) or direct gradient step (false).
+    pub use_anderson: bool,
+    /// Step scale multiplier for direct gradient step mode.
+    pub step_scale: f64,
+    /// Stagnation step reduction factor (multiply step_limit by this).
+    pub step_decay: f64,
+    /// Don't check stagnation before this iteration.
+    pub stagnation_warmup: usize,
+    /// Rollback after this many consecutive non-improving iterations.
+    pub stagnation_patience: usize,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -86,6 +124,16 @@ impl Default for OptTransPlacerCfg {
             subtile_resolution: 2,
             preconditioner: PreconditionerType::Amg,
             congestion_repulsion_weight: 0.0,
+            // Displacement model: equal weight superposition with RMS normalization.
+            grad_weight: 1.0,
+            attraction_weight: 1.0,
+            cell_normalization: CellNormalization::Rms,
+            // Iteration control.
+            use_anderson: true,
+            step_scale: 5.0,
+            step_decay: 0.7,
+            stagnation_warmup: 20,
+            stagnation_patience: 5,
         }
     }
 }

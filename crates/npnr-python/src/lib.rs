@@ -12,7 +12,7 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType};
+use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType, CellNormalization};
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
@@ -224,8 +224,16 @@ impl PyContext {
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
     ///     subtile_resolution: Subtile grid resolution N (NxN per tile, opt_trans). Default 2.
-    ///     preconditioner: CG preconditioner ("jacobi" or "amg", opt_trans). Default "jacobi".
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=3.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="jacobi"))]
+    ///     preconditioner: CG preconditioner ("jacobi" or "amg", opt_trans). Default "amg".
+    ///     grad_weight: Weight for -grad(P) flow direction component. Default 1.0.
+    ///     attraction_weight: Weight for dp/dist pin attraction component. Default 1.0.
+    ///     cell_normalization: Per-cell normalization ("raw", "unit", "rms"). Default "rms".
+    ///     use_anderson: Use Anderson acceleration (true) or direct step (false). Default true.
+    ///     step_scale: Step multiplier for direct mode. Default 5.0.
+    ///     step_decay: Stagnation step reduction factor. Default 0.7.
+    ///     stagnation_warmup: Skip stagnation check before this iteration. Default 20.
+    ///     stagnation_patience: Rollback after this many stagnant iterations. Default 5.
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=0.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="amg", grad_weight=1.0, attraction_weight=1.0, cell_normalization="rms", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5))]
     fn place(
         &mut self,
         placer: &str,
@@ -238,6 +246,14 @@ impl PyContext {
         init_strategy: &str,
         subtile_resolution: usize,
         preconditioner: &str,
+        grad_weight: f64,
+        attraction_weight: f64,
+        cell_normalization: &str,
+        use_anderson: bool,
+        step_scale: f64,
+        step_decay: f64,
+        stagnation_warmup: usize,
+        stagnation_patience: usize,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -278,6 +294,21 @@ impl PyContext {
                         "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
                     ))),
                 };
+                cfg.cell_normalization = match cell_normalization {
+                    "raw" => CellNormalization::Raw,
+                    "unit" => CellNormalization::Unit,
+                    "rms" => CellNormalization::Rms,
+                    other => return Err(PyValueError::new_err(format!(
+                        "Unknown cell_normalization: {}. Available: raw, unit, rms", other
+                    ))),
+                };
+                cfg.grad_weight = grad_weight;
+                cfg.attraction_weight = attraction_weight;
+                cfg.use_anderson = use_anderson;
+                cfg.step_scale = step_scale;
+                cfg.step_decay = step_decay;
+                cfg.stagnation_warmup = stagnation_warmup;
+                cfg.stagnation_patience = stagnation_patience;
                 if let Some(iters) = max_iters {
                     cfg.max_iters = iters;
                 }

@@ -258,21 +258,21 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
-/// Compute cell displacement from superposition of pressure field and flow field,
-/// normalized per cell.
-///
-/// 1. -grad(P): flow direction from Kirchhoff solve (congestion-aware)
+/// Compute cell displacement from configurable superposition of:
+/// 1. -grad(P): flow field direction (congestion-aware, from Kirchhoff solve)
 /// 2. dp/dist: pin-to-pin attraction from pressure differences
 ///
-/// Both are RMS-normalized independently, superposed, then the result is
-/// normalized per cell to a unit direction vector. Anderson controls step size.
+/// Weights, normalization strategy, and combination are controlled by cfg.
 pub fn compute_displacement(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
 ) -> (Vec<f64>, Vec<f64>) {
+    use super::config::CellNormalization;
+
     let num_cells = cell_x.len();
     let n = network.resolution;
     let sw = network.subtile_width();
@@ -282,76 +282,96 @@ pub fn compute_displacement(
     // 1. -grad(P) component.
     let mut grad_dx = vec![0.0; num_cells];
     let mut grad_dy = vec![0.0; num_cells];
-    for i in 0..num_cells {
-        let sx = to_subtile_coord(cell_x[i], n);
-        let sy = to_subtile_coord(cell_y[i], n);
-        let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+    if cfg.grad_weight > 0.0 {
+        for i in 0..num_cells {
+            let sx = to_subtile_coord(cell_x[i], n);
+            let sy = to_subtile_coord(cell_y[i], n);
+            let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
 
-        let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
-        let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
-        let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
-        let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+            let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
+            let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
+            let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
+            let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
 
-        let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
-        grad_dx[i] = -gx * n as f64;
-        grad_dy[i] = -gy * n as f64;
+            let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
+            grad_dx[i] = -gx * n as f64;
+            grad_dy[i] = -gy * n as f64;
+        }
     }
-
-    // Normalize -grad(P) by its RMS.
-    let grad_rms = ((grad_dx.iter().map(|v| v*v).sum::<f64>()
-        + grad_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
 
     // 2. dp/dist pin attraction component.
     let mut attr_dx = vec![0.0; num_cells];
     let mut attr_dy = vec![0.0; num_cells];
+    if cfg.attraction_weight > 0.0 {
+        for (_net_id, net) in ctx.design.iter_alive_nets() {
+            let Some(drv) = net.driver() else { continue };
+            if net.num_users() == 0 { continue; }
 
-    for (_net_id, net) in ctx.design.iter_alive_nets() {
-        let Some(drv) = net.driver() else { continue };
-        if net.num_users() == 0 { continue; }
+            let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
+            let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
+            pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
+            for user in net.users() {
+                if !user.is_valid() { continue; }
+                let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+                pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
+            }
+            if pins.len() < 2 { continue; }
 
-        let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
-        let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
-        pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
-        for user in net.users() {
-            if !user.is_valid() { continue; }
-            let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
-            pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
-        }
-        if pins.len() < 2 { continue; }
+            for i in 0..pins.len() {
+                let Some(ci) = pins[i].2 else { continue };
+                let (xi, yi, _) = pins[i];
+                let p_self = pressure_at(xi, yi, network);
 
-        for i in 0..pins.len() {
-            let Some(ci) = pins[i].2 else { continue };
-            let (xi, yi, _) = pins[i];
-            let p_self = pressure_at(xi, yi, network);
+                for j in 0..pins.len() {
+                    if i == j { continue; }
+                    let (xj, yj, _) = pins[j];
+                    let dir_x = xj - xi;
+                    let dir_y = yj - yi;
+                    let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                    if dist < 0.1 { continue; }
 
-            for j in 0..pins.len() {
-                if i == j { continue; }
-                let (xj, yj, _) = pins[j];
-                let dir_x = xj - xi;
-                let dir_y = yj - yi;
-                let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
-                if dist < 0.1 { continue; }
-
-                let p_other = pressure_at(xj, yj, network);
-                let dp = p_other - p_self;
-                let weight = dp / dist;
-                attr_dx[ci] += weight * dir_x;
-                attr_dy[ci] += weight * dir_y;
+                    let p_other = pressure_at(xj, yj, network);
+                    let dp = p_other - p_self;
+                    let weight = dp / dist;
+                    attr_dx[ci] += weight * dir_x;
+                    attr_dy[ci] += weight * dir_y;
+                }
             }
         }
     }
 
-    // Normalize dp/dist by its RMS.
+    // 3. Superpose with configurable weights and normalization.
+    let grad_rms = ((grad_dx.iter().map(|v| v*v).sum::<f64>()
+        + grad_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
     let attr_rms = ((attr_dx.iter().map(|v| v*v).sum::<f64>()
         + attr_dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * num_cells as f64)).sqrt().max(1e-12);
 
-    // 3. Superpose with equal RMS weight. Per-cell magnitude preserved —
-    //    cells far from equilibrium have larger displacement.
     let mut dx = vec![0.0; num_cells];
     let mut dy = vec![0.0; num_cells];
+
+    let gw = cfg.grad_weight;
+    let aw = cfg.attraction_weight;
+
     for i in 0..num_cells {
-        dx[i] = grad_dx[i] / grad_rms + attr_dx[i] / attr_rms;
-        dy[i] = grad_dy[i] / grad_rms + attr_dy[i] / attr_rms;
+        match cfg.cell_normalization {
+            CellNormalization::Raw => {
+                dx[i] = gw * grad_dx[i] + aw * attr_dx[i];
+                dy[i] = gw * grad_dy[i] + aw * attr_dy[i];
+            }
+            CellNormalization::Rms => {
+                dx[i] = gw * grad_dx[i] / grad_rms + aw * attr_dx[i] / attr_rms;
+                dy[i] = gw * grad_dy[i] / grad_rms + aw * attr_dy[i] / attr_rms;
+            }
+            CellNormalization::Unit => {
+                let sx = gw * grad_dx[i] / grad_rms + aw * attr_dx[i] / attr_rms;
+                let sy = gw * grad_dy[i] / grad_rms + aw * attr_dy[i] / attr_rms;
+                let mag = (sx * sx + sy * sy).sqrt();
+                if mag > 1e-12 {
+                    dx[i] = sx / mag;
+                    dy[i] = sy / mag;
+                }
+            }
+        }
     }
 
     (dx, dy)
