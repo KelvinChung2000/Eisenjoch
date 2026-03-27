@@ -184,8 +184,8 @@ def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
         for pdata in data.get("pips", {}).values():
             src, dst = pdata["src_wire"], pdata["dst_wire"]
             if src in created and dst in created:
-                
-                tt.create_pip(src, dst)
+                tc = _pip_timing_class(src, dst)
+                tt.create_pip(src, dst, timing_class=tc)
 
     # 4. GND/VCC
     if "GND" not in created:

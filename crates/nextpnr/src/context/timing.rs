@@ -6,10 +6,7 @@ use crate::netlist::NetId;
 use super::Context;
 
 /// Delay scaling factor: estimated cost per Manhattan grid unit.
-/// Must be ≤ the cheapest PIP cost per tile for A* admissibility.
-/// XC7 SPAN PIPs cost 10 per tile, MUX PIPs cost 150.
-/// Using 10 ensures A* is admissible and SPAN-preferring.
-const DELAY_SCALE: i32 = 10;
+const DELAY_SCALE: i32 = 100;
 
 /// Compute Manhattan-distance delay between two tile locations.
 fn manhattan_delay(loc_a: (i32, i32), loc_b: (i32, i32)) -> DelayT {
