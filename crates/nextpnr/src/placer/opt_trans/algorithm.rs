@@ -172,16 +172,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement: superposition of -grad(P) and pin attraction,
-        //    normalized to unit direction per cell.
+        // e. Compute displacement from pressure differences, density-damped.
         let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-
-        // Compute step size for this iteration.
-        let n_tiles = (network.width * network.height) as usize;
-        let n_clb_tiles = (n_tiles - network.num_zero_bel_tiles()) as f64;
-        let util = (n as f64) / n_clb_tiles.max(1.0);
-        let hpwl_ratio = chpwl_prev / initial_hpwl;
-        let step_size = ((1.0 - util).max(0.05) * hpwl_ratio.sqrt() * 5.0).min(step_limit);
 
         // Diagnostics.
         {
@@ -193,8 +185,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
             let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
             eprintln!(
-                "  [{}] step={:.2} P=[{:.1e},{:.1e}] dx_max={:.3} dy_max={:.3} rms={:.3}",
-                iter, step_size, p_min, p_max, dx_max, dy_max, disp_rms,
+                "  [{}] P=[{:.1e},{:.1e}] dx_max={:.3} dy_max={:.3} rms={:.3}",
+                iter, p_min, p_max, dx_max, dy_max, disp_rms,
             );
 
             // Congestion diagnostics every 10 iters.
@@ -332,11 +324,16 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Direct step: move each cell by direction * step_size.
-        for i in 0..n {
-            cell_x[i] += dx[i] * step_size;
-            cell_y[i] += dy[i] * step_size;
-        }
+        // f. Anderson acceleration.
+        let current_pos: Vec<f64> = cell_x.iter().chain(cell_y.iter()).copied().collect();
+        let target: Vec<f64> = cell_x.iter().zip(&dx).map(|(x, d)| x + d)
+            .chain(cell_y.iter().zip(&dy).map(|(y, d)| y + d))
+            .collect();
+        let residual: Vec<f64> = target.iter().zip(&current_pos).map(|(t, c)| t - c).collect();
+
+        let next = anderson.step(&current_pos, &residual);
+        cell_x.copy_from_slice(&next[..n]);
+        cell_y.copy_from_slice(&next[n..]);
 
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
@@ -354,6 +351,20 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             best_y.copy_from_slice(&cell_y);
             best_iter = iter;
             stagnant_count = 0;
+        } else if iter >= 20 {
+            stagnant_count += 1;
+            if stagnant_count >= 5 {
+                step_limit *= 0.7;
+                stagnant_count = 0;
+                cell_x.copy_from_slice(&best_x);
+                cell_y.copy_from_slice(&best_y);
+                anderson = AndersonAccelerator::new(cfg.anderson_depth, n * 2);
+            }
+        }
+
+        if step_limit < 0.5 {
+            eprintln!("OptTrans: step_limit below 0.5, stopping at iter {}", iter);
+            break;
         }
 
         // k. Report + convergence.
