@@ -16,14 +16,17 @@ pub struct ResistanceModel {
     pub interference_weight: f64,
     /// Weight for timing criticality term.
     pub timing_weight: f64,
+    /// Weight for cell density spreading.
+    pub density_weight: f64,
 }
 
 impl ResistanceModel {
     /// Compute effective resistance for a single pipe.
     ///
-    /// R_eff = R_base * R_cong * R_interf * R_timing where:
-    /// - R_cong = 1 + (|flow|/capacity)^alpha  (Beckmann congestion)
+    /// R_eff = R_base * R_cong * R_interf * R_density * R_timing where:
+    /// - R_cong = 1 + (|flow|/capacity)^alpha  (Beckmann flow congestion)
     /// - R_interf = 1 + w_i * (n_nets - 1) * util^2  (flow interference)
+    /// - R_density = 1 + w_d * cell_density^2  (placement density)
     /// - R_timing = 1 + w_t * criticality  (timing resistance)
     pub fn effective_resistance(&self, pipe: &Pipe, timing_criticality: f64) -> f64 {
         let r_base = pipe.base_resistance;
@@ -39,10 +42,15 @@ impl ResistanceModel {
                 * util
                 * util;
 
+        // Density: regions with many cells get higher resistance,
+        // making pressure drop larger across them, encouraging cells
+        // to spread to less dense regions.
+        let r_density = 1.0 + self.density_weight * pipe.cell_density * pipe.cell_density;
+
         // Timing: critical nets resist stretching
         let r_timing = 1.0 + self.timing_weight * timing_criticality;
 
-        r_base * r_cong * r_interf * r_timing
+        r_base * r_cong * r_interf * r_density * r_timing
     }
 }
 
@@ -59,6 +67,7 @@ mod tests {
             capacity,
             flow,
             net_count,
+            cell_density: 0.0,
             pipe_type: PipeType::IntraTile,
         }
     }

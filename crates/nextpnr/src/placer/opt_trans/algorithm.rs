@@ -63,6 +63,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         congestion_exponent: cfg.congestion_exponent,
         interference_weight: cfg.interference_weight,
         timing_weight: cfg.timing_weight,
+        density_weight: 0.0,
     };
 
     // 4. Anderson accelerator.
@@ -206,6 +207,29 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                 iter, p_min, p_max, dx_max, dy_max, disp_rms,
             );
 
+            // Congestion diagnostics every 10 iters.
+            if iter % 10 == 0 {
+                let mut flow_abs: Vec<f64> = network.pipes.iter().map(|p| p.flow.abs()).collect();
+                flow_abs.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                let flow_max = flow_abs.first().copied().unwrap_or(0.0);
+                let flow_p90 = flow_abs.get(flow_abs.len() / 10).copied().unwrap_or(0.0);
+                let n_high_util = network.pipes.iter().filter(|p| p.flow.abs() / p.capacity.max(1.0) > 1.0).count();
+                let n_high_nets = network.pipes.iter().filter(|p| p.net_count > 3).count();
+                let max_nets = network.pipes.iter().map(|p| p.net_count).max().unwrap_or(0);
+
+                // R_eff range
+                let r_effs: Vec<f64> = network.pipes.iter()
+                    .map(|p| resistance_model.effective_resistance(p, 0.0))
+                    .collect();
+                let r_min = r_effs.iter().cloned().fold(f64::INFINITY, f64::min);
+                let r_max = r_effs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+                eprintln!(
+                    "    congestion: flow_max={:.2} flow_p90={:.2} pipes_util>1={} pipes_nets>3={} max_nets={} R=[{:.2},{:.2}]",
+                    flow_max, flow_p90, n_high_util, n_high_nets, max_nets, r_min, r_max,
+                );
+            }
+
             // Dump field and cell data at iter 0 for visualization.
             if iter == 0 {
                 let near_zero = (0..n).filter(|&i| dx[i].abs() < 0.01 && dy[i].abs() < 0.01).count();
@@ -339,8 +363,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
 
-        // i. Update net counts for interference.
+        // i. Update net counts and cell density for next iteration's resistance.
         demand::update_net_counts(&cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
+        demand::update_cell_density(&cell_x, &cell_y, &mut network);
 
         // j. Track best positions + adaptive step size.
         let chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);

@@ -63,6 +63,8 @@ pub struct Pipe {
     pub flow: f64,
     /// Number of distinct nets using this pipe (for interference).
     pub net_count: u32,
+    /// Cell density: number of cells near this pipe's endpoints.
+    pub cell_density: f64,
     pub pipe_type: PipeType,
 }
 
@@ -296,6 +298,7 @@ impl PipeNetwork {
         for p in &mut self.pipes {
             p.flow = 0.0;
             p.net_count = 0;
+            p.cell_density = 0.0;
         }
     }
 
@@ -327,6 +330,7 @@ fn add_pipe(
         capacity,
         flow: 0.0,
         net_count: 0,
+        cell_density: 0.0,
         pipe_type,
     });
     node_pipes[from].push(pipe_idx);

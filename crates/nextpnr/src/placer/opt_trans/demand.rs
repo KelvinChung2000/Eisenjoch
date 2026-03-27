@@ -192,6 +192,34 @@ fn pressure_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
         + fx * fy * p11
 }
 
+/// Interpolate cell density at a tile-coordinate position.
+/// Uses the pipe cell_density field, averaged across pipes incident to the
+/// nearest subtile nodes.
+fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    let sx = to_subtile_coord(x, n);
+    let sy = to_subtile_coord(y, n);
+    let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+    // Average cell_density of pipes touching the 4 surrounding nodes.
+    let mut total = 0.0;
+    let mut count = 0usize;
+    for &(gx, gy) in &[(gx0, gy0), (gx0 + 1, gy0), (gx0, gy0 + 1), (gx0 + 1, gy0 + 1)] {
+        let ni = subtile_grid_index(gx, gy, tile_w, n);
+        if ni < network.node_pipes.len() {
+            for &pi in &network.node_pipes[ni] {
+                total += network.pipes[pi].cell_density;
+                count += 1;
+            }
+        }
+    }
+    if count > 0 { total / count as f64 } else { 0.0 }
+}
+
 /// Compute cell displacement from pressure differences between connected pins.
 ///
 /// For each net, the pressure difference between the cell and each other pin
@@ -244,6 +272,7 @@ pub fn compute_displacement(
             let Some(ci) = pins[i].2 else { continue }; // skip fixed pins
             let (xi, yi, _) = pins[i];
             let p_self = pressure_at(xi, yi, network);
+            let d_self = density_at(xi, yi, network);
 
             for j in 0..pins.len() {
                 if i == j {
@@ -260,7 +289,11 @@ pub fn compute_displacement(
                 let p_other = pressure_at(xj, yj, network);
                 let dp = p_other - p_self;
 
-                let weight = dp / dist;
+                // In dense regions, damp the pressure difference to prevent
+                // congestion-amplified pull. The damping scales with density²
+                // so it only activates when significantly overcrowded.
+                let density_factor = 1.0 + 0.5 * d_self * d_self;
+                let weight = dp / (dist * density_factor);
                 dx[ci] += weight * dir_x;
                 dy[ci] += weight * dir_y;
             }
@@ -392,6 +425,50 @@ pub fn update_net_counts(
                 }
             }
         }
+    }
+}
+
+/// Update cell_density on pipes from current cell positions.
+///
+/// Each movable cell contributes density 1.0 to the pipes near its position
+/// (bilinearly interpolated on the subtile grid). Density is normalized by
+/// the pipe's placement capacity (BELs) so density=1.0 means fully utilized.
+pub fn update_cell_density(
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &mut PipeNetwork,
+) {
+    // Reset all densities.
+    for pipe in &mut network.pipes {
+        pipe.cell_density = 0.0;
+    }
+
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    // Accumulate density at subtile nodes from cell positions.
+    let n_nodes = network.num_nodes();
+    let mut node_density = vec![0.0f64; n_nodes];
+
+    for i in 0..cell_x.len() {
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        for (gx, gy, bw) in bilinear_weights(sx, sy, sw, sh) {
+            let ni = subtile_grid_index(gx, gy, tile_w, n);
+            node_density[ni] += bw;
+        }
+    }
+
+    // Transfer node density to pipes: each pipe gets the average of its endpoints.
+    // Normalize by capacity so density=1.0 means at placement capacity.
+    for pipe in &mut network.pipes {
+        let d_from = node_density[pipe.from];
+        let d_to = node_density[pipe.to];
+        let avg = (d_from + d_to) * 0.5;
+        // Normalize by capacity (BEL-based).
+        pipe.cell_density = avg / pipe.capacity.max(0.25);
     }
 }
 
