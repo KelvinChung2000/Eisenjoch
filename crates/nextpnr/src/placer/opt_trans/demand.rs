@@ -258,15 +258,17 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
-/// Compute cell displacement from pressure differences between connected pins.
+/// Compute cell displacement: attraction magnitude from pressure differences,
+/// direction from the flow field (-grad P).
 ///
-/// For each net, the pressure difference between the cell and each other pin
-/// tells the cell which direction to move through the network. The displacement
-/// is the sum over all connected pins of:
-///   (P_other - P_self) * unit_direction_to_other
+/// For each cell:
+/// 1. Compute attraction strength from pin-to-pin pressure differences (|dp|/dist)
+///    summed over all connected pins — this gives how hard the cell should move.
+/// 2. Compute direction from -grad(P) at the cell position — this gives which way
+///    to move, following the flow field that respects congestion.
 ///
-/// This avoids self-interaction: a cell's own demand doesn't affect its
-/// displacement because P_self cancels out in the difference.
+/// The result: cells move toward their connected pins (attraction) but follow
+/// congestion-aware paths (flow direction).
 pub fn compute_displacement(
     ctx: &Context,
     cell_to_idx: &FxHashMap<CellId, usize>,
@@ -275,65 +277,99 @@ pub fn compute_displacement(
     network: &PipeNetwork,
 ) -> (Vec<f64>, Vec<f64>) {
     let num_cells = cell_x.len();
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    // 1. Compute -grad(P) direction at each cell position.
+    let mut flow_dx = vec![0.0; num_cells];
+    let mut flow_dy = vec![0.0; num_cells];
+    let mut flow_mag = vec![0.0; num_cells];
+
+    for i in 0..num_cells {
+        let sx = to_subtile_coord(cell_x[i], n);
+        let sy = to_subtile_coord(cell_y[i], n);
+        let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+        let p00 = network.nodes[subtile_grid_index(gx0, gy0, tile_w, n)].pressure;
+        let p10 = network.nodes[subtile_grid_index(gx0 + 1, gy0, tile_w, n)].pressure;
+        let p01 = network.nodes[subtile_grid_index(gx0, gy0 + 1, tile_w, n)].pressure;
+        let p11 = network.nodes[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)].pressure;
+
+        let (gx, gy) = bilinear_gradient(fx, fy, p00, p10, p01, p11);
+        // -grad(P) in tile coords.
+        flow_dx[i] = -gx * n as f64;
+        flow_dy[i] = -gy * n as f64;
+        flow_mag[i] = (flow_dx[i] * flow_dx[i] + flow_dy[i] * flow_dy[i]).sqrt();
+    }
+
+    // 2. Compute per-cell displacement from pin-to-pin pressure differences,
+    //    but blend direction with the local flow field.
     let mut dx = vec![0.0; num_cells];
     let mut dy = vec![0.0; num_cells];
 
     for (_net_id, net) in ctx.design.iter_alive_nets() {
-        let Some(dp) = net.driver() else { continue };
+        let Some(drv) = net.driver() else { continue };
         if net.num_users() == 0 {
             continue;
         }
 
-        // Collect all pin positions on this net.
-        let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new(); // (x, y, movable_idx)
-
-        let (dpx, dpy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
-        let dp_idx = cell_to_idx.get(&dp.cell).copied();
-        pins.push((dpx, dpy, dp_idx));
+        let mut pins: Vec<(f64, f64, Option<usize>)> = Vec::new();
+        let (dpx, dpy) = pin_pos(ctx, drv.cell, cell_to_idx, cell_x, cell_y, network);
+        pins.push((dpx, dpy, cell_to_idx.get(&drv.cell).copied()));
 
         for user in net.users() {
-            if !user.is_valid() {
-                continue;
-            }
+            if !user.is_valid() { continue; }
             let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
-            let u_idx = cell_to_idx.get(&user.cell).copied();
-            pins.push((ux, uy, u_idx));
+            pins.push((ux, uy, cell_to_idx.get(&user.cell).copied()));
         }
 
-        if pins.len() < 2 {
-            continue;
-        }
+        if pins.len() < 2 { continue; }
 
-        // For each movable pin, compute displacement from pressure differences
-        // with all other pins on this net.
         for i in 0..pins.len() {
-            let Some(ci) = pins[i].2 else { continue }; // skip fixed pins
+            let Some(ci) = pins[i].2 else { continue };
             let (xi, yi, _) = pins[i];
             let p_self = pressure_at(xi, yi, network);
-            let d_self = density_at(xi, yi, network);
 
             for j in 0..pins.len() {
-                if i == j {
-                    continue;
-                }
+                if i == j { continue; }
                 let (xj, yj, _) = pins[j];
-                let dir_x = xj - xi;
-                let dir_y = yj - yi;
-                let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
-                if dist < 0.1 {
-                    continue; // pins coincident, no force
-                }
+                let pin_dx = xj - xi;
+                let pin_dy = yj - yi;
+                let dist = (pin_dx * pin_dx + pin_dy * pin_dy).sqrt();
+                if dist < 0.1 { continue; }
 
                 let p_other = pressure_at(xj, yj, network);
                 let dp = p_other - p_self;
+                let attract_mag = dp.abs() / dist;
 
-                // In dense regions, damp the pressure difference to prevent
-                // congestion-amplified pull. The damping scales with density²
-                // so it only activates when significantly overcrowded.
-                let density_factor = 1.0 + 0.5 * d_self * d_self;
-                let weight = dp / (dist * density_factor);
-                dx[ci] += weight * dir_x;
-                dy[ci] += weight * dir_y;
+                // Pin direction (unit vector toward the other pin).
+                let pin_ux = pin_dx / dist;
+                let pin_uy = pin_dy / dist;
+
+                // Blend pin direction with flow direction.
+                // When flow agrees with pin direction (dot > 0), lean toward flow
+                // (congestion-aware path). When they disagree, use pin direction
+                // (direct attraction wins over irrelevant global flow).
+                if flow_mag[ci] > 1e-12 {
+                    let flow_ux = flow_dx[ci] / flow_mag[ci];
+                    let flow_uy = flow_dy[ci] / flow_mag[ci];
+                    let dot = pin_ux * flow_ux + pin_uy * flow_uy;
+
+                    // Blend factor: 0.0 = pure pin direction, 1.0 = pure flow direction.
+                    // Use flow direction more when it agrees with pin direction.
+                    let blend = dot.max(0.0).min(1.0) * 0.8;
+                    let dir_x = (1.0 - blend) * pin_ux + blend * flow_ux;
+                    let dir_y = (1.0 - blend) * pin_uy + blend * flow_uy;
+
+                    dx[ci] += attract_mag * dir_x;
+                    dy[ci] += attract_mag * dir_y;
+                } else {
+                    // No flow direction available — use pin direction.
+                    dx[ci] += attract_mag * pin_ux;
+                    dy[ci] += attract_mag * pin_uy;
+                }
             }
         }
     }

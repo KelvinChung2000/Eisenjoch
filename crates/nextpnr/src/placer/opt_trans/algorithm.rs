@@ -172,8 +172,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             pipe.flow = (pressure[pipe.from] - pressure[pipe.to]) / r_eff.max(1e-12);
         }
 
-        // e. Compute displacement from -grad(P): cells move along flow direction.
-        let (mut dx, mut dy) = demand::compute_displacement_gradient(&cell_x, &cell_y, &network);
+        // e. Compute displacement: attraction from pressure differences, direction from -grad(P).
+        let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
 
         // f. Scale displacement by utilization and HPWL ratio.
         //    Normalize raw gradient RMS to target step size, then clamp.
