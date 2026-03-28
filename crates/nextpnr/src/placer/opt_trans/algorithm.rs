@@ -175,9 +175,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // e. Compute congestion-aware displacement from pin-to-pin pressure differences.
         let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
 
-        // Eulerian-Lagrangian projection: enforce mass conservation.
-        // Distributes residual flow momentum to cells in overcrowded tiles.
-        demand::project_velocity(&cell_x, &cell_y, &mut dx, &mut dy, &network);
+        // Optional: radial density expansion to reduce overflow.
+        // Disabled by default — pure Bottleneck-R gives best convergence.
+        if cfg.congestion_repulsion_weight > 0.0 {
+            demand::project_velocity(&cell_x, &cell_y, &mut dx, &mut dy, &network);
+        }
 
         // Diagnostics.
         {
