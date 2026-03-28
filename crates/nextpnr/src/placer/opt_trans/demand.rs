@@ -407,11 +407,12 @@ pub fn project_velocity(
         cell_tile[i] = ti;
     }
 
-    // 2. Compute continuous flow vector Q at each tile from pipe flows.
-    //    Q = sum of (flow * direction) for all pipes incident to this tile's nodes.
-    //    East-flowing pipes contribute +x, south-flowing contribute +y.
+    // 2. Compute continuous fluid velocity V at each tile.
+    //    V = Q / Capacity — volumetric flow divided by cross-sectional area.
+    //    This gives velocity in "tiles per iteration" units.
     let mut tile_q_x = vec![0.0f64; tw * th];
     let mut tile_q_y = vec![0.0f64; tw * th];
+    let mut tile_capacity = vec![0.0f64; tw * th];
 
     for pipe in &network.pipes {
         let from_node = &network.nodes[pipe.from];
@@ -423,20 +424,30 @@ pub fn project_velocity(
         let dir_y = (to_node.tile_y - from_node.tile_y) as f64
             + (to_node.sub_y as f64 - from_node.sub_y as f64) / n as f64;
 
-        // Flow vector contribution from this pipe.
         tile_q_x[from_ti] += pipe.flow * dir_x;
         tile_q_y[from_ti] += pipe.flow * dir_y;
+        tile_capacity[from_ti] += pipe.capacity;
     }
 
-    // 3. Project: add residual (Q - sum_intentions) / N to each cell.
+    // Convert volumetric flow to fluid velocity: V = Q / capacity.
+    for ti in 0..(tw * th) {
+        let cap = tile_capacity[ti].max(1.0);
+        tile_q_x[ti] /= cap;
+        tile_q_y[ti] /= cap;
+    }
+
+    // 3. Project: v_i = u_i + (V_fluid - u_avg)
+    //    where u_avg = sum(u_k) / N.
     for i in 0..num_cells {
         let ti = cell_tile[i];
         let nc = tile_count[ti] as f64;
         if nc > 1.0 {
-            let residual_x = tile_q_x[ti] - tile_sum_dx[ti];
-            let residual_y = tile_q_y[ti] - tile_sum_dy[ti];
-            dx[i] += residual_x / nc;
-            dy[i] += residual_y / nc;
+            let u_avg_x = tile_sum_dx[ti] / nc;
+            let u_avg_y = tile_sum_dy[ti] / nc;
+            let residual_x = tile_q_x[ti] - u_avg_x;
+            let residual_y = tile_q_y[ti] - u_avg_y;
+            dx[i] += residual_x;
+            dy[i] += residual_y;
         }
     }
 }
