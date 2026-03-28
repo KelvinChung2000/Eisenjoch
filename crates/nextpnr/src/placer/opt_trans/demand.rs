@@ -408,7 +408,7 @@ pub fn project_velocity(
     }
 
     // 2. Build cell density grid and per-tile BEL capacity.
-    let mut tile_density = vec![0.0f64; tw * th]; // cells per tile
+    let mut tile_density = vec![0.0f64; tw * th];
     let mut tile_bel_cap = vec![1.0f64; tw * th];
 
     for ti in 0..(tw * th) {
@@ -424,20 +424,71 @@ pub fn project_velocity(
         }
     }
 
-    // 3. Compute radial density gradient: -grad(cell_density) at each tile.
-    //    Central differences on the tile grid. Points away from high density.
+    // 3. Smooth the density field with a Gaussian kernel.
+    //    Radius chosen to span across non-CLB columns (typically 3-7 tiles gap).
+    //    This creates a continuous slope that bridges void columns, preventing
+    //    the oscillation trap where cells bounce between CLB and non-CLB tiles.
+    let smooth_density = {
+        // Compute sigma from average CLB column spacing.
+        // Scan the middle row to find which columns have BELs.
+        let mid_y = th / 2;
+        let mut clb_xs: Vec<usize> = Vec::new();
+        for tx in 0..tw {
+            let ni = network.node_index(tx as i32, mid_y as i32, 0, 0);
+            if ni < network.node_pipes.len() && !network.node_pipes[ni].is_empty() {
+                let pi = network.node_pipes[ni][0];
+                if network.pipes[pi].capacity > 1.0 {
+                    clb_xs.push(tx);
+                }
+            }
+        }
+        let sigma = if clb_xs.len() >= 2 {
+            let mut total_gap = 0.0;
+            for i in 1..clb_xs.len() {
+                total_gap += (clb_xs[i] - clb_xs[i - 1]) as f64;
+            }
+            (total_gap / (clb_xs.len() - 1) as f64).max(1.0)
+        } else {
+            3.0 // reasonable default
+        };
+        let radius = (sigma * 2.5) as usize;
+        let mut smoothed = vec![0.0f64; tw * th];
+        for ty in 0..th {
+            for tx in 0..tw {
+                let ti = ty * tw + tx;
+                if tile_density[ti] == 0.0 { continue; }
+                let weight = tile_density[ti];
+                // Spread this cell's density contribution over the kernel.
+                let x0 = tx.saturating_sub(radius);
+                let x1 = (tx + radius + 1).min(tw);
+                let y0 = ty.saturating_sub(radius);
+                let y1 = (ty + radius + 1).min(th);
+                for sy in y0..y1 {
+                    let dy2 = (sy as f64 - ty as f64) * (sy as f64 - ty as f64);
+                    for sx in x0..x1 {
+                        let dx2 = (sx as f64 - tx as f64) * (sx as f64 - tx as f64);
+                        let g = (-(dx2 + dy2) / (2.0 * sigma * sigma)).exp();
+                        smoothed[sy * tw + sx] += weight * g;
+                    }
+                }
+            }
+        }
+        smoothed
+    };
+
+    // 4. Compute radial gradient of SMOOTHED density: -grad(D_smooth).
+    //    Central differences on the smooth field. The gradient now spans
+    //    across non-CLB voids, providing a continuous slope to guide cells
+    //    from x=10 through x=9 (void) to x=13 (next CLB).
     let mut grad_x = vec![0.0f64; tw * th];
     let mut grad_y = vec![0.0f64; tw * th];
     for ty in 0..th {
         for tx in 0..tw {
             let ti = ty * tw + tx;
-            // x-gradient: central difference
-            let d_left = if tx > 0 { tile_density[ti - 1] } else { tile_density[ti] };
-            let d_right = if tx + 1 < tw { tile_density[ti + 1] } else { tile_density[ti] };
-            // y-gradient: central difference
-            let d_up = if ty > 0 { tile_density[ti - tw] } else { tile_density[ti] };
-            let d_down = if ty + 1 < th { tile_density[ti + tw] } else { tile_density[ti] };
-            // -grad(density): points away from high density
+            let d_left = if tx > 0 { smooth_density[ti - 1] } else { smooth_density[ti] };
+            let d_right = if tx + 1 < tw { smooth_density[ti + 1] } else { smooth_density[ti] };
+            let d_up = if ty > 0 { smooth_density[ti - tw] } else { smooth_density[ti] };
+            let d_down = if ty + 1 < th { smooth_density[ti + tw] } else { smooth_density[ti] };
             grad_x[ti] = -(d_right - d_left) * 0.5;
             grad_y[ti] = -(d_down - d_up) * 0.5;
         }
