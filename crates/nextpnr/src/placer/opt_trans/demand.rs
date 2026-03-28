@@ -365,6 +365,82 @@ pub fn compute_displacement(
     (dx, dy)
 }
 
+/// Eulerian-Lagrangian velocity projection: enforce mass conservation between
+/// the continuous Kirchhoff flow field and the discrete cell displacements.
+///
+/// For each tile containing cells, compute the residual between the continuous
+/// fluid velocity (from pipe flows) and the sum of cell intentions (dx, dy).
+/// Distribute the residual equally among cells in that tile. This ensures
+/// cells carry the exact volume the solver computed — pileups are flushed
+/// by the outward flow their own demand creates.
+///
+/// v_i = u_i + (Q_tile - sum(u_k)) / N
+///
+/// where u_i is the Bottleneck-R intention, Q_tile is the continuous flow
+/// vector at the tile, and N is the number of cells in the tile.
+pub fn project_velocity(
+    cell_x: &[f64],
+    cell_y: &[f64],
+    dx: &mut [f64],
+    dy: &mut [f64],
+    network: &PipeNetwork,
+) {
+    let num_cells = cell_x.len();
+    let tw = network.width as usize;
+    let th = network.height as usize;
+    let n = network.resolution;
+    let n_per_tile = n * n;
+
+    // 1. Accumulate cell intentions per tile and count cells per tile.
+    let mut tile_sum_dx = vec![0.0f64; tw * th];
+    let mut tile_sum_dy = vec![0.0f64; tw * th];
+    let mut tile_count = vec![0u32; tw * th];
+    let mut cell_tile = vec![0usize; num_cells];
+
+    for i in 0..num_cells {
+        let tx = (cell_x[i].round() as usize).min(tw - 1);
+        let ty = (cell_y[i].round() as usize).min(th - 1);
+        let ti = ty * tw + tx;
+        tile_sum_dx[ti] += dx[i];
+        tile_sum_dy[ti] += dy[i];
+        tile_count[ti] += 1;
+        cell_tile[i] = ti;
+    }
+
+    // 2. Compute continuous flow vector Q at each tile from pipe flows.
+    //    Q = sum of (flow * direction) for all pipes incident to this tile's nodes.
+    //    East-flowing pipes contribute +x, south-flowing contribute +y.
+    let mut tile_q_x = vec![0.0f64; tw * th];
+    let mut tile_q_y = vec![0.0f64; tw * th];
+
+    for pipe in &network.pipes {
+        let from_node = &network.nodes[pipe.from];
+        let to_node = &network.nodes[pipe.to];
+
+        let from_ti = (from_node.tile_y as usize) * tw + (from_node.tile_x as usize);
+        let dir_x = (to_node.tile_x - from_node.tile_x) as f64
+            + (to_node.sub_x as f64 - from_node.sub_x as f64) / n as f64;
+        let dir_y = (to_node.tile_y - from_node.tile_y) as f64
+            + (to_node.sub_y as f64 - from_node.sub_y as f64) / n as f64;
+
+        // Flow vector contribution from this pipe.
+        tile_q_x[from_ti] += pipe.flow * dir_x;
+        tile_q_y[from_ti] += pipe.flow * dir_y;
+    }
+
+    // 3. Project: add residual (Q - sum_intentions) / N to each cell.
+    for i in 0..num_cells {
+        let ti = cell_tile[i];
+        let nc = tile_count[ti] as f64;
+        if nc > 1.0 {
+            let residual_x = tile_q_x[ti] - tile_sum_dx[ti];
+            let residual_y = tile_q_y[ti] - tile_sum_dy[ti];
+            dx[i] += residual_x / nc;
+            dy[i] += residual_y / nc;
+        }
+    }
+}
+
 /// Compute congestion repulsion: push cells away from high-utilization regions.
 ///
 /// Builds a utilization density field on the subtile grid from pipe flows,

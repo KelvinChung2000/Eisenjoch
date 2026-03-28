@@ -173,7 +173,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
 
         // e. Compute congestion-aware displacement from pin-to-pin pressure differences.
-        let (dx, dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        let (mut dx, mut dy) = demand::compute_displacement(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+
+        // Eulerian-Lagrangian projection: enforce mass conservation.
+        // Distributes residual flow momentum to cells in overcrowded tiles.
+        demand::project_velocity(&cell_x, &cell_y, &mut dx, &mut dy, &network);
 
         // Diagnostics.
         {
