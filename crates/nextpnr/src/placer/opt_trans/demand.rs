@@ -282,20 +282,21 @@ fn congestion_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if r_count > 0 { r_sum / r_count as f64 } else { 1.0 }
 }
 
-/// Compute path-averaged congestion resistance along a straight line
-/// from (x0,y0) to (x1,y1), sampling at N_SAMPLES points.
+/// Compute bottleneck congestion resistance along a straight line
+/// from (x0,y0) to (x1,y1). Returns the MAXIMUM congestion sampled
+/// at N_SAMPLES points — the choke point determines flow rate.
 fn path_congestion(x0: f64, y0: f64, x1: f64, y1: f64, network: &PipeNetwork) -> f64 {
     const N_SAMPLES: usize = 5;
     let w = (network.width - 1) as f64;
     let h = (network.height - 1) as f64;
-    let mut total = 0.0;
+    let mut max_r = 1.0f64;
     for k in 0..N_SAMPLES {
         let t = (k as f64 + 0.5) / N_SAMPLES as f64;
         let px = (x0 + t * (x1 - x0)).clamp(0.0, w);
         let py = (y0 + t * (y1 - y0)).clamp(0.0, h);
-        total += congestion_at(px, py, network);
+        max_r = max_r.max(congestion_at(px, py, network));
     }
-    total / N_SAMPLES as f64
+    max_r
 }
 
 /// Compute cell displacement from congestion-aware pressure differences.
