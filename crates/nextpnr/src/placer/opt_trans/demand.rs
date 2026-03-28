@@ -254,6 +254,50 @@ fn density_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
     if count > 0 { total / count as f64 } else { 0.0 }
 }
 
+/// Sample congestion resistance (1 + util²) at a tile-coordinate position.
+/// Returns the average congestion of pipes near the position.
+fn congestion_at(x: f64, y: f64, network: &PipeNetwork) -> f64 {
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    let sx = to_subtile_coord(x, n);
+    let sy = to_subtile_coord(y, n);
+    let (gx0, gy0, _fx, _fy) = bilinear_cell(sx, sy, sw, sh);
+
+    let mut r_sum = 0.0;
+    let mut r_count = 0usize;
+    for &(gx, gy) in &[(gx0, gy0), (gx0 + 1, gy0), (gx0, gy0 + 1), (gx0 + 1, gy0 + 1)] {
+        let ni = subtile_grid_index(gx, gy, tile_w, n);
+        if ni < network.node_pipes.len() {
+            for &pi in &network.node_pipes[ni] {
+                let pipe = &network.pipes[pi];
+                let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
+                r_sum += 1.0 + util * util;
+                r_count += 1;
+            }
+        }
+    }
+    if r_count > 0 { r_sum / r_count as f64 } else { 1.0 }
+}
+
+/// Compute path-averaged congestion resistance along a straight line
+/// from (x0,y0) to (x1,y1), sampling at N_SAMPLES points.
+fn path_congestion(x0: f64, y0: f64, x1: f64, y1: f64, network: &PipeNetwork) -> f64 {
+    const N_SAMPLES: usize = 5;
+    let w = (network.width - 1) as f64;
+    let h = (network.height - 1) as f64;
+    let mut total = 0.0;
+    for k in 0..N_SAMPLES {
+        let t = (k as f64 + 0.5) / N_SAMPLES as f64;
+        let px = (x0 + t * (x1 - x0)).clamp(0.0, w);
+        let py = (y0 + t * (y1 - y0)).clamp(0.0, h);
+        total += congestion_at(px, py, network);
+    }
+    total / N_SAMPLES as f64
+}
+
 /// Compute cell displacement from congestion-aware pressure differences.
 ///
 /// For each cell, the force from each connected pin is:
@@ -274,39 +318,8 @@ pub fn compute_displacement(
     let mut dx = vec![0.0; num_cells];
     let mut dy = vec![0.0; num_cells];
 
-    // Precompute local congestion resistance at each cell position.
-    // Average R_eff of pipes touching the nearest subtile nodes.
-    let n = network.resolution;
-    let sw = network.subtile_width();
-    let sh = network.subtile_height();
-    let tile_w = network.width as usize;
-
-    let mut cell_r_local = vec![1.0f64; num_cells];
-    for i in 0..num_cells {
-        let sx = to_subtile_coord(cell_x[i], n);
-        let sy = to_subtile_coord(cell_y[i], n);
-        let (gx0, gy0, _fx, _fy) = bilinear_cell(sx, sy, sw, sh);
-
-        let mut r_sum = 0.0;
-        let mut r_count = 0usize;
-        for &(gx, gy) in &[(gx0, gy0), (gx0 + 1, gy0), (gx0, gy0 + 1), (gx0 + 1, gy0 + 1)] {
-            let ni = subtile_grid_index(gx, gy, tile_w, n);
-            if ni < network.node_pipes.len() {
-                for &pi in &network.node_pipes[ni] {
-                    let pipe = &network.pipes[pi];
-                    // Use congestion-derived resistance: 1 + (|flow|/capacity)^2
-                    let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
-                    r_sum += 1.0 + util * util;
-                    r_count += 1;
-                }
-            }
-        }
-        if r_count > 0 {
-            cell_r_local[i] = r_sum / r_count as f64;
-        }
-    }
-
-    // Compute per-cell displacement from connected pins.
+    // Compute per-cell displacement from connected pins,
+    // divided by path-averaged congestion resistance.
     for (_net_id, net) in ctx.design.iter_alive_nets() {
         let Some(drv) = net.driver() else { continue };
         if net.num_users() == 0 { continue; }
@@ -325,7 +338,6 @@ pub fn compute_displacement(
             let Some(ci) = pins[i].2 else { continue };
             let (xi, yi, _) = pins[i];
             let p_self = pressure_at(xi, yi, network);
-            let r_local = cell_r_local[ci];
 
             for j in 0..pins.len() {
                 if i == j { continue; }
@@ -338,9 +350,11 @@ pub fn compute_displacement(
                 let p_other = pressure_at(xj, yj, network);
                 let dp = p_other - p_self;
 
-                // Flow-proportional force: dp / R_local / dist.
-                // High congestion at cell → high R_local → weaker pull.
-                let weight = dp / (r_local * dist);
+                // Path-averaged congestion: sample R_cong along the straight
+                // line from cell to pin. The entire corridor's congestion
+                // damps the pull, not just the cell's local congestion.
+                let r_path = path_congestion(xi, yi, xj, yj, network);
+                let weight = dp / (r_path * dist);
                 dx[ci] += weight * dir_x;
                 dy[ci] += weight * dir_y;
             }
