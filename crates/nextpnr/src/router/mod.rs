@@ -1,6 +1,7 @@
 //! Router trait and implementations.
 
 pub mod common;
+pub mod lookahead;
 pub mod maze;
 pub mod negotiation;
 pub mod traits;

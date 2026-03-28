@@ -146,7 +146,11 @@ impl super::Router for Router1 {
         net: crate::netlist::NetId,
     ) -> Result<(), super::RouterError> {
         let wire_penalty = FxHashMap::default();
-        route_net_impl(ctx, net, &wire_penalty, cfg.bb_margin)
+        let plan = compute_route_r1(ctx, net, &wire_penalty, cfg.bb_margin, None)?;
+        if plan.source_wire.is_valid() {
+            super::common::apply_route_plan(ctx, &plan);
+        }
+        Ok(())
     }
 
     fn route_nets(
@@ -183,10 +187,18 @@ impl super::Router for Router1 {
             }
         }
 
+        // Build lookahead table for A* heuristic.
+        let lookahead = super::lookahead::Lookahead::build(
+            ctx.chipdb(),
+            ctx.speed_grade_idx(),
+            40, // ±40 tiles range
+        );
+        let lookahead = std::sync::Arc::new(lookahead);
+
         // Phase 1: Parallel initial route computation.
         let plans: Vec<Result<RoutePlan, RouterError>> = nets
             .par_iter()
-            .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin))
+            .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin, Some(&lookahead)))
             .collect();
 
         // Phase 2: Serial apply + build wire→net reverse index.
@@ -226,7 +238,7 @@ impl super::Router for Router1 {
             // Parallel reroute.
             let plans: Vec<Result<RoutePlan, RouterError>> = congested
                 .par_iter()
-                .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin))
+                .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin, Some(&lookahead)))
                 .collect();
 
             for plan in plans {
@@ -276,6 +288,7 @@ pub fn compute_route_r1(
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
     bb_margin: i32,
+    lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
         Some(w) => w,
@@ -320,7 +333,7 @@ pub fn compute_route_r1(
             });
             continue;
         }
-        match astar_route(ctx, &tree_wires, sink_wire, wire_penalty, bbox.as_ref()) {
+        match astar_route(ctx, &tree_wires, sink_wire, wire_penalty, bbox.as_ref(), lookahead) {
             Some(pips) => {
                 // Add destination wires of each PIP to tree.
                 for &pip in &pips {
@@ -355,7 +368,7 @@ fn route_net_impl(
     wire_penalty: &FxHashMap<WireId, DelayT>,
     bb_margin: i32,
 ) -> Result<(), RouterError> {
-    let plan = compute_route_r1(ctx, net, wire_penalty, bb_margin)?;
+    let plan = compute_route_r1(ctx, net, wire_penalty, bb_margin, None)?;
     if plan.source_wire.is_valid() {
         apply_route_plan(ctx, &plan);
     }
@@ -381,6 +394,7 @@ pub fn astar_route(
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
     bbox: Option<&BoundingBox>,
+    lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Option<Vec<PipId>> {
     // Trivial case: destination is already in the source set.
     if src_wires.contains(&dst_wire) {
@@ -399,13 +413,21 @@ pub fn astar_route(
     // Remaining PIPs are deferred via re-push with advanced pip_start.
     const PIP_BATCH: usize = 64;
 
+    // Heuristic function: use lookahead if available, else Manhattan distance.
+    let h = |src: WireId, dst: WireId| -> DelayT {
+        match lookahead {
+            Some(la) => la.estimate_delay(chipdb, src, dst),
+            None => ctx.estimate_delay(src, dst),
+        }
+    };
+
     // Seed the search with all source wires.
     for &src in src_wires {
-        let h = ctx.estimate_delay(src, dst_wire);
+        let hval = h(src, dst_wire);
         heap.push(QueueEntry {
             wire: src,
             cost: 0,
-            estimate: h,
+            estimate: hval,
             pip_start: 0,
         });
         visited.insert(src, (0, None, src));
@@ -465,11 +487,11 @@ pub fn astar_route(
                     }
                 }
                 visited.insert(nw, (new_cost, None, entry.wire));
-                let h = ctx.estimate_delay(nw, dst_wire);
+                let hval = h(nw, dst_wire);
                 heap.push(QueueEntry {
                     wire: nw,
                     cost: new_cost,
-                    estimate: new_cost + h,
+                    estimate: new_cost + hval,
                     pip_start: 0,
                 });
             };
@@ -520,11 +542,11 @@ pub fn astar_route(
 
                 visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
 
-                let h = ctx.estimate_delay(next_wire, dst_wire);
+                let hval = h(next_wire, dst_wire);
                 heap.push(QueueEntry {
                     wire: next_wire,
                     cost: new_cost,
-                    estimate: new_cost + h,
+                    estimate: new_cost + hval,
                     pip_start: 0,
                 });
             }
