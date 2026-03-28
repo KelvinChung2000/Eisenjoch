@@ -436,18 +436,32 @@ pub fn project_velocity(
         tile_q_y[ti] /= cap;
     }
 
-    // 3. Project: v_i = u_i + (V_fluid - u_avg)
-    //    where u_avg = sum(u_k) / N.
+    // 3. Compute per-tile BEL capacity for density ratio.
+    let mut tile_bel_cap = vec![1.0f64; tw * th];
+    for ty in 0..th {
+        for tx in 0..tw {
+            let tile = network.width * ty as i32 + tx as i32;
+            // Approximate: capacity field on intra-tile pipes reflects BEL count.
+            // Use the node_pipes of the first subtile node in this tile.
+            let ni = network.node_index(tx as i32, ty as i32, 0, 0);
+            if ni < network.node_pipes.len() && !network.node_pipes[ni].is_empty() {
+                let pi = network.node_pipes[ni][0];
+                tile_bel_cap[ty * tw + tx] = network.pipes[pi].capacity.max(0.25);
+            }
+        }
+    }
+
+    // 4. Add density-scaled fluid expansion: v_i = u_i + V_expansion
+    //    V_expansion = V_fluid * max(0, N/capacity - 1)
+    //    Only activates when tile is over capacity. Magnitude proportional
+    //    to how much over capacity the tile is.
     for i in 0..num_cells {
         let ti = cell_tile[i];
         let nc = tile_count[ti] as f64;
-        if nc > 1.0 {
-            let u_avg_x = tile_sum_dx[ti] / nc;
-            let u_avg_y = tile_sum_dy[ti] / nc;
-            let residual_x = tile_q_x[ti] - u_avg_x;
-            let residual_y = tile_q_y[ti] - u_avg_y;
-            dx[i] += residual_x;
-            dy[i] += residual_y;
+        let over_density = (nc / tile_bel_cap[ti] - 1.0).max(0.0);
+        if over_density > 0.0 {
+            dx[i] += tile_q_x[ti] * over_density;
+            dy[i] += tile_q_y[ti] * over_density;
         }
     }
 }
