@@ -92,6 +92,9 @@ pub struct OptTransPlacerCfg {
     /// Per-cell normalization strategy.
     pub cell_normalization: CellNormalization,
 
+    /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
+    pub legalization: String,
+
     // --- Iteration control ---
 
     /// Use Anderson acceleration (true) or direct gradient step (false).
@@ -128,6 +131,7 @@ impl Default for OptTransPlacerCfg {
             grad_weight: 1.0,
             attraction_weight: 0.0,
             cell_normalization: CellNormalization::Raw,
+            legalization: "ring".to_string(),
             // Iteration control.
             use_anderson: true,
             step_scale: 5.0,

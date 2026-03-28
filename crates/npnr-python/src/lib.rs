@@ -233,7 +233,7 @@ impl PyContext {
     ///     step_decay: Stagnation step reduction factor. Default 0.7.
     ///     stagnation_warmup: Skip stagnation check before this iteration. Default 20.
     ///     stagnation_patience: Rollback after this many stagnant iterations. Default 5.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=0.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="amg", grad_weight=1.0, attraction_weight=1.0, cell_normalization="rms", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=0.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="amg", grad_weight=1.0, attraction_weight=1.0, cell_normalization="rms", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -254,6 +254,7 @@ impl PyContext {
         step_decay: f64,
         stagnation_warmup: usize,
         stagnation_patience: usize,
+        legalization: &str,
     ) -> PyResult<()> {
         match placer {
             "heap" => {
@@ -308,6 +309,7 @@ impl PyContext {
                 cfg.step_scale = step_scale;
                 cfg.step_decay = step_decay;
                 cfg.stagnation_warmup = stagnation_warmup;
+                cfg.legalization = legalization.to_string();
                 cfg.stagnation_patience = stagnation_patience;
                 if let Some(iters) = max_iters {
                     cfg.max_iters = iters;

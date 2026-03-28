@@ -464,7 +464,25 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
-    crate::placer::legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
+
+    match cfg.legalization.as_str() {
+        "sorted" => {
+            crate::placer::legalize::sorted_legalize(ctx, &idx_to_cell, &phys_x, &phys_y)?;
+        }
+        "bipartite" => {
+            let cost = Box::new(crate::placer::legalize::DistanceCost);
+            crate::placer::legalize::bipartite::legalize_bipartite(
+                ctx, &idx_to_cell, &phys_x, &phys_y, &*cost, cfg.lap_max_cells,
+            )?;
+        }
+        "greedy" => {
+            crate::placer::legalize::legalize_electro(ctx, &idx_to_cell, &phys_x, &phys_y)?;
+        }
+        _ => {
+            // Default: ring legalizer
+            crate::placer::legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
+        }
+    }
 
     // 8. Post-legalization HPWL.
     let post_hpwl = total_hpwl(ctx);
