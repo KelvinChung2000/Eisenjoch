@@ -125,6 +125,16 @@ pub fn build_demands(
     let sh = network.subtile_height();
     let tile_w = network.width as usize;
 
+    // Utilization-aware demand scaling: at low utilization, demand is dilute
+    // and produces weak pressure gradients. Scale demand by 1/sqrt(util)
+    // so the Kirchhoff solve produces proportionally stronger fields.
+    let n_tiles = (network.width * network.height) as usize;
+    let n_clb_tiles = (n_tiles - network.num_zero_bel_tiles()) as f64;
+    let n_movable = cell_to_idx.len() as f64;
+    let util = (n_movable / n_clb_tiles.max(1.0)).max(0.01);
+    let demand_scale = (1.0 / util).powf(0.25).min(3.0);
+    eprintln!("  demand_scale={:.2} (util={:.4})", demand_scale, util);
+
     for (_net_id, net) in ctx.design.iter_alive_nets() {
         let Some(dp) = net.driver() else { continue };
 
@@ -141,17 +151,18 @@ pub fn build_demands(
         let (dx, dy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
         let fanout = sink_positions.len() as f64;
         let io_factor = if has_fixed_pin { cfg.io_boost } else { 1.0 };
+        let net_demand = io_factor * demand_scale;
 
         // Driver injects +demand.
         let dsx = to_subtile_coord(dx, n);
         let dsy = to_subtile_coord(dy, n);
         for (gx, gy, bw) in bilinear_weights(dsx, dsy, sw, sh) {
             let ni = subtile_grid_index(gx, gy, tile_w, n);
-            demand[ni] += io_factor * bw;
+            demand[ni] += net_demand * bw;
         }
 
         // Each sink extracts -demand/fanout.
-        let sink_weight = io_factor / fanout;
+        let sink_weight = net_demand / fanout;
         for &(sx, sy) in &sink_positions {
             let ssx = to_subtile_coord(sx, n);
             let ssy = to_subtile_coord(sy, n);
@@ -494,9 +505,16 @@ pub fn project_velocity(
         }
     }
 
-    // 4. Radial density expansion: v_i = u_i + activation * normalized_direction
+    // 4. Radial density expansion, scaled by inverse utilization.
     //    activation = max(0, N/capacity - 1): zero when legal, scales with pileup
     //    direction = -grad(cell_density): radial push away from density center
+    //    util_scale = 1/utilization: at low utilization, push harder to overcome
+    //    the dilute Bottleneck-R attraction.
+    let total_cells = num_cells as f64;
+    let total_bel_cap: f64 = tile_bel_cap.iter().sum();
+    let util = (total_cells / total_bel_cap.max(1.0)).max(0.01);
+    let util_scale = (1.0 / util).sqrt();
+
     for i in 0..num_cells {
         let ti = cell_tile[i];
         let nc = tile_count[ti] as f64;
@@ -506,9 +524,8 @@ pub fn project_velocity(
             let gy = grad_y[ti];
             let mag = (gx * gx + gy * gy).sqrt();
             if mag > 1e-6 {
-                // Normalized direction × activation strength.
-                dx[i] += activation * gx / mag;
-                dy[i] += activation * gy / mag;
+                dx[i] += activation * util_scale * gx / mag;
+                dy[i] += activation * util_scale * gy / mag;
             }
         }
     }
