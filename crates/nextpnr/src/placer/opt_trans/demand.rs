@@ -407,42 +407,15 @@ pub fn project_velocity(
         cell_tile[i] = ti;
     }
 
-    // 2. Compute continuous fluid velocity V at each tile.
-    //    V = Q / Capacity — volumetric flow divided by cross-sectional area.
-    //    This gives velocity in "tiles per iteration" units.
-    let mut tile_q_x = vec![0.0f64; tw * th];
-    let mut tile_q_y = vec![0.0f64; tw * th];
-    let mut tile_capacity = vec![0.0f64; tw * th];
-
-    for pipe in &network.pipes {
-        let from_node = &network.nodes[pipe.from];
-        let to_node = &network.nodes[pipe.to];
-
-        let from_ti = (from_node.tile_y as usize) * tw + (from_node.tile_x as usize);
-        let dir_x = (to_node.tile_x - from_node.tile_x) as f64
-            + (to_node.sub_x as f64 - from_node.sub_x as f64) / n as f64;
-        let dir_y = (to_node.tile_y - from_node.tile_y) as f64
-            + (to_node.sub_y as f64 - from_node.sub_y as f64) / n as f64;
-
-        tile_q_x[from_ti] += pipe.flow * dir_x;
-        tile_q_y[from_ti] += pipe.flow * dir_y;
-        tile_capacity[from_ti] += pipe.capacity;
-    }
-
-    // Convert volumetric flow to fluid velocity: V = Q / capacity.
-    for ti in 0..(tw * th) {
-        let cap = tile_capacity[ti].max(1.0);
-        tile_q_x[ti] /= cap;
-        tile_q_y[ti] /= cap;
-    }
-
-    // 3. Compute per-tile BEL capacity for density ratio.
+    // 2. Build cell density grid and per-tile BEL capacity.
+    let mut tile_density = vec![0.0f64; tw * th]; // cells per tile
     let mut tile_bel_cap = vec![1.0f64; tw * th];
+
+    for ti in 0..(tw * th) {
+        tile_density[ti] = tile_count[ti] as f64;
+    }
     for ty in 0..th {
         for tx in 0..tw {
-            let tile = network.width * ty as i32 + tx as i32;
-            // Approximate: capacity field on intra-tile pipes reflects BEL count.
-            // Use the node_pipes of the first subtile node in this tile.
             let ni = network.node_index(tx as i32, ty as i32, 0, 0);
             if ni < network.node_pipes.len() && !network.node_pipes[ni].is_empty() {
                 let pi = network.node_pipes[ni][0];
@@ -451,17 +424,41 @@ pub fn project_velocity(
         }
     }
 
-    // 4. Add density-scaled fluid expansion: v_i = u_i + V_expansion
-    //    V_expansion = V_fluid * max(0, N/capacity - 1)
-    //    Only activates when tile is over capacity. Magnitude proportional
-    //    to how much over capacity the tile is.
+    // 3. Compute radial density gradient: -grad(cell_density) at each tile.
+    //    Central differences on the tile grid. Points away from high density.
+    let mut grad_x = vec![0.0f64; tw * th];
+    let mut grad_y = vec![0.0f64; tw * th];
+    for ty in 0..th {
+        for tx in 0..tw {
+            let ti = ty * tw + tx;
+            // x-gradient: central difference
+            let d_left = if tx > 0 { tile_density[ti - 1] } else { tile_density[ti] };
+            let d_right = if tx + 1 < tw { tile_density[ti + 1] } else { tile_density[ti] };
+            // y-gradient: central difference
+            let d_up = if ty > 0 { tile_density[ti - tw] } else { tile_density[ti] };
+            let d_down = if ty + 1 < th { tile_density[ti + tw] } else { tile_density[ti] };
+            // -grad(density): points away from high density
+            grad_x[ti] = -(d_right - d_left) * 0.5;
+            grad_y[ti] = -(d_down - d_up) * 0.5;
+        }
+    }
+
+    // 4. Radial density expansion: v_i = u_i + activation * normalized_direction
+    //    activation = max(0, N/capacity - 1): zero when legal, scales with pileup
+    //    direction = -grad(cell_density): radial push away from density center
     for i in 0..num_cells {
         let ti = cell_tile[i];
         let nc = tile_count[ti] as f64;
-        let over_density = (nc / tile_bel_cap[ti] - 1.0).max(0.0);
-        if over_density > 0.0 {
-            dx[i] += tile_q_x[ti] * over_density;
-            dy[i] += tile_q_y[ti] * over_density;
+        let activation = (nc / tile_bel_cap[ti] - 1.0).max(0.0);
+        if activation > 0.0 {
+            let gx = grad_x[ti];
+            let gy = grad_y[ti];
+            let mag = (gx * gx + gy * gy).sqrt();
+            if mag > 1e-6 {
+                // Normalized direction × activation strength.
+                dx[i] += activation * gx / mag;
+                dy[i] += activation * gy / mag;
+            }
         }
     }
 }
