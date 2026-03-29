@@ -12,6 +12,283 @@ use crate::netlist::CellId;
 use super::config::OptTransPlacerCfg;
 use super::network::PipeNetwork;
 
+// ---------------------------------------------------------------------------
+// Per-net Kirchhoff solve infrastructure
+// ---------------------------------------------------------------------------
+
+/// Information about a single net for per-net Kirchhoff solving.
+pub struct NetSolveInfo {
+    /// Pin positions and optional movable cell index.
+    /// First element is always the driver.
+    pub pins: Vec<(f64, f64, Option<usize>)>,
+    /// Whether each pin is fixed (locked). Same indexing as `pins`.
+    pub pin_is_fixed: Vec<bool>,
+    /// Whether this net has at least one fixed/IO pin.
+    pub has_fixed_pin: bool,
+}
+
+/// Collect nets that need per-net Kirchhoff solves.
+///
+/// Returns all nets with at least one movable pin (those are the cells
+/// we need to move). ALL pins inject demand — the flow-vector extraction
+/// handles self-cancellation via Gauss's law. Sorted largest-first.
+pub fn collect_nets_for_solve(
+    ctx: &Context,
+    cell_to_idx: &FxHashMap<CellId, usize>,
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+) -> Vec<NetSolveInfo> {
+    let mut nets = Vec::new();
+
+    for (_net_id, net) in ctx.design.iter_alive_nets() {
+        let Some(dp) = net.driver() else { continue };
+        if net.num_users() == 0 { continue; }
+
+        let mut pins = Vec::new();
+        let mut pin_is_fixed = Vec::new();
+        let mut has_fixed = false;
+        let mut has_movable = false;
+
+        // Driver.
+        let dc = ctx.design.cell(dp.cell);
+        let (dx, dy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
+        let ci = cell_to_idx.get(&dp.cell).copied();
+        let is_fixed = dc.bel_strength.is_locked();
+        if is_fixed { has_fixed = true; }
+        if ci.is_some() { has_movable = true; }
+        pins.push((dx, dy, ci));
+        pin_is_fixed.push(is_fixed);
+
+        // Sinks.
+        for user in net.users() {
+            if !user.is_valid() { continue; }
+            let uc = ctx.design.cell(user.cell);
+            let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+            let ci = cell_to_idx.get(&user.cell).copied();
+            let is_fixed = uc.bel_strength.is_locked();
+            if is_fixed { has_fixed = true; }
+            if ci.is_some() { has_movable = true; }
+            pins.push((ux, uy, ci));
+            pin_is_fixed.push(is_fixed);
+        }
+
+        // Need at least one fixed pin (for directional signal) and one movable pin.
+        if has_fixed && has_movable && pins.len() >= 2 {
+            nets.push(NetSolveInfo { pins, pin_is_fixed, has_fixed_pin: has_fixed });
+        }
+    }
+
+    // Largest nets first.
+    nets.sort_by(|a, b| b.pins.len().cmp(&a.pins.len()));
+    nets
+}
+
+/// Build RHS vector for a single net — all pins inject demand.
+///
+/// Driver injects +1, each sink extracts −1/fanout. Both fixed and
+/// movable pins contribute. The flow-vector force extraction handles
+/// self-cancellation via Gauss's law on the discrete grid.
+pub fn build_net_rhs(
+    info: &NetSolveInfo,
+    network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
+) -> Vec<f64> {
+    let n_nodes = network.num_nodes();
+    let mut rhs = vec![0.0; n_nodes];
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    let io_factor = if info.has_fixed_pin { cfg.io_boost } else { 1.0 };
+    let fanout = (info.pins.len() - 1) as f64;
+
+    // Driver (first pin): inject +demand.
+    let (dx, dy, _) = info.pins[0];
+    let dsx = to_subtile_coord(dx, n);
+    let dsy = to_subtile_coord(dy, n);
+    for (gx, gy, bw) in bilinear_weights(dsx, dsy, sw, sh) {
+        let ni = subtile_grid_index(gx, gy, tile_w, n);
+        rhs[ni] += io_factor * bw;
+    }
+
+    // All sinks: extract −demand/fanout.
+    let sink_weight = io_factor / fanout;
+    for k in 1..info.pins.len() {
+        let (sx, sy, _) = info.pins[k];
+        let ssx = to_subtile_coord(sx, n);
+        let ssy = to_subtile_coord(sy, n);
+        for (gx, gy, bw) in bilinear_weights(ssx, ssy, sw, sh) {
+            let ni = subtile_grid_index(gx, gy, tile_w, n);
+            rhs[ni] -= sink_weight * bw;
+        }
+    }
+
+    rhs
+}
+
+/// Accumulate dp/dist force with energy-gradient role sign.
+///
+/// For each movable cell, computes force from pressure differences to
+/// connected pins. The role sign ensures energy-minimizing direction:
+///   Sink:   F = +dp / (R_local × dist) × direction  (toward driver)
+///   Driver: F = −dp / (R_local × dist) × direction  (toward sinks)
+pub fn accumulate_dp_dist_force(
+    info: &NetSolveInfo,
+    pressure: &[f64],
+    network: &PipeNetwork,
+    dx: &mut [f64],
+    dy: &mut [f64],
+) {
+    let pin_pressures: Vec<f64> = info.pins.iter()
+        .map(|&(px, py, _)| pressure_from_vec(px, py, pressure, network))
+        .collect();
+
+    for (i, &(xi, yi, ci_opt)) in info.pins.iter().enumerate() {
+        let Some(ci) = ci_opt else { continue };
+        if info.pin_is_fixed[i] { continue; }
+
+        // Role sign: sinks (+1) move toward high P, drivers (-1) toward low P.
+        let role_sign: f64 = if i == 0 { -1.0 } else { 1.0 };
+        let p_self = pin_pressures[i];
+        let r_local = congestion_at(xi, yi, network);
+
+        for (j, &(xj, yj, _)) in info.pins.iter().enumerate() {
+            if i == j { continue; }
+            let dir_x = xj - xi;
+            let dir_y = yj - yi;
+            let dist = (dir_x * dir_x + dir_y * dir_y).sqrt();
+            if dist < 0.1 { continue; }
+
+            let dp = pin_pressures[j] - p_self;
+            let weight = role_sign * dp / (r_local * dist);
+            dx[ci] += weight * dir_x / dist;
+            dy[ci] += weight * dir_y / dist;
+        }
+    }
+}
+
+/// Accumulate flow-vector force from a per-net pressure field.
+///
+/// For each movable cell, computes the net flow vector at its position
+/// from the per-net pressure solution: F = Σ_pipes ΔP × g × direction.
+///
+/// This is "pressure × area = force" (Gauss's law). The self-field from
+/// the cell's own demand is symmetric and cancels in the vector sum,
+/// leaving only the external field (force from other pins' demand).
+///
+/// Role sign: sinks move against the flow (toward driver),
+///            drivers move with the flow (toward sinks).
+/// This comes from the energy gradient: dE/dx = ±∇P depending on role.
+pub fn accumulate_flow_force(
+    info: &NetSolveInfo,
+    pressure: &[f64],
+    network: &PipeNetwork,
+    dx: &mut [f64],
+    dy: &mut [f64],
+) {
+    let res = network.resolution;
+
+    for (k, &(px, py, ci_opt)) in info.pins.iter().enumerate() {
+        let Some(ci) = ci_opt else { continue };
+        if info.pin_is_fixed[k] { continue; }
+
+        // Role sign: driver (k==0) moves WITH flow, sinks move AGAINST.
+        let role_sign: f64 = if k == 0 { 1.0 } else { -1.0 };
+
+        // Find the nearest subtile node to the cell position.
+        let sx = to_subtile_coord(px, res);
+        let sy = to_subtile_coord(py, res);
+        let sw = network.subtile_width();
+        let sh = network.subtile_height();
+        let tile_w = network.width as usize;
+
+        let gx = (sx.round() as usize).min(sw - 1);
+        let gy = (sy.round() as usize).min(sh - 1);
+        let node_i = subtile_grid_index(gx, gy, tile_w, res);
+
+        // Cell's demand at this specific node (bilinear weight at nearest node).
+        let base_demand: f64 = if k == 0 { 1.0 } else { -1.0 / (info.pins.len() - 1) as f64 };
+        // Bilinear weight at the nearest node: the fraction of demand at node_i.
+        let bw = bilinear_weights(sx, sy, sw, sh);
+        let self_weight = bw.iter()
+            .filter(|&&(bgx, bgy, _)| subtile_grid_index(bgx, bgy, tile_w, res) == node_i)
+            .map(|&(_, _, w)| w)
+            .sum::<f64>();
+        let self_demand = base_demand * self_weight;
+
+        // Sum of effective conductances at this node (matches Laplacian diagonal).
+        let mut g_total = 0.0f64;
+        if node_i < network.node_pipes.len() {
+            for &pipe_idx in &network.node_pipes[node_i] {
+                g_total += network.pipes[pipe_idx].eff_conductance;
+            }
+        }
+        // Add regularization (ε·I from CG setup: ε = 1e-4 × avg_diag).
+        g_total += 1e-4 * g_total.max(1.0);
+
+        // Sum flow vectors with self-field subtraction.
+        let mut fx = 0.0f64;
+        let mut fy = 0.0f64;
+
+        if node_i < network.node_pipes.len() {
+            for &pipe_idx in &network.node_pipes[node_i] {
+                let pipe = &network.pipes[pipe_idx];
+                let other = if pipe.from == node_i { pipe.to } else { pipe.from };
+                let node_self = &network.nodes[node_i];
+                let node_other = &network.nodes[other];
+
+                // Total flow on this pipe from per-net pressure (using same g as Laplacian).
+                let p_from = pressure[pipe.from];
+                let p_to = pressure[pipe.to];
+                let g_pipe = pipe.eff_conductance;
+                let flow = (p_from - p_to) * g_pipe;
+
+                // Self-field subtraction: cell's demand distributes ∝ conductance.
+                let self_flow = self_demand * g_pipe / g_total;
+
+                // Outward flow from node_i (positive = away from node_i).
+                let outward_sign = if pipe.from == node_i { 1.0 } else { -1.0 };
+                let corrected_flow = outward_sign * flow - self_flow;
+
+                // Direction: from self toward other (in tile coordinates).
+                let dir_x = node_other.center_x(res) - node_self.center_x(res);
+                let dir_y = node_other.center_y(res) - node_self.center_y(res);
+
+                fx += corrected_flow * dir_x;
+                fy += corrected_flow * dir_y;
+            }
+        }
+
+        // Apply role sign: sinks go against flow, drivers go with flow.
+        dx[ci] += role_sign * fx;
+        dy[ci] += role_sign * fy;
+    }
+}
+
+/// Interpolate pressure from a given pressure vector at a tile-coordinate position.
+fn pressure_from_vec(x: f64, y: f64, pressure: &[f64], network: &PipeNetwork) -> f64 {
+    let n = network.resolution;
+    let sw = network.subtile_width();
+    let sh = network.subtile_height();
+    let tile_w = network.width as usize;
+
+    let sx = to_subtile_coord(x, n);
+    let sy = to_subtile_coord(y, n);
+    let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, sw, sh);
+
+    let p00 = pressure[subtile_grid_index(gx0, gy0, tile_w, n)];
+    let p10 = pressure[subtile_grid_index(gx0 + 1, gy0, tile_w, n)];
+    let p01 = pressure[subtile_grid_index(gx0, gy0 + 1, tile_w, n)];
+    let p11 = pressure[subtile_grid_index(gx0 + 1, gy0 + 1, tile_w, n)];
+
+    (1.0 - fx) * (1.0 - fy) * p00
+        + fx * (1.0 - fy) * p10
+        + (1.0 - fx) * fy * p01
+        + fx * fy * p11
+}
+
 /// Convert tile-coordinate position to subtile-grid coordinate.
 ///
 /// Subtile node (gx, gy) has its center at tile position ((gx+0.5)/N, (gy+0.5)/N).

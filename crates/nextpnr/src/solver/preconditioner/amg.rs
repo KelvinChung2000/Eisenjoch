@@ -656,21 +656,23 @@ impl faer::matrix_free::LinOp<f64> for AmgPreconditioner {
         _stack: &mut MemStack,
     ) {
         let n = self.nrows();
+        let ncols = rhs.ncols();
         // SAFETY: We are the only ones accessing work during apply().
         // faer guarantees sequential access to preconditioners.
         let work = unsafe { &mut *self.work.get() };
 
-        // Copy rhs column into work buffer
-        work[0].rhs.resize(n, 0.0);
-        for i in 0..n {
-            work[0].rhs[i] = rhs[(i, 0)];
-        }
-        work[0].x.fill(0.0);
+        for col in 0..ncols {
+            work[0].rhs.resize(n, 0.0);
+            for i in 0..n {
+                work[0].rhs[i] = rhs[(i, col)];
+            }
+            work[0].x.fill(0.0);
 
-        Self::v_cycle_level(&self.structure, &self.numerics, work, 0);
+            Self::v_cycle_level(&self.structure, &self.numerics, work, 0);
 
-        for i in 0..n {
-            out[(i, 0)] = work[0].x[i];
+            for i in 0..n {
+                out[(i, col)] = work[0].x[i];
+            }
         }
     }
 
@@ -697,18 +699,21 @@ impl faer::matrix_free::Precond<f64> for AmgPreconditioner {
         _stack: &mut MemStack,
     ) {
         let n = self.nrows();
+        let ncols = rhs.ncols();
         let work = unsafe { &mut *self.work.get() };
 
-        work[0].rhs.resize(n, 0.0);
-        for i in 0..n {
-            work[0].rhs[i] = rhs[(i, 0)];
-        }
-        work[0].x.fill(0.0);
+        for col in 0..ncols {
+            work[0].rhs.resize(n, 0.0);
+            for i in 0..n {
+                work[0].rhs[i] = rhs[(i, col)];
+            }
+            work[0].x.fill(0.0);
 
-        Self::v_cycle_level(&self.structure, &self.numerics, work, 0);
+            Self::v_cycle_level(&self.structure, &self.numerics, work, 0);
 
-        for i in 0..n {
-            rhs[(i, 0)] = work[0].x[i];
+            for i in 0..n {
+                rhs[(i, col)] = work[0].x[i];
+            }
         }
     }
 

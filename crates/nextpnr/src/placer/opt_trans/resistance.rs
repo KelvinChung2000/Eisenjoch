@@ -68,6 +68,7 @@ mod tests {
             flow,
             net_count,
             cell_density: 0.0,
+            eff_conductance: 1.0,
             pipe_type: PipeType::IntraTile,
         }
     }

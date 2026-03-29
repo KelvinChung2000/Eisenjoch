@@ -65,6 +65,8 @@ pub struct Pipe {
     pub net_count: u32,
     /// Cell density: number of cells near this pipe's endpoints.
     pub cell_density: f64,
+    /// Effective conductance used in the current Laplacian (updated each iteration).
+    pub eff_conductance: f64,
     pub pipe_type: PipeType,
 }
 
@@ -331,6 +333,7 @@ fn add_pipe(
         flow: 0.0,
         net_count: 0,
         cell_density: 0.0,
+        eff_conductance: 1.0 / base_resistance.max(1e-12),
         pipe_type,
     });
     node_pipes[from].push(pipe_idx);

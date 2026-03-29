@@ -95,6 +95,70 @@ pub fn solve_cg(
     }
 }
 
+/// Batched CG solve: A * X = B where B has `nrhs` columns.
+///
+/// `rhs_data` is column-major: `nrhs` columns of length `n`, packed as
+/// `[col0_row0, col0_row1, ..., col0_rowN, col1_row0, ...]`.
+/// `x_data` is the same layout for the solution.
+///
+/// Returns one CgResult (the aggregate). Each column converges independently
+/// inside faer's block CG, leveraging BLAS3 for the mat-vecs.
+pub fn solve_cg_batched(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs_data: &[f64],
+    x_data: &mut [f64],
+    nrhs: usize,
+    tol: f64,
+    max_iters: usize,
+) -> CgResult {
+    let n = mat.nrows();
+    if n == 0 || nrhs == 0 {
+        return CgResult { iterations: 0, converged: true, residual: 0.0 };
+    }
+
+    let rhs_mat = faer::MatRef::from_column_major_slice(rhs_data, n, nrhs);
+    let mut x_mat = faer::MatMut::from_column_major_slice_mut(x_data, n, nrhs);
+
+    let mut params = CgParams::default();
+    params.rel_tolerance = tol;
+    params.max_iters = max_iters;
+
+    let scratch = conjugate_gradient_scratch(precond, mat, nrhs, faer::Par::Seq);
+    let mut buf = MemBuffer::new(scratch);
+    let mut stack = MemStack::new(&mut buf);
+
+    match conjugate_gradient(
+        x_mat.as_mut(),
+        precond,
+        mat,
+        rhs_mat,
+        params,
+        |_| {},
+        faer::Par::Seq,
+        &mut stack,
+    ) {
+        Ok(info) => CgResult {
+            iterations: info.iter_count,
+            converged: true,
+            residual: info.rel_residual,
+        },
+        Err(CgError::NoConvergence { rel_residual, .. }) => CgResult {
+            iterations: max_iters,
+            converged: false,
+            residual: rel_residual,
+        },
+        Err(CgError::NonPositiveDefiniteOperator) => {
+            eprintln!("CG ERROR (batched): NonPositiveDefiniteOperator");
+            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+        },
+        Err(CgError::NonPositiveDefinitePreconditioner) => {
+            eprintln!("CG ERROR (batched): NonPositiveDefinitePreconditioner");
+            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,8 +47,11 @@ impl faer::matrix_free::LinOp<f64> for JacobiPreconditioner {
         _par: faer::Par,
         _stack: &mut MemStack,
     ) {
-        for i in 0..self.inv_diag.len() {
-            out[(i, 0)] = self.inv_diag[i] * rhs[(i, 0)];
+        let ncols = rhs.ncols();
+        for col in 0..ncols {
+            for i in 0..self.inv_diag.len() {
+                out[(i, col)] = self.inv_diag[i] * rhs[(i, col)];
+            }
         }
     }
 
@@ -69,8 +72,11 @@ impl faer::matrix_free::Precond<f64> for JacobiPreconditioner {
     }
 
     fn apply_in_place(&self, mut rhs: faer::MatMut<'_, f64>, _par: faer::Par, _stack: &mut MemStack) {
-        for i in 0..self.inv_diag.len() {
-            rhs[(i, 0)] *= self.inv_diag[i];
+        let ncols = rhs.ncols();
+        for col in 0..ncols {
+            for i in 0..self.inv_diag.len() {
+                rhs[(i, col)] *= self.inv_diag[i];
+            }
         }
     }
 
