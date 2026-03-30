@@ -73,8 +73,8 @@ pub fn collect_nets_for_solve(
             pin_is_fixed.push(is_fixed);
         }
 
-        // Need at least one fixed pin (for directional signal) and one movable pin.
-        if has_fixed && has_movable && pins.len() >= 2 {
+        // Need at least one movable pin and 2+ total pins.
+        if has_movable && pins.len() >= 2 {
             nets.push(NetSolveInfo { pins, pin_is_fixed, has_fixed_pin: has_fixed });
         }
     }

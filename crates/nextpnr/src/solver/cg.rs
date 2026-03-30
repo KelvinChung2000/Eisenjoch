@@ -52,7 +52,7 @@ pub fn solve_cg(
     params.max_iters = max_iters;
 
     // Compute workspace requirement and allocate
-    let scratch = conjugate_gradient_scratch(precond, mat, 1, faer::Par::Seq);
+    let scratch = conjugate_gradient_scratch(precond, mat, 1, faer::Par::rayon(0));
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
@@ -63,7 +63,7 @@ pub fn solve_cg(
         rhs_mat,
         params,
         |_| {},
-        faer::Par::Seq,
+        faer::Par::rayon(0),
         &mut stack,
     ) {
         Ok(info) => CgResult {
@@ -124,7 +124,7 @@ pub fn solve_cg_batched(
     params.rel_tolerance = tol;
     params.max_iters = max_iters;
 
-    let scratch = conjugate_gradient_scratch(precond, mat, nrhs, faer::Par::Seq);
+    let scratch = conjugate_gradient_scratch(precond, mat, nrhs, faer::Par::rayon(0));
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
@@ -135,7 +135,7 @@ pub fn solve_cg_batched(
         rhs_mat,
         params,
         |_| {},
-        faer::Par::Seq,
+        faer::Par::rayon(0),
         &mut stack,
     ) {
         Ok(info) => CgResult {
