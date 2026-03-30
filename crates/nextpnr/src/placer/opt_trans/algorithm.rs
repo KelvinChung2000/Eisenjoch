@@ -88,7 +88,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // produces steps proportional to the grid size.
     let amplification = grid_diag;
 
-
     // 5. Main loop.
     for iter in 0..cfg.max_iters {
         let n_nodes = network.num_nodes();
@@ -232,15 +231,23 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             // tiles toward open area, bridging across non-CLB column gaps.
             demand::project_velocity(&cell_x, &cell_y, &mut dx, &mut dy, &network);
 
-            // Normalize each cell's force to unit direction, then apply
-            // decaying step magnitude. Physics gives direction, schedule
-            // gives exploration range: large initially, shrinks to settle.
-            let step_mag = grid_diag * 0.1 * cfg.step_scale / (1.0 + iter as f64).sqrt();
+            // Amplify raw force and clamp per-cell magnitude.
+            // Adaptive clamp: large steps when CHPWL is high and utilization
+            // is low (cells far from targets, room to move), shrinks as
+            // placement improves (cells near targets, need precision).
+            let chpwl_now = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network).max(1.0);
+            // Adaptive step: chpwl/n gives average wirelength per cell (how far to go).
+            // Decays naturally as placement improves.
+            let avg_wl = chpwl_now / n as f64;
+            let max_step = (avg_wl * cfg.step_scale * 0.1).min(grid_diag * 0.1);
             for i in 0..n {
+                dx[i] *= amplification;
+                dy[i] *= amplification;
                 let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
-                if mag > 1e-12 {
-                    dx[i] = dx[i] / mag * step_mag;
-                    dy[i] = dy[i] / mag * step_mag;
+                if mag > max_step {
+                    let scale = max_step / mag;
+                    dx[i] *= scale;
+                    dy[i] *= scale;
                 }
             }
 
@@ -396,15 +403,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Direct step with per-cell magnitude clamping.
-        let max_step = grid_diag * 0.05; // max 5% of grid diagonal per iter
+        // f. Direct step.
         for i in 0..n {
-            let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
-            if mag > max_step {
-                let scale = max_step / mag;
-                dx[i] *= scale;
-                dy[i] *= scale;
-            }
             cell_x[i] += dx[i];
             cell_y[i] += dy[i];
         }
