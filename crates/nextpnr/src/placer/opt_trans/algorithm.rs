@@ -8,7 +8,7 @@ use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
 use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
 use crate::solver::preconditioner::{JacobiPreconditioner, AmgPreconditioner};
-use crate::solver::cg::{solve_cg, solve_cg_batched};
+use crate::solver::cg::solve_cg_batched;
 
 use super::config::{OptTransPlacerCfg, PreconditionerType};
 use super::demand;
@@ -184,32 +184,34 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         {
             let t_batch = std::time::Instant::now();
             let batch_tol = (cfg.cg_tol * 100.0).min(1e-2);
-            let max_per_net_iters = 30;
-            let mut per_net_pressure = vec![0.0; n_nodes];
-            let mut last_cg_iters = 0usize;
-            let mut last_cg_resid = 0.0f64;
+            let max_batch_iters = 30;
 
-            for net_info in &net_infos {
+            // Pack all per-net RHS into column-major matrix [n_nodes × n_nets].
+            let mut rhs_batch = vec![0.0f64; n_nodes * n_nets];
+            for (ni, net_info) in net_infos.iter().enumerate() {
                 let net_rhs = demand::build_net_rhs(net_info, &network, cfg);
-                per_net_pressure.fill(0.0);
-
-                let nr = if let Some(amg) = amg_ref {
-                    solve_cg(&op, amg, &net_rhs, &mut per_net_pressure, batch_tol, max_per_net_iters)
-                } else {
-                    solve_cg(&op, jacobi_precond.as_ref().unwrap(), &net_rhs, &mut per_net_pressure, batch_tol, max_per_net_iters)
-                };
-                total_per_net_iters += nr.iterations;
-                last_cg_iters = nr.iterations;
-                last_cg_resid = nr.residual;
-
-                // Accumulate into global pressure for congestion tracking.
-                for i in 0..n_nodes {
-                    global_pressure[i] += per_net_pressure[i];
-                }
-
-                // dp/dist with role sign from per-net pressure field.
-                demand::accumulate_dp_dist_force(net_info, &per_net_pressure, &network, &mut dx, &mut dy);
+                rhs_batch[ni * n_nodes..(ni + 1) * n_nodes].copy_from_slice(&net_rhs);
             }
+
+            // Single batched CG: L × [P0|P1|...|Pk] = [S0|S1|...|Sk]
+            let mut x_batch = vec![0.0f64; n_nodes * n_nets];
+            let batch_result = if let Some(amg) = amg_ref {
+                solve_cg_batched(&op, amg, &rhs_batch, &mut x_batch, n_nets, batch_tol, max_batch_iters)
+            } else {
+                solve_cg_batched(&op, jacobi_precond.as_ref().unwrap(), &rhs_batch, &mut x_batch, n_nets, batch_tol, max_batch_iters)
+            };
+            total_per_net_iters = batch_result.iterations;
+
+            // Extract forces and accumulate global pressure from each net's column.
+            for (ni, net_info) in net_infos.iter().enumerate() {
+                let col = &x_batch[ni * n_nodes..(ni + 1) * n_nodes];
+                for i in 0..n_nodes {
+                    global_pressure[i] += col[i];
+                }
+                demand::accumulate_dp_dist_force(net_info, col, &network, &mut dx, &mut dy);
+            }
+
+            let cg_resid = batch_result.residual;
 
             // Update node pressures and pipe flows from summed per-net fields.
             for (i, node) in network.nodes.iter_mut().enumerate() {
@@ -222,8 +224,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
             cg_result = crate::solver::cg::CgResult {
                 iterations: total_per_net_iters,
-                converged: true,
-                residual: last_cg_resid,
+                converged: batch_result.converged,
+                residual: cg_resid,
             };
 
             // Second term of energy gradient: density spreading.
