@@ -88,6 +88,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // produces steps proportional to the grid size.
     let amplification = grid_diag;
 
+    // Momentum: accumulate velocity to smooth oscillation.
+    let mut vel_x = vec![0.0f64; n];
+    let mut vel_y = vec![0.0f64; n];
+    let momentum = 0.9;
+
     // 5. Main loop.
     for iter in 0..cfg.max_iters {
         let n_nodes = network.num_nodes();
@@ -440,10 +445,12 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // f. Direct step.
+        // f. Momentum step: velocity smooths oscillating forces.
         for i in 0..n {
-            cell_x[i] += dx[i];
-            cell_y[i] += dy[i];
+            vel_x[i] = momentum * vel_x[i] + (1.0 - momentum) * dx[i];
+            vel_y[i] = momentum * vel_y[i] + (1.0 - momentum) * dy[i];
+            cell_x[i] += vel_x[i];
+            cell_y[i] += vel_y[i];
         }
 
         // h. Clamp to grid.
