@@ -25,3 +25,19 @@ pub use preconditioner::{JacobiPreconditioner, AmgPreconditioner};
 pub use direct::FaerDirectSolver;
 pub use system::{SparseSystemBuilder, Solver};
 pub use optimizer::NesterovSolver;
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Global thread count for faer parallel operations. Default: 8.
+static SOLVER_THREADS: AtomicUsize = AtomicUsize::new(8);
+
+/// Set the number of threads for solver parallelism.
+pub fn set_solver_threads(n: usize) {
+    SOLVER_THREADS.store(n.max(1), Ordering::Relaxed);
+}
+
+/// Get the faer Par setting using the configured thread count.
+pub fn par() -> faer::Par {
+    let n = SOLVER_THREADS.load(Ordering::Relaxed);
+    if n <= 1 { faer::Par::Seq } else { faer::Par::rayon(n) }
+}

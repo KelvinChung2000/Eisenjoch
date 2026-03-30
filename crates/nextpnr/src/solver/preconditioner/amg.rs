@@ -552,7 +552,7 @@ impl AmgPreconditioner {
                 csc.as_ref(),
                 x_col,
                 1.0,
-                faer::Par::rayon(0),
+                crate::solver::par(),
             );
             // r = rhs - A*x
             for i in 0..n {
@@ -578,7 +578,7 @@ impl AmgPreconditioner {
                 p_csc.as_ref().transpose(),
                 r_col,
                 1.0,
-                faer::Par::rayon(0),
+                crate::solver::par(),
             );
         }
 
@@ -600,7 +600,7 @@ impl AmgPreconditioner {
                 p_csc.as_ref(),
                 xc_col,
                 1.0,
-                faer::Par::rayon(0),
+                crate::solver::par(),
             );
         }
 
@@ -745,7 +745,7 @@ fn jacobi_smooth_faer(
         operator_csc.as_ref(),
         x_col,
         1.0,
-        faer::Par::rayon(0),
+        crate::solver::par(),
     );
     // x += omega * D^{-1} * (rhs - A*x)
     for i in 0..n {

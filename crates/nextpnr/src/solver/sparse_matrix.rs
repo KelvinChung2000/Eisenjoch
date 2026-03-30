@@ -119,7 +119,7 @@ impl SparseMatrix {
             csc.as_ref(),
             x_col,
             1.0,
-            faer::Par::rayon(0),
+            crate::solver::par(),
         );
     }
 }
@@ -178,7 +178,7 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
             self.csc.as_ref(),
             rhs,
             1.0,
-            faer::Par::rayon(0),
+            crate::solver::par(),
         );
     }
 
@@ -196,7 +196,7 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
             self.csc.as_ref(),
             rhs,
             1.0,
-            faer::Par::rayon(0),
+            crate::solver::par(),
         );
     }
 }
@@ -266,12 +266,12 @@ mod tests {
         let mut result = vec![0.0; 2];
         let out = faer::MatMut::from_column_major_slice_mut(&mut result, 2, 1);
 
-        let scratch = op.apply_scratch(1, faer::Par::rayon(0));
+        let scratch = op.apply_scratch(1, crate::solver::par());
         let mut buf = MemBuffer::new(scratch);
         let mut stack = MemStack::new(&mut buf);
 
         use faer::matrix_free::LinOp;
-        op.apply(out, x, faer::Par::rayon(0), &mut stack);
+        op.apply(out, x, crate::solver::par(), &mut stack);
 
         assert!((result[0] - 2.0).abs() < 1e-12);
         assert!((result[1] - 5.0).abs() < 1e-12);
