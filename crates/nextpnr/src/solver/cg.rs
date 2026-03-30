@@ -3,7 +3,7 @@
 //! Provides a simple interface for solving A*x = rhs using preconditioned CG
 //! via faer's matrix-free operator framework.
 
-use dyn_stack::{MemBuffer, MemStack};
+use dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::matrix_free::conjugate_gradient::{
     conjugate_gradient, conjugate_gradient_scratch, CgError, CgParams,
 };
@@ -91,6 +91,69 @@ pub fn solve_cg(
                 converged: false,
                 residual: f64::MAX,
             }
+        },
+    }
+}
+
+/// Compute the scratch size needed for CG with the given matrix and preconditioner.
+/// Use this to pre-allocate a MemBuffer that can be reused across multiple solves.
+pub fn cg_scratch_size(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+) -> StackReq {
+    conjugate_gradient_scratch(precond, mat, 1, faer::Par::Seq)
+}
+
+/// Solve A*x = rhs using a pre-allocated scratch buffer.
+/// The buffer must have been allocated with at least `cg_scratch_size()` bytes.
+pub fn solve_cg_reuse(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs: &[f64],
+    x: &mut [f64],
+    tol: f64,
+    max_iters: usize,
+    buf: &mut MemBuffer,
+) -> CgResult {
+    let n = mat.nrows();
+    if n == 0 {
+        return CgResult { iterations: 0, converged: true, residual: 0.0 };
+    }
+
+    let rhs_mat = faer::MatRef::from_column_major_slice(rhs, n, 1);
+    let mut x_mat = faer::MatMut::from_column_major_slice_mut(x, n, 1);
+
+    let mut params = CgParams::default();
+    params.rel_tolerance = tol;
+    params.max_iters = max_iters;
+
+    let mut stack = MemStack::new(buf);
+
+    match conjugate_gradient(
+        x_mat.as_mut(),
+        precond,
+        mat,
+        rhs_mat,
+        params,
+        |_| {},
+        faer::Par::Seq,
+        &mut stack,
+    ) {
+        Ok(info) => CgResult {
+            iterations: info.iter_count,
+            converged: true,
+            residual: info.rel_residual,
+        },
+        Err(CgError::NoConvergence { rel_residual, .. }) => CgResult {
+            iterations: max_iters,
+            converged: false,
+            residual: rel_residual,
+        },
+        Err(CgError::NonPositiveDefiniteOperator) => {
+            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+        },
+        Err(CgError::NonPositiveDefinitePreconditioner) => {
+            CgResult { iterations: 0, converged: false, residual: f64::MAX }
         },
     }
 }
