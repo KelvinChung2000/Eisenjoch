@@ -29,7 +29,7 @@ pub use optimizer::NesterovSolver;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Global thread count for faer parallel operations. Default: 8.
-static SOLVER_THREADS: AtomicUsize = AtomicUsize::new(8);
+pub static SOLVER_THREADS: AtomicUsize = AtomicUsize::new(8);
 
 /// Set the number of threads for solver parallelism.
 pub fn set_solver_threads(n: usize) {
