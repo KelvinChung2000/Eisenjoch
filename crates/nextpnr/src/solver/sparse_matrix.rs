@@ -169,7 +169,7 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
         &self,
         out: faer::MatMut<'_, f64>,
         rhs: faer::MatRef<'_, f64>,
-        _par: faer::Par,
+        par: faer::Par,
         _stack: &mut MemStack,
     ) {
         faer::sparse::linalg::matmul::sparse_dense_matmul(
@@ -178,7 +178,7 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
             self.csc.as_ref(),
             rhs,
             1.0,
-            crate::solver::par(),
+            par,
         );
     }
 
@@ -186,17 +186,16 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
         &self,
         out: faer::MatMut<'_, f64>,
         rhs: faer::MatRef<'_, f64>,
-        _par: faer::Par,
+        par: faer::Par,
         _stack: &mut MemStack,
     ) {
-        // Symmetric matrix: conj_apply = apply for real values
         faer::sparse::linalg::matmul::sparse_dense_matmul(
             out,
             faer::Accum::Replace,
             self.csc.as_ref(),
             rhs,
             1.0,
-            crate::solver::par(),
+            par,
         );
     }
 }
