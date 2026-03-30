@@ -184,7 +184,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         {
             let t_batch = std::time::Instant::now();
             let batch_tol = (cfg.cg_tol * 100.0).min(1e-2);
-            let max_batch_iters = 30;
+            let max_batch_iters = 10; // TODO: expose via cfg.cg_max_iters
 
             // Pack all per-net RHS into column-major matrix [n_nodes × n_nets].
             let mut rhs_batch = vec![0.0f64; n_nodes * n_nets];
