@@ -375,10 +375,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
 
-    // Use SnapLegalizer: type-aware snap + spread + BEL assignment in one pass.
-    let type_aware = crate::placer::common::TypeAwarePlacement::build(ctx, 0, 0);
-    let legalizer = crate::placer::legalize::SnapLegalizer;
-    legalizer.legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &type_aware)?;
+    crate::placer::legalize::legalize(
+        ctx, &idx_to_cell, &phys_x, &phys_y, &cfg.legalization,
+    )?;
 
     let post_hpwl = total_hpwl(ctx);
     let post_line = total_line_estimate(ctx);

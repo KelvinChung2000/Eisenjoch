@@ -40,17 +40,39 @@ pub trait Legalizer {
     ) -> Result<f64, PlacerError>;
 }
 
-/// Snap + legalize in one pass: build `TypeAwarePlacement` once, snap positions
-/// to nearest valid tiles, then run the legalization algorithm. Both steps
-/// share the same type-aware placement data.
-pub fn snap_and_legalize(
+/// Create a legalizer by name.
+///
+/// Available strategies:
+/// - `"snap"` (default): type-aware snap + spread + BEL assignment in one pass
+/// - `"ring"`: Manhattan ring search (nearest available BEL)
+/// - `"sorted"`: distance-sorted greedy assignment
+/// - `"bipartite"`: optimal LAPJV bipartite matching
+/// - `"greedy"`: simple nearest-BEL greedy
+pub fn create_legalizer(name: &str) -> Box<dyn Legalizer> {
+    match name {
+        "ring" => Box::new(RingLegalizer { x_offset: 0.0, y_offset: 0.0 }),
+        "sorted" => Box::new(SortedLegalizer),
+        "bipartite" => Box::new(BipartiteLegalizer {
+            cost: Box::new(DistanceCost),
+            lap_max_cells: 10000,
+        }),
+        "greedy" => Box::new(GreedyLegalizer),
+        _ => Box::new(SnapLegalizer),
+    }
+}
+
+/// Legalize cell positions: build TypeAwarePlacement, then run the selected strategy.
+///
+/// `cell_x`/`cell_y` are physical coordinates. The legalizer snaps to valid tiles,
+/// resolves overcrowding, and assigns cells to specific BELs.
+pub fn legalize(
     ctx: &mut Context,
     idx_to_cell: &[CellId],
     cell_x: &[f64],
     cell_y: &[f64],
-    legalizer: &dyn Legalizer,
+    strategy: &str,
 ) -> Result<f64, PlacerError> {
     let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
-    let (snapped_x, snapped_y) = snap_to_clb_grid(ctx, idx_to_cell, cell_x, cell_y, &type_aware);
-    legalizer.legalize(ctx, idx_to_cell, &snapped_x, &snapped_y, &type_aware)
+    let legalizer = create_legalizer(strategy);
+    legalizer.legalize(ctx, idx_to_cell, cell_x, cell_y, &type_aware)
 }
