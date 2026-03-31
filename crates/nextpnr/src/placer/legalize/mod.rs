@@ -12,6 +12,7 @@ pub mod sorted;
 
 use crate::context::Context;
 use crate::netlist::CellId;
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::PlacerError;
 
 pub use bipartite::{BipartiteLegalizer, DistanceCost, LegalizeCost};
@@ -33,4 +34,17 @@ pub trait Legalizer {
         cell_x: &[f64],
         cell_y: &[f64],
     ) -> Result<f64, PlacerError>;
+}
+
+/// Snap + legalize in one pass: snap positions to nearest valid tiles
+/// using TypeAwarePlacement, then run the legalization algorithm.
+pub fn snap_and_legalize(
+    ctx: &mut Context,
+    idx_to_cell: &[CellId],
+    cell_x: &[f64],
+    cell_y: &[f64],
+    legalizer: &dyn Legalizer,
+) -> Result<f64, PlacerError> {
+    let (snapped_x, snapped_y) = snap_to_clb_grid(ctx, idx_to_cell, cell_x, cell_y);
+    legalizer.legalize(ctx, idx_to_cell, &snapped_x, &snapped_y)
 }

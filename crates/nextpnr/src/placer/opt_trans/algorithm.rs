@@ -17,7 +17,6 @@ use crate::solver::preconditioner::amg::{AmgPreconditioner, AmgStructure};
 use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
 use log::info;
 use rayon::{prelude::*, ThreadPoolBuilder};
-use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::placer::common::TypeAwarePlacement;
 
@@ -25,6 +24,33 @@ use super::config::OptTransPlacerCfg;
 use super::demand;
 use super::network::PipeNetwork;
 use super::resistance::ResistanceModel;
+
+fn rebuild_laplacian(
+    solve_pool: &rayon::ThreadPool,
+    network: &mut PipeNetwork,
+    resistance_model: &ResistanceModel,
+    laplacian: &mut SparseMatrix,
+) {
+    laplacian.clear();
+
+    solve_pool.install(|| {
+        network.pipes.par_iter_mut().for_each(|pipe| {
+            let r_eff = resistance_model.effective_resistance(pipe, 0.0);
+            let conductance = 1.0 / r_eff.max(1e-12);
+            pipe.eff_conductance = conductance;
+        });
+    });
+
+    laplacian.add_connections_from_iter(
+        network
+            .pipes
+            .iter()
+            .map(|pipe| (pipe.from, pipe.to, pipe.eff_conductance)),
+    );
+
+    let epsilon = 1e-4 * laplacian.diagonal_mean();
+    laplacian.add_uniform_diagonal_shift(epsilon);
+}
 
 /// Main Beckmann OT placement algorithm.
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
@@ -77,9 +103,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .collect();
 
     // Snap initial positions to valid columns for each cell's type.
-    for i in 0..n {
-        let bucket = cell_buckets[i];
-        cell_x[i] = type_aware.snap_x(bucket, cell_x[i]);
+    for (x, &bucket) in cell_x.iter_mut().zip(cell_buckets.iter()) {
+        *x = type_aware.snap_x(bucket, *x);
     }
 
     info!(
@@ -119,10 +144,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         })
         .collect();
     let amg_structure = AmgStructure::new(network.num_nodes(), &pipe_pairs);
-    info!(
-        "AMG structure: {} levels",
-        amg_structure.num_levels(),
-    );
+    info!("AMG structure: {} levels", amg_structure.num_levels(),);
     let mut amg_precond: Option<AmgPreconditioner> = None;
 
     // Adam optimizer: lr = step_scale controls tiles/iter for median cell.
@@ -147,8 +169,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // a. Compute adaptive congestion exponent from per-type tile overflow.
         {
             let (max_overflow, n_overflow) = type_aware.compute_overflow(
-                &cell_buckets, &cell_x, &cell_y,
-                network.width as usize, network.height as usize,
+                &cell_buckets,
+                &cell_x,
+                &cell_y,
+                network.width as usize,
+                network.height as usize,
             );
 
             // Exponent: 0 when legal, ramps with log of overflow, capped at 4.
@@ -166,27 +191,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             }
         }
 
-        // Build Kirchhoff Laplacian.
-        // Parallel phase: compute conductances for all pipes
-        laplacian.clear();
-        solve_pool.install(|| {
-            network.pipes.par_iter_mut().for_each(|pipe| {
-                let r_eff = resistance_model.effective_resistance(pipe, 0.0);
-                let conductance = 1.0 / r_eff.max(1e-12);
-                pipe.eff_conductance = conductance;
-            });
-        });
-
-        // Sequential assembly: add all connections to sparse matrix
-        for pipe in &network.pipes {
-            laplacian.add_connection(pipe.from, pipe.to, pipe.eff_conductance);
-        }
-
-        let avg_diag = laplacian.diag().iter().sum::<f64>() / n_nodes as f64;
-        let epsilon = 1e-4 * avg_diag;
-        for i in 0..n_nodes {
-            laplacian.add_diagonal(i, epsilon);
-        }
+        // Build Kirchhoff Laplacian from current pipe state.
+        rebuild_laplacian(&solve_pool, &mut network, &resistance_model, &mut laplacian);
 
         let op = SparseMatrixOp::from_matrix(&mut laplacian);
 
@@ -227,11 +233,6 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                             grad: vec![0.0; 2 * n],
                         },
                         |mut local, net_info| {
-                            // Thread-local AMG + CG scratch.
-                            thread_local! {
-                                static TL: std::cell::RefCell<Option<(AmgPreconditioner, dyn_stack::MemBuffer)>> =
-                                    const { std::cell::RefCell::new(None) };
-                            }
                             let driver_rhs = demand::build_driver_rhs(net_info, &network, cfg);
                             let mut pressure = vec![0.0; n_nodes];
                             thread_local! {
@@ -240,18 +241,23 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                             }
                             BUF.with(|cell| {
                                 let mut borrow = cell.borrow_mut();
-                                let buf = borrow.get_or_insert_with(|| {
-                                    dyn_stack::MemBuffer::new(scratch_req)
-                                });
-                                let rhs_mat = faer::MatRef::from_column_major_slice(
-                                    &driver_rhs, n_nodes, 1,
-                                );
+                                let buf = borrow
+                                    .get_or_insert_with(|| dyn_stack::MemBuffer::new(scratch_req));
+                                let rhs_mat =
+                                    faer::MatRef::from_column_major_slice(&driver_rhs, n_nodes, 1);
                                 let p_mat = faer::MatMut::from_column_major_slice_mut(
-                                    &mut pressure, n_nodes, 1,
+                                    &mut pressure,
+                                    n_nodes,
+                                    1,
                                 );
                                 solve_cg_reuse(
-                                    &op, precond, rhs_mat, p_mat,
-                                    cfg.cg_tol, cfg.cg_max_iters, buf,
+                                    &op,
+                                    precond,
+                                    rhs_mat,
+                                    p_mat,
+                                    cfg.cg_tol,
+                                    cfg.cg_max_iters,
+                                    buf,
                                 );
                             });
 
@@ -322,11 +328,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         // Snap positions to nearest valid column (and optionally row) for each cell's type.
         // Cells optimize within their type's valid tile set, so legalization
         // only needs to resolve within-tile overlaps (much smaller displacement).
-        for i in 0..n {
-            let bucket = cell_buckets[i];
-            cell_x[i] = type_aware.snap_x(bucket, cell_x[i]);
-            let snapped_x = cell_x[i].round() as i32;
-            cell_y[i] = type_aware.snap_y(bucket, snapped_x, cell_y[i]);
+        for ((x, y), &bucket) in cell_x
+            .iter_mut()
+            .zip(cell_y.iter_mut())
+            .zip(cell_buckets.iter())
+        {
+            *x = type_aware.snap_x(bucket, *x);
+            let snapped_x = x.round() as i32;
+            *y = type_aware.snap_y(bucket, snapped_x, *y);
         }
 
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
@@ -361,40 +370,25 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let pre_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
     eprintln!("Best iter {}: chpwl={:.0}", best_iter, pre_chpwl);
 
-    // Legalize.
-    crate::placer::legalize::snap_to_clb_grid(
-        ctx,
-        &mut cell_x,
-        &mut cell_y,
-        &idx_to_cell,
-        &network,
-    );
-
+    // Legalize: snap to valid tiles + assign BELs in one pass.
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
 
-    match cfg.legalization.as_str() {
-        "sorted" => {
-            crate::placer::legalize::sorted_legalize(ctx, &idx_to_cell, &phys_x, &phys_y)?;
-        }
-        "bipartite" => {
-            let cost = Box::new(crate::placer::legalize::DistanceCost);
-            crate::placer::legalize::bipartite::legalize_bipartite(
-                ctx,
-                &idx_to_cell,
-                &phys_x,
-                &phys_y,
-                &*cost,
-                cfg.lap_max_cells,
-            )?;
-        }
-        "greedy" => {
-            crate::placer::legalize::legalize_electro(ctx, &idx_to_cell, &phys_x, &phys_y)?;
-        }
-        _ => {
-            crate::placer::legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
-        }
-    }
+    let legalizer: Box<dyn crate::placer::legalize::Legalizer> = match cfg.legalization.as_str() {
+        "sorted" => Box::new(crate::placer::legalize::SortedLegalizer),
+        "bipartite" => Box::new(crate::placer::legalize::BipartiteLegalizer {
+            cost: Box::new(crate::placer::legalize::DistanceCost),
+            lap_max_cells: cfg.lap_max_cells,
+        }),
+        "greedy" => Box::new(crate::placer::legalize::GreedyLegalizer),
+        _ => Box::new(crate::placer::legalize::RingLegalizer {
+            x_offset: 0.0,
+            y_offset: 0.0,
+        }),
+    };
+    crate::placer::legalize::snap_and_legalize(
+        ctx, &idx_to_cell, &phys_x, &phys_y, &*legalizer,
+    )?;
 
     let post_hpwl = total_hpwl(ctx);
     let post_line = total_line_estimate(ctx);
