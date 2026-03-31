@@ -397,8 +397,10 @@ pub fn astar_route(
 
     // Best total score (delay + penalty) found so far. Starts at MAX.
     let mut best_score: DelayT = DelayT::MAX;
-    // Adaptive visit limit: starts unbounded, tightens after first solution.
-    let mut max_visits: usize = usize::MAX;
+    // Adaptive visit limit: caps total node visits to prevent OOM on dense graphs.
+    // Budget scales with grid area — larger chips get more budget.
+    let grid_area = (chipdb.width() as usize) * (chipdb.height() as usize);
+    let mut max_visits: usize = grid_area.saturating_mul(10).max(100_000);
     let mut visit_count: usize = 0;
 
     // Seed with all source wires.

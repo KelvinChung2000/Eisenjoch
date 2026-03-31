@@ -1448,9 +1448,8 @@ impl super::Router for RasterRouter {
                 return Ok(());
             }
 
-            // Cleanup pass: route remaining failed nets with full A* (no
-            // tile confinement, no budget limit). Uses Router1's astar_route
-            // which is slower but guaranteed to find a path if one exists.
+            // Cleanup pass: route remaining failed nets with A*.
+            // Add per-net step budget to prevent OOM on dense routing graphs.
             if failed > 0 && iter == 0 {
                 let failed_nets: Vec<NetId> = ordered_nets
                     .iter()
