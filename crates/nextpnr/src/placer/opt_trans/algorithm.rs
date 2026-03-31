@@ -163,32 +163,45 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let full_h = ctx.chipdb().height() as f64;
     let full_diag = (full_w * full_w + full_h * full_h).sqrt();
 
+    // Progressive resolution schedule: spend more iterations at coarse levels.
+    // Use square-root progress so early (cheap) iterations get more time at low resolution.
+    let mut current_scale = 0.0f64;
+    let mut needs_rebuild = true;
+
     for iter in 0..cfg.max_iters {
         let t_iter = std::time::Instant::now();
 
-        // Progressive resolution: ramp from coarse (0.1) to target over iterations.
+        // Cubic schedule: progress^3 keeps resolution low for most iterations.
+        // First 50% of iters at <25% resolution, last 20% at full resolution.
         let progress = iter as f64 / cfg.max_iters.max(1) as f64;
-        let current_scale = 0.1 + (target_scale - 0.1) * progress;
-        network = PipeNetwork::from_context(ctx, current_scale);
+        let new_scale = 0.05 + (target_scale - 0.05) * progress * progress;
 
-        // Rebuild laplacian and AMG for new network size.
-        laplacian = SparseMatrix::new(network.num_nodes());
-        laplacian.reserve_off_diag(network.num_pipes());
-        amg_precond = None; // force AMG rebuild
+        // Only rebuild network when resolution actually changes.
+        let scale_changed = (new_scale - current_scale).abs() > 0.02;
+        if scale_changed || needs_rebuild {
+            current_scale = new_scale;
+            network = PipeNetwork::from_context(ctx, current_scale);
+            laplacian = SparseMatrix::new(network.num_nodes());
+            laplacian.reserve_off_diag(network.num_pipes());
+            amg_precond = None;
+            needs_rebuild = false;
+        }
 
         let n_nodes = network.num_nodes();
 
-        // Warm-start: reuse previous iteration's global_pressure as CG initial guess.
-        // If the grid changed size, reinitialize to zeros.
         if n_nodes != prev_n_nodes {
             global_pressure.resize(n_nodes, 0.0);
             global_pressure.fill(0.0);
         }
         prev_n_nodes = n_nodes;
 
-        // Cosine lr: 10× at start → 1× at end. step_scale is in tile units.
+        // Lr scales with grid size: at coarse resolution, cells need to move fewer
+        // coarse-grid units to cover the same tile distance. Scale lr by coarsen factor
+        // so effective tile displacement is consistent across resolutions.
+        // Cosine warmup: 10× at start → 1× at end.
         let cosine_factor = 1.0 + 9.0 * (1.0 + (std::f64::consts::PI * progress).cos()) / 2.0;
-        adam.set_lr(cfg.step_scale * cosine_factor);
+        let c = network.coarsen as f64;
+        adam.set_lr(cfg.step_scale * cosine_factor * c);
 
         // a. Compute adaptive congestion exponent from per-type tile overflow.
         let max_overflow;
@@ -393,8 +406,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         if iter % cfg.report_interval == 0 || iter == cfg.max_iters - 1 {
             let grad_norm = grad.par_iter().map(|v| v * v).sum::<f64>().sqrt();
             eprintln!(
-                "OT {:3}: chpwl={:.0} rms={:.2} grad={:.3e} {}ms nets={}",
-                iter, chpwl, disp_rms, grad_norm, iter_ms, n_nets,
+                "OT {:3}: chpwl={:.0} rms={:.2} grid={}x{} lr={:.2} grad={:.3e} {}ms",
+                iter, chpwl, disp_rms,
+                network.width, network.height,
+                cfg.step_scale * cosine_factor * c,
+                grad_norm, iter_ms,
             );
         }
 
@@ -426,6 +442,32 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         post_hpwl - pre_chpwl,
         (post_hpwl - pre_chpwl) / pre_chpwl.max(1.0) * 100.0,
     );
+
+    // Per-net HPWL breakdown (post-legalization BEL positions).
+    {
+        use crate::metrics::wirelength::net_hpwl;
+        let mut net_hpwls: Vec<(f64, usize, crate::netlist::NetId)> = Vec::new();
+        for (net_id, net) in ctx.design.iter_alive_nets() {
+            if net.driver().is_none() || net.num_users() == 0 { continue; }
+            let h = net_hpwl(ctx, net_id);
+            let fanout = net.num_users();
+            net_hpwls.push((h, fanout, net_id));
+        }
+        net_hpwls.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let total: f64 = net_hpwls.iter().map(|(h, _, _)| h).sum();
+        eprintln!("Per-net HPWL: {} nets, total={:.0}", net_hpwls.len(), total);
+        for (i, &(h, f, _)) in net_hpwls.iter().take(10).enumerate() {
+            eprintln!("  #{}: hpwl={:.0} fanout={} ({:.1}%)", i, h, f, h / total * 100.0);
+        }
+        let mut cumul = 0.0;
+        for (i, &(h, _, _)) in net_hpwls.iter().enumerate() {
+            cumul += h;
+            if cumul > total * 0.5 {
+                eprintln!("  50% of HPWL from top {} nets (of {})", i + 1, net_hpwls.len());
+                break;
+            }
+        }
+    }
 
     PlacerPipeline::validate(ctx)?;
     info!("OptTrans placement complete");

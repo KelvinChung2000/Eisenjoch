@@ -215,9 +215,9 @@ impl PipeNetwork {
             }
         }
 
-        eprintln!(
-            "  network: {}x{} (coarsen={}) = {} nodes, {} pipes, {} zero-BEL, {} total BELs",
-            w, h, coarsen, total_nodes, pipes.len(), zero_bel_tiles, total_bels,
+        log::debug!(
+            "network: {}x{} (coarsen={}) = {} nodes, {} pipes",
+            w, h, coarsen, total_nodes, pipes.len(),
         );
 
         Self {
