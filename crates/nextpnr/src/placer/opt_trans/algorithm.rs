@@ -168,8 +168,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         prev_n_nodes = n_nodes;
 
         // a. Compute adaptive congestion exponent from per-type tile overflow.
+        let max_overflow;
         {
-            let (max_overflow, n_overflow) = type_aware.compute_overflow(
+            let n_overflow;
+            (max_overflow, n_overflow) = type_aware.compute_overflow(
                 &cell_buckets,
                 &cell_x,
                 &cell_y,
@@ -266,9 +268,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                                 *dst += src;
                             }
                             // Fanout-aware gradient: high-fanout nets need more room
-                            // to route their many sinks, so scale gradient by sqrt(fanout).
+                            // to route their many sinks, so scale gradient linearly by fanout.
                             let fanout = (net_info.pins.len() - 1).max(1) as f64;
-                            let fanout_weight = fanout.sqrt();
+                            let fanout_weight = fanout;
 
                             let (gx, gy) = local.grad.split_at_mut(n);
                             demand::accumulate_energy_gradient(
@@ -314,7 +316,57 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             });
         }
 
-        // c. Adam step (raw gradient — Adam adapts per-cell from scale).
+        // c. Density spreading: push cells away from overcrowded tiles.
+        //    For each cell at an over-capacity tile, add gradient toward
+        //    the nearest tile with remaining capacity for its type.
+        //    Strength proportional to overflow ratio.
+        if max_overflow > 1.0 {
+            let tw = network.width as usize;
+            let th = network.height as usize;
+
+            // Count cells per type per tile.
+            let mut type_tile_cells: rustc_hash::FxHashMap<(IdString, i32, i32), Vec<usize>> =
+                rustc_hash::FxHashMap::default();
+            for i in 0..n {
+                let tx = cell_x[i].round() as i32;
+                let ty = cell_y[i].round() as i32;
+                type_tile_cells
+                    .entry((cell_buckets[i], tx, ty))
+                    .or_default()
+                    .push(i);
+            }
+
+            for ((bucket, tx, ty), cells) in &type_tile_cells {
+                let cap = type_aware
+                    .tile_capacity
+                    .get(bucket)
+                    .and_then(|m| m.get(&(*tx, *ty)))
+                    .copied()
+                    .unwrap_or(0) as usize;
+
+                if cells.len() <= cap { continue; }
+
+                // Overflow ratio drives spreading strength.
+                let overflow = cells.len() as f64 / cap.max(1) as f64;
+                let spread_strength = (overflow - 1.0).min(10.0);
+
+                // Push excess cells radially outward from tile center.
+                // Each cell gets a gradient pointing away from the overcrowded tile,
+                // scaled by its distance rank (furthest cells move most).
+                for (rank, &ci) in cells.iter().enumerate() {
+                    if rank < cap { continue; } // keep closest cells
+                    // Direction: away from tile center, with some randomness from position.
+                    let away_x = cell_x[ci] - *tx as f64;
+                    let away_y = cell_y[ci] - *ty as f64;
+                    let mag = (away_x * away_x + away_y * away_y).sqrt().max(0.1);
+                    let scale = spread_strength / mag;
+                    grad[ci] += away_x * scale;
+                    grad[n + ci] += away_y * scale;
+                }
+            }
+        }
+
+        // d. Adam step (raw gradient — Adam adapts per-cell from scale).
         adam.step(&grad, &mut delta);
 
         let (dx, dy) = delta.split_at(n);

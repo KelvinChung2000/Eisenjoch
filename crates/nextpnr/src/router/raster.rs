@@ -1476,8 +1476,17 @@ impl super::Router for RasterRouter {
                     );
 
                     let mut cleanup_routed = 0usize;
+                    let cleanup_start = std::time::Instant::now();
+                    let cleanup_budget = std::time::Duration::from_secs(30);
 
                     for &net in &failed_nets {
+                        if cleanup_start.elapsed() > cleanup_budget {
+                            eprintln!(
+                                "RasterRouter: A* cleanup timeout after {}s, {}/{} recovered",
+                                cleanup_budget.as_secs(), cleanup_routed, failed_nets.len(),
+                            );
+                            break;
+                        }
                         let source_wire = match resolve_source_wire(ctx, net) {
                             Ok(Some(w)) => w,
                             _ => continue,
