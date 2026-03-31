@@ -25,6 +25,11 @@ impl AdamOptimizer {
         }
     }
 
+    /// Update the learning rate.
+    pub fn set_lr(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
     /// Compute one Adam update from gradient and write step into `out`.
     pub fn step(&mut self, grad: &[f64], out: &mut [f64]) {
         debug_assert_eq!(grad.len(), self.m.len());

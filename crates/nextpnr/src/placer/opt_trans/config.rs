@@ -90,7 +90,7 @@ impl Default for OptTransPlacerCfg {
         Self {
             seed: 1,
             max_iters: 500,
-            cg_max_iters: 100,
+            cg_max_iters: 500,
             cg_tol: 1e-2,
             cg_batch_size: 4,
             congestion_exponent: 0.0,
@@ -100,7 +100,7 @@ impl Default for OptTransPlacerCfg {
             anderson_depth: 3,
             report_interval: 5,
             lap_max_cells: 10000,
-            init_strategy: InitStrategy::Centroid,
+            init_strategy: InitStrategy::RandomBel,
             subtile_resolution: 1,
             preconditioner: PreconditionerType::Amg,
             num_threads: 8,

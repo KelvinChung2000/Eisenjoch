@@ -81,19 +81,18 @@ pub(crate) struct BilinearJacobianStencil {
     pub dw_dy: [f64; 4],
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BilinearCorners {
+    pub nodes: [usize; 4],
+    pub fx: f64,
+    pub fy: f64,
+}
+
 #[inline]
-pub(crate) fn bilinear_jacobian_stencil(
-    tile_x: f64,
-    tile_y: f64,
-    params: &GridParams,
-) -> BilinearJacobianStencil {
+pub(crate) fn bilinear_corners(tile_x: f64, tile_y: f64, params: &GridParams) -> BilinearCorners {
     let sx = to_subtile_coord(tile_x, params.resolution);
     let sy = to_subtile_coord(tile_y, params.resolution);
     let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, params.subtile_width, params.subtile_height);
-    let n_f = params.resolution as f64;
-
-    let dw_dx = [-(1.0 - fy) * n_f, (1.0 - fy) * n_f, -fy * n_f, fy * n_f];
-    let dw_dy = [-(1.0 - fx) * n_f, -fx * n_f, (1.0 - fx) * n_f, fx * n_f];
 
     let nodes = [
         subtile_grid_index(gx0, gy0, params.tile_width, params.resolution),
@@ -102,8 +101,33 @@ pub(crate) fn bilinear_jacobian_stencil(
         subtile_grid_index(gx0 + 1, gy0 + 1, params.tile_width, params.resolution),
     ];
 
+    BilinearCorners { nodes, fx, fy }
+}
+
+#[inline]
+pub(crate) fn bilinear_jacobian_stencil(
+    tile_x: f64,
+    tile_y: f64,
+    params: &GridParams,
+) -> BilinearJacobianStencil {
+    let corners = bilinear_corners(tile_x, tile_y, params);
+    let n_f = params.resolution as f64;
+
+    let dw_dx = [
+        -(1.0 - corners.fy) * n_f,
+        (1.0 - corners.fy) * n_f,
+        -corners.fy * n_f,
+        corners.fy * n_f,
+    ];
+    let dw_dy = [
+        -(1.0 - corners.fx) * n_f,
+        -corners.fx * n_f,
+        (1.0 - corners.fx) * n_f,
+        corners.fx * n_f,
+    ];
+
     BilinearJacobianStencil {
-        nodes,
+        nodes: corners.nodes,
         dw_dx,
         dw_dy,
     }
@@ -116,16 +140,14 @@ pub(crate) fn pressure_gradient_at(
     tile_y: f64,
     params: &GridParams,
 ) -> (f64, f64) {
-    let sx = to_subtile_coord(tile_x, params.resolution);
-    let sy = to_subtile_coord(tile_y, params.resolution);
-    let (gx0, gy0, fx, fy) = bilinear_cell(sx, sy, params.subtile_width, params.subtile_height);
+    let corners = bilinear_corners(tile_x, tile_y, params);
 
-    let p00 = pressure[subtile_grid_index(gx0, gy0, params.tile_width, params.resolution)];
-    let p10 = pressure[subtile_grid_index(gx0 + 1, gy0, params.tile_width, params.resolution)];
-    let p01 = pressure[subtile_grid_index(gx0, gy0 + 1, params.tile_width, params.resolution)];
-    let p11 = pressure[subtile_grid_index(gx0 + 1, gy0 + 1, params.tile_width, params.resolution)];
+    let p00 = pressure[corners.nodes[0]];
+    let p10 = pressure[corners.nodes[1]];
+    let p01 = pressure[corners.nodes[2]];
+    let p11 = pressure[corners.nodes[3]];
 
-    bilinear_gradient(fx, fy, p00, p10, p01, p11)
+    bilinear_gradient(corners.fx, corners.fy, p00, p10, p01, p11)
 }
 
 #[inline]
@@ -503,6 +525,72 @@ fn pin_pos(
     }
 }
 
+#[derive(Clone, Copy)]
+struct TileBBox {
+    x0: i32,
+    x1: i32,
+    y0: i32,
+    y1: i32,
+}
+
+fn net_tile_bbox(
+    ctx: &Context,
+    net_id: crate::netlist::NetId,
+    driver_cell: CellId,
+    cell_to_idx: &FxHashMap<CellId, usize>,
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+) -> TileBBox {
+    let net = ctx.design.net(net_id);
+    let (dxx, dyy) = pin_pos(ctx, driver_cell, cell_to_idx, cell_x, cell_y, network);
+    let (mut min_x, mut max_x) = (dxx, dxx);
+    let (mut min_y, mut max_y) = (dyy, dyy);
+
+    for user in net.users() {
+        if !user.is_valid() {
+            continue;
+        }
+        let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+        min_x = min_x.min(ux);
+        max_x = max_x.max(ux);
+        min_y = min_y.min(uy);
+        max_y = max_y.max(uy);
+    }
+
+    TileBBox {
+        x0: (min_x.floor() as i32).clamp(0, network.width - 1),
+        x1: (max_x.ceil() as i32).clamp(0, network.width - 1),
+        y0: (min_y.floor() as i32).clamp(0, network.height - 1),
+        y1: (max_y.ceil() as i32).clamp(0, network.height - 1),
+    }
+}
+
+fn accumulate_pipe_counts_in_bbox(
+    local_counts: &mut [u32],
+    bbox: TileBBox,
+    node_pipes: &[Vec<usize>],
+    pipe_from: &[usize],
+    tile_width: i32,
+    n_per_tile: usize,
+) {
+    for ty in bbox.y0..=bbox.y1 {
+        for tx in bbox.x0..=bbox.x1 {
+            let base = ((ty * tile_width + tx) as usize) * n_per_tile;
+            for ni in base..(base + n_per_tile) {
+                if ni >= node_pipes.len() {
+                    continue;
+                }
+                for &pipe_idx in &node_pipes[ni] {
+                    if pipe_from[pipe_idx] == ni {
+                        local_counts[pipe_idx] = local_counts[pipe_idx].saturating_add(1);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Update net_count on pipes based on current cell positions.
 ///
 /// For each net, determines which pipes its bounding box covers and
@@ -528,7 +616,6 @@ pub fn update_net_counts(
     let pipe_from: Vec<usize> = network.pipes.iter().map(|p| p.from).collect();
     let node_pipes = &network.node_pipes;
     let w = network.width;
-    let h = network.height;
     let n_per_tile = network.nodes_per_tile();
 
     let net_ids: Vec<_> = ctx
@@ -550,43 +637,16 @@ pub fn update_net_counts(
                     return local_counts;
                 }
 
-                let (dxx, dyy) = pin_pos(ctx, dp.cell, cell_to_idx, cell_x, cell_y, network);
-                let (mut min_x, mut max_x) = (dxx, dxx);
-                let (mut min_y, mut max_y) = (dyy, dyy);
-
-                for user in net.users() {
-                    if !user.is_valid() {
-                        continue;
-                    }
-                    let (ux, uy) = pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
-                    min_x = min_x.min(ux);
-                    max_x = max_x.max(ux);
-                    min_y = min_y.min(uy);
-                    max_y = max_y.max(uy);
-                }
-
-                let x0 = (min_x.floor() as i32).clamp(0, w - 1);
-                let x1 = (max_x.ceil() as i32).clamp(0, w - 1);
-                let y0 = (min_y.floor() as i32).clamp(0, h - 1);
-                let y1 = (max_y.ceil() as i32).clamp(0, h - 1);
-
-                for ty in y0..=y1 {
-                    for tx in x0..=x1 {
-                        let base = ((ty * w + tx) as usize) * n_per_tile;
-                        for offset in 0..n_per_tile {
-                            let ni = base + offset;
-                            if ni >= node_pipes.len() {
-                                continue;
-                            }
-                            for &pipe_idx in &node_pipes[ni] {
-                                if pipe_from[pipe_idx] == ni {
-                                    local_counts[pipe_idx] =
-                                        local_counts[pipe_idx].saturating_add(1);
-                                }
-                            }
-                        }
-                    }
-                }
+                let bbox =
+                    net_tile_bbox(ctx, net_id, dp.cell, cell_to_idx, cell_x, cell_y, network);
+                accumulate_pipe_counts_in_bbox(
+                    &mut local_counts,
+                    bbox,
+                    node_pipes,
+                    &pipe_from,
+                    w,
+                    n_per_tile,
+                );
 
                 local_counts
             },

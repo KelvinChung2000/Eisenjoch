@@ -11,13 +11,12 @@
 
 mod algorithm;
 pub mod config;
+mod demand;
 pub(crate) mod network;
 mod resistance;
-mod demand;
-mod gauss_newton;
 
-pub use config::OptTransPlacerCfg;
 pub use algorithm::place_opt_trans;
+pub use config::OptTransPlacerCfg;
 
 use rustc_hash::FxHashSet;
 
