@@ -19,130 +19,7 @@ use log::info;
 use rayon::{prelude::*, ThreadPoolBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Pre-computed per-cell-type valid tile positions and capacities.
-struct TypeAwarePlacement {
-    /// For each cell type (resolved bucket): sorted list of valid x-coordinates (virtual grid).
-    valid_xs: FxHashMap<IdString, Vec<f64>>,
-    /// For each cell type: sorted list of valid y-coordinates per x-column.
-    valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>>,
-    /// Per-tile capacity for each cell type: (vx, vy) -> n_compatible_bels.
-    tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>>,
-}
-
-impl TypeAwarePlacement {
-    fn build(ctx: &Context, network: &super::network::PipeNetwork) -> Self {
-        // Collect all cell types present in the design (resolved to buckets).
-        let mut cell_types_present: FxHashSet<IdString> = FxHashSet::default();
-        for (_cell_id, cell) in ctx.design.iter_alive_cells() {
-            if cell.bel_strength.is_locked() {
-                continue;
-            }
-            let bucket = ctx.resolve_bucket(cell.cell_type);
-            cell_types_present.insert(bucket);
-        }
-
-        let mut valid_xs: FxHashMap<IdString, Vec<f64>> = FxHashMap::default();
-        let mut valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>> = FxHashMap::default();
-        let mut tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
-            FxHashMap::default();
-
-        for &ct in &cell_types_present {
-            let mut xs_set: FxHashSet<i32> = FxHashSet::default();
-            let mut ys_per_x: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
-            let cap_map = tile_capacity.entry(ct).or_default();
-
-            for bel in ctx.bels_for_bucket(ct) {
-                let loc = bel.loc();
-                let vx = loc.x - network.x0;
-                let vy = loc.y - network.y0;
-                xs_set.insert(vx);
-                ys_per_x.entry(vx).or_default().insert(vy);
-                *cap_map.entry((vx, vy)).or_insert(0) += 1;
-            }
-
-            let mut xs: Vec<f64> = xs_set.into_iter().map(|x| x as f64).collect();
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            valid_xs.insert(ct, xs);
-
-            let mut ys_map: FxHashMap<i32, Vec<f64>> = FxHashMap::default();
-            for (x, ys_set) in ys_per_x {
-                let mut ys: Vec<f64> = ys_set.into_iter().map(|y| y as f64).collect();
-                ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                ys_map.insert(x, ys);
-            }
-            valid_ys.insert(ct, ys_map);
-        }
-
-        let n_types = cell_types_present.len();
-        for ct in &cell_types_present {
-            let n_pos = valid_xs.get(ct).map(|v| v.len()).unwrap_or(0);
-            let n_bels: u32 = tile_capacity
-                .get(ct)
-                .map(|m| m.values().sum())
-                .unwrap_or(0);
-            eprintln!(
-                "  type {}: {} valid columns, {} total BELs",
-                ctx.name_of(*ct),
-                n_pos,
-                n_bels,
-            );
-        }
-        eprintln!("TypeAwarePlacement: {} cell types", n_types);
-
-        Self {
-            valid_xs,
-            valid_ys,
-            tile_capacity,
-        }
-    }
-
-    /// Snap x to nearest valid column for this cell type. Returns the snapped x.
-    fn snap_x(&self, bucket: IdString, x: f64) -> f64 {
-        let xs = match self.valid_xs.get(&bucket) {
-            Some(xs) if !xs.is_empty() => xs,
-            _ => return x,
-        };
-        let idx = xs.partition_point(|&c| c < x);
-        if idx == 0 {
-            xs[0]
-        } else if idx >= xs.len() {
-            *xs.last().unwrap()
-        } else {
-            let left = xs[idx - 1];
-            let right = xs[idx];
-            if (x - left) <= (right - x) {
-                left
-            } else {
-                right
-            }
-        }
-    }
-
-    /// Snap y to nearest valid row for this cell type at the given (already-snapped) x column.
-    fn snap_y(&self, bucket: IdString, snapped_x: i32, y: f64) -> f64 {
-        let ys = match self.valid_ys.get(&bucket) {
-            Some(ys_map) => match ys_map.get(&snapped_x) {
-                Some(ys) if !ys.is_empty() => ys,
-                _ => return y,
-            },
-            _ => return y,
-        };
-        let idx = ys.partition_point(|&c| c < y);
-        if idx == 0 {
-            ys[0]
-        } else if idx >= ys.len() {
-            *ys.last().unwrap()
-        } else {
-            let left = ys[idx - 1];
-            let right = ys[idx];
-            if (y - left) <= (right - y) {
-                left
-            } else {
-                right
-            }
-        }
-    }
-}
+use crate::placer::common::TypeAwarePlacement;
 
 use super::config::OptTransPlacerCfg;
 use super::demand;
@@ -191,7 +68,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let max_y = (network.height - 1) as f64;
 
     // Build per-cell-type valid tile positions and capacities.
-    let type_aware = TypeAwarePlacement::build(ctx, &network);
+    let type_aware = TypeAwarePlacement::build(ctx, network.x0, network.y0);
 
     // Build per-cell resolved bucket, parallel to cell_x/cell_y.
     let cell_buckets: Vec<IdString> = idx_to_cell
@@ -268,49 +145,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         prev_n_nodes = n_nodes;
 
         // a. Compute adaptive congestion exponent from per-type tile overflow.
-        //    For each cell type, count how many cells of that type occupy each tile,
-        //    and divide by the number of compatible BELs at that tile.
-        //    The max overflow across all types drives the congestion exponent.
         {
-            // Count cells per type per tile.
-            let mut type_tile_count: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
-                FxHashMap::default();
-            for i in 0..n {
-                let bucket = cell_buckets[i];
-                let tx = cell_x[i].round() as i32;
-                let ty = cell_y[i].round() as i32;
-                *type_tile_count
-                    .entry(bucket)
-                    .or_default()
-                    .entry((tx, ty))
-                    .or_insert(0) += 1;
-            }
-
-            let mut max_overflow: f64 = 0.0;
-            let mut n_overflow = 0usize;
-
-            for (bucket, tile_counts) in &type_tile_count {
-                let cap_map = match type_aware.tile_capacity.get(bucket) {
-                    Some(m) => m,
-                    None => continue,
-                };
-                for (&(tx, ty), &cnt) in tile_counts {
-                    let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0);
-                    if cap > 0 {
-                        let ratio = cnt as f64 / cap as f64;
-                        if ratio > max_overflow {
-                            max_overflow = ratio;
-                        }
-                        if cnt > cap {
-                            n_overflow += 1;
-                        }
-                    } else if cnt > 0 {
-                        // Cells at a tile with zero capacity for their type: max overflow.
-                        max_overflow = max_overflow.max(cnt as f64);
-                        n_overflow += 1;
-                    }
-                }
-            }
+            let (max_overflow, n_overflow) = type_aware.compute_overflow(
+                &cell_buckets, &cell_x, &cell_y,
+                network.width as usize, network.height as usize,
+            );
 
             // Exponent: 0 when legal, ramps with log of overflow, capped at 4.
             resistance_model.congestion_exponent = if max_overflow > 1.0 {

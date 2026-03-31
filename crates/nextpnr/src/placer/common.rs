@@ -559,3 +559,181 @@ where
 
     result
 }
+
+// ---------------------------------------------------------------------------
+// Type-aware tile placement
+// ---------------------------------------------------------------------------
+
+/// Pre-computed per-cell-type valid tile positions and BEL capacities.
+///
+/// Shared across placers. Enables type-aware snapping (cells move only to tiles
+/// with compatible BELs) and per-type overflow detection for density control.
+pub struct TypeAwarePlacement {
+    /// For each cell type (resolved bucket): sorted list of valid x-coordinates.
+    pub valid_xs: FxHashMap<IdString, Vec<f64>>,
+    /// For each cell type: sorted list of valid y-coordinates per x-column.
+    pub valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>>,
+    /// Per-tile capacity for each cell type: (vx, vy) → n_compatible_bels.
+    pub tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>>,
+}
+
+impl TypeAwarePlacement {
+    /// Build from the chip database. `x0`/`y0` is the grid origin offset
+    /// (physical tile coords → virtual grid coords: `vx = loc.x - x0`).
+    pub fn build(ctx: &Context, x0: i32, y0: i32) -> Self {
+        let mut cell_types_present: FxHashSet<IdString> = FxHashSet::default();
+        for (_cell_id, cell) in ctx.design.iter_alive_cells() {
+            if cell.bel_strength.is_locked() {
+                continue;
+            }
+            let bucket = ctx.resolve_bucket(cell.cell_type);
+            cell_types_present.insert(bucket);
+        }
+
+        let mut valid_xs: FxHashMap<IdString, Vec<f64>> = FxHashMap::default();
+        let mut valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>> = FxHashMap::default();
+        let mut tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+            FxHashMap::default();
+
+        for &ct in &cell_types_present {
+            let mut xs_set: FxHashSet<i32> = FxHashSet::default();
+            let mut ys_per_x: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
+            let cap_map = tile_capacity.entry(ct).or_default();
+
+            for bel in ctx.bels_for_bucket(ct) {
+                let loc = bel.loc();
+                let vx = loc.x - x0;
+                let vy = loc.y - y0;
+                xs_set.insert(vx);
+                ys_per_x.entry(vx).or_default().insert(vy);
+                *cap_map.entry((vx, vy)).or_insert(0) += 1;
+            }
+
+            let mut xs: Vec<f64> = xs_set.into_iter().map(|x| x as f64).collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            valid_xs.insert(ct, xs);
+
+            let mut ys_map: FxHashMap<i32, Vec<f64>> = FxHashMap::default();
+            for (x, ys_set) in ys_per_x {
+                let mut ys: Vec<f64> = ys_set.into_iter().map(|y| y as f64).collect();
+                ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                ys_map.insert(x, ys);
+            }
+            valid_ys.insert(ct, ys_map);
+        }
+
+        let n_types = cell_types_present.len();
+        for ct in &cell_types_present {
+            let n_pos = valid_xs.get(ct).map(|v| v.len()).unwrap_or(0);
+            let n_bels: u32 = tile_capacity
+                .get(ct)
+                .map(|m| m.values().sum())
+                .unwrap_or(0);
+            eprintln!(
+                "  type {}: {} valid columns, {} total BELs",
+                ctx.name_of(*ct),
+                n_pos,
+                n_bels,
+            );
+        }
+        eprintln!("TypeAwarePlacement: {} cell types", n_types);
+
+        Self {
+            valid_xs,
+            valid_ys,
+            tile_capacity,
+        }
+    }
+
+    /// Snap x to nearest valid column for this cell type.
+    pub fn snap_x(&self, bucket: IdString, x: f64) -> f64 {
+        let xs = match self.valid_xs.get(&bucket) {
+            Some(xs) if !xs.is_empty() => xs,
+            _ => return x,
+        };
+        let idx = xs.partition_point(|&c| c < x);
+        if idx == 0 {
+            xs[0]
+        } else if idx >= xs.len() {
+            *xs.last().unwrap()
+        } else {
+            let left = xs[idx - 1];
+            let right = xs[idx];
+            if (x - left) <= (right - x) { left } else { right }
+        }
+    }
+
+    /// Snap y to nearest valid row for this cell type at the given x column.
+    pub fn snap_y(&self, bucket: IdString, snapped_x: i32, y: f64) -> f64 {
+        let ys = match self.valid_ys.get(&bucket) {
+            Some(ys_map) => match ys_map.get(&snapped_x) {
+                Some(ys) if !ys.is_empty() => ys,
+                _ => return y,
+            },
+            _ => return y,
+        };
+        let idx = ys.partition_point(|&c| c < y);
+        if idx == 0 {
+            ys[0]
+        } else if idx >= ys.len() {
+            *ys.last().unwrap()
+        } else {
+            let left = ys[idx - 1];
+            let right = ys[idx];
+            if (y - left) <= (right - y) { left } else { right }
+        }
+    }
+
+    /// Compute max per-type tile overflow ratio.
+    ///
+    /// For each cell type, counts cells at each tile and divides by compatible
+    /// BEL capacity. Returns (max_overflow_ratio, n_tiles_over_capacity).
+    pub fn compute_overflow(
+        &self,
+        cell_buckets: &[IdString],
+        cell_x: &[f64],
+        cell_y: &[f64],
+        grid_w: usize,
+        grid_h: usize,
+    ) -> (f64, usize) {
+        let mut max_overflow = 0.0f64;
+        let mut n_over = 0usize;
+
+        // Count cells per type per tile.
+        let mut type_tile_count: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+            FxHashMap::default();
+        for (i, &bucket) in cell_buckets.iter().enumerate() {
+            let tx = (cell_x[i].round() as i32).clamp(0, grid_w as i32 - 1);
+            let ty = (cell_y[i].round() as i32).clamp(0, grid_h as i32 - 1);
+            *type_tile_count
+                .entry(bucket)
+                .or_default()
+                .entry((tx, ty))
+                .or_insert(0) += 1;
+        }
+
+        for (bucket, tile_counts) in &type_tile_count {
+            let cap_map = match self.tile_capacity.get(bucket) {
+                Some(m) => m,
+                None => continue,
+            };
+            for (&(tx, ty), &count) in tile_counts {
+                let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0);
+                if cap == 0 {
+                    if count > 0 {
+                        max_overflow = max_overflow.max(count as f64);
+                        n_over += 1;
+                    }
+                } else {
+                    let ratio = count as f64 / cap as f64;
+                    max_overflow = max_overflow.max(ratio);
+                    if count > cap {
+                        n_over += 1;
+                    }
+                }
+            }
+        }
+
+        (max_overflow, n_over)
+    }
+}
