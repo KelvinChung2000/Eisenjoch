@@ -265,9 +265,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                             for (dst, &src) in local.pressure.iter_mut().zip(pressure.iter()) {
                                 *dst += src;
                             }
+                            // Fanout-aware gradient: high-fanout nets need more room
+                            // to route their many sinks, so scale gradient by sqrt(fanout).
+                            let fanout = (net_info.pins.len() - 1).max(1) as f64;
+                            let fanout_weight = fanout.sqrt();
+
                             let (gx, gy) = local.grad.split_at_mut(n);
                             demand::accumulate_energy_gradient(
-                                net_info, &pressure, &network, cfg, 1.0, gx, gy,
+                                net_info, &pressure, &network, cfg, fanout_weight, gx, gy,
                             );
                             local
                         },
