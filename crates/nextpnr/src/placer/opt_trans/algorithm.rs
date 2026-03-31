@@ -167,24 +167,38 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // Use square-root progress so early (cheap) iterations get more time at low resolution.
     let mut current_scale = 0.0f64;
     let mut needs_rebuild = true;
+    let mut prev_rms = f64::INFINITY;
+    let mut iters_at_level = 0usize;
 
     for iter in 0..cfg.max_iters {
         let t_iter = std::time::Instant::now();
 
-        // Cubic schedule: progress^3 keeps resolution low for most iterations.
-        // First 50% of iters at <25% resolution, last 20% at full resolution.
-        let progress = iter as f64 / cfg.max_iters.max(1) as f64;
-        let new_scale = 0.05 + (target_scale - 0.05) * progress * progress;
-
-        // Only rebuild network when resolution actually changes.
-        let scale_changed = (new_scale - current_scale).abs() > 0.02;
-        if scale_changed || needs_rebuild {
+        // Adaptive resolution: stay at current level until step rms drops below
+        // threshold (convergence), then increase resolution. This ensures the coarse
+        // grid fully converges before moving to finer grids.
+        let min_scale = 0.05;
+        // Move to finer grid after spending enough iterations at current level.
+        // Minimum iters ensures the coarse grid converges before refining.
+        let min_iters_per_level = 30;
+        let max_iters_per_level = 60;
+        iters_at_level += 1;
+        let should_refine = iters_at_level >= min_iters_per_level
+            && (prev_rms < 1.0 || iters_at_level >= max_iters_per_level);
+        if needs_rebuild || (iter > 0 && should_refine && current_scale < target_scale) {
+            // Double the resolution each time.
+            let new_scale = if needs_rebuild {
+                min_scale
+            } else {
+                (current_scale * 2.0).min(target_scale)
+            };
             current_scale = new_scale;
             network = PipeNetwork::from_context(ctx, current_scale);
             laplacian = SparseMatrix::new(network.num_nodes());
             laplacian.reserve_off_diag(network.num_pipes());
             amg_precond = None;
             needs_rebuild = false;
+            iters_at_level = 0;
+            eprintln!("  → resolution {:.2} ({}x{}, {} nodes)", current_scale, network.width, network.height, network.num_nodes());
         }
 
         let n_nodes = network.num_nodes();
@@ -195,13 +209,12 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
         prev_n_nodes = n_nodes;
 
-        // Lr scales with grid size: at coarse resolution, cells need to move fewer
-        // coarse-grid units to cover the same tile distance. Scale lr by coarsen factor
-        // so effective tile displacement is consistent across resolutions.
-        // Cosine warmup: 10× at start → 1× at end.
-        let cosine_factor = 1.0 + 9.0 * (1.0 + (std::f64::consts::PI * progress).cos()) / 2.0;
+        // Lr scales with coarsen factor so effective tile displacement is consistent.
+        // At coarse grid (coarsen=20): lr = 0.5 * 20 = 10 (coarse-grid units)
+        //   → 10 * 20 = 200 tile-units per step (big moves on coarse grid)
+        // At fine grid (coarsen=1): lr = 0.5 * 1 = 0.5 tile-units per step
         let c = network.coarsen as f64;
-        adam.set_lr(cfg.step_scale * cosine_factor * c);
+        adam.set_lr(cfg.step_scale * c);
 
         // a. Compute adaptive congestion exponent from per-type tile overflow.
         let max_overflow;
@@ -376,6 +389,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         });
 
         let disp_rms = ((delta.par_iter().map(|v| v * v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
+        prev_rms = disp_rms;
 
         // Snap positions to nearest valid column (and optionally row) for each cell's type.
         // Cells optimize within their type's valid tile set, so legalization
@@ -406,10 +420,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         if iter % cfg.report_interval == 0 || iter == cfg.max_iters - 1 {
             let grad_norm = grad.par_iter().map(|v| v * v).sum::<f64>().sqrt();
             eprintln!(
-                "OT {:3}: chpwl={:.0} rms={:.2} grid={}x{} lr={:.2} grad={:.3e} {}ms",
+                "OT {:3}: chpwl={:.0} rms={:.2} grid={}x{} c={} lr={:.2} grad={:.3e} {}ms",
                 iter, chpwl, disp_rms,
                 network.width, network.height,
-                cfg.step_scale * cosine_factor * c,
+                network.coarsen,
+                cfg.step_scale * c,
                 grad_norm, iter_ms,
             );
         }
