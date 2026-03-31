@@ -4,6 +4,7 @@ use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::PlacerError;
 
 use super::Legalizer;
@@ -18,8 +19,9 @@ impl Legalizer for GreedyLegalizer {
         idx_to_cell: &[CellId],
         cell_x: &[f64],
         cell_y: &[f64],
+        _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
-        legalize_electro(ctx, idx_to_cell, cell_x, cell_y)
+        legalize_electro(ctx, idx_to_cell, cell_x, cell_y, _type_aware)
     }
 }
 
@@ -28,6 +30,7 @@ pub fn legalize_electro(
     idx_to_cell: &[CellId],
     cell_x: &[f64],
     cell_y: &[f64],
+    _type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     unbind_movable_cells(ctx, idx_to_cell);
 

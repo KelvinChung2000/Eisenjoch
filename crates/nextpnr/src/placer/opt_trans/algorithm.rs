@@ -9,6 +9,7 @@ use crate::common::IdString;
 use crate::context::Context;
 use crate::metrics::{total_hpwl, total_line_estimate};
 use crate::placer::common;
+use crate::placer::legalize::Legalizer;
 use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
 use crate::solver::cg::{cg_scratch_size, solve_cg_reuse};
@@ -374,21 +375,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
 
-    let legalizer: Box<dyn crate::placer::legalize::Legalizer> = match cfg.legalization.as_str() {
-        "sorted" => Box::new(crate::placer::legalize::SortedLegalizer),
-        "bipartite" => Box::new(crate::placer::legalize::BipartiteLegalizer {
-            cost: Box::new(crate::placer::legalize::DistanceCost),
-            lap_max_cells: cfg.lap_max_cells,
-        }),
-        "greedy" => Box::new(crate::placer::legalize::GreedyLegalizer),
-        _ => Box::new(crate::placer::legalize::RingLegalizer {
-            x_offset: 0.0,
-            y_offset: 0.0,
-        }),
-    };
-    crate::placer::legalize::snap_and_legalize(
-        ctx, &idx_to_cell, &phys_x, &phys_y, &*legalizer,
-    )?;
+    // Use SnapLegalizer: type-aware snap + spread + BEL assignment in one pass.
+    let type_aware = crate::placer::common::TypeAwarePlacement::build(ctx, 0, 0);
+    let legalizer = crate::placer::legalize::SnapLegalizer;
+    legalizer.legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &type_aware)?;
 
     let post_hpwl = total_hpwl(ctx);
     let post_line = total_line_estimate(ctx);

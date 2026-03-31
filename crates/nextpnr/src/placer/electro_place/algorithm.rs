@@ -14,6 +14,7 @@ use crate::placer::PlacerPipeline;
 
 use super::config::ElectroPlaceCfg;
 use super::density;
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::legalize_electro;
 
 const DENSITY_NORM_EPSILON: f64 = 1e-30;
@@ -60,6 +61,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
     );
 
     let pin_weights = compute_pin_weights(ctx, &cell_to_idx, n);
+    let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
 
     let mut density_penalty = 0.0;
     let mut density_initialized = false;
@@ -142,7 +144,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
             cell_y.copy_from_slice(nesterov_y.positions());
             clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
 
-            let displacement = legalize_electro(ctx, &idx_to_cell, &cell_x, &cell_y)?;
+            let displacement = legalize_electro(ctx, &idx_to_cell, &cell_x, &cell_y, &type_aware)?;
             let hpwl = total_hpwl(ctx);
             loop_state.record_metric(hpwl, &cell_x, &cell_y, iter);
 
@@ -160,7 +162,7 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
         }
     }
 
-    let _ = legalize_electro(ctx, &idx_to_cell, &loop_state.best_positions_x, &loop_state.best_positions_y)?;
+    let _ = legalize_electro(ctx, &idx_to_cell, &loop_state.best_positions_x, &loop_state.best_positions_y, &type_aware)?;
 
     PlacerPipeline::validate(ctx)?;
     info!("ElectroPlace complete");

@@ -8,6 +8,7 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::PlacerError;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -27,8 +28,9 @@ impl Legalizer for SortedLegalizer {
         idx_to_cell: &[CellId],
         cell_x: &[f64],
         cell_y: &[f64],
+        _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
-        sorted_legalize(ctx, idx_to_cell, cell_x, cell_y)
+        sorted_legalize(ctx, idx_to_cell, cell_x, cell_y, _type_aware)
     }
 }
 
@@ -59,6 +61,7 @@ pub fn sorted_legalize(
     idx_to_cell: &[CellId],
     cell_x: &[f64],
     cell_y: &[f64],
+    _type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     let n = idx_to_cell.len();
     if n == 0 {

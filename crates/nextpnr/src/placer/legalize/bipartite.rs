@@ -8,6 +8,7 @@ use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::PlacerError;
 
 use ndarray::Array2;
@@ -28,8 +29,9 @@ impl Legalizer for BipartiteLegalizer {
         idx_to_cell: &[CellId],
         cell_x: &[f64],
         cell_y: &[f64],
+        _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
-        legalize_bipartite(ctx, idx_to_cell, cell_x, cell_y, &*self.cost, self.lap_max_cells)
+        legalize_bipartite(ctx, idx_to_cell, cell_x, cell_y, &*self.cost, self.lap_max_cells, _type_aware)
     }
 }
 
@@ -62,6 +64,7 @@ pub fn legalize_bipartite(
     cell_y: &[f64],
     cost: &dyn LegalizeCost,
     lap_max_cells: usize,
+    type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     unbind_movable_cells(ctx, idx_to_cell);
 
@@ -86,7 +89,23 @@ pub fn legalize_bipartite(
             )));
         }
 
-        // Collect available BELs
+        // Use tile_capacity from TypeAwarePlacement for the capacity check.
+        let bucket = ctx.resolve_bucket(cell_type);
+        let total_capacity: u32 = type_aware
+            .tile_capacity
+            .get(&bucket)
+            .map(|cap_map| cap_map.values().sum())
+            .unwrap_or(0);
+        if (total_capacity as usize) < n_cells {
+            return Err(PlacerError::NoBelsAvailable(format!(
+                "{} (need {} BELs but only {} total capacity)",
+                ctx.name_of(cell_type),
+                n_cells,
+                total_capacity,
+            )));
+        }
+
+        // Collect available BELs for assignment.
         let bels: Vec<(BelId, i32, i32)> = ctx
             .bels_for_bucket(cell_type)
             .filter(|b| b.is_available())

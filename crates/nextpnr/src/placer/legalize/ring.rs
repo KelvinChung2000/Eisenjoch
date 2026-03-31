@@ -7,6 +7,7 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::PlacerError;
 
 use rustc_hash::FxHashMap;
@@ -26,10 +27,11 @@ impl Legalizer for RingLegalizer {
         idx_to_cell: &[CellId],
         cell_x: &[f64],
         cell_y: &[f64],
+        _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
         let phys_x: Vec<f64> = cell_x.iter().map(|&x| x + self.x_offset).collect();
         let phys_y: Vec<f64> = cell_y.iter().map(|&y| y + self.y_offset).collect();
-        legalize_ring(ctx, idx_to_cell, &phys_x, &phys_y)
+        legalize_ring(ctx, idx_to_cell, &phys_x, &phys_y, _type_aware)
     }
 }
 
@@ -42,6 +44,7 @@ pub fn legalize_ring(
     idx_to_cell: &[CellId],
     phys_x: &[f64],
     phys_y: &[f64],
+    type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     let t_start = std::time::Instant::now();
 
@@ -58,21 +61,28 @@ pub fn legalize_ring(
 
     for (&cell_type, cell_indices) in &groups {
         let n_cells = cell_indices.len();
+        let bucket = ctx.resolve_bucket(cell_type);
 
+        // Use tile_capacity from TypeAwarePlacement for the capacity check.
+        let total_capacity: u32 = type_aware
+            .tile_capacity
+            .get(&bucket)
+            .map(|cap_map| cap_map.values().sum())
+            .unwrap_or(0);
+        if (total_capacity as usize) < n_cells {
+            return Err(PlacerError::NoBelsAvailable(format!(
+                "{} (need {} BELs but only {} total capacity)",
+                ctx.name_of(cell_type),
+                n_cells,
+                total_capacity,
+            )));
+        }
+
+        // Build per-position BEL lists for the ring search assignment.
         let mut bels_by_pos: FxHashMap<(i32, i32), Vec<BelId>> = FxHashMap::default();
         for b in ctx.bels_for_bucket(cell_type).filter(|b| b.is_available()) {
             let loc = b.loc();
             bels_by_pos.entry((loc.x, loc.y)).or_default().push(b.id());
-        }
-
-        let n_bels: usize = bels_by_pos.values().map(|v| v.len()).sum();
-        if n_bels < n_cells {
-            return Err(PlacerError::NoBelsAvailable(format!(
-                "{} (need {} BELs but only {} available)",
-                ctx.name_of(cell_type),
-                n_cells,
-                n_bels,
-            )));
         }
 
         let mut all_positions: Vec<(i32, i32)> = bels_by_pos.keys().copied().collect();

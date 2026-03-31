@@ -1,5 +1,6 @@
 use crate::context::Context;
 use crate::metrics::{compute_net_demand, compute_tile_capacities};
+use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::sorted::sorted_legalize;
 use crate::placer::PlacerError;
 
@@ -13,7 +14,8 @@ impl HeapState {
     /// HeapState cell_x/cell_y from the bound BEL positions.
     pub(super) fn legalize(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
         // Delegate to shared sorted legalization.
-        sorted_legalize(ctx, &self.movable_cells, &self.cell_x, &self.cell_y)?;
+        let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
+        sorted_legalize(ctx, &self.movable_cells, &self.cell_x, &self.cell_y, &type_aware)?;
 
         // HeAP-specific: update cell_x/cell_y from bound BEL positions.
         for (i, &cell_idx) in self.movable_cells.iter().enumerate() {
