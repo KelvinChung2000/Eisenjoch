@@ -57,7 +57,9 @@ fn rebuild_laplacian(
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
 
-    let mut network = PipeNetwork::from_context(ctx, cfg.subtile_resolution);
+    // Initial network at target resolution (used for grid dimensions).
+    let target_scale = cfg.subtile_resolution as f64;
+    let mut network = PipeNetwork::from_context(ctx, target_scale);
 
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
     let n = idx_to_cell.len();
@@ -156,9 +158,25 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let mut global_pressure = vec![0.0f64; network.num_nodes()];
     let _cg_batch_size = cfg.cg_batch_size.max(1);
     let mut prev_n_nodes = 0usize;
+    // Full-resolution grid dimensions (for device-scaled step size).
+    let full_w = ctx.chipdb().width() as f64;
+    let full_h = ctx.chipdb().height() as f64;
+    let full_diag = (full_w * full_w + full_h * full_h).sqrt();
+
     for iter in 0..cfg.max_iters {
-        let n_nodes = network.num_nodes();
         let t_iter = std::time::Instant::now();
+
+        // Progressive resolution: ramp from coarse (0.1) to target over iterations.
+        let progress = iter as f64 / cfg.max_iters.max(1) as f64;
+        let current_scale = 0.1 + (target_scale - 0.1) * progress;
+        network = PipeNetwork::from_context(ctx, current_scale);
+
+        // Rebuild laplacian and AMG for new network size.
+        laplacian = SparseMatrix::new(network.num_nodes());
+        laplacian.reserve_off_diag(network.num_pipes());
+        amg_precond = None; // force AMG rebuild
+
+        let n_nodes = network.num_nodes();
 
         // Warm-start: reuse previous iteration's global_pressure as CG initial guess.
         // If the grid changed size, reinitialize to zeros.
@@ -167,6 +185,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             global_pressure.fill(0.0);
         }
         prev_n_nodes = n_nodes;
+
+        // Cosine lr: 10× at start → 1× at end. step_scale is in tile units.
+        let cosine_factor = 1.0 + 9.0 * (1.0 + (std::f64::consts::PI * progress).cos()) / 2.0;
+        adam.set_lr(cfg.step_scale * cosine_factor);
 
         // a. Compute adaptive congestion exponent from per-type tile overflow.
         let max_overflow;
@@ -200,25 +222,18 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
         let op = SparseMatrixOp::from_matrix(&mut laplacian);
 
-        // AMG preconditioner: reuse structure, update numeric values each iteration.
-        match amg_precond.as_mut() {
-            Some(amg) => {
-                amg.update_values(laplacian.diag(), laplacian.off_diag());
-            }
-            None => {
-                amg_precond = Some(AmgPreconditioner::new(
-                    amg_structure.clone(),
-                    laplacian.diag(),
-                    laplacian.off_diag(),
-                ));
-            }
-        }
+        // Jacobi preconditioner (simple, thread-safe, sufficient for coarse grids).
         let jacobi = crate::solver::preconditioner::JacobiPreconditioner::new(laplacian.diag());
         let precond = &jacobi;
         let scratch_req = cg_scratch_size(&op, precond);
 
+        // Scale cell positions to coarse grid for Kirchhoff solve.
+        let c = network.coarsen as f64;
+        let coarse_x: Vec<f64> = cell_x.iter().map(|&x| x / c).collect();
+        let coarse_y: Vec<f64> = cell_y.iter().map(|&y| y / c).collect();
+
         let net_infos =
-            demand::collect_nets_for_solve(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+            demand::collect_nets_for_solve(ctx, &cell_to_idx, &coarse_x, &coarse_y, &network);
         let n_nets = net_infos.len();
         grad.fill(0.0);
 
@@ -245,8 +260,12 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                             }
                             BUF.with(|cell| {
                                 let mut borrow = cell.borrow_mut();
-                                let buf = borrow
-                                    .get_or_insert_with(|| dyn_stack::MemBuffer::new(scratch_req));
+                                // Reallocate if buffer is too small (grid size changes each iter).
+                                let buf = borrow.get_or_insert_with(|| dyn_stack::MemBuffer::new(scratch_req));
+                                if buf.len() < scratch_req.size_bytes() {
+                                    *buf = dyn_stack::MemBuffer::new(scratch_req);
+                                }
+                                let buf = borrow.as_mut().unwrap();
                                 let rhs_mat =
                                     faer::MatRef::from_column_major_slice(&driver_rhs, n_nodes, 1);
                                 let p_mat = faer::MatMut::from_column_major_slice_mut(
@@ -299,6 +318,12 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
             global_pressure.copy_from_slice(&accum.pressure);
             grad.copy_from_slice(&accum.grad);
+
+            // Scale gradient from coarse-grid units to tile units.
+            // dE/d(tile) = dE/d(coarse) / coarsen
+            if c > 1.0 {
+                grad.iter_mut().for_each(|g| *g /= c);
+            }
 
             // Update node pressures and pipe flows.
             solve_pool.install(|| {
