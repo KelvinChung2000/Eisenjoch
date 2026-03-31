@@ -1,16 +1,150 @@
 //! Main Beckmann OT placement algorithm.
+//!
+//! Uses driver-only pressure for the transport cost gradient (no self-interaction).
+//! Adam optimizer provides per-cell adaptive learning rates — handles the 1/d
+//! gradient acceleration near optima without overshooting.
+//! Congestion resistance on shared pipes provides natural spreading.
 
-use log::info;
+use crate::common::IdString;
 use crate::context::Context;
-use crate::metrics::total_hpwl;
+use crate::metrics::{total_hpwl, total_line_estimate};
 use crate::placer::common;
 use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::PlacerError;
-use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
-use crate::solver::preconditioner::{JacobiPreconditioner, AmgPreconditioner};
 use crate::solver::cg::{cg_scratch_size, solve_cg_reuse};
+use crate::solver::optimizer::AdamOptimizer;
+use crate::solver::preconditioner::amg::{AmgPreconditioner, AmgStructure};
+use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOp};
+use log::info;
+use rayon::{prelude::*, ThreadPoolBuilder};
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::config::{OptTransPlacerCfg, PreconditionerType};
+/// Pre-computed per-cell-type valid tile positions and capacities.
+struct TypeAwarePlacement {
+    /// For each cell type (resolved bucket): sorted list of valid x-coordinates (virtual grid).
+    valid_xs: FxHashMap<IdString, Vec<f64>>,
+    /// For each cell type: sorted list of valid y-coordinates per x-column.
+    valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>>,
+    /// Per-tile capacity for each cell type: (vx, vy) -> n_compatible_bels.
+    tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>>,
+}
+
+impl TypeAwarePlacement {
+    fn build(ctx: &Context, network: &super::network::PipeNetwork) -> Self {
+        // Collect all cell types present in the design (resolved to buckets).
+        let mut cell_types_present: FxHashSet<IdString> = FxHashSet::default();
+        for (_cell_id, cell) in ctx.design.iter_alive_cells() {
+            if cell.bel_strength.is_locked() {
+                continue;
+            }
+            let bucket = ctx.resolve_bucket(cell.cell_type);
+            cell_types_present.insert(bucket);
+        }
+
+        let mut valid_xs: FxHashMap<IdString, Vec<f64>> = FxHashMap::default();
+        let mut valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>> = FxHashMap::default();
+        let mut tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+            FxHashMap::default();
+
+        for &ct in &cell_types_present {
+            let mut xs_set: FxHashSet<i32> = FxHashSet::default();
+            let mut ys_per_x: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
+            let cap_map = tile_capacity.entry(ct).or_default();
+
+            for bel in ctx.bels_for_bucket(ct) {
+                let loc = bel.loc();
+                let vx = loc.x - network.x0;
+                let vy = loc.y - network.y0;
+                xs_set.insert(vx);
+                ys_per_x.entry(vx).or_default().insert(vy);
+                *cap_map.entry((vx, vy)).or_insert(0) += 1;
+            }
+
+            let mut xs: Vec<f64> = xs_set.into_iter().map(|x| x as f64).collect();
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            valid_xs.insert(ct, xs);
+
+            let mut ys_map: FxHashMap<i32, Vec<f64>> = FxHashMap::default();
+            for (x, ys_set) in ys_per_x {
+                let mut ys: Vec<f64> = ys_set.into_iter().map(|y| y as f64).collect();
+                ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                ys_map.insert(x, ys);
+            }
+            valid_ys.insert(ct, ys_map);
+        }
+
+        let n_types = cell_types_present.len();
+        for ct in &cell_types_present {
+            let n_pos = valid_xs.get(ct).map(|v| v.len()).unwrap_or(0);
+            let n_bels: u32 = tile_capacity
+                .get(ct)
+                .map(|m| m.values().sum())
+                .unwrap_or(0);
+            eprintln!(
+                "  type {}: {} valid columns, {} total BELs",
+                ctx.name_of(*ct),
+                n_pos,
+                n_bels,
+            );
+        }
+        eprintln!("TypeAwarePlacement: {} cell types", n_types);
+
+        Self {
+            valid_xs,
+            valid_ys,
+            tile_capacity,
+        }
+    }
+
+    /// Snap x to nearest valid column for this cell type. Returns the snapped x.
+    fn snap_x(&self, bucket: IdString, x: f64) -> f64 {
+        let xs = match self.valid_xs.get(&bucket) {
+            Some(xs) if !xs.is_empty() => xs,
+            _ => return x,
+        };
+        let idx = xs.partition_point(|&c| c < x);
+        if idx == 0 {
+            xs[0]
+        } else if idx >= xs.len() {
+            *xs.last().unwrap()
+        } else {
+            let left = xs[idx - 1];
+            let right = xs[idx];
+            if (x - left) <= (right - x) {
+                left
+            } else {
+                right
+            }
+        }
+    }
+
+    /// Snap y to nearest valid row for this cell type at the given (already-snapped) x column.
+    fn snap_y(&self, bucket: IdString, snapped_x: i32, y: f64) -> f64 {
+        let ys = match self.valid_ys.get(&bucket) {
+            Some(ys_map) => match ys_map.get(&snapped_x) {
+                Some(ys) if !ys.is_empty() => ys,
+                _ => return y,
+            },
+            _ => return y,
+        };
+        let idx = ys.partition_point(|&c| c < y);
+        if idx == 0 {
+            ys[0]
+        } else if idx >= ys.len() {
+            *ys.last().unwrap()
+        } else {
+            let left = ys[idx - 1];
+            let right = ys[idx];
+            if (y - left) <= (right - y) {
+                left
+            } else {
+                right
+            }
+        }
+    }
+}
+
+use super::config::OptTransPlacerCfg;
 use super::demand;
 use super::network::PipeNetwork;
 use super::resistance::ResistanceModel;
@@ -19,13 +153,10 @@ use super::resistance::ResistanceModel;
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
 
-    // 1. Build subtile pipe network from chipdb.
     let mut network = PipeNetwork::from_context(ctx, cfg.subtile_resolution);
 
-    // 2. Collect movable cells, init positions.
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
     let n = idx_to_cell.len();
-
     if n == 0 {
         PlacerPipeline::validate(ctx)?;
         return Ok(());
@@ -33,6 +164,15 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     let mut cell_x = vec![0.0; n];
     let mut cell_y = vec![0.0; n];
+    let solve_pool = ThreadPoolBuilder::new()
+        .num_threads(cfg.num_threads.max(1))
+        .build()
+        .map_err(|e| {
+            PlacerError::PlacementFailed(format!(
+                "failed to build opt_trans Rayon thread pool: {e}"
+            ))
+        })?;
+
     match cfg.init_strategy {
         super::config::InitStrategy::Centroid => {
             common::init_positions_center_drop(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
@@ -42,425 +182,318 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
     }
 
-    // Convert to virtual grid coords (offset by grid origin).
-    for x in cell_x.iter_mut() {
-        *x -= network.x0 as f64;
-    }
-    for y in cell_y.iter_mut() {
-        *y -= network.y0 as f64;
-    }
+    solve_pool.install(|| {
+        cell_x.par_iter_mut().for_each(|v| *v -= network.x0 as f64);
+        cell_y.par_iter_mut().for_each(|v| *v -= network.y0 as f64);
+    });
 
     let max_x = (network.width - 1) as f64;
     let max_y = (network.height - 1) as f64;
 
+    // Build per-cell-type valid tile positions and capacities.
+    let type_aware = TypeAwarePlacement::build(ctx, &network);
+
+    // Build per-cell resolved bucket, parallel to cell_x/cell_y.
+    let cell_buckets: Vec<IdString> = idx_to_cell
+        .iter()
+        .map(|&ci| ctx.resolve_bucket(ctx.design.cell(ci).cell_type))
+        .collect();
+
+    // Snap initial positions to valid columns for each cell's type.
+    for i in 0..n {
+        let bucket = cell_buckets[i];
+        cell_x[i] = type_aware.snap_x(bucket, cell_x[i]);
+    }
+
     info!(
-        "OptTrans placer: {} movable cells, {}x{} grid ({}x{} subtile, N={}), {} pipes",
+        "OptTrans placer: {} cells, {}x{} grid ({}x{} subtile), {} pipes",
         n,
         network.width,
         network.height,
         network.subtile_width(),
         network.subtile_height(),
-        network.resolution,
         network.num_pipes(),
     );
 
-    // 3. Build resistance model.
-    let resistance_model = ResistanceModel {
-        congestion_exponent: cfg.congestion_exponent,
+    let mut resistance_model = ResistanceModel {
+        congestion_exponent: 0.0, // computed dynamically from overflow
         interference_weight: cfg.interference_weight,
         timing_weight: cfg.timing_weight,
-        density_weight: 0.0,
     };
 
-    // 4. Tracking and amplification.
     let mut best_chpwl = f64::INFINITY;
     let mut best_x = cell_x.clone();
     let mut best_y = cell_y.clone();
     let mut best_iter = 0usize;
-    let grid_diag = ((max_x * max_x + max_y * max_y) as f64).sqrt();
-    let mut cached_amg: Option<AmgPreconditioner> = None;
+    let mut laplacian = SparseMatrix::new(network.num_nodes());
+    laplacian.reserve_off_diag(network.num_pipes());
 
-    // Force amplification: CHPWL / (n × utilization).
-    // Compensates for diluted force field on large grids.
-    // Fixed at initial scale to avoid positive feedback.
-    // Force amplification: grid_diag compensates for diluted flow field.
-    // The raw flow vector is O(1/sqrt(n_nodes)), so scaling by grid_diag
-    // produces steps proportional to the grid size.
-    let amplification = grid_diag;
+    // Build AMG structure once from pipe network topology (sparsity pattern is constant).
+    let pipe_pairs: Vec<(usize, usize)> = network
+        .pipes
+        .iter()
+        .map(|p| {
+            let (lo, hi) = if p.from < p.to {
+                (p.from, p.to)
+            } else {
+                (p.to, p.from)
+            };
+            (lo, hi)
+        })
+        .collect();
+    let amg_structure = AmgStructure::new(network.num_nodes(), &pipe_pairs);
+    info!(
+        "AMG structure: {} levels",
+        amg_structure.num_levels(),
+    );
+    let mut amg_precond: Option<AmgPreconditioner> = None;
 
-    // Momentum: accumulate velocity to smooth oscillation.
-    let mut vel_x = vec![0.0f64; n];
-    let mut vel_y = vec![0.0f64; n];
-    let momentum = 0.9;
-
-    // 5. Main loop.
+    // Adam optimizer: lr = step_scale controls tiles/iter for median cell.
+    let mut adam = AdamOptimizer::new(2 * n, cfg.step_scale);
+    let mut grad = vec![0.0; 2 * n];
+    let mut delta = vec![0.0; 2 * n];
+    let mut global_pressure = vec![0.0f64; network.num_nodes()];
+    let _cg_batch_size = cfg.cg_batch_size.max(1);
+    let mut prev_n_nodes = 0usize;
     for iter in 0..cfg.max_iters {
         let n_nodes = network.num_nodes();
+        let t_iter = std::time::Instant::now();
 
-        // b. Build the Kirchhoff Laplacian from pipe conductances.
-        let mut laplacian = SparseMatrix::new(n_nodes);
+        // Warm-start: reuse previous iteration's global_pressure as CG initial guess.
+        // If the grid changed size, reinitialize to zeros.
+        if n_nodes != prev_n_nodes {
+            global_pressure.resize(n_nodes, 0.0);
+            global_pressure.fill(0.0);
+        }
+        prev_n_nodes = n_nodes;
 
-        for pipe in &mut network.pipes {
-            let r_eff = resistance_model.effective_resistance(pipe, 0.0);
-            let conductance = 1.0 / r_eff.max(1e-12);
-            pipe.eff_conductance = conductance;
-            laplacian.add_connection(pipe.from, pipe.to, conductance);
+        // a. Compute adaptive congestion exponent from per-type tile overflow.
+        //    For each cell type, count how many cells of that type occupy each tile,
+        //    and divide by the number of compatible BELs at that tile.
+        //    The max overflow across all types drives the congestion exponent.
+        {
+            // Count cells per type per tile.
+            let mut type_tile_count: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+                FxHashMap::default();
+            for i in 0..n {
+                let bucket = cell_buckets[i];
+                let tx = cell_x[i].round() as i32;
+                let ty = cell_y[i].round() as i32;
+                *type_tile_count
+                    .entry(bucket)
+                    .or_default()
+                    .entry((tx, ty))
+                    .or_insert(0) += 1;
+            }
+
+            let mut max_overflow: f64 = 0.0;
+            let mut n_overflow = 0usize;
+
+            for (bucket, tile_counts) in &type_tile_count {
+                let cap_map = match type_aware.tile_capacity.get(bucket) {
+                    Some(m) => m,
+                    None => continue,
+                };
+                for (&(tx, ty), &cnt) in tile_counts {
+                    let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0);
+                    if cap > 0 {
+                        let ratio = cnt as f64 / cap as f64;
+                        if ratio > max_overflow {
+                            max_overflow = ratio;
+                        }
+                        if cnt > cap {
+                            n_overflow += 1;
+                        }
+                    } else if cnt > 0 {
+                        // Cells at a tile with zero capacity for their type: max overflow.
+                        max_overflow = max_overflow.max(cnt as f64);
+                        n_overflow += 1;
+                    }
+                }
+            }
+
+            // Exponent: 0 when legal, ramps with log of overflow, capped at 4.
+            resistance_model.congestion_exponent = if max_overflow > 1.0 {
+                (2.0 * max_overflow.ln()).min(4.0)
+            } else {
+                0.0
+            };
+
+            if iter % cfg.report_interval == 0 {
+                eprintln!(
+                    "  overflow: max={:.1}x tiles_over={} alpha={:.2}",
+                    max_overflow, n_overflow, resistance_model.congestion_exponent,
+                );
+            }
         }
 
-        // Matrix diagnostics (first iteration only).
-        if iter == 0 {
-            let diag = laplacian.diag();
-            let diag_min = diag.iter().cloned().fold(f64::INFINITY, f64::min);
-            let diag_max = diag.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let n_zero_diag = diag.iter().filter(|&&d| d == 0.0).count();
+        // Build Kirchhoff Laplacian.
+        // Parallel phase: compute conductances for all pipes
+        laplacian.clear();
+        solve_pool.install(|| {
+            network.pipes.par_iter_mut().for_each(|pipe| {
+                let r_eff = resistance_model.effective_resistance(pipe, 0.0);
+                let conductance = 1.0 / r_eff.max(1e-12);
+                pipe.eff_conductance = conductance;
+            });
+        });
 
-            // Off-diagonal: check for positive values (should all be negative for Kirchhoff)
-            let off = laplacian.off_diag();
-            let off_min = off.iter().map(|&(_, _, v)| v).fold(f64::INFINITY, f64::min);
-            let off_max = off.iter().map(|&(_, _, v)| v).fold(f64::NEG_INFINITY, f64::max);
-            let n_positive_offdiag = off.iter().filter(|&&(_, _, v)| v > 0.0).count();
-
-            // Conductance range (from pipes)
-            let cond_min = network.pipes.iter()
-                .map(|p| 1.0 / resistance_model.effective_resistance(p, 0.0).max(1e-12))
-                .fold(f64::INFINITY, f64::min);
-            let cond_max = network.pipes.iter()
-                .map(|p| 1.0 / resistance_model.effective_resistance(p, 0.0).max(1e-12))
-                .fold(f64::NEG_INFINITY, f64::max);
-
-            // Row sum check (should be ~0 for Kirchhoff before regularization)
-            let mut row_sums = vec![0.0f64; n_nodes];
-            for i in 0..n_nodes {
-                row_sums[i] += diag[i];
-            }
-            for &(lo, hi, val) in off {
-                row_sums[lo] += val;
-                row_sums[hi] += val;
-            }
-            let row_sum_max = row_sums.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-            let row_sum_avg = row_sums.iter().map(|v| v.abs()).sum::<f64>() / n_nodes as f64;
-
-            eprintln!("  MATRIX: n={}, nnz_offdiag={}", n_nodes, off.len());
-            eprintln!("  diag: [{:.3e}, {:.3e}], zero_diag={}", diag_min, diag_max, n_zero_diag);
-            eprintln!("  offdiag: [{:.3e}, {:.3e}], positive_offdiag={}", off_min, off_max, n_positive_offdiag);
-            eprintln!("  conductance: [{:.3e}, {:.3e}], ratio={:.1e}", cond_min, cond_max, cond_max / cond_min.max(1e-30));
-            eprintln!("  row_sum (pre-reg): max={:.3e}, avg={:.3e}", row_sum_max, row_sum_avg);
+        // Sequential assembly: add all connections to sparse matrix
+        for pipe in &network.pipes {
+            laplacian.add_connection(pipe.from, pipe.to, pipe.eff_conductance);
         }
 
-        // Regularize: add ε·I to make strictly SPD.
         let avg_diag = laplacian.diag().iter().sum::<f64>() / n_nodes as f64;
         let epsilon = 1e-4 * avg_diag;
         for i in 0..n_nodes {
             laplacian.add_diagonal(i, epsilon);
         }
 
-        // c. Build operator and preconditioner (shared across all solves).
         let op = SparseMatrixOp::from_matrix(&mut laplacian);
-        let amg_ref = match cfg.preconditioner {
-            PreconditionerType::Amg => {
-                let amg = cached_amg.get_or_insert_with(|| {
-                    AmgPreconditioner::setup(n_nodes, laplacian.diag(), laplacian.off_diag())
-                });
-                if iter > 0 {
-                    amg.update_values(laplacian.diag(), laplacian.off_diag());
-                }
-                Some(&*amg)
+
+        // AMG preconditioner: reuse structure, update numeric values each iteration.
+        match amg_precond.as_mut() {
+            Some(amg) => {
+                amg.update_values(laplacian.diag(), laplacian.off_diag());
             }
-            _ => None,
-        };
-        let jacobi_precond = if amg_ref.is_none() {
-            Some(JacobiPreconditioner::new(laplacian.diag()))
-        } else {
-            None
-        };
+            None => {
+                amg_precond = Some(AmgPreconditioner::new(
+                    amg_structure.clone(),
+                    laplacian.diag(),
+                    laplacian.off_diag(),
+                ));
+            }
+        }
+        let jacobi = crate::solver::preconditioner::JacobiPreconditioner::new(laplacian.diag());
+        let precond = &jacobi;
+        let scratch_req = cg_scratch_size(&op, precond);
 
-        // d. Per-net IO-only Kirchhoff solves → displacement + congestion update.
-        // Single formulation: same Laplacian, one CG per net. Per-net pressures
-        // are summed into global node pressures and pipe flows for congestion.
-        let mut dx = vec![0.0; n];
-        let mut dy = vec![0.0; n];
-        let mut global_pressure = vec![0.0f64; n_nodes];
-
-        let net_infos = demand::collect_nets_for_solve(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        let net_infos =
+            demand::collect_nets_for_solve(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
         let n_nets = net_infos.len();
-        let mut total_per_net_iters = 0usize;
-        let cg_result;
+        grad.fill(0.0);
 
         {
-            let t_batch = std::time::Instant::now();
-            let batch_tol = (cfg.cg_tol * 100.0).min(1e-2);
-            let max_per_net_iters = 10;
-
-            // Parallel per-net CG with pre-allocated scratch buffers.
-            // Each thread reuses its CG workspace across all nets it processes,
-            // avoiding the 3.9MB alloc/free per solve_cg call.
-            use rayon::prelude::*;
-
-            // Pre-compute scratch size once.
-            let scratch_req = if jacobi_precond.is_some() {
-                cg_scratch_size(&op, jacobi_precond.as_ref().unwrap())
-            } else {
-                cg_scratch_size(&op, amg_ref.unwrap())
-            };
-
-            struct NetResult {
+            struct Accum {
                 pressure: Vec<f64>,
-                dx: Vec<f64>,
-                dy: Vec<f64>,
-                cg_iters: usize,
+                grad: Vec<f64>,
             }
 
-            let results: Vec<NetResult> = net_infos.par_iter().map(|net_info| {
-                // Thread-local scratch buffer — allocated once, reused for all
-                // nets this thread processes.
-                thread_local! {
-                    static BUF: std::cell::RefCell<Option<dyn_stack::MemBuffer>> = const { std::cell::RefCell::new(None) };
-                }
+            let accum = solve_pool.install(|| {
+                net_infos
+                    .par_iter()
+                    .fold(
+                        || Accum {
+                            pressure: vec![0.0; n_nodes],
+                            grad: vec![0.0; 2 * n],
+                        },
+                        |mut local, net_info| {
+                            // Thread-local AMG + CG scratch.
+                            thread_local! {
+                                static TL: std::cell::RefCell<Option<(AmgPreconditioner, dyn_stack::MemBuffer)>> =
+                                    const { std::cell::RefCell::new(None) };
+                            }
+                            let driver_rhs = demand::build_driver_rhs(net_info, &network, cfg);
+                            let mut pressure = vec![0.0; n_nodes];
+                            thread_local! {
+                                static BUF: std::cell::RefCell<Option<dyn_stack::MemBuffer>> =
+                                    const { std::cell::RefCell::new(None) };
+                            }
+                            BUF.with(|cell| {
+                                let mut borrow = cell.borrow_mut();
+                                let buf = borrow.get_or_insert_with(|| {
+                                    dyn_stack::MemBuffer::new(scratch_req)
+                                });
+                                let rhs_mat = faer::MatRef::from_column_major_slice(
+                                    &driver_rhs, n_nodes, 1,
+                                );
+                                let p_mat = faer::MatMut::from_column_major_slice_mut(
+                                    &mut pressure, n_nodes, 1,
+                                );
+                                solve_cg_reuse(
+                                    &op, precond, rhs_mat, p_mat,
+                                    cfg.cg_tol, cfg.cg_max_iters, buf,
+                                );
+                            });
 
-                let net_rhs = demand::build_net_rhs(net_info, &network, cfg);
-                let mut pressure = vec![0.0; n_nodes];
+                            for (dst, &src) in local.pressure.iter_mut().zip(pressure.iter()) {
+                                *dst += src;
+                            }
+                            let (gx, gy) = local.grad.split_at_mut(n);
+                            demand::accumulate_energy_gradient(
+                                net_info, &pressure, &network, cfg, 1.0, gx, gy,
+                            );
+                            local
+                        },
+                    )
+                    .reduce(
+                        || Accum {
+                            pressure: vec![0.0; n_nodes],
+                            grad: vec![0.0; 2 * n],
+                        },
+                        |mut a, b| {
+                            for (dst, &src) in a.pressure.iter_mut().zip(b.pressure.iter()) {
+                                *dst += src;
+                            }
+                            for (dst, &src) in a.grad.iter_mut().zip(b.grad.iter()) {
+                                *dst += src;
+                            }
+                            a
+                        },
+                    )
+            });
 
-                BUF.with(|cell| {
-                    let mut borrow = cell.borrow_mut();
-                    let buf = borrow.get_or_insert_with(|| dyn_stack::MemBuffer::new(scratch_req));
-                    if let Some(jac) = jacobi_precond.as_ref() {
-                        solve_cg_reuse(&op, jac, &net_rhs, &mut pressure, batch_tol, max_per_net_iters, buf);
-                    } else {
-                        solve_cg_reuse(&op, amg_ref.unwrap(), &net_rhs, &mut pressure, batch_tol, max_per_net_iters, buf);
-                    }
+            global_pressure.copy_from_slice(&accum.pressure);
+            grad.copy_from_slice(&accum.grad);
+
+            // Update node pressures and pipe flows.
+            solve_pool.install(|| {
+                network
+                    .nodes
+                    .par_iter_mut()
+                    .zip(global_pressure.par_iter())
+                    .for_each(|(node, &p)| {
+                        node.pressure = p;
+                    });
+
+                network.pipes.par_iter_mut().for_each(|pipe| {
+                    let dp = global_pressure[pipe.from] - global_pressure[pipe.to];
+                    pipe.flow = dp * pipe.eff_conductance;
                 });
-
-                let mut ldx = vec![0.0; n];
-                let mut ldy = vec![0.0; n];
-                demand::accumulate_dp_dist_force(net_info, &pressure, &network, &mut ldx, &mut ldy);
-
-                NetResult { pressure, dx: ldx, dy: ldy, cg_iters: max_per_net_iters }
-            }).collect();
-
-            // Merge results.
-            let mut total_cg_iters = 0usize;
-            for res in &results {
-                total_cg_iters += res.cg_iters;
-                for i in 0..n_nodes {
-                    global_pressure[i] += res.pressure[i];
-                }
-                for i in 0..n {
-                    dx[i] += res.dx[i];
-                    dy[i] += res.dy[i];
-                }
-            }
-            total_per_net_iters = total_cg_iters;
-
-            let cg_resid = 0.0f64; // individual residuals not aggregated
-
-            // Update node pressures and pipe flows from summed per-net fields.
-            for (i, node) in network.nodes.iter_mut().enumerate() {
-                node.pressure = global_pressure[i];
-            }
-            for pipe in &mut network.pipes {
-                let r_eff = resistance_model.effective_resistance(pipe, 0.0);
-                pipe.flow = (global_pressure[pipe.from] - global_pressure[pipe.to]) / r_eff.max(1e-12);
-            }
-
-            cg_result = crate::solver::cg::CgResult {
-                iterations: total_per_net_iters,
-                converged: true,
-                residual: cg_resid,
-            };
-
-            // Second term of energy gradient: density spreading.
-            // Gaussian-smoothed density gradient pushes cells from overcrowded
-            // tiles toward open area, bridging across non-CLB column gaps.
-            demand::project_velocity(&cell_x, &cell_y, &mut dx, &mut dy, &network);
-
-            // Amplify raw force and clamp per-cell magnitude.
-            // Adaptive clamp: large steps when CHPWL is high and utilization
-            // is low (cells far from targets, room to move), shrinks as
-            // placement improves (cells near targets, need precision).
-            let chpwl_now = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network).max(1.0);
-            // Adaptive step: chpwl/n gives average wirelength per cell (how far to go).
-            // Decays naturally as placement improves.
-            let avg_wl = chpwl_now / n as f64;
-            let max_step = (avg_wl * cfg.step_scale * 0.1).min(grid_diag * 0.1);
-            for i in 0..n {
-                dx[i] *= amplification;
-                dy[i] *= amplification;
-                let mag = (dx[i] * dx[i] + dy[i] * dy[i]).sqrt();
-                if mag > max_step {
-                    let scale = max_step / mag;
-                    dx[i] *= scale;
-                    dy[i] *= scale;
-                }
-            }
-
-            let batch_ms = t_batch.elapsed().as_millis();
-            if iter == 0 {
-                eprintln!("    per-net CG: {} nets, {} total iters, {:.1}ms, amp={:.1}",
-                    n_nets, total_per_net_iters, batch_ms, amplification);
-            }
+            });
         }
 
-        // Diagnostics.
-        {
-            let p_min = global_pressure.iter().cloned().fold(f64::INFINITY, f64::min);
-            let p_max = global_pressure.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let dx_max = dx.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-            let dy_max = dy.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-            let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
-            eprintln!(
-                "  [{}] P=[{:.1e},{:.1e}] dx={:.4} dy={:.4} rms={:.4} nets={} batch_cg={}",
-                iter, p_min, p_max, dx_max, dy_max, disp_rms, n_nets, total_per_net_iters,
-            );
+        // c. Adam step (raw gradient — Adam adapts per-cell from scale).
+        adam.step(&grad, &mut delta);
 
-            // Congestion diagnostics every 10 iters.
-            if iter % 10 == 0 {
-                let mut flow_abs: Vec<f64> = network.pipes.iter().map(|p| p.flow.abs()).collect();
-                flow_abs.sort_by(|a, b| b.partial_cmp(a).unwrap());
-                let flow_max = flow_abs.first().copied().unwrap_or(0.0);
-                let flow_p90 = flow_abs.get(flow_abs.len() / 10).copied().unwrap_or(0.0);
-                let n_high_util = network.pipes.iter().filter(|p| p.flow.abs() / p.capacity.max(1.0) > 1.0).count();
-                let n_high_nets = network.pipes.iter().filter(|p| p.net_count > 3).count();
-                let max_nets = network.pipes.iter().map(|p| p.net_count).max().unwrap_or(0);
+        let (dx, dy) = delta.split_at(n);
+        solve_pool.install(|| {
+            cell_x
+                .par_iter_mut()
+                .zip(dx.par_iter())
+                .for_each(|(x, &d)| *x += d);
+            cell_y
+                .par_iter_mut()
+                .zip(dy.par_iter())
+                .for_each(|(y, &d)| *y += d);
+        });
 
-                // R_eff range
-                let r_effs: Vec<f64> = network.pipes.iter()
-                    .map(|p| resistance_model.effective_resistance(p, 0.0))
-                    .collect();
-                let r_min = r_effs.iter().cloned().fold(f64::INFINITY, f64::min);
-                let r_max = r_effs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let disp_rms = ((delta.par_iter().map(|v| v * v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
 
-                eprintln!(
-                    "    congestion: flow_max={:.2} flow_p90={:.2} pipes_util>1={} pipes_nets>3={} max_nets={} R=[{:.2},{:.2}]",
-                    flow_max, flow_p90, n_high_util, n_high_nets, max_nets, r_min, r_max,
-                );
-            }
-
-            // Dump field and cell data at iter 0 for visualization.
-            if iter == 0 {
-                let near_zero = (0..n).filter(|&i| dx[i].abs() < 0.01 && dy[i].abs() < 0.01).count();
-                eprintln!("    near-zero displacement: {}/{}", near_zero, n);
-
-                // Dump pressure field as tile-averaged grid.
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::File::create("/tmp/pressure_field.csv") {
-                    let res = network.resolution;
-                    let tw = network.width as usize;
-                    let th = network.height as usize;
-                    writeln!(f, "tx,ty,pressure").ok();
-                    for ty in 0..th {
-                        for tx in 0..tw {
-                            let mut p_sum = 0.0;
-                            for sy in 0..res {
-                                for sx in 0..res {
-                                    let ni = network.node_index(tx as i32, ty as i32, sx, sy);
-                                    p_sum += global_pressure[ni];
-                                }
-                            }
-                            let n_sub = (res * res) as f64;
-                            writeln!(f, "{},{},{:.6}", tx, ty, p_sum / n_sub).ok();
-                        }
-                    }
-                }
-                // Dump cell positions + raw displacement vectors.
-                if let Ok(mut f) = std::fs::File::create("/tmp/cell_disp.csv") {
-                    writeln!(f, "cell_idx,x,y,dx,dy").ok();
-                    for ci in 0..n {
-                        writeln!(f, "{},{:.2},{:.2},{:.6},{:.6}", ci, cell_x[ci], cell_y[ci], dx[ci], dy[ci]).ok();
-                    }
-                }
-                // Dump fixed/IO cell positions.
-                if let Ok(mut f) = std::fs::File::create("/tmp/fixed_cells.csv") {
-                    writeln!(f, "x,y").ok();
-                    for (_cell_id, cell) in ctx.design.iter_alive_cells() {
-                        if !cell.bel_strength.is_locked() { continue; }
-                        if let Some(bel) = cell.bel {
-                            let loc = ctx.bel(bel).loc();
-                            writeln!(f, "{},{}", loc.x - network.x0, loc.y - network.y0).ok();
-                        }
-                    }
-                }
-                // Build per-cell IO target centroids from net connectivity.
-                // For each net, find fixed pins and associate them with movable cells on the same net.
-                let mut cell_io_x: Vec<f64> = vec![0.0; n];
-                let mut cell_io_y: Vec<f64> = vec![0.0; n];
-                let mut cell_io_count: Vec<usize> = vec![0; n];
-                let mut cell_net_count: Vec<usize> = vec![0; n];
-
-                for (_net_id, net) in ctx.design.iter_alive_nets() {
-                    let Some(dp) = net.driver() else { continue };
-
-                    // Collect fixed pin positions on this net.
-                    let mut fixed_pins: Vec<(f64, f64)> = Vec::new();
-                    let mut movable_indices: Vec<usize> = Vec::new();
-
-                    let dc = ctx.design.cell(dp.cell);
-                    if dc.bel_strength.is_locked() {
-                        if let Some(bel) = dc.bel {
-                            let loc = ctx.bel(bel).loc();
-                            fixed_pins.push(((loc.x - network.x0) as f64, (loc.y - network.y0) as f64));
-                        }
-                    } else if let Some(&ci) = cell_to_idx.get(&dp.cell) {
-                        movable_indices.push(ci);
-                    }
-
-                    for user in net.users() {
-                        if !user.is_valid() { continue; }
-                        let uc = ctx.design.cell(user.cell);
-                        if uc.bel_strength.is_locked() {
-                            if let Some(bel) = uc.bel {
-                                let loc = ctx.bel(bel).loc();
-                                fixed_pins.push(((loc.x - network.x0) as f64, (loc.y - network.y0) as f64));
-                            }
-                        } else if let Some(&ci) = cell_to_idx.get(&user.cell) {
-                            movable_indices.push(ci);
-                        }
-                    }
-
-                    // Associate fixed pins with movable cells on this net.
-                    for &ci in &movable_indices {
-                        cell_net_count[ci] += 1;
-                        for &(fx, fy) in &fixed_pins {
-                            cell_io_x[ci] += fx;
-                            cell_io_y[ci] += fy;
-                            cell_io_count[ci] += 1;
-                        }
-                    }
-                }
-
-                if let Ok(mut f) = std::fs::File::create("/tmp/cell_connectivity.csv") {
-                    writeln!(f, "cell_idx,x,y,dx,dy,io_cx,io_cy,n_io_pins,n_nets").ok();
-                    for ci in 0..n {
-                        let (io_cx, io_cy) = if cell_io_count[ci] > 0 {
-                            (cell_io_x[ci] / cell_io_count[ci] as f64,
-                             cell_io_y[ci] / cell_io_count[ci] as f64)
-                        } else {
-                            (f64::NAN, f64::NAN)
-                        };
-                        writeln!(f, "{},{:.2},{:.2},{:.6},{:.6},{:.2},{:.2},{},{}",
-                            ci, cell_x[ci], cell_y[ci], dx[ci], dy[ci], io_cx, io_cy,
-                            cell_io_count[ci], cell_net_count[ci]).ok();
-                    }
-                }
-                eprintln!("    dumped /tmp/pressure_field.csv, /tmp/cell_disp.csv, /tmp/fixed_cells.csv, /tmp/cell_connectivity.csv");
-            }
-        }
-
-        // f. Momentum step: velocity smooths oscillating forces.
+        // Snap positions to nearest valid column (and optionally row) for each cell's type.
+        // Cells optimize within their type's valid tile set, so legalization
+        // only needs to resolve within-tile overlaps (much smaller displacement).
         for i in 0..n {
-            vel_x[i] = momentum * vel_x[i] + (1.0 - momentum) * dx[i];
-            vel_y[i] = momentum * vel_y[i] + (1.0 - momentum) * dy[i];
-            cell_x[i] += vel_x[i];
-            cell_y[i] += vel_y[i];
+            let bucket = cell_buckets[i];
+            cell_x[i] = type_aware.snap_x(bucket, cell_x[i]);
+            let snapped_x = cell_x[i].round() as i32;
+            cell_y[i] = type_aware.snap_y(bucket, snapped_x, cell_y[i]);
         }
 
-        // h. Clamp to grid.
         common::clamp_positions(&mut cell_x, &mut cell_y, max_x, max_y);
-
-        // i. Update net counts and cell density for next iteration's resistance.
         demand::update_net_counts(&cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
-        demand::update_cell_density(&cell_x, &cell_y, &mut network);
 
-        // j. Track best positions.
+        // d. Track best.
         let chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
         if chpwl < best_chpwl {
             best_chpwl = chpwl;
@@ -469,83 +502,34 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             best_iter = iter;
         }
 
-        // k. Report.
-        let disp_rms = ((dx.iter().map(|v| v*v).sum::<f64>() + dy.iter().map(|v| v*v).sum::<f64>()) / (2.0 * n as f64)).sqrt();
-        let is_report = iter % cfg.report_interval == 0 || iter == cfg.max_iters - 1;
-        if is_report {
-            let max_util = network.max_utilization();
+        let iter_ms = t_iter.elapsed().as_millis();
+        if iter % cfg.report_interval == 0 || iter == cfg.max_iters - 1 {
+            let grad_norm = grad.par_iter().map(|v| v * v).sum::<f64>().sqrt();
             eprintln!(
-                "OptTrans iter {}: chpwl={:.0}, disp_rms={:.2}, max_util={:.2}, cg={}",
-                iter, chpwl, disp_rms, max_util, cg_result.iterations,
+                "OT {:3}: chpwl={:.0} rms={:.2} grad={:.3e} {}ms nets={}",
+                iter, chpwl, disp_rms, grad_norm, iter_ms, n_nets,
             );
         }
 
-        // Convergence: displacement rms below threshold.
-        if disp_rms < 0.01 && iter >= 5 {
-            eprintln!("OptTrans converged at iteration {} (disp_rms={:.3e})", iter, disp_rms);
+        if disp_rms < 0.01 && iter >= 10 {
+            eprintln!("Converged at iter {} (rms={:.3e})", iter, disp_rms);
             break;
         }
     }
 
-    // Restore best positions.
     cell_x.copy_from_slice(&best_x);
     cell_y.copy_from_slice(&best_y);
-    eprintln!(
-        "Best iteration: {} (chpwl={:.0})",
-        best_iter, best_chpwl,
-    );
-
-    // 6. Pre-legalization diagnostics: rebuild demand/flow at best position to inspect.
     let pre_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-    {
-        let final_rhs = demand::build_demands(ctx, &cell_to_idx, &cell_x, &cell_y, &network, cfg);
-        let rhs_l1: f64 = final_rhs.iter().map(|v| v.abs()).sum();
+    eprintln!("Best iter {}: chpwl={:.0}", best_iter, pre_chpwl);
 
-        // Demand per tile column (sum absolute demand in each x-column).
-        let res = network.resolution;
-        let tw = network.width as usize;
-        let th = network.height as usize;
-        let mut col_demand = vec![0.0f64; tw];
-        let mut col_cells = vec![0u32; tw];
-        for i in 0..n {
-            let tx = (cell_x[i] as usize).min(tw - 1);
-            col_cells[tx] += 1;
-        }
-        for ty in 0..th {
-            for tx in 0..tw {
-                for sy in 0..res {
-                    for sx in 0..res {
-                        let ni = network.node_index(tx as i32, ty as i32, sx, sy);
-                        col_demand[tx] += final_rhs[ni].abs();
-                    }
-                }
-            }
-        }
-
-        // Flow stats per x-column.
-        let mut col_flow = vec![0.0f64; tw];
-        let mut col_max_flow = vec![0.0f64; tw];
-        for pipe in &network.pipes {
-            let from_node = &network.nodes[pipe.from];
-            let tx = from_node.tile_x as usize;
-            let flow = pipe.flow.abs();
-            col_flow[tx] += flow;
-            col_max_flow[tx] = col_max_flow[tx].max(flow);
-        }
-
-        eprintln!("  final state: rhs_l1={:.1}, max_util={:.2}", rhs_l1, network.max_utilization());
-        eprintln!("  x-column breakdown (cells | demand | total_flow | max_pipe_flow):");
-        for tx in 0..tw {
-            if col_cells[tx] > 0 || col_demand[tx] > 0.1 || col_flow[tx] > 0.5 {
-                eprintln!("    x={:3}: cells={:3} demand={:6.1} flow={:8.1} max_flow={:.2}",
-                    tx, col_cells[tx], col_demand[tx], col_flow[tx], col_max_flow[tx]);
-            }
-        }
-    }
-    eprintln!("Pre-legalization: CHPWL={:.0}", pre_chpwl);
-
-    // 7. CLB snap + legalize.
-    crate::placer::legalize::snap_to_clb_grid(ctx, &mut cell_x, &mut cell_y, &idx_to_cell, &network);
+    // Legalize.
+    crate::placer::legalize::snap_to_clb_grid(
+        ctx,
+        &mut cell_x,
+        &mut cell_y,
+        &idx_to_cell,
+        &network,
+    );
 
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
@@ -557,23 +541,28 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         "bipartite" => {
             let cost = Box::new(crate::placer::legalize::DistanceCost);
             crate::placer::legalize::bipartite::legalize_bipartite(
-                ctx, &idx_to_cell, &phys_x, &phys_y, &*cost, cfg.lap_max_cells,
+                ctx,
+                &idx_to_cell,
+                &phys_x,
+                &phys_y,
+                &*cost,
+                cfg.lap_max_cells,
             )?;
         }
         "greedy" => {
             crate::placer::legalize::legalize_electro(ctx, &idx_to_cell, &phys_x, &phys_y)?;
         }
         _ => {
-            // Default: ring legalizer
             crate::placer::legalize::legalize_ring(ctx, &idx_to_cell, &phys_x, &phys_y)?;
         }
     }
 
-    // 8. Post-legalization HPWL.
     let post_hpwl = total_hpwl(ctx);
+    let post_line = total_line_estimate(ctx);
     eprintln!(
-        "Post-legalization: HPWL={:.0}, delta={:+.0} ({:+.1}%)",
+        "Post-legalization: HPWL={:.0}, line={:.0}, delta={:+.0} ({:+.1}%)",
         post_hpwl,
+        post_line,
         post_hpwl - pre_chpwl,
         (post_hpwl - pre_chpwl) / pre_chpwl.max(1.0) * 100.0,
     );

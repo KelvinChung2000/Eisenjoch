@@ -12,12 +12,13 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType, CellNormalization};
+use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType};
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
 use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::negotiation::{Router2, Router2Cfg};
+use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::timing::{DelayT, TimingAnalyser};
 use std::path::Path;
@@ -224,16 +225,14 @@ impl PyContext {
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
     ///     subtile_resolution: Subtile grid resolution N (NxN per tile, opt_trans). Default 2.
+    ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
     ///     preconditioner: CG preconditioner ("jacobi" or "amg", opt_trans). Default "amg".
-    ///     grad_weight: Weight for -grad(P) flow direction component. Default 1.0.
-    ///     attraction_weight: Weight for dp/dist pin attraction component. Default 1.0.
-    ///     cell_normalization: Per-cell normalization ("raw", "unit", "rms"). Default "rms".
     ///     use_anderson: Use Anderson acceleration (true) or direct step (false). Default true.
     ///     step_scale: Step multiplier for direct mode. Default 5.0.
     ///     step_decay: Stagnation step reduction factor. Default 0.7.
     ///     stagnation_warmup: Skip stagnation check before this iteration. Default 20.
     ///     stagnation_patience: Rollback after this many stagnant iterations. Default 5.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=0.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, preconditioner="amg", grad_weight=1.0, attraction_weight=1.0, cell_normalization="rms", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5, legalization="ring"))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, num_threads=8, preconditioner="amg", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -245,10 +244,8 @@ impl PyContext {
         timing_weight: f64,
         init_strategy: &str,
         subtile_resolution: usize,
+        num_threads: usize,
         preconditioner: &str,
-        grad_weight: f64,
-        attraction_weight: f64,
-        cell_normalization: &str,
         use_anderson: bool,
         step_scale: f64,
         step_decay: f64,
@@ -280,31 +277,28 @@ impl PyContext {
                 cfg.interference_weight = interference_weight;
                 cfg.timing_weight = timing_weight;
                 cfg.subtile_resolution = subtile_resolution;
+                cfg.num_threads = num_threads.max(1);
                 cfg.preconditioner = match preconditioner {
                     "jacobi" => PreconditionerType::Jacobi,
                     "amg" => PreconditionerType::Amg,
-                    other => return Err(PyValueError::new_err(format!(
-                        "Unknown preconditioner: {}. Available: jacobi, amg", other
-                    ))),
+                    other => {
+                        return Err(PyValueError::new_err(format!(
+                            "Unknown preconditioner: {}. Available: jacobi, amg",
+                            other
+                        )))
+                    }
                 };
                 cfg.init_strategy = match init_strategy {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
                     "random_bel" => InitStrategy::RandomBel,
-                    other => return Err(PyValueError::new_err(format!(
-                        "Unknown init_strategy: {}. Available: centroid, uniform, random_bel", other
-                    ))),
+                    other => {
+                        return Err(PyValueError::new_err(format!(
+                            "Unknown init_strategy: {}. Available: centroid, uniform, random_bel",
+                            other
+                        )))
+                    }
                 };
-                cfg.cell_normalization = match cell_normalization {
-                    "raw" => CellNormalization::Raw,
-                    "unit" => CellNormalization::Unit,
-                    "rms" => CellNormalization::Rms,
-                    other => return Err(PyValueError::new_err(format!(
-                        "Unknown cell_normalization: {}. Available: raw, unit, rms", other
-                    ))),
-                };
-                cfg.grad_weight = grad_weight;
-                cfg.attraction_weight = attraction_weight;
                 cfg.use_anderson = use_anderson;
                 cfg.step_scale = step_scale;
                 cfg.step_decay = step_decay;
@@ -338,7 +332,7 @@ impl PyContext {
     /// Run a router on the design.
     ///
     /// Args:
-    ///     router: Router algorithm name ("router1" or "router2"). Default "router1".
+    ///     router: Router algorithm name ("router1", "router2", or "raster"). Default "router1".
     ///     bb_margin: Bounding box margin in tiles for A* pruning. Default 3.
     ///     max_iterations: Max routing iterations. Router1 default 500, Router2 default 50.
     ///     skip_unplaced: If true, skip nets whose driver cell is not placed. Default false.
@@ -412,6 +406,27 @@ impl PyContext {
                 Router2
                     .route_nets(&mut self.ctx, &cfg, &nets)
                     .map_err(|e| PyRuntimeError::new_err(format!("Router2 error: {}", e)))
+            }
+            "raster" => {
+                let mut cfg = RasterRouterCfg::default();
+                if let Some(iters) = max_iterations {
+                    cfg.max_iterations = iters;
+                }
+                cfg.verbose = true;
+                RasterRouter
+                    .route_nets(&mut self.ctx, &cfg, &nets)
+                    .map_err(|e| PyRuntimeError::new_err(format!("RasterRouter error: {}", e)))
+            }
+            "greedy" => {
+                let mut cfg = RasterRouterCfg::default();
+                cfg.use_greedy = true;
+                cfg.max_iterations = 1;
+                if let Some(iters) = max_iterations {
+                    cfg.max_iterations = iters;
+                }
+                RasterRouter
+                    .route_nets(&mut self.ctx, &cfg, &nets)
+                    .map_err(|e| PyRuntimeError::new_err(format!("RasterRouter error: {}", e)))
             }
             _ => Err(PyValueError::new_err(format!("Unknown router: {}", router))),
         }

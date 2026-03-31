@@ -96,10 +96,8 @@ impl Lookahead {
         // For the representative tile type, it's identity. For other tile types,
         // we map by wire name matching (same name = same class).
         let num_tile_types = chipdb.num_tile_types();
-        let rep_tt_idx = chipdb.tile_type_index(best_tile) as usize;
 
         // Collect wire names for the representative tile type.
-        let rep_tt = chipdb.tile_type_by_index(rep_tt_idx as i32);
         let mut rep_wire_names: Vec<i32> = Vec::with_capacity(n_wires);
         for wi in 0..n_wires {
             let wire = WireId::new(best_tile, wi as i32);
@@ -161,7 +159,6 @@ impl Lookahead {
         // Run Dijkstra from each wire class (each wire in the rep tile).
         for src_wi in 0..n_wires {
             let src_wire = WireId::new(best_tile, src_wi as i32);
-            let class = WireClass(src_wi as u16);
 
             let mut heap: BinaryHeap<DijkEntry> = BinaryHeap::new();
             let mut visited: FxHashMap<WireId, DelayT> = FxHashMap::default();

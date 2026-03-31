@@ -4,10 +4,12 @@ pub mod common;
 pub mod lookahead;
 pub mod maze;
 pub mod negotiation;
+pub mod raster;
 pub mod traits;
 
 pub use maze::Router1;
 pub use negotiation::Router2;
+pub use raster::RasterRouter;
 pub use traits::Router;
 
 // ---------------------------------------------------------------------------

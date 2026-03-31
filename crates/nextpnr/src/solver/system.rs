@@ -79,7 +79,9 @@ impl SparseSystemBuilder {
         let op = SparseMatrixOp::from_matrix(&mut mat);
         let precond = JacobiPreconditioner::new(&self.diag);
 
-        let result = solve_cg(&op, &precond, &self.rhs, x, tol, max_iters);
+        let rhs_mat = faer::MatRef::from_column_major_slice(&self.rhs, self.n, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(x, self.n, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, tol, max_iters);
         result.iterations
     }
 

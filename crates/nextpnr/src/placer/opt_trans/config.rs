@@ -32,23 +32,6 @@ impl Default for InitStrategy {
     }
 }
 
-/// Per-cell displacement normalization strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellNormalization {
-    /// Keep raw per-cell magnitudes (no normalization).
-    Raw,
-    /// Normalize each cell's displacement to unit vector.
-    Unit,
-    /// RMS-normalize each component independently before superposition (default).
-    Rms,
-}
-
-impl Default for CellNormalization {
-    fn default() -> Self {
-        Self::Rms
-    }
-}
-
 /// Configuration for the Beckmann optimal transport placer.
 #[derive(Debug, Clone)]
 pub struct OptTransPlacerCfg {
@@ -60,6 +43,9 @@ pub struct OptTransPlacerCfg {
     pub cg_max_iters: usize,
     /// CG relative tolerance.
     pub cg_tol: f64,
+    /// Number of right-hand sides solved together in per-net Kirchhoff solves.
+    /// 1 preserves original single-net solve behavior.
+    pub cg_batch_size: usize,
     /// Beckmann congestion exponent: alpha in (|J|/C)^alpha.
     pub congestion_exponent: f64,
     /// Weight for flow interference spreading.
@@ -80,23 +66,13 @@ pub struct OptTransPlacerCfg {
     pub subtile_resolution: usize,
     /// Preconditioner for the Kirchhoff CG solve.
     pub preconditioner: PreconditionerType,
-    /// Weight for congestion repulsion force.
-    pub congestion_repulsion_weight: f64,
-
-    // --- Displacement model ---
-
-    /// Weight for -grad(P) flow field component.
-    pub grad_weight: f64,
-    /// Weight for dp/dist pin attraction component.
-    pub attraction_weight: f64,
-    /// Per-cell normalization strategy.
-    pub cell_normalization: CellNormalization,
+    /// Number of Rayon worker threads for per-net solves.
+    pub num_threads: usize,
 
     /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
     pub legalization: String,
 
     // --- Iteration control ---
-
     /// Use Anderson acceleration (true) or direct gradient step (false).
     pub use_anderson: bool,
     /// Step scale multiplier for direct gradient step mode.
@@ -113,28 +89,25 @@ impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            max_iters: 150,
-            cg_max_iters: 200,
-            cg_tol: 1e-4,
-            congestion_exponent: 2.0,
+            max_iters: 500,
+            cg_max_iters: 100,
+            cg_tol: 1e-2,
+            cg_batch_size: 4,
+            congestion_exponent: 0.0,
             interference_weight: 0.0,
             timing_weight: 0.0,
             io_boost: 1.0,
             anderson_depth: 3,
             report_interval: 5,
             lap_max_cells: 10000,
-            init_strategy: InitStrategy::default(),
-            subtile_resolution: 2,
+            init_strategy: InitStrategy::Centroid,
+            subtile_resolution: 1,
             preconditioner: PreconditionerType::Amg,
-            congestion_repulsion_weight: 0.0,
-            // Displacement model: IO-only -grad(P), no pin attraction.
-            grad_weight: 1.0,
-            attraction_weight: 0.0,
-            cell_normalization: CellNormalization::Raw,
+            num_threads: 8,
             legalization: "ring".to_string(),
             // Iteration control.
-            use_anderson: true,
-            step_scale: 5.0,
+            use_anderson: false,
+            step_scale: 0.5,
             step_decay: 0.7,
             stagnation_warmup: 20,
             stagnation_patience: 5,

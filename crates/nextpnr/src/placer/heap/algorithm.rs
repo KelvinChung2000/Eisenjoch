@@ -76,7 +76,6 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
 }
 
 /// Count how many BELs fall within the given rectangular region.
-#[cfg(feature = "test-utils")]
 pub fn count_bels_in_region(ctx: &Context, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
     let mut count = 0;
     for bel in ctx.bels() {

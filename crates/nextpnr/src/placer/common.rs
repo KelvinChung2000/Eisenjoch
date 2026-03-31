@@ -452,8 +452,10 @@ pub(crate) fn gradient_norm(grad_x: &[f64], grad_y: &[f64]) -> f64 {
         .sqrt()
 }
 
+#[allow(dead_code)]
 /// Minimum step size for Lipschitz-based step size estimation.
 const LIPSCHITZ_STEP_MIN: f64 = 1e-2;
+#[allow(dead_code)]
 /// Maximum step size for Lipschitz-based step size estimation.
 const LIPSCHITZ_STEP_MAX: f64 = 0.2;
 
@@ -490,6 +492,7 @@ impl NesterovLoopState {
     }
 
     /// Update Lipschitz-based step sizes from consecutive gradients.
+    #[allow(dead_code)]
     pub fn update_step_sizes(
         &mut self,
         nesterov_x: &mut crate::solver::NesterovSolver,

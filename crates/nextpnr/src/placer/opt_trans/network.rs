@@ -9,6 +9,7 @@
 //! - Inter-tile: boundary subtiles of adjacent tiles connected across tile edges
 
 use crate::context::Context;
+use rayon::prelude::*;
 
 /// Direction of an inter-tile pipe between two adjacent tiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +137,9 @@ impl PipeNetwork {
                 let tile = ctx.chipdb().tile_by_xy(tx + x0, ty + y0);
                 let tt = ctx.chipdb().tile_type(tile);
                 let n_bels = tt.bels.len();
-                if n_bels == 0 { zero_bel_tiles += 1; }
+                if n_bels == 0 {
+                    zero_bel_tiles += 1;
+                }
                 total_bels += n_bels;
 
                 // Conductance scales with routing capacity: max(wires, pips).
@@ -147,10 +150,16 @@ impl PipeNetwork {
                 let routing_capacity = n_wires.max(n_pips);
                 if ty == mid_y && tx % 5 == 0 {
                     let g_intra_val = intra_tile_conductance(routing_capacity, resolution);
-                    eprintln!("    tile({:3},{:3}): wires={:5} pips={:5} bels={:2} g_intra={:.4}", tx, ty, n_wires, n_pips, n_bels, g_intra_val);
+                    eprintln!(
+                        "    tile({:3},{:3}): wires={:5} pips={:5} bels={:2} g_intra={:.4}",
+                        tx, ty, n_wires, n_pips, n_bels, g_intra_val
+                    );
                 }
                 let g_intra = intra_tile_conductance(routing_capacity, resolution);
-                let capacity = (n_bels as f64).max(1.0) / n_per_tile as f64;
+                // Capacity reflects actual BEL count. Zero-BEL tiles get capacity=0,
+                // so the adaptive congestion treats them as unpopulable — cells are
+                // pushed toward CLB columns naturally.
+                let capacity = n_bels as f64 / n_per_tile as f64;
 
                 // Horizontal edges within tile.
                 for sy in 0..resolution {
@@ -235,9 +244,14 @@ impl PipeNetwork {
 
         eprintln!(
             "  network: {}x{} = {} tiles, {} zero-BEL ({:.1}%), {} total BELs, {} nodes, {} pipes",
-            w, h, n_tiles, zero_bel_tiles,
+            w,
+            h,
+            n_tiles,
+            zero_bel_tiles,
             100.0 * zero_bel_tiles as f64 / n_tiles as f64,
-            total_bels, total_nodes, pipes.len(),
+            total_bels,
+            total_nodes,
+            pipes.len(),
         );
 
         Self {
@@ -294,23 +308,23 @@ impl PipeNetwork {
 
     /// Reset all dynamic state (pressures, flows, net counts).
     pub fn reset(&mut self) {
-        for node in &mut self.nodes {
+        self.nodes.par_iter_mut().for_each(|node| {
             node.pressure = 0.0;
-        }
-        for p in &mut self.pipes {
+        });
+        self.pipes.par_iter_mut().for_each(|p| {
             p.flow = 0.0;
             p.net_count = 0;
             p.cell_density = 0.0;
-        }
+        });
     }
 
     /// Maximum utilization ratio |flow|/capacity across all pipes.
     pub fn max_utilization(&self) -> f64 {
         self.pipes
-            .iter()
+            .par_iter()
             .filter(|p| p.capacity > 0.0)
             .map(|p| p.flow.abs() / p.capacity)
-            .fold(0.0, f64::max)
+            .reduce(|| 0.0, f64::max)
     }
 }
 
@@ -340,19 +354,21 @@ fn add_pipe(
     node_pipes[to].push(pipe_idx);
 }
 
-/// Intra-tile conductance: scales with PIP count (routing richness).
-/// Tiles with many PIPs have high internal conductance regardless of BEL count.
+/// Intra-tile conductance: log-normalized.
+///
+/// Raw PIP/wire counts create 130x conductance ratios between adjacent tiles,
+/// producing artificial pressure barriers. Using log compresses the range
+/// while preserving the relative structure (routing-rich tiles still conduct
+/// more, but the ratio is ~3x instead of 130x).
 fn intra_tile_conductance(n_pips: usize, resolution: usize) -> f64 {
-    // Scale conductance with sqrt(PIPs) to avoid extreme ratios.
-    // A tile with 1000 PIPs gets g ≈ 1.0, a tile with 0 PIPs gets the minimum.
-    let g_base = ((n_pips as f64).sqrt() / 32.0).max(0.01);
+    let g_base = (1.0 + n_pips as f64).ln().max(0.1);
     g_base * resolution as f64
 }
 
-/// Inter-tile conductance from wire count, divided across N boundary subtiles.
+/// Inter-tile conductance: log-normalized from wire count.
 fn inter_tile_conductance(wire_count: usize, resolution: usize) -> f64 {
-    let total_g = (wire_count as f64).max(1.0);
-    total_g / resolution as f64
+    let g = (1.0 + wire_count as f64).ln().max(0.1);
+    g * resolution as f64
 }
 
 /// Estimate routing capacity between adjacent tiles in the given direction.

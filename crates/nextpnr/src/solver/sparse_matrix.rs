@@ -51,6 +51,11 @@ impl SparseMatrix {
         &self.off_diag
     }
 
+    /// Reserve capacity for off-diagonal entries.
+    pub fn reserve_off_diag(&mut self, additional: usize) {
+        self.off_diag.reserve(additional);
+    }
+
     /// Add symmetric connection: A[i,i] += w, A[j,j] += w, A[i,j] = A[j,i] += -w
     pub fn add_connection(&mut self, i: usize, j: usize, weight: f64) {
         if i == j {
@@ -109,18 +114,26 @@ impl SparseMatrix {
     }
 
     /// Sparse matrix-vector product: result = A * x (using full symmetric matrix).
-    pub fn spmv(&mut self, x: &[f64], result: &mut [f64]) {
+    /// Accepts pre-constructed faer matrices to enable reuse and avoid conversions.
+    pub fn spmv_mat(&mut self, x: faer::MatRef<'_, f64>, result: faer::MatMut<'_, f64>) {
         let csc = self.to_faer_symmetric().clone();
-        let x_col = faer::MatRef::from_column_major_slice(x, self.n, 1);
-        let mut r_col = faer::MatMut::from_column_major_slice_mut(result, self.n, 1);
         faer::sparse::linalg::matmul::sparse_dense_matmul(
-            r_col.as_mut(),
+            result,
             faer::Accum::Replace,
             csc.as_ref(),
-            x_col,
+            x,
             1.0,
             crate::solver::par(),
         );
+    }
+
+    /// Sparse matrix-vector product: result = A * x (slice-based convenience wrapper).
+    /// NOTE: Creates temporary matrix objects on each call. Consider using spmv_mat() for
+    /// repeated calls to avoid allocation overhead.
+    pub fn spmv(&mut self, x: &[f64], result: &mut [f64]) {
+        let x_col = faer::MatRef::from_column_major_slice(x, self.n, 1);
+        let r_col = faer::MatMut::from_column_major_slice_mut(result, self.n, 1);
+        self.spmv_mat(x_col, r_col);
     }
 }
 
@@ -214,16 +227,8 @@ mod tests {
 
         let mut result = vec![0.0; 2];
         mat.spmv(&[1.0, 2.0], &mut result);
-        assert!(
-            (result[0] - 2.0).abs() < 1e-12,
-            "result[0] = {}",
-            result[0]
-        );
-        assert!(
-            (result[1] - 5.0).abs() < 1e-12,
-            "result[1] = {}",
-            result[1]
-        );
+        assert!((result[0] - 2.0).abs() < 1e-12, "result[0] = {}", result[0]);
+        assert!((result[1] - 5.0).abs() < 1e-12, "result[1] = {}", result[1]);
     }
 
     #[test]

@@ -9,7 +9,6 @@ use crate::netlist::{CellId, NetId, PortType};
 /// Removes the port from the net's driver or users list and clears the port's
 /// net reference. If the port is not connected or does not exist, this is a
 /// no-op.
-#[cfg(feature = "test-utils")]
 pub fn disconnect_port(ctx: &mut Context, cell: CellId, port: IdString) {
     let cell_info = ctx.design.cell(cell);
     let Some(net_idx) = cell_info.port_net(port) else {
@@ -53,13 +52,11 @@ pub fn connect_port(ctx: &mut Context, cell: CellId, port: IdString, net: NetId)
 }
 
 /// Get the net connected to a cell port, if any.
-#[cfg(feature = "test-utils")]
 pub fn get_net_for_port(ctx: &Context, cell: CellId, port: IdString) -> Option<NetId> {
     ctx.design.cell(cell).port_net(port)
 }
 
 /// Check if a net has exactly one connected user.
-#[cfg(feature = "test-utils")]
 pub fn is_single_fanout(ctx: &Context, net: NetId) -> bool {
     let net_info = ctx.design.net(net);
     net_info.users().iter().filter(|u| u.is_connected()).count() == 1

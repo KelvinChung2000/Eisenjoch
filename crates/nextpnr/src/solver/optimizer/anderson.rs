@@ -117,7 +117,8 @@ impl AndersonAccelerator {
 
         // Add alpha_i * g(x_{k-i})
         for i in 0..mm {
-            let idx = ((self.count as isize - 1 - (i + 1) as isize).rem_euclid(k as isize)) as usize;
+            let idx =
+                ((self.count as isize - 1 - (i + 1) as isize).rem_euclid(k as isize)) as usize;
             let x_old = &self.iterates[idx];
             let r_old = &self.residuals[idx];
             for j in 0..self.n {
@@ -265,7 +266,6 @@ mod tests {
             x = aa.step(&x, &residual);
             norms.push(aa.residual_norm());
         }
-        // Residual norm should generally decrease.
         assert!(norms.last().unwrap() < norms.first().unwrap());
     }
 }

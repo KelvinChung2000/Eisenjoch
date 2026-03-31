@@ -22,6 +22,7 @@ use faer::sparse::{SparseColMat, Triplet};
 
 /// Cached structural information for one AMG level.
 /// Built once from the sparsity pattern, reused across numeric updates.
+#[derive(Clone)]
 struct LevelStructure {
     /// Number of fine unknowns.
     n: usize,
@@ -61,6 +62,7 @@ struct LevelWork {
 
 /// Cached AMG structure: C/F splitting and interpolation patterns.
 /// Built once, reused across many numeric updates.
+#[derive(Clone)]
 pub struct AmgStructure {
     level_structs: Vec<LevelStructure>,
 }

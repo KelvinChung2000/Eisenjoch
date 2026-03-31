@@ -17,7 +17,6 @@ pub mod legalize;
 pub mod spreading;
 pub mod state;
 
-#[cfg(feature = "test-utils")]
 pub use algorithm::count_bels_in_region;
 pub use algorithm::place_heap;
 pub use config::PlacerHeapCfg;

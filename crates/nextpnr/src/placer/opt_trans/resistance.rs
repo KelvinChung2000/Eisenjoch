@@ -16,41 +16,36 @@ pub struct ResistanceModel {
     pub interference_weight: f64,
     /// Weight for timing criticality term.
     pub timing_weight: f64,
-    /// Weight for cell density spreading.
-    pub density_weight: f64,
 }
 
 impl ResistanceModel {
     /// Compute effective resistance for a single pipe.
     ///
-    /// R_eff = R_base * R_cong * R_interf * R_density * R_timing where:
+    /// R_eff = R_base * R_cong * R_interf * R_timing where:
     /// - R_cong = 1 + (|flow|/capacity)^alpha  (Beckmann flow congestion)
     /// - R_interf = 1 + w_i * (n_nets - 1) * util^2  (flow interference)
-    /// - R_density = 1 + w_d * cell_density^2  (placement density)
     /// - R_timing = 1 + w_t * criticality  (timing resistance)
+    #[inline(always)]
     pub fn effective_resistance(&self, pipe: &Pipe, timing_criticality: f64) -> f64 {
         let r_base = pipe.base_resistance;
 
         // Congestion: increases with utilization ratio
+        // Fast path: if exponent is ~2.0, avoid powf transcendental
         let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
-        let r_cong = 1.0 + util.powf(self.congestion_exponent);
+        let r_cong = if (self.congestion_exponent - 2.0).abs() < 0.01 {
+            1.0 + util * util  // Fast: direct multiply
+        } else {
+            1.0 + util.powf(self.congestion_exponent)
+        };
 
         // Interference: more nets sharing a pipe = more resistance
-        let r_interf = 1.0
-            + self.interference_weight
-                * (pipe.net_count.max(1) - 1) as f64
-                * util
-                * util;
-
-        // Density: regions with many cells get higher resistance,
-        // making pressure drop larger across them, encouraging cells
-        // to spread to less dense regions.
-        let r_density = 1.0 + self.density_weight * pipe.cell_density * pipe.cell_density;
+        let net_count_contrib = pipe.net_count.saturating_sub(1) as f64;
+        let r_interf = 1.0 + self.interference_weight * net_count_contrib * util * util;
 
         // Timing: critical nets resist stretching
         let r_timing = 1.0 + self.timing_weight * timing_criticality;
 
-        r_base * r_cong * r_interf * r_density * r_timing
+        r_base * r_cong * r_interf * r_timing
     }
 }
 

@@ -14,7 +14,7 @@ pub mod config;
 pub(crate) mod network;
 mod resistance;
 mod demand;
-mod anderson;
+mod gauss_newton;
 
 pub use config::OptTransPlacerCfg;
 pub use algorithm::place_opt_trans;

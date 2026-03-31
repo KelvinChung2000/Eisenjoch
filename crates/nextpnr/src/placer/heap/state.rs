@@ -13,14 +13,8 @@ pub struct HeapState {
     /// Map from CellIdx to index in movable_cells.
     pub(super) cell_to_idx: FxHashMap<CellId, usize>,
     /// Current X positions (continuous).
-    #[cfg(not(feature = "test-utils"))]
-    pub(super) cell_x: Vec<f64>,
-    #[cfg(feature = "test-utils")]
     pub cell_x: Vec<f64>,
     /// Current Y positions (continuous).
-    #[cfg(not(feature = "test-utils"))]
-    pub(super) cell_y: Vec<f64>,
-    #[cfg(feature = "test-utils")]
     pub cell_y: Vec<f64>,
     /// Region constraint for each movable cell (parallel to movable_cells).
     pub(super) cell_region: Vec<Option<u32>>,

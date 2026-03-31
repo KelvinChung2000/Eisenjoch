@@ -23,15 +23,15 @@ pub struct CgResult {
 ///
 /// `mat` implements `LinOp<f64>` (the system matrix A).
 /// `precond` implements `Precond<f64>` (the preconditioner M).
-/// `rhs` is the right-hand side vector.
-/// `x` is the initial guess on input, solution on output.
+/// `rhs_mat` is the right-hand side matrix (n × nrhs).
+/// `x_mat` is the initial guess on input, solution on output.
 /// `tol` is the relative tolerance for convergence.
 /// `max_iters` is the maximum number of CG iterations.
 pub fn solve_cg(
     mat: &(impl LinOp<f64> + Sized),
     precond: &(impl Precond<f64> + Sized),
-    rhs: &[f64],
-    x: &mut [f64],
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
     tol: f64,
     max_iters: usize,
 ) -> CgResult {
@@ -43,9 +43,6 @@ pub fn solve_cg(
             residual: 0.0,
         };
     }
-
-    let rhs_mat = faer::MatRef::from_column_major_slice(rhs, n, 1);
-    let mut x_mat = faer::MatMut::from_column_major_slice_mut(x, n, 1);
 
     let mut params = CgParams::default();
     params.rel_tolerance = tol;
@@ -83,7 +80,7 @@ pub fn solve_cg(
                 converged: false,
                 residual: f64::MAX,
             }
-        },
+        }
         Err(CgError::NonPositiveDefinitePreconditioner) => {
             eprintln!("CG ERROR: NonPositiveDefinitePreconditioner detected!");
             CgResult {
@@ -91,7 +88,7 @@ pub fn solve_cg(
                 converged: false,
                 residual: f64::MAX,
             }
-        },
+        }
     }
 }
 
@@ -104,24 +101,34 @@ pub fn cg_scratch_size(
     conjugate_gradient_scratch(precond, mat, 1, faer::Par::Seq)
 }
 
-/// Solve A*x = rhs using a pre-allocated scratch buffer.
+/// Compute the scratch size needed for CG with `nrhs` right-hand sides.
+pub fn cg_scratch_size_nrhs(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    nrhs: usize,
+) -> StackReq {
+    conjugate_gradient_scratch(precond, mat, nrhs.max(1), faer::Par::Seq)
+}
+
+/// Solve A*x = rhs using a pre-allocated scratch buffer, reusing matrix objects.
 /// The buffer must have been allocated with at least `cg_scratch_size()` bytes.
 pub fn solve_cg_reuse(
     mat: &(impl LinOp<f64> + Sized),
     precond: &(impl Precond<f64> + Sized),
-    rhs: &[f64],
-    x: &mut [f64],
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
     tol: f64,
     max_iters: usize,
     buf: &mut MemBuffer,
 ) -> CgResult {
     let n = mat.nrows();
     if n == 0 {
-        return CgResult { iterations: 0, converged: true, residual: 0.0 };
+        return CgResult {
+            iterations: 0,
+            converged: true,
+            residual: 0.0,
+        };
     }
-
-    let rhs_mat = faer::MatRef::from_column_major_slice(rhs, n, 1);
-    let mut x_mat = faer::MatMut::from_column_major_slice_mut(x, n, 1);
 
     let mut params = CgParams::default();
     params.rel_tolerance = tol;
@@ -149,39 +156,40 @@ pub fn solve_cg_reuse(
             converged: false,
             residual: rel_residual,
         },
-        Err(CgError::NonPositiveDefiniteOperator) => {
-            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+        Err(CgError::NonPositiveDefiniteOperator) => CgResult {
+            iterations: 0,
+            converged: false,
+            residual: f64::MAX,
         },
-        Err(CgError::NonPositiveDefinitePreconditioner) => {
-            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+        Err(CgError::NonPositiveDefinitePreconditioner) => CgResult {
+            iterations: 0,
+            converged: false,
+            residual: f64::MAX,
         },
     }
 }
 
-/// Batched CG solve: A * X = B where B has `nrhs` columns.
-///
-/// `rhs_data` is column-major: `nrhs` columns of length `n`, packed as
-/// `[col0_row0, col0_row1, ..., col0_rowN, col1_row0, ...]`.
-/// `x_data` is the same layout for the solution.
+/// Batched CG solve: A * X = B where X and B are matrices.
 ///
 /// Returns one CgResult (the aggregate). Each column converges independently
 /// inside faer's block CG, leveraging BLAS3 for the mat-vecs.
 pub fn solve_cg_batched(
     mat: &(impl LinOp<f64> + Sized),
     precond: &(impl Precond<f64> + Sized),
-    rhs_data: &[f64],
-    x_data: &mut [f64],
-    nrhs: usize,
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
     tol: f64,
     max_iters: usize,
 ) -> CgResult {
     let n = mat.nrows();
+    let nrhs = rhs_mat.ncols();
     if n == 0 || nrhs == 0 {
-        return CgResult { iterations: 0, converged: true, residual: 0.0 };
+        return CgResult {
+            iterations: 0,
+            converged: true,
+            residual: 0.0,
+        };
     }
-
-    let rhs_mat = faer::MatRef::from_column_major_slice(rhs_data, n, nrhs);
-    let mut x_mat = faer::MatMut::from_column_major_slice_mut(x_data, n, nrhs);
 
     let mut params = CgParams::default();
     params.rel_tolerance = tol;
@@ -213,11 +221,78 @@ pub fn solve_cg_batched(
         },
         Err(CgError::NonPositiveDefiniteOperator) => {
             eprintln!("CG ERROR (batched): NonPositiveDefiniteOperator");
-            CgResult { iterations: 0, converged: false, residual: f64::MAX }
-        },
+            CgResult {
+                iterations: 0,
+                converged: false,
+                residual: f64::MAX,
+            }
+        }
         Err(CgError::NonPositiveDefinitePreconditioner) => {
             eprintln!("CG ERROR (batched): NonPositiveDefinitePreconditioner");
-            CgResult { iterations: 0, converged: false, residual: f64::MAX }
+            CgResult {
+                iterations: 0,
+                converged: false,
+                residual: f64::MAX,
+            }
+        }
+    }
+}
+
+/// Batched CG solve using a pre-allocated scratch buffer.
+pub fn solve_cg_batched_reuse(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
+    tol: f64,
+    max_iters: usize,
+    buf: &mut MemBuffer,
+) -> CgResult {
+    let n = mat.nrows();
+    let nrhs = rhs_mat.ncols();
+    if n == 0 || nrhs == 0 {
+        return CgResult {
+            iterations: 0,
+            converged: true,
+            residual: 0.0,
+        };
+    }
+
+    let mut params = CgParams::default();
+    params.rel_tolerance = tol;
+    params.max_iters = max_iters;
+
+    let mut stack = MemStack::new(buf);
+
+    match conjugate_gradient(
+        x_mat.as_mut(),
+        precond,
+        mat,
+        rhs_mat,
+        params,
+        |_| {},
+        faer::Par::Seq,
+        &mut stack,
+    ) {
+        Ok(info) => CgResult {
+            iterations: info.iter_count,
+            converged: true,
+            residual: info.rel_residual,
+        },
+        Err(CgError::NoConvergence { rel_residual, .. }) => CgResult {
+            iterations: max_iters,
+            converged: false,
+            residual: rel_residual,
+        },
+        Err(CgError::NonPositiveDefiniteOperator) => CgResult {
+            iterations: 0,
+            converged: false,
+            residual: f64::MAX,
+        },
+        Err(CgError::NonPositiveDefinitePreconditioner) => CgResult {
+            iterations: 0,
+            converged: false,
+            residual: f64::MAX,
         },
     }
 }
@@ -240,7 +315,10 @@ mod tests {
 
         let rhs = vec![4.0, 9.0];
         let mut x = vec![0.0, 0.0];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-10, 100);
+
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, 2, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, 2, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-10, 100);
 
         assert!(result.converged);
         assert!((x[0] - 2.0).abs() < 1e-6, "x[0] = {}", x[0]);
@@ -260,7 +338,10 @@ mod tests {
 
         let rhs = vec![3.0, 3.0];
         let mut x = vec![0.0, 0.0];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-10, 100);
+
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, 2, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, 2, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-10, 100);
 
         assert!(result.converged);
         assert!((x[0] - 1.0).abs() < 1e-4, "x[0] = {}", x[0]);
@@ -284,7 +365,10 @@ mod tests {
 
         let rhs = vec![1.0; n];
         let mut x = vec![0.0; n];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-10, 100);
+
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, n, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, n, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-10, 100);
 
         assert!(result.converged);
 
@@ -322,12 +406,21 @@ mod tests {
         rhs[0] = 1.0;
         rhs[n - 1] = -1.0;
         let mut x = vec![0.0; n];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-6, 200);
 
-        eprintln!("graph laplacian CG: iters={}, converged={}, residual={:.3e}",
-            result.iterations, result.converged, result.residual);
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, n, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, n, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-6, 200);
 
-        assert!(result.converged, "Laplacian CG should converge, residual={}", result.residual);
+        eprintln!(
+            "graph laplacian CG: iters={}, converged={}, residual={:.3e}",
+            result.iterations, result.converged, result.residual
+        );
+
+        assert!(
+            result.converged,
+            "Laplacian CG should converge, residual={}",
+            result.residual
+        );
     }
 
     #[test]
@@ -350,12 +443,21 @@ mod tests {
         rhs[0] = 1.0;
         rhs[n - 1] = -1.0;
         let mut x = vec![0.0; n];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-4, 2000);
 
-        eprintln!("large laplacian CG: iters={}, converged={}, residual={:.3e}",
-            result.iterations, result.converged, result.residual);
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, n, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, n, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-4, 2000);
 
-        assert!(result.converged, "Large Laplacian CG should converge, residual={}", result.residual);
+        eprintln!(
+            "large laplacian CG: iters={}, converged={}, residual={:.3e}",
+            result.iterations, result.converged, result.residual
+        );
+
+        assert!(
+            result.converged,
+            "Large Laplacian CG should converge, residual={}",
+            result.residual
+        );
     }
 
     #[test]
@@ -393,12 +495,21 @@ mod tests {
         rhs[0] = 1.0;
         rhs[n - 1] = -1.0;
         let mut x = vec![0.0; n];
-        let result = solve_cg(&op, &precond, &rhs, &mut x, 1e-4, 5000);
 
-        eprintln!("2D grid CG: n={}, iters={}, converged={}, residual={:.3e}",
-            n, result.iterations, result.converged, result.residual);
+        let rhs_mat = faer::MatRef::from_column_major_slice(&rhs, n, 1);
+        let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x, n, 1);
+        let result = solve_cg(&op, &precond, rhs_mat, x_mat, 1e-4, 5000);
 
-        assert!(result.converged, "2D grid CG should converge, residual={}", result.residual);
+        eprintln!(
+            "2D grid CG: n={}, iters={}, converged={}, residual={:.3e}",
+            n, result.iterations, result.converged, result.residual
+        );
+
+        assert!(
+            result.converged,
+            "2D grid CG should converge, residual={}",
+            result.residual
+        );
     }
 
     #[test]
@@ -423,7 +534,11 @@ mod tests {
         let mut x = vec![0.0; n];
         let result = solve_cg(&op, &amg, &rhs, &mut x, 1e-8, 200);
 
-        assert!(result.converged, "AMG+CG 1D should converge, residual={}", result.residual);
+        assert!(
+            result.converged,
+            "AMG+CG 1D should converge, residual={}",
+            result.residual
+        );
     }
 
     #[test]
@@ -484,7 +599,9 @@ mod tests {
         // AMG should converge faster than Jacobi
         assert!(
             result_a.iterations < result_j.iterations || result_a.iterations < 50,
-            "AMG should be faster: AMG={} vs Jacobi={}", result_a.iterations, result_j.iterations
+            "AMG should be faster: AMG={} vs Jacobi={}",
+            result_a.iterations,
+            result_j.iterations
         );
     }
 }

@@ -1,9 +1,9 @@
 //! Router1: A* rip-up and reroute router.
 //!
-//! This module implements an iterative A* routing algorithm that routes each net
-//! independently, then detects congestion (wires used by multiple nets) and
-//! rips up congested nets for rerouting with increased penalties. The process
-//! repeats until all congestion is resolved or the iteration limit is reached.
+//! Implements an A* routing algorithm with estimate-based pruning (matching
+//! the C++ nextpnr router1 approach). Routes each net independently, then
+//! detects congestion and rips up congested nets for rerouting with increased
+//! penalties.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -13,8 +13,6 @@ use crate::context::Context;
 use crate::netlist::NetId;
 use crate::timing::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
-
-use crate::metrics::{BoundingBox, compute_bbox};
 
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
@@ -39,6 +37,9 @@ pub struct Router1Cfg {
     /// Margin (in tiles) added around each net's bounding box for A* pruning.
     /// Set to 0 to disable bounding-box pruning.
     pub bb_margin: i32,
+    /// Precision slack for estimate-based pruning. Candidates within this
+    /// margin of the best estimate are kept. Higher = more exploration.
+    pub estimate_precision: DelayT,
     /// Whether to emit verbose log messages.
     pub verbose: bool,
 }
@@ -50,6 +51,7 @@ impl Default for Router1Cfg {
             rip_up_penalty: 10,
             congestion_weight: 1.0,
             bb_margin: 3,
+            estimate_precision: 50,
             verbose: false,
         }
     }
@@ -62,17 +64,13 @@ impl Default for Router1Cfg {
 /// An entry in the A* search priority queue.
 #[derive(Clone)]
 pub struct QueueEntry {
-    /// The wire this entry represents.
     pub wire: WireId,
-    /// g(n): accumulated cost from the source to this wire.
+    /// g(n): accumulated cost from the source.
     pub cost: DelayT,
-    /// f(n) = g(n) + h(n): total estimated cost through this wire.
+    /// Penalty component of the cost (congestion penalties).
+    pub penalty: DelayT,
+    /// f(n) = g(n) + h(n): total estimated cost.
     pub estimate: DelayT,
-    /// Lazy PIP expansion: start index into downhill PIPs array.
-    /// 0 = first visit (expand nodes + first PIP batch).
-    /// >0 = continuation (expand next PIP batch only).
-    /// u16::MAX = fully expanded (skip PIP expansion).
-    pub pip_start: u16,
 }
 
 impl Eq for QueueEntry {}
@@ -91,8 +89,7 @@ impl PartialOrd for QueueEntry {
 
 impl Ord for QueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse ordering so BinaryHeap (max-heap) behaves as a min-heap
-        // by estimate. Break ties by preferring lower g-cost.
+        // Min-heap by estimate, break ties by lower cost.
         other
             .estimate
             .cmp(&self.estimate)
@@ -106,11 +103,8 @@ impl Ord for QueueEntry {
 
 /// Internal mutable state for the Router1 algorithm.
 pub struct Router1State {
-    /// Per-wire penalty that increases when a wire is involved in congestion.
     pub wire_penalty: FxHashMap<WireId, DelayT>,
-    /// Per-wire usage count, updated incrementally as nets are ripped up/rerouted.
     pub wire_usage: FxHashMap<WireId, u32>,
-    /// Reverse index: wire → set of nets using it. Enables O(1) congestion lookups.
     pub wire_nets: FxHashMap<WireId, FxHashSet<NetId>>,
 }
 
@@ -128,7 +122,6 @@ impl Router1State {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Router1: A* rip-up and reroute.
 pub struct Router1;
 
 impl super::Router for Router1 {
@@ -146,7 +139,7 @@ impl super::Router for Router1 {
         net: crate::netlist::NetId,
     ) -> Result<(), super::RouterError> {
         let wire_penalty = FxHashMap::default();
-        let plan = compute_route_r1(ctx, net, &wire_penalty, cfg.bb_margin, None)?;
+        let plan = compute_route_r1(ctx, net, &wire_penalty, cfg.bb_margin, cfg.estimate_precision, None)?;
         if plan.source_wire.is_valid() {
             super::common::apply_route_plan(ctx, &plan);
         }
@@ -163,45 +156,26 @@ impl super::Router for Router1 {
 
         let mut state = Router1State::new();
 
-        // Diagnostic: check pip delay distribution on first tile with PIPs.
-        {
-            let chipdb = ctx.chipdb();
-            let mut delay_counts: std::collections::BTreeMap<DelayT, usize> = std::collections::BTreeMap::new();
-            let mut sampled = 0usize;
-            'outer: for tile in 0..(chipdb.width() * chipdb.height()) {
-                let tt = chipdb.tile_type(tile);
-                let n_pips = tt.pips.len();
-                if n_pips > 100 {
-                    for pip_idx in 0..n_pips.min(200) {
-                        let pip = crate::chipdb::PipId::new(tile, pip_idx as i32);
-                        let delay = ctx.pip(pip).delay().max_delay();
-                        *delay_counts.entry(delay).or_insert(0) += 1;
-                        sampled += 1;
-                    }
-                    break 'outer;
-                }
-            }
-            eprintln!("Router1: pip delay distribution (sampled {} PIPs):", sampled);
-            for (delay, count) in &delay_counts {
-                eprintln!("  delay={}: {} PIPs", delay, count);
-            }
-        }
-
         // Build lookahead table for A* heuristic.
         let lookahead = super::lookahead::Lookahead::build(
             ctx.chipdb(),
             ctx.speed_grade_idx(),
-            40, // ±40 tiles range
+            40,
         );
         let lookahead = std::sync::Arc::new(lookahead);
 
         // Phase 1: Parallel initial route computation.
         let plans: Vec<Result<RoutePlan, RouterError>> = nets
             .par_iter()
-            .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin, Some(&lookahead)))
+            .map(|&net| {
+                compute_route_r1(
+                    &*ctx, net, &state.wire_penalty,
+                    cfg.bb_margin, cfg.estimate_precision, Some(&lookahead),
+                )
+            })
             .collect();
 
-        // Phase 2: Serial apply + build wire→net reverse index.
+        // Phase 2: Serial apply + build wire->net reverse index.
         for plan in plans {
             let plan = plan?;
             if plan.source_wire.is_valid() {
@@ -212,11 +186,23 @@ impl super::Router for Router1 {
 
         // Phase 3: Rip-up-and-reroute loop.
         let net_set: FxHashSet<NetId> = nets.iter().copied().collect();
-        for _iter in 0..cfg.max_iterations {
-            // Use the reverse index to find congested nets in O(congested_wires).
+        for iter in 0..cfg.max_iterations {
             let congested = find_congested_nets_fast(&state, &net_set);
             if congested.is_empty() {
+                eprintln!("Router1: converged at iteration {}", iter);
                 return Ok(());
+            }
+
+            if cfg.verbose || iter % 50 == 0 {
+                let congested_wires = state
+                    .wire_usage
+                    .values()
+                    .filter(|&&c| c > 1)
+                    .count();
+                eprintln!(
+                    "Router1 iter {}: {} congested nets, {} congested wires",
+                    iter, congested.len(), congested_wires,
+                );
             }
 
             // Increase penalties for congested wires.
@@ -238,7 +224,12 @@ impl super::Router for Router1 {
             // Parallel reroute.
             let plans: Vec<Result<RoutePlan, RouterError>> = congested
                 .par_iter()
-                .map(|&net| compute_route_r1(&*ctx, net, &state.wire_penalty, cfg.bb_margin, Some(&lookahead)))
+                .map(|&net| {
+                    compute_route_r1(
+                        &*ctx, net, &state.wire_penalty,
+                        cfg.bb_margin, cfg.estimate_precision, Some(&lookahead),
+                    )
+                })
                 .collect();
 
             for plan in plans {
@@ -250,7 +241,6 @@ impl super::Router for Router1 {
             }
         }
 
-        // Check remaining congestion.
         let remaining = find_congested_nets_fast(&state, &net_set);
         if remaining.is_empty() {
             Ok(())
@@ -264,30 +254,24 @@ impl super::Router for Router1 {
 // Single-net routing
 // ---------------------------------------------------------------------------
 
-/// Route a single net from its driver to all of its sinks using A* search.
-///
-/// For each user (sink) of the net, we find the sink cell's BEL pin wire and
-/// run A* from the current routing tree to that sink wire. The resulting path
-/// of PIPs is then bound in the context.
-#[cfg(feature = "test-utils")]
 pub fn route_net(
     ctx: &mut Context,
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
 ) -> Result<(), RouterError> {
-    route_net_impl(ctx, net, wire_penalty, 0)
+    let plan = compute_route_r1(ctx, net, wire_penalty, 0, 50, None)?;
+    if plan.source_wire.is_valid() {
+        apply_route_plan(ctx, &plan);
+    }
+    Ok(())
 }
 
-/// Pure computation function: compute a route plan for a single net without
-/// mutating the Context. The returned `RoutePlan` can later be applied via
-/// `apply_route_plan`.
-///
-/// Uses bounding-box pruning with `bb_margin` tiles of expansion (0 = no pruning).
 pub fn compute_route_r1(
     ctx: &Context,
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
     bb_margin: i32,
+    estimate_precision: DelayT,
     lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
@@ -302,27 +286,22 @@ pub fn compute_route_r1(
     };
 
     let bbox = if bb_margin > 0 {
-        Some(compute_bbox(ctx, net, bb_margin))
+        Some(crate::metrics::compute_bbox(ctx, net, bb_margin))
     } else {
         None
     };
 
     let sink_wires = collect_sink_wires(ctx, net);
 
-    // Track routing tree locally using a HashSet for O(1) contains checks.
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
-    // Include already-routed wires from the net.
     tree_wires.extend(ctx.net(net).wire_ids());
 
-    // For constant nets (GND/VCC), add all matching constant wires across the
-    // chip as additional source points.
     let const_val = source_wire_const_value(ctx, source_wire);
     if const_val != 0 {
         let const_wires = collect_constant_source_wires(ctx, const_val);
         tree_wires.extend(const_wires);
     }
-
 
     let mut sink_routes = Vec::new();
     for sink_wire in sink_wires {
@@ -333,9 +312,16 @@ pub fn compute_route_r1(
             });
             continue;
         }
-        match astar_route(ctx, &tree_wires, sink_wire, wire_penalty, bbox.as_ref(), lookahead) {
+        match astar_route(
+            ctx,
+            &tree_wires,
+            sink_wire,
+            wire_penalty,
+            bbox.as_ref(),
+            estimate_precision,
+            lookahead,
+        ) {
             Some(pips) => {
-                // Add destination wires of each PIP to tree.
                 for &pip in &pips {
                     tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
                 }
@@ -362,58 +348,40 @@ pub fn compute_route_r1(
     })
 }
 
-fn route_net_impl(
-    ctx: &mut Context,
-    net: NetId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bb_margin: i32,
-) -> Result<(), RouterError> {
-    let plan = compute_route_r1(ctx, net, wire_penalty, bb_margin, None)?;
-    if plan.source_wire.is_valid() {
-        apply_route_plan(ctx, &plan);
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
-// A* search
+// A* search with estimate-based pruning
 // ---------------------------------------------------------------------------
 
-/// Run A* search from multiple source wires to a single destination wire,
-/// with optional bounding-box pruning.
+/// A* search from multiple source wires to a single destination wire.
 ///
-/// Searches from all `src_wires` simultaneously, which allows the algorithm
-/// to find the shortest path from any wire already in the routing tree.
-/// Uses `estimate_delay` as the heuristic function.
+/// Key speed optimizations (matching C++ nextpnr router1):
 ///
-/// Returns a sequence of PIPs forming the path in forward order (source to
-/// destination), or `None` if no path exists.
+/// 1. **Estimate-based pruning**: once any path is found, candidates whose
+///    `estimate / 2` exceeds `best_score + precision` are skipped. This is
+///    far tighter than bounding-box pruning.
+///
+/// 2. **Score-based culling**: before inserting a PIP destination into the
+///    queue, reject it if `new_score > best_score + precision`.
+///
+/// 3. **Adaptive visit limit**: after finding the first path, cap further
+///    exploration to `2 * visit_count` to prevent unbounded search on
+///    hard instances.
 pub fn astar_route(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&BoundingBox>,
+    bbox: Option<&crate::metrics::BoundingBox>,
+    estimate_precision: DelayT,
     lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Option<Vec<PipId>> {
-    // Trivial case: destination is already in the source set.
     if src_wires.contains(&dst_wire) {
         return Some(Vec::new());
     }
 
     let chipdb = ctx.chipdb();
-    let init_capacity = src_wires.len().saturating_mul(8).max(16);
-    let mut heap = BinaryHeap::with_capacity(init_capacity);
-    // visited: wire -> (best cost, Option<pip>, came_from wire)
-    let mut visited: FxHashMap<WireId, (DelayT, Option<PipId>, WireId)> =
-        FxHashMap::with_capacity_and_hasher(init_capacity, Default::default());
 
-    // Number of PIPs to expand per heap pop. Limits the branching factor
-    // for dense switch matrices (e.g., 3737 PIPs per XC7 INT tile).
-    // Remaining PIPs are deferred via re-push with advanced pip_start.
-    const PIP_BATCH: usize = 64;
-
-    // Heuristic function: use lookahead if available, else Manhattan distance.
+    // Heuristic function.
     let h = |src: WireId, dst: WireId| -> DelayT {
         match lookahead {
             Some(la) => la.estimate_delay(chipdb, src, dst),
@@ -421,78 +389,91 @@ pub fn astar_route(
         }
     };
 
-    // Seed the search with all source wires.
+    let init_cap = src_wires.len().saturating_mul(8).max(16);
+    let mut heap = BinaryHeap::with_capacity(init_cap);
+    // visited: wire -> (best_cost, penalty, Option<pip>, came_from_wire)
+    let mut visited: FxHashMap<WireId, (DelayT, DelayT, Option<PipId>, WireId)> =
+        FxHashMap::with_capacity_and_hasher(init_cap, Default::default());
+
+    // Best total score (delay + penalty) found so far. Starts at MAX.
+    let mut best_score: DelayT = DelayT::MAX;
+    // Adaptive visit limit: starts unbounded, tightens after first solution.
+    let mut max_visits: usize = usize::MAX;
+    let mut visit_count: usize = 0;
+
+    // Seed with all source wires.
     for &src in src_wires {
         let hval = h(src, dst_wire);
         heap.push(QueueEntry {
             wire: src,
             cost: 0,
+            penalty: 0,
             estimate: hval,
-            pip_start: 0,
         });
-        visited.insert(src, (0, None, src));
+        visited.insert(src, (0, 0, None, src));
     }
 
     while let Some(entry) = heap.pop() {
-        // Skip if we already found a cheaper path to this wire.
-        if let Some(&(prev_cost, _, _)) = visited.get(&entry.wire) {
-            if entry.cost > prev_cost {
+        visit_count += 1;
+        if visit_count > max_visits {
+            break;
+        }
+
+        // Estimate-based pruning: skip if this candidate is clearly worse
+        // than the best path found. The /2 allows exploring alternatives
+        // that might be slightly longer but avoid congestion.
+        if best_score < DelayT::MAX {
+            if entry.estimate / 2 - estimate_precision > best_score {
                 continue;
             }
         }
 
-        // Check if we reached the destination.
-        if entry.wire == dst_wire {
-            // Trace back the path through visited.
-            let mut pips = Vec::new();
-            let mut current = dst_wire;
-            loop {
-                let Some(&(_, pip, from)) = visited.get(&current) else {
-                    break;
-                };
-                match pip {
-                    Some(p) => {
-                        pips.push(p);
-                        current = chipdb.pip_src_wire(p);
-                    }
-                    None => {
-                        if from == current {
-                            break;
-                        }
-                        current = from;
-                    }
-                }
+        // Skip if we already found a cheaper path to this wire.
+        if let Some(&(prev_cost, prev_pen, _, _)) = visited.get(&entry.wire) {
+            if entry.cost + entry.penalty > prev_cost + prev_pen {
+                continue;
             }
-            pips.reverse();
-            return Some(pips);
         }
 
-        // Node expansion: only on first visit (pip_start == 0).
-        // Add a small wire delay proportional to the hop distance.
-        // In reality, longer wires have higher RC delay. Without this,
-        // zero-cost node expansion floods the entire bounding box,
-        // causing the A* to visit all ~28K wires instead of following
-        // a directed path. The delay is set low enough (~10 per tile)
-        // that node hops are still much cheaper than PIP traversal (~100),
-        // but high enough to break ties between nearby and distant nodes.
-        if entry.pip_start == 0 {
-            let src_loc = chipdb.tile_xy(entry.wire.tile());
+        // Check destination hit.
+        if entry.wire == dst_wire {
+            let score = entry.cost + entry.penalty;
+            if score < best_score {
+                best_score = score;
+                // Set adaptive visit limit: allow 2x current visits more.
+                if max_visits == usize::MAX {
+                    max_visits = visit_count * 2 + 100;
+                }
+            }
+            // Don't break - keep searching for potentially better paths
+            // (with lower penalty). The visit limit will stop us.
+            continue;
+        }
+
+        // Node expansion: spread to other tiles via routing nodes.
+        {
             let mut expand_node = |nw: WireId| {
-                let nw_loc = chipdb.tile_xy(nw.tile());
-                let wire_delay: DelayT = 0;
-                let new_cost = entry.cost + wire_delay;
-                if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
-                    if new_cost >= prev_cost {
+                let new_cost = entry.cost;
+                let new_pen = entry.penalty;
+                if let Some(&(pc, pp, _, _)) = visited.get(&nw) {
+                    if new_cost + new_pen >= pc + pp {
                         return;
                     }
                 }
-                visited.insert(nw, (new_cost, None, entry.wire));
+                visited.insert(nw, (new_cost, new_pen, None, entry.wire));
                 let hval = h(nw, dst_wire);
+                let est = new_cost + new_pen + hval;
+
+                // Score-based culling before insertion.
+                if best_score < DelayT::MAX && est / 2 - estimate_precision > best_score {
+                    return;
+                }
+
                 heap.push(QueueEntry {
                     wire: nw,
                     cost: new_cost,
-                    estimate: new_cost + hval,
-                    pip_start: 0,
+                    penalty: new_pen,
+                    estimate: est,
                 });
             };
             if let Some(bb) = bbox {
@@ -502,68 +483,85 @@ pub fn astar_route(
             }
         }
 
-        // Lazy PIP expansion: process at most PIP_BATCH PIPs per pop.
-        // Skip PIP expansion if a node hop already advanced us closer to
-        // the target AND we're not near the destination. This prevents the
-        // A* from exploring all 600 wires per tile via PIP chains when a
-        // direct node hop is available, while still allowing switch matrix
-        // entry at source/destination tiles.
-        // Always expand PIPs near source or destination tiles (within 2 tiles).
-        // The source needs PIPs to enter the routing fabric (LOGIC_OUTS→span wires).
-        // Lazy PIP expansion: process at most PIP_BATCH PIPs per pop.
-        if entry.pip_start < u16::MAX {
-            let pip_batch = PIP_BATCH;
-            let wire_info = chipdb.wire_info(entry.wire);
-            let downhill_indices = wire_info.pips_downhill.get();
-            let start = entry.pip_start as usize;
-            let end = (start + pip_batch).min(downhill_indices.len());
+        // PIP expansion.
+        let wire_info = chipdb.wire_info(entry.wire);
+        let downhill = wire_info.pips_downhill.get();
 
-            for &pip_index in &downhill_indices[start..end] {
-                let pip = PipId::new(entry.wire.tile(), pip_index);
-                let next_wire = chipdb.pip_dst_wire(pip);
+        for &pip_idx in downhill {
+            let pip = PipId::new(entry.wire.tile(), pip_idx);
+            let next_wire = chipdb.pip_dst_wire(pip);
 
-                // Bounding box pruning.
-                if let Some(bb) = bbox {
-                    let (wx, wy) = chipdb.tile_xy(next_wire.tile());
-                    if !bb.contains(wx, wy) {
-                        continue;
-                    }
+            // Bounding box pruning (coarse spatial filter).
+            if let Some(bb) = bbox {
+                let (wx, wy) = chipdb.tile_xy(next_wire.tile());
+                if !bb.contains(wx, wy) {
+                    continue;
                 }
-
-                let pip_delay = ctx.pip(pip).delay().max_delay();
-                let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
-                let new_cost = entry.cost + pip_delay + penalty + 1;
-
-                if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
-                    if new_cost >= prev_cost {
-                        continue;
-                    }
-                }
-
-                visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-
-                let hval = h(next_wire, dst_wire);
-                heap.push(QueueEntry {
-                    wire: next_wire,
-                    cost: new_cost,
-                    estimate: new_cost + hval,
-                    pip_start: 0,
-                });
             }
 
-            // If there are more PIPs, re-push this wire for deferred expansion.
-            if end < downhill_indices.len() {
-                heap.push(QueueEntry {
-                    wire: entry.wire,
-                    cost: entry.cost,
-                    estimate: entry.estimate,
-                    pip_start: end as u16,
-                });
+            let pip_delay = ctx.pip(pip).delay().max_delay();
+            let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
+            let new_cost = entry.cost + pip_delay + 1;
+            let new_pen = entry.penalty + penalty;
+
+            // Score-based culling: reject if clearly worse than best.
+            let new_score = new_cost + new_pen;
+            if best_score < DelayT::MAX && new_score - estimate_precision > best_score {
+                continue;
             }
+
+            // Skip if visited with better score.
+            if let Some(&(pc, pp, _, _)) = visited.get(&next_wire) {
+                if new_cost + new_pen >= pc + pp {
+                    continue;
+                }
+            }
+
+            visited.insert(next_wire, (new_cost, new_pen, Some(pip), entry.wire));
+
+            let hval = h(next_wire, dst_wire);
+            let est = new_score + hval;
+
+            // Pre-insertion culling.
+            if best_score < DelayT::MAX && est / 2 - estimate_precision > best_score {
+                continue;
+            }
+
+            heap.push(QueueEntry {
+                wire: next_wire,
+                cost: new_cost,
+                penalty: new_pen,
+                estimate: est,
+            });
         }
     }
 
-    None
+    // Extract best path if destination was reached.
+    if best_score < DelayT::MAX {
+        let mut pips = Vec::new();
+        let mut current = dst_wire;
+        loop {
+            let Some(&(_, _, pip, from)) = visited.get(&current) else {
+                break;
+            };
+            match pip {
+                Some(p) => {
+                    pips.push(p);
+                    current = chipdb.pip_src_wire(p);
+                }
+                None => {
+                    if from == current {
+                        break;
+                    }
+                    current = from;
+                }
+            }
+        }
+        pips.reverse();
+        Some(pips)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -599,8 +597,6 @@ fn remove_wire_usage(ctx: &Context, state: &mut Router1State, net_idx: NetId) {
     }
 }
 
-/// Use the wire→net reverse index to find congested nets in O(congested_wires)
-/// instead of O(all_nets).
 fn find_congested_nets_fast(
     state: &Router1State,
     net_set: &FxHashSet<NetId>,
@@ -620,9 +616,6 @@ fn find_congested_nets_fast(
     nets.into_iter().collect()
 }
 
-/// Find all nets that use at least one congested wire.
-///
-/// Returns a deduplicated list of net indices.
 pub fn find_congested_nets(ctx: &Context) -> Vec<NetId> {
     let congested_wires = find_congested_wires(ctx);
     if congested_wires.is_empty() {
@@ -644,4 +637,3 @@ pub fn find_congested_nets(ctx: &Context) -> Vec<NetId> {
 
     nets.into_iter().collect()
 }
-

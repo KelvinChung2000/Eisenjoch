@@ -174,7 +174,6 @@ impl Router2State {
     }
 
     /// Recompute wire usage and ownership from the current design state.
-    #[cfg(feature = "test-utils")]
     pub fn update_usage(&mut self, design: &crate::netlist::Design) {
         self.wire_usage.clear();
         self.wire_owner.clear();
