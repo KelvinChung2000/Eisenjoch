@@ -179,8 +179,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         let min_scale = 0.05;
         // Move to finer grid after spending enough iterations at current level.
         // Minimum iters ensures the coarse grid converges before refining.
-        let min_iters_per_level = 30;
-        let max_iters_per_level = 60;
+        let min_iters_per_level = 50;
+        let max_iters_per_level = 100;
         iters_at_level += 1;
         let should_refine = iters_at_level >= min_iters_per_level
             && (prev_rms < 1.0 || iters_at_level >= max_iters_per_level);
@@ -198,9 +198,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             amg_precond = None;
             needs_rebuild = false;
             iters_at_level = 0;
-            // Reset Adam when changing resolution — stale momentum from
-            // the coarse grid would push cells in wrong directions.
-            adam = AdamOptimizer::new(2 * n, cfg.step_scale * network.coarsen as f64);
+            // Don't reset Adam — keep momentum across levels. The lr change
+            // and new gradient scale will naturally adapt. Resetting kills
+            // useful momentum and wastes iterations warming up.
             eprintln!("  → resolution {:.2} ({}x{}, {} nodes)", current_scale, network.width, network.height, network.num_nodes());
         }
 
