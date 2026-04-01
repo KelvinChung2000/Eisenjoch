@@ -198,6 +198,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             amg_precond = None;
             needs_rebuild = false;
             iters_at_level = 0;
+            // Reset Adam when changing resolution — stale momentum from
+            // the coarse grid would push cells in wrong directions.
+            adam = AdamOptimizer::new(2 * n, cfg.step_scale * network.coarsen as f64);
             eprintln!("  → resolution {:.2} ({}x{}, {} nodes)", current_scale, network.width, network.height, network.num_nodes());
         }
 
