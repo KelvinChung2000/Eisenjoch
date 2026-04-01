@@ -434,6 +434,14 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             best_chpwl,
             level_ms as f64 / 1000.0,
         );
+
+        // Stop refining if this level worsened CHPWL significantly.
+        // The fine-level Kirchhoff gradient has a different equilibrium
+        // that can undo the coarse placement.
+        if level_idx > 0 && level_chpwl > best_chpwl * 1.01 {
+            eprintln!("  Fine level worsened, stopping refinement");
+            break;
+        }
     }
 
     // Restore best positions found across all levels.
