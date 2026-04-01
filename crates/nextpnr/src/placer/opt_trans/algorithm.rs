@@ -353,11 +353,17 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                 n,
             );
 
-            // Residual correction: subtract coarse gradient so fine levels only
-            // correct the short-range error not already handled by coarser grids.
+            // Residual correction: recompute coarse gradient at CURRENT positions
+            // and subtract. This ensures the correction only contains fine-scale
+            // detail, not stale global information.
             if level_idx > 0 {
-                for (g, &cg) in grad.iter_mut().zip(coarse_grad.iter()) {
-                    *g -= cg;
+                let mut coarse_net = PipeNetwork::from_context(ctx, levels[0]);
+                let cg = compute_kirchhoff_gradient(
+                    ctx, &mut coarse_net, &cell_to_idx, &cell_x, &cell_y,
+                    cfg, &resistance_model, &solve_pool, n,
+                );
+                for (g, &c) in grad.iter_mut().zip(cg.iter()) {
+                    *g -= c;
                 }
             }
 
