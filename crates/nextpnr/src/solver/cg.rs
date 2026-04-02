@@ -35,6 +35,26 @@ pub fn solve_cg(
     tol: f64,
     max_iters: usize,
 ) -> CgResult {
+    solve_cg_with_par(
+        mat,
+        precond,
+        rhs_mat,
+        x_mat,
+        tol,
+        max_iters,
+        crate::solver::par(),
+    )
+}
+
+pub fn solve_cg_with_par(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
+    tol: f64,
+    max_iters: usize,
+    par: faer::Par,
+) -> CgResult {
     let n = mat.nrows();
     if n == 0 {
         return CgResult {
@@ -49,7 +69,7 @@ pub fn solve_cg(
     params.max_iters = max_iters;
 
     // Compute workspace requirement and allocate
-    let scratch = conjugate_gradient_scratch(precond, mat, 1, crate::solver::par());
+    let scratch = conjugate_gradient_scratch(precond, mat, 1, par);
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
@@ -60,7 +80,7 @@ pub fn solve_cg(
         rhs_mat,
         params,
         |_| {},
-        crate::solver::par(),
+        par,
         &mut stack,
     ) {
         Ok(info) => CgResult {
@@ -98,7 +118,7 @@ pub fn cg_scratch_size(
     mat: &(impl LinOp<f64> + Sized),
     precond: &(impl Precond<f64> + Sized),
 ) -> StackReq {
-    conjugate_gradient_scratch(precond, mat, 1, faer::Par::Seq)
+    conjugate_gradient_scratch(precond, mat, 1, crate::solver::par())
 }
 
 /// Compute the scratch size needed for CG with `nrhs` right-hand sides.
@@ -107,7 +127,7 @@ pub fn cg_scratch_size_nrhs(
     precond: &(impl Precond<f64> + Sized),
     nrhs: usize,
 ) -> StackReq {
-    conjugate_gradient_scratch(precond, mat, nrhs.max(1), faer::Par::Seq)
+    conjugate_gradient_scratch(precond, mat, nrhs.max(1), crate::solver::par())
 }
 
 /// Solve A*x = rhs using a pre-allocated scratch buffer, reusing matrix objects.
@@ -143,7 +163,7 @@ pub fn solve_cg_reuse(
         rhs_mat,
         params,
         |_| {},
-        faer::Par::Seq,
+        crate::solver::par(),
         &mut stack,
     ) {
         Ok(info) => CgResult {
@@ -181,6 +201,26 @@ pub fn solve_cg_batched(
     tol: f64,
     max_iters: usize,
 ) -> CgResult {
+    solve_cg_batched_with_par(
+        mat,
+        precond,
+        rhs_mat,
+        x_mat,
+        tol,
+        max_iters,
+        crate::solver::par(),
+    )
+}
+
+pub fn solve_cg_batched_with_par(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
+    tol: f64,
+    max_iters: usize,
+    par: faer::Par,
+) -> CgResult {
     let n = mat.nrows();
     let nrhs = rhs_mat.ncols();
     if n == 0 || nrhs == 0 {
@@ -195,7 +235,7 @@ pub fn solve_cg_batched(
     params.rel_tolerance = tol;
     params.max_iters = max_iters;
 
-    let scratch = conjugate_gradient_scratch(precond, mat, nrhs, crate::solver::par());
+    let scratch = conjugate_gradient_scratch(precond, mat, nrhs, par);
     let mut buf = MemBuffer::new(scratch);
     let mut stack = MemStack::new(&mut buf);
 
@@ -206,7 +246,7 @@ pub fn solve_cg_batched(
         rhs_mat,
         params,
         |_| {},
-        crate::solver::par(),
+        par,
         &mut stack,
     ) {
         Ok(info) => CgResult {
@@ -248,6 +288,28 @@ pub fn solve_cg_batched_reuse(
     max_iters: usize,
     buf: &mut MemBuffer,
 ) -> CgResult {
+    solve_cg_batched_reuse_with_par(
+        mat,
+        precond,
+        rhs_mat,
+        x_mat,
+        tol,
+        max_iters,
+        crate::solver::par(),
+        buf,
+    )
+}
+
+pub fn solve_cg_batched_reuse_with_par(
+    mat: &(impl LinOp<f64> + Sized),
+    precond: &(impl Precond<f64> + Sized),
+    rhs_mat: faer::MatRef<'_, f64>,
+    mut x_mat: faer::MatMut<'_, f64>,
+    tol: f64,
+    max_iters: usize,
+    par: faer::Par,
+    buf: &mut MemBuffer,
+) -> CgResult {
     let n = mat.nrows();
     let nrhs = rhs_mat.ncols();
     if n == 0 || nrhs == 0 {
@@ -271,7 +333,7 @@ pub fn solve_cg_batched_reuse(
         rhs_mat,
         params,
         |_| {},
-        faer::Par::Seq,
+        par,
         &mut stack,
     ) {
         Ok(info) => CgResult {

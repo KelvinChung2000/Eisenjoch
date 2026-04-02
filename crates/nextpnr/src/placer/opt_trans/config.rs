@@ -1,5 +1,8 @@
 //! Configuration for the Beckmann optimal transport placer.
 
+use crate::netlist::NetId;
+use rustc_hash::FxHashMap;
+
 /// Preconditioner for the CG solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreconditionerType {
@@ -52,8 +55,14 @@ pub struct OptTransPlacerCfg {
     pub interference_weight: f64,
     /// Weight for timing-critical path resistance.
     pub timing_weight: f64,
+    /// Optional per-net timing criticality map (0.0..1.0).
+    pub timing_criticality: FxHashMap<NetId, f32>,
     /// IO net demand amplification factor.
     pub io_boost: f64,
+    /// Exponent used to normalize sink demand by fanout.
+    pub fanout_norm_exp: f64,
+    /// Apply sqrt(fanout) scaling to IO demand for large nets.
+    pub fanout_weight_sqrt: bool,
     /// Anderson mixing depth m.
     pub anderson_depth: usize,
     /// Report every N iterations.
@@ -96,7 +105,10 @@ impl Default for OptTransPlacerCfg {
             congestion_exponent: 0.0,
             interference_weight: 0.0,
             timing_weight: 0.0,
+            timing_criticality: FxHashMap::default(),
             io_boost: 1.0,
+            fanout_norm_exp: 1.0,
+            fanout_weight_sqrt: false,
             anderson_depth: 3,
             report_interval: 5,
             lap_max_cells: 10000,

@@ -1,5 +1,5 @@
-pub mod jacobi;
 pub mod amg;
+pub mod jacobi;
 
-pub use jacobi::JacobiPreconditioner;
 pub use amg::AmgPreconditioner;
+pub use jacobi::JacobiPreconditioner;

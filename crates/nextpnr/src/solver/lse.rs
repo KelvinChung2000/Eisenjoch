@@ -20,8 +20,7 @@ pub fn lse_wirelength(positions: &[(f64, f64)], gamma: f64) -> f64 {
         return 0.0;
     }
 
-    lse_axis(positions.iter().map(|p| p.0), gamma)
-        + lse_axis(positions.iter().map(|p| p.1), gamma)
+    lse_axis(positions.iter().map(|p| p.0), gamma) + lse_axis(positions.iter().map(|p| p.1), gamma)
 }
 
 /// LSE approximation for a single axis.
@@ -42,9 +41,7 @@ fn lse_axis(coords: impl Iterator<Item = f64> + Clone, gamma: f64) -> f64 {
         .map(|x| ((x - max_val) * inv_gamma).exp())
         .sum();
 
-    let sum_exp_neg: f64 = coords
-        .map(|x| ((-x + min_val) * inv_gamma).exp())
-        .sum();
+    let sum_exp_neg: f64 = coords.map(|x| ((-x + min_val) * inv_gamma).exp()).sum();
 
     gamma * (max_val * inv_gamma + sum_exp_pos.ln() - min_val * inv_gamma + sum_exp_neg.ln())
 }

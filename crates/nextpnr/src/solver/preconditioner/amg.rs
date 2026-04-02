@@ -19,7 +19,6 @@ use dyn_stack::{MemStack, StackReq};
 use faer::matrix_free::LinOp;
 use faer::sparse::{SparseColMat, Triplet};
 
-
 /// Cached structural information for one AMG level.
 /// Built once from the sparsity pattern, reused across numeric updates.
 #[derive(Clone)]
@@ -117,8 +116,7 @@ impl AmgStructure {
             // Greedy C/F splitting.
             let mut is_coarse = vec![false; cur_n];
             let mut is_fine = vec![false; cur_n];
-            let mut measure: Vec<i32> =
-                strong_neighbors.iter().map(|s| s.len() as i32).collect();
+            let mut measure: Vec<i32> = strong_neighbors.iter().map(|s| s.len() as i32).collect();
 
             loop {
                 let mut best = None;
@@ -258,11 +256,7 @@ impl AmgPreconditioner {
     }
 
     /// Create a new AMG preconditioner from a cached structure and initial matrix values.
-    pub fn new(
-        structure: AmgStructure,
-        diag: &[f64],
-        off_diag: &[(usize, usize, f64)],
-    ) -> Self {
+    pub fn new(structure: AmgStructure, diag: &[f64], off_diag: &[(usize, usize, f64)]) -> Self {
         let num_levels = structure.level_structs.len();
         let mut numerics = Vec::with_capacity(num_levels);
         let mut work = Vec::with_capacity(num_levels);
@@ -304,11 +298,7 @@ impl AmgPreconditioner {
     }
 
     /// Check if structure needs rebuild (returns true if sigma changed too much).
-    pub fn needs_rebuild(
-        &self,
-        new_diag: &[f64],
-        new_off_diag: &[(usize, usize, f64)],
-    ) -> bool {
+    pub fn needs_rebuild(&self, new_diag: &[f64], new_off_diag: &[(usize, usize, f64)]) -> bool {
         // Check if sparsity pattern changed
         let ls = &self.structure.level_structs[0];
         if new_off_diag.len() != ls.offdiag_pattern.len() {
@@ -321,11 +311,7 @@ impl AmgPreconditioner {
             }
         }
         // Check relative change in values
-        let old_norm_sq: f64 = self.numerics[0]
-            .diag
-            .iter()
-            .map(|d| d * d)
-            .sum::<f64>()
+        let old_norm_sq: f64 = self.numerics[0].diag.iter().map(|d| d * d).sum::<f64>()
             + self.numerics[0]
                 .off_diag_values
                 .iter()
@@ -461,8 +447,7 @@ impl AmgPreconditioner {
                 .map(|key| coarse_offdiag_map.get(key).copied().unwrap_or(0.0))
                 .collect();
             for (i, d) in coarse_diag.iter().enumerate() {
-                self.numerics[next_level].inv_diag[i] =
-                    if d.abs() > 1e-30 { 1.0 / d } else { 1.0 };
+                self.numerics[next_level].inv_diag[i] = if d.abs() > 1e-30 { 1.0 / d } else { 1.0 };
             }
         }
 
@@ -475,12 +460,24 @@ impl AmgPreconditioner {
             // Build operator CSC from diag + off_diag (full symmetric).
             let mut triplets = Vec::with_capacity(n + ls.offdiag_pattern.len() * 2);
             for i in 0..n {
-                triplets.push(Triplet { row: i, col: i, val: nm.diag[i] });
+                triplets.push(Triplet {
+                    row: i,
+                    col: i,
+                    val: nm.diag[i],
+                });
             }
             for (idx, &(i, j)) in ls.offdiag_pattern.iter().enumerate() {
                 let v = nm.off_diag_values[idx];
-                triplets.push(Triplet { row: i, col: j, val: v });
-                triplets.push(Triplet { row: j, col: i, val: v });
+                triplets.push(Triplet {
+                    row: i,
+                    col: j,
+                    val: v,
+                });
+                triplets.push(Triplet {
+                    row: j,
+                    col: i,
+                    val: v,
+                });
             }
             self.numerics[level].operator_csc =
                 Some(SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &triplets).unwrap());
@@ -492,7 +489,11 @@ impl AmgPreconditioner {
                 for i in 0..n {
                     for (k, &cj) in ls.interp_indices[i].iter().enumerate() {
                         let w = self.numerics[level].interp_weights[i][k];
-                        p_triplets.push(Triplet { row: i, col: cj, val: w });
+                        p_triplets.push(Triplet {
+                            row: i,
+                            col: cj,
+                            val: w,
+                        });
                     }
                 }
                 self.numerics[level].interp_csc = Some(
@@ -618,11 +619,7 @@ impl AmgPreconditioner {
     }
 
     pub fn level_sizes(&self) -> Vec<usize> {
-        self.structure
-            .level_structs
-            .iter()
-            .map(|l| l.n)
-            .collect()
+        self.structure.level_structs.iter().map(|l| l.n).collect()
     }
 }
 
@@ -782,8 +779,7 @@ mod tests {
         let mut diag = vec![2.0; n];
         diag[0] = 1.0 + 1.0; // anchored
         diag[n - 1] = 1.0 + 1.0;
-        let off_diag: Vec<(usize, usize, f64)> =
-            (0..n - 1).map(|i| (i, i + 1, -1.0)).collect();
+        let off_diag: Vec<(usize, usize, f64)> = (0..n - 1).map(|i| (i, i + 1, -1.0)).collect();
         (diag, off_diag)
     }
 
@@ -793,7 +789,10 @@ mod tests {
         let (_, off_diag) = laplacian_1d(n);
         let pairs: Vec<(usize, usize)> = off_diag.iter().map(|&(i, j, _)| (i, j)).collect();
         let structure = AmgStructure::new(n, &pairs);
-        assert!(structure.num_levels() >= 2, "Should have multiple AMG levels");
+        assert!(
+            structure.num_levels() >= 2,
+            "Should have multiple AMG levels"
+        );
     }
 
     #[test]

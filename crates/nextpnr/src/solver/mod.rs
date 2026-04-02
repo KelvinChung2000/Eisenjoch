@@ -10,21 +10,21 @@
 //! - `NesterovSolver`: FISTA-accelerated gradient descent
 //! - `wa` / `lse`: smooth wirelength approximations
 
-pub mod sparse_matrix;
 pub mod cg;
-pub mod preconditioner;
-pub mod optimizer;
 pub mod direct;
+pub mod lse;
+pub mod optimizer;
+pub mod preconditioner;
+pub mod sparse_matrix;
 pub mod system;
 pub mod wa;
-pub mod lse;
 
-pub use sparse_matrix::SparseMatrix;
 pub use cg::solve_cg;
-pub use preconditioner::{JacobiPreconditioner, AmgPreconditioner};
 pub use direct::FaerDirectSolver;
-pub use system::{SparseSystemBuilder, Solver};
 pub use optimizer::NesterovSolver;
+pub use preconditioner::{AmgPreconditioner, JacobiPreconditioner};
+pub use sparse_matrix::SparseMatrix;
+pub use system::{Solver, SparseSystemBuilder};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -39,5 +39,9 @@ pub fn set_solver_threads(n: usize) {
 /// Get the faer Par setting using the configured thread count.
 pub fn par() -> faer::Par {
     let n = SOLVER_THREADS.load(Ordering::Relaxed);
-    if n <= 1 { faer::Par::Seq } else { faer::Par::rayon(n) }
+    if n <= 1 {
+        faer::Par::Seq
+    } else {
+        faer::Par::rayon(n)
+    }
 }

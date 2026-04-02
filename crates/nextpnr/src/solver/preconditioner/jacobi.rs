@@ -16,6 +16,16 @@ impl JacobiPreconditioner {
             .collect();
         Self { inv_diag }
     }
+
+    /// Refresh the preconditioner values without reallocating.
+    pub fn update(&mut self, diag: &[f64]) {
+        if self.inv_diag.len() != diag.len() {
+            self.inv_diag.resize(diag.len(), 1.0);
+        }
+        for (dst, &d) in self.inv_diag.iter_mut().zip(diag.iter()) {
+            *dst = if d.abs() > 1e-12 { 1.0 / d } else { 1.0 };
+        }
+    }
 }
 
 impl std::fmt::Debug for JacobiPreconditioner {
@@ -71,7 +81,12 @@ impl faer::matrix_free::Precond<f64> for JacobiPreconditioner {
         StackReq::EMPTY
     }
 
-    fn apply_in_place(&self, mut rhs: faer::MatMut<'_, f64>, _par: faer::Par, _stack: &mut MemStack) {
+    fn apply_in_place(
+        &self,
+        mut rhs: faer::MatMut<'_, f64>,
+        _par: faer::Par,
+        _stack: &mut MemStack,
+    ) {
         let ncols = rhs.ncols();
         for col in 0..ncols {
             for i in 0..self.inv_diag.len() {

@@ -51,6 +51,12 @@ impl SparseMatrix {
         &self.off_diag
     }
 
+    /// Mutable access to off-diagonal entries.
+    pub fn off_diag_mut(&mut self) -> &mut [(usize, usize, f64)] {
+        self.cached_csc = None;
+        &mut self.off_diag
+    }
+
     /// Reserve capacity for off-diagonal entries.
     pub fn reserve_off_diag(&mut self, additional: usize) {
         self.off_diag.reserve(additional);
@@ -91,6 +97,30 @@ impl SparseMatrix {
     pub fn clear(&mut self) {
         self.diag.fill(0.0);
         self.off_diag.clear();
+        self.cached_csc = None;
+    }
+
+    /// Add symmetric connections from an iterator of (i, j, weight) tuples.
+    pub fn add_connections_from_iter<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = (usize, usize, f64)>,
+    {
+        for (i, j, w) in iter {
+            self.add_connection(i, j, w);
+        }
+    }
+
+    /// Mean of diagonal entries.
+    pub fn diagonal_mean(&self) -> f64 {
+        let sum: f64 = self.diag.iter().sum();
+        sum / self.n.max(1) as f64
+    }
+
+    /// Add a uniform shift to all diagonal entries: A[i,i] += shift for all i.
+    pub fn add_uniform_diagonal_shift(&mut self, shift: f64) {
+        for d in self.diag.iter_mut() {
+            *d += shift;
+        }
         self.cached_csc = None;
     }
 
@@ -145,6 +175,79 @@ impl SparseMatrix {
 pub struct SparseMatrixOp {
     csc: SparseColMat<usize, f64>,
     n: usize,
+}
+
+/// Borrowed sparse matrix operator over diagonal + upper-triangle entries.
+///
+/// This avoids rebuilding or cloning a faer CSC matrix when the numeric values
+/// are updated frequently but the sparsity pattern stays fixed.
+pub struct SparseMatrixOpRef<'a> {
+    diag: &'a [f64],
+    off_diag: &'a [(usize, usize, f64)],
+    n: usize,
+}
+
+impl<'a> SparseMatrixOpRef<'a> {
+    pub fn from_matrix(mat: &'a SparseMatrix) -> Self {
+        Self {
+            diag: mat.diag(),
+            off_diag: mat.off_diag(),
+            n: mat.n(),
+        }
+    }
+}
+
+impl std::fmt::Debug for SparseMatrixOpRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SparseMatrixOpRef(n={})", self.n)
+    }
+}
+
+unsafe impl Sync for SparseMatrixOpRef<'_> {}
+
+impl faer::matrix_free::LinOp<f64> for SparseMatrixOpRef<'_> {
+    fn apply_scratch(&self, _rhs_ncols: usize, _par: faer::Par) -> StackReq {
+        StackReq::EMPTY
+    }
+
+    fn nrows(&self) -> usize {
+        self.n
+    }
+
+    fn ncols(&self) -> usize {
+        self.n
+    }
+
+    fn apply(
+        &self,
+        mut out: faer::MatMut<'_, f64>,
+        rhs: faer::MatRef<'_, f64>,
+        _par: faer::Par,
+        _stack: &mut MemStack,
+    ) {
+        let ncols = rhs.ncols();
+        for col in 0..ncols {
+            for i in 0..self.n {
+                out[(i, col)] = self.diag[i] * rhs[(i, col)];
+            }
+            for &(lo, hi, val) in self.off_diag {
+                let rhs_lo = rhs[(lo, col)];
+                let rhs_hi = rhs[(hi, col)];
+                out[(lo, col)] += val * rhs_hi;
+                out[(hi, col)] += val * rhs_lo;
+            }
+        }
+    }
+
+    fn conj_apply(
+        &self,
+        out: faer::MatMut<'_, f64>,
+        rhs: faer::MatRef<'_, f64>,
+        par: faer::Par,
+        stack: &mut MemStack,
+    ) {
+        self.apply(out, rhs, par, stack);
+    }
 }
 
 impl SparseMatrixOp {

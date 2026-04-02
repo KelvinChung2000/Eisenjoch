@@ -1,8 +1,7 @@
 //! Unified resistance model for the Beckmann optimal transport placer.
 //!
-//! Resistance sigma encodes ALL physics:
-//! - Congestion (Beckmann): increases with flow/capacity ratio
-//! - Interference: more nets sharing a pipe = more resistance
+//! Resistance sigma encodes the active transport physics:
+//! - Congestion: increases with pipe competition (`net_count`)
 //! - Timing: critical nets resist stretching
 
 use super::network::Pipe;
@@ -10,10 +9,10 @@ use super::network::Pipe;
 /// Computes effective resistance for a pipe given congestion, interference,
 /// and timing state.
 pub struct ResistanceModel {
-    /// Exponent alpha for congestion: (|J|/C)^alpha.
-    pub congestion_exponent: f64,
-    /// Weight for flow interference term.
-    pub interference_weight: f64,
+    /// Gain applied to the passive net-count congestion response.
+    pub congestion_scale: f64,
+    /// Net-count is raised to this power before scaling resistance.
+    pub congestion_power: f64,
     /// Weight for timing criticality term.
     pub timing_weight: f64,
 }
@@ -21,31 +20,24 @@ pub struct ResistanceModel {
 impl ResistanceModel {
     /// Compute effective resistance for a single pipe.
     ///
-    /// R_eff = R_base * R_cong * R_interf * R_timing where:
-    /// - R_cong = 1 + (|flow|/capacity)^alpha  (Beckmann flow congestion)
-    /// - R_interf = 1 + w_i * (n_nets - 1) * util^2  (flow interference)
+    /// R_eff = R_base * R_cong * R_timing where:
+    /// - R_cong = 1 + scale * net_count^power  (pipe competition congestion)
     /// - R_timing = 1 + w_t * criticality  (timing resistance)
     #[inline(always)]
     pub fn effective_resistance(&self, pipe: &Pipe, timing_criticality: f64) -> f64 {
         let r_base = pipe.base_resistance;
 
-        // Congestion: increases with utilization ratio
-        // Fast path: if exponent is ~2.0, avoid powf transcendental
-        let util = (pipe.flow.abs() / pipe.capacity.max(1.0)).min(10.0);
-        let r_cong = if (self.congestion_exponent - 2.0).abs() < 0.01 {
-            1.0 + util * util  // Fast: direct multiply
+        let count = pipe.net_count.max(1) as f64;
+        let r_cong = if self.congestion_scale <= 0.0 {
+            1.0
         } else {
-            1.0 + util.powf(self.congestion_exponent)
+            1.0 + self.congestion_scale * count.powf(self.congestion_power.max(1.0))
         };
-
-        // Interference: more nets sharing a pipe = more resistance
-        let net_count_contrib = pipe.net_count.saturating_sub(1) as f64;
-        let r_interf = 1.0 + self.interference_weight * net_count_contrib * util * util;
 
         // Timing: critical nets resist stretching
         let r_timing = 1.0 + self.timing_weight * timing_criticality;
 
-        r_base * r_cong * r_interf * r_timing
+        r_base * r_cong * r_timing
     }
 }
 
@@ -62,6 +54,7 @@ mod tests {
             capacity,
             flow,
             net_count,
+            raw_cell_density: 0.0,
             cell_density: 0.0,
             eff_conductance: 1.0,
             pipe_type: PipeType::IntraTile,
@@ -71,8 +64,8 @@ mod tests {
     #[test]
     fn zero_flow_gives_base_resistance() {
         let model = ResistanceModel {
-            congestion_exponent: 2.0,
-            interference_weight: 1.0,
+            congestion_scale: 0.01,
+            congestion_power: 2.0,
             timing_weight: 0.0,
         };
         let pipe = test_pipe(0.0, 10.0, 1);
@@ -83,24 +76,32 @@ mod tests {
     #[test]
     fn congestion_increases_resistance() {
         let model = ResistanceModel {
-            congestion_exponent: 2.0,
-            interference_weight: 0.0,
+            congestion_scale: 0.01,
+            congestion_power: 2.0,
             timing_weight: 0.0,
         };
-        let pipe_low = test_pipe(1.0, 10.0, 1);
-        let pipe_high = test_pipe(9.0, 10.0, 1);
-        assert!(model.effective_resistance(&pipe_high, 0.0) > model.effective_resistance(&pipe_low, 0.0));
+        let mut pipe_low = test_pipe(1.0, 10.0, 1);
+        let mut pipe_high = test_pipe(9.0, 10.0, 1);
+        pipe_low.net_count = 1;
+        pipe_high.net_count = 4;
+        assert!(
+            model.effective_resistance(&pipe_high, 0.0)
+                > model.effective_resistance(&pipe_low, 0.0)
+        );
     }
 
     #[test]
-    fn interference_increases_resistance() {
+    fn net_count_no_longer_changes_resistance_directly() {
         let model = ResistanceModel {
-            congestion_exponent: 2.0,
-            interference_weight: 1.0,
+            congestion_scale: 0.01,
+            congestion_power: 2.0,
             timing_weight: 0.0,
         };
         let pipe_1net = test_pipe(5.0, 10.0, 1);
         let pipe_5nets = test_pipe(5.0, 10.0, 5);
-        assert!(model.effective_resistance(&pipe_5nets, 0.0) > model.effective_resistance(&pipe_1net, 0.0));
+        assert_eq!(
+            model.effective_resistance(&pipe_5nets, 0.0),
+            model.effective_resistance(&pipe_1net, 0.0)
+        );
     }
 }

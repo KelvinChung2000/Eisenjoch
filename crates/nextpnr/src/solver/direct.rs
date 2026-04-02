@@ -146,8 +146,7 @@ mod tests {
         let mut solver = FaerDirectSolver::new(n, &pipes);
 
         let diag = vec![4.0; n];
-        let off_diag: Vec<(usize, usize, f64)> =
-            (0..n - 1).map(|i| (i, i + 1, -1.0)).collect();
+        let off_diag: Vec<(usize, usize, f64)> = (0..n - 1).map(|i| (i, i + 1, -1.0)).collect();
         let rhs = vec![1.0; n];
         let mut x = vec![0.0; n];
 
