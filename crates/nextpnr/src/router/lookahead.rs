@@ -8,11 +8,11 @@
 //! The table is computed once at router startup by running Dijkstra from
 //! representative wires of each type at a sample tile.
 
-use crate::chipdb::{ChipDb, WireId, PipId};
+use crate::chipdb::{ChipDb, PipId, WireId};
 use crate::timing::DelayT;
 use rustc_hash::FxHashMap;
-use std::collections::BinaryHeap;
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 
 /// Compact wire class: groups wires by their routing capability.
 /// Wires of the same class at different tiles have equivalent routing reach.
@@ -41,13 +41,19 @@ struct DijkEntry {
 
 impl Eq for DijkEntry {}
 impl PartialEq for DijkEntry {
-    fn eq(&self, other: &Self) -> bool { self.cost == other.cost }
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost
+    }
 }
 impl Ord for DijkEntry {
-    fn cmp(&self, other: &Self) -> Ordering { other.cost.cmp(&self.cost) }
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.cost.cmp(&self.cost)
+    }
 }
 impl PartialOrd for DijkEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Lookahead {
@@ -163,7 +169,10 @@ impl Lookahead {
             let mut heap: BinaryHeap<DijkEntry> = BinaryHeap::new();
             let mut visited: FxHashMap<WireId, DelayT> = FxHashMap::default();
 
-            heap.push(DijkEntry { wire: src_wire, cost: 0 });
+            heap.push(DijkEntry {
+                wire: src_wire,
+                cost: 0,
+            });
             visited.insert(src_wire, 0);
 
             // Also seed with node wires (multi-tile nodes).
@@ -174,7 +183,10 @@ impl Lookahead {
                 let wire_cost = (hop_dx + hop_dy) as DelayT; // small cost for node hops
                 if !visited.contains_key(&nw) || wire_cost < visited[&nw] {
                     visited.insert(nw, wire_cost);
-                    heap.push(DijkEntry { wire: nw, cost: wire_cost });
+                    heap.push(DijkEntry {
+                        wire: nw,
+                        cost: wire_cost,
+                    });
                 }
             });
 
@@ -183,10 +195,14 @@ impl Lookahead {
             const MAX_EXPAND: usize = 50_000;
 
             while let Some(entry) = heap.pop() {
-                if expanded >= MAX_EXPAND { break; }
+                if expanded >= MAX_EXPAND {
+                    break;
+                }
 
                 if let Some(&prev) = visited.get(&entry.wire) {
-                    if entry.cost > prev { continue; }
+                    if entry.cost > prev {
+                        continue;
+                    }
                 }
 
                 // Record cost at this tile offset.
@@ -209,7 +225,10 @@ impl Lookahead {
                     let new_cost = entry.cost + hop_cost;
                     if !visited.contains_key(&nw) || new_cost < visited[&nw] {
                         visited.insert(nw, new_cost);
-                        heap.push(DijkEntry { wire: nw, cost: new_cost });
+                        heap.push(DijkEntry {
+                            wire: nw,
+                            cost: new_cost,
+                        });
                     }
                 });
 
@@ -225,9 +244,14 @@ impl Lookahead {
                     let next_wire = chipdb.pip_dst_wire(pip);
                     let new_cost = entry.cost + pip_delay;
 
-                    if !visited.contains_key(&next_wire) || new_cost < *visited.get(&next_wire).unwrap() {
+                    if !visited.contains_key(&next_wire)
+                        || new_cost < *visited.get(&next_wire).unwrap()
+                    {
                         visited.insert(next_wire, new_cost);
-                        heap.push(DijkEntry { wire: next_wire, cost: new_cost });
+                        heap.push(DijkEntry {
+                            wire: next_wire,
+                            cost: new_cost,
+                        });
                     }
                 }
 
@@ -252,12 +276,7 @@ impl Lookahead {
     /// Estimate delay from a source wire to a destination wire using the
     /// precomputed lookahead table. Returns the minimum cost from any wire
     /// of the source's class to reach the destination tile's offset.
-    pub fn estimate_delay(
-        &self,
-        chipdb: &ChipDb,
-        src: WireId,
-        dst: WireId,
-    ) -> DelayT {
+    pub fn estimate_delay(&self, chipdb: &ChipDb, src: WireId, dst: WireId) -> DelayT {
         let tt_idx = chipdb.tile_type_index(src.tile()) as usize;
         let wi = src.index() as usize;
 

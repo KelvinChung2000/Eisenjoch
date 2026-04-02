@@ -2,12 +2,10 @@ mod common;
 
 use nextpnr::chipdb::{BelId, PipId, WireId};
 use nextpnr::common::PlaceStrength;
+use nextpnr::metrics::{compute_bbox, BoundingBox};
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
-use nextpnr::metrics::{BoundingBox, compute_bbox};
-use nextpnr::router::negotiation::{
-    astar_route_r2, R2QueueEntry, Router2Cfg, Router2State,
-};
+use nextpnr::router::negotiation::{astar_route_r2, R2QueueEntry, Router2Cfg, Router2State};
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;
 
@@ -315,11 +313,16 @@ fn astar_r2_same_wire_returns_empty_path() {
         x1: 1,
         y1: 1,
     };
-    assert!(
-        astar_route_r2(&ctx, &wire_set(&[wire]), wire, NetId::from_raw(0), &state, &bbox)
-            .unwrap()
-            .is_empty()
-    );
+    assert!(astar_route_r2(
+        &ctx,
+        &wire_set(&[wire]),
+        wire,
+        NetId::from_raw(0),
+        &state,
+        &bbox
+    )
+    .unwrap()
+    .is_empty());
 }
 
 #[test]

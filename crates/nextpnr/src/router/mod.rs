@@ -7,6 +7,7 @@ pub mod negotiation;
 pub mod raster;
 pub mod traits;
 
+pub use common::{NegotiationCfg, NegotiationState};
 pub use maze::Router1;
 pub use negotiation::Router2;
 pub use raster::RasterRouter;

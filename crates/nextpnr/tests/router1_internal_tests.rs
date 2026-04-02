@@ -26,17 +26,20 @@ fn queue_entry_min_heap_ordering() {
     heap.push(QueueEntry {
         wire: WireId::new(0, 0),
         cost: 10,
-        estimate: 50, pip_start: 0,
+        estimate: 50,
+        pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(0, 1),
         cost: 5,
-        estimate: 20, pip_start: 0,
+        estimate: 20,
+        pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(1, 0),
         cost: 8,
-        estimate: 35, pip_start: 0,
+        estimate: 35,
+        pip_start: 0,
     });
     assert_eq!(heap.pop().unwrap().estimate, 20);
     assert_eq!(heap.pop().unwrap().estimate, 35);
@@ -49,12 +52,14 @@ fn queue_entry_tiebreak_by_cost() {
     heap.push(QueueEntry {
         wire: WireId::new(0, 0),
         cost: 30,
-        estimate: 50, pip_start: 0,
+        estimate: 50,
+        pip_start: 0,
     });
     heap.push(QueueEntry {
         wire: WireId::new(0, 1),
         cost: 10,
-        estimate: 50, pip_start: 0,
+        estimate: 50,
+        pip_start: 0,
     });
     assert_eq!(heap.pop().unwrap().cost, 10);
 }
@@ -124,7 +129,12 @@ fn astar_with_penalty_still_finds_path() {
     let dst = WireId::new(0, 1);
     let mut penalty = FxHashMap::default();
     penalty.insert(dst, 1000);
-    assert_eq!(astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None).unwrap().len(), 1);
+    assert_eq!(
+        astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -144,7 +154,14 @@ fn astar_multi_source_picks_closest() {
 #[test]
 fn astar_empty_sources_returns_none() {
     let ctx = common::make_context();
-    assert!(astar_route(&ctx, &wire_set(&[]), WireId::new(0, 1), &FxHashMap::default(), None).is_none());
+    assert!(astar_route(
+        &ctx,
+        &wire_set(&[]),
+        WireId::new(0, 1),
+        &FxHashMap::default(),
+        None
+    )
+    .is_none());
 }
 
 #[test]

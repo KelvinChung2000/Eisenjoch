@@ -22,6 +22,10 @@ refs
 .venv
 .worktrees
 benchmark/output
+benchmark/ispd/raw/
+benchmark/ispd/extracted/
+benchmark/ispd/manifests/
+benchmark/ispd/index.json
 build
 **/__pycache__/**
 *.json

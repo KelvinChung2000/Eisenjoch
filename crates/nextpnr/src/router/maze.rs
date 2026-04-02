@@ -139,7 +139,14 @@ impl super::Router for Router1 {
         net: crate::netlist::NetId,
     ) -> Result<(), super::RouterError> {
         let wire_penalty = FxHashMap::default();
-        let plan = compute_route_r1(ctx, net, &wire_penalty, cfg.bb_margin, cfg.estimate_precision, None)?;
+        let plan = compute_route_r1(
+            ctx,
+            net,
+            &wire_penalty,
+            cfg.bb_margin,
+            cfg.estimate_precision,
+            None,
+        )?;
         if plan.source_wire.is_valid() {
             super::common::apply_route_plan(ctx, &plan);
         }
@@ -157,11 +164,7 @@ impl super::Router for Router1 {
         let mut state = Router1State::new();
 
         // Build lookahead table for A* heuristic.
-        let lookahead = super::lookahead::Lookahead::build(
-            ctx.chipdb(),
-            ctx.speed_grade_idx(),
-            40,
-        );
+        let lookahead = super::lookahead::Lookahead::build(ctx.chipdb(), ctx.speed_grade_idx(), 40);
         let lookahead = std::sync::Arc::new(lookahead);
 
         // Phase 1: Parallel initial route computation.
@@ -169,8 +172,12 @@ impl super::Router for Router1 {
             .par_iter()
             .map(|&net| {
                 compute_route_r1(
-                    &*ctx, net, &state.wire_penalty,
-                    cfg.bb_margin, cfg.estimate_precision, Some(&lookahead),
+                    &*ctx,
+                    net,
+                    &state.wire_penalty,
+                    cfg.bb_margin,
+                    cfg.estimate_precision,
+                    Some(&lookahead),
                 )
             })
             .collect();
@@ -194,14 +201,12 @@ impl super::Router for Router1 {
             }
 
             if cfg.verbose || iter % 50 == 0 {
-                let congested_wires = state
-                    .wire_usage
-                    .values()
-                    .filter(|&&c| c > 1)
-                    .count();
+                let congested_wires = state.wire_usage.values().filter(|&&c| c > 1).count();
                 eprintln!(
                     "Router1 iter {}: {} congested nets, {} congested wires",
-                    iter, congested.len(), congested_wires,
+                    iter,
+                    congested.len(),
+                    congested_wires,
                 );
             }
 
@@ -226,8 +231,12 @@ impl super::Router for Router1 {
                 .par_iter()
                 .map(|&net| {
                     compute_route_r1(
-                        &*ctx, net, &state.wire_penalty,
-                        cfg.bb_margin, cfg.estimate_precision, Some(&lookahead),
+                        &*ctx,
+                        net,
+                        &state.wire_penalty,
+                        cfg.bb_margin,
+                        cfg.estimate_precision,
+                        Some(&lookahead),
                     )
                 })
                 .collect();
@@ -291,7 +300,15 @@ pub fn compute_route_r1(
         None
     };
 
-    let sink_wires = collect_sink_wires(ctx, net);
+    let mut sink_wires = collect_sink_wires(ctx, net);
+    // Sort sinks nearest-first so the routing tree grows toward the destination,
+    // making subsequent A* calls cheaper.
+    let chipdb = ctx.chipdb();
+    let (src_x, src_y) = chipdb.tile_xy(source_wire.tile());
+    sink_wires.sort_by_key(|&sw| {
+        let (wx, wy) = chipdb.tile_xy(sw.tile());
+        (wx - src_x).abs() + (wy - src_y).abs()
+    });
 
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
@@ -320,6 +337,7 @@ pub fn compute_route_r1(
             bbox.as_ref(),
             estimate_precision,
             lookahead,
+            None,
         ) {
             Some(pips) => {
                 for &pip in &pips {
@@ -334,7 +352,11 @@ pub fn compute_route_r1(
                 let (dx, dy) = chipdb.tile_xy(sink_wire.tile());
                 println!(
                     "NO_PATH net={} src=({},{}) dst=({},{})",
-                    ctx.name_of(net_name), sx, sy, dx, dy,
+                    ctx.name_of(net_name),
+                    sx,
+                    sy,
+                    dx,
+                    dy,
                 );
                 return Err(RouterError::NoPath(ctx.name_of(net_name).to_owned()));
             }
@@ -374,6 +396,7 @@ pub fn astar_route(
     bbox: Option<&crate::metrics::BoundingBox>,
     estimate_precision: DelayT,
     lookahead: Option<&super::lookahead::Lookahead>,
+    visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
     if src_wires.contains(&dst_wire) {
         return Some(Vec::new());
@@ -400,7 +423,8 @@ pub fn astar_route(
     // Adaptive visit limit: caps total node visits to prevent OOM on dense graphs.
     // Budget scales with grid area — larger chips get more budget.
     let grid_area = (chipdb.width() as usize) * (chipdb.height() as usize);
-    let mut max_visits: usize = grid_area.saturating_mul(10).max(100_000);
+    let mut max_visits: usize =
+        visit_limit.unwrap_or_else(|| grid_area.saturating_mul(10).max(100_000));
     let mut visit_count: usize = 0;
 
     // Seed with all source wires.
@@ -599,10 +623,7 @@ fn remove_wire_usage(ctx: &Context, state: &mut Router1State, net_idx: NetId) {
     }
 }
 
-fn find_congested_nets_fast(
-    state: &Router1State,
-    net_set: &FxHashSet<NetId>,
-) -> Vec<NetId> {
+fn find_congested_nets_fast(state: &Router1State, net_set: &FxHashSet<NetId>) -> Vec<NetId> {
     let mut nets = FxHashSet::default();
     for (&wire, &usage) in &state.wire_usage {
         if usage > 1 {

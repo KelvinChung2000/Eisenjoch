@@ -1,10 +1,10 @@
 # ruff: noqa: E402, F403, F405
-"""Generate a hybrid chipdb: real XC7 tile types + synthetic LUT6/DFF BELs.
+"""Generate a hybrid chipdb: real XC7 tile types + synthetic/placeable BELs.
 
 Copies all tile types from prjxray with their real wires and PIPs.
 For CLB tiles (CLBLL_L, CLBLM_R, etc.), replaces SLICEL/SLICEM sites
 with our synthetic LUT6/DFF/DLATCH BELs mapped to the real site pin wires.
-BRAM/DSP tiles are routing-only black boxes (wires + PIPs, no BELs).
+For BRAM/DSP tiles, exposes placeable BELs using the real site pin wires.
 All other tile types get their tileconn-derived wires for BFS traversal.
 
 Usage:
@@ -42,6 +42,17 @@ CHIPDB_DIR = path.join(ROOT, "chip_database")
 K = 6  # LUT6 to match real XC7 SLICEL
 N_IO = 2
 N_CLK = 2
+
+BRAM_TILE_TYPES = {"BRAM_L", "BRAM_R"}
+DSP_TILE_TYPES = {"DSP_L", "DSP_R"}
+BRAM_SITE_TYPES = {
+    "RAMB18E1",
+    "FIFO18E1",
+    "RAMB36E1",
+    "FIFO36E1",
+    "RAMBFIFO36E1",
+}
+DSP_SITE_TYPES = {"DSP48E1"}
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +167,75 @@ def add_slice_bels(tt, site_data, z_offset):
         tt.create_pip("VCC", pins[f"{letter}X"]["wire"])
     tt.create_pip("GND", pins["CLK"]["wire"])
     tt.create_pip("VCC", pins["CLK"]["wire"])
+
+
+def _infer_pin_dir(site_type, pin_name):
+    """Best-effort pin direction inference for BRAM/DSP site pins.
+
+    prjxray tile-type JSON tells us which tile wire a site pin connects to, but
+    not the pin direction. For the hybrid chipdb we only need a practical
+    direction model that matches the mainstream XC7 primitive interfaces well
+    enough for placement/routing experiments.
+    """
+    pin = pin_name.upper()
+    st = site_type.upper()
+
+    if st.startswith("DSP48"):
+        dsp_out_prefixes = (
+            "ACOUT",
+            "BCOUT",
+            "CARRYCASCOUT",
+            "CARRYOUT",
+            "MULTSIGNOUT",
+            "OVERFLOW",
+            "P",
+            "PATTERNBDETECT",
+            "PATTERNDETECT",
+            "PCOUT",
+            "UNDERFLOW",
+            "XOROUT",
+        )
+        return PinType.OUTPUT if pin.startswith(dsp_out_prefixes) else PinType.INPUT
+
+    if any(st.startswith(prefix) for prefix in ("RAMB", "FIFO")):
+        bram_out_prefixes = (
+            "CASCADEOUT",
+            "DBITERR",
+            "DO",
+            "DOP",
+            "ECCPARITY",
+            "RDADDRECC",
+            "SBITERR",
+        )
+        return PinType.OUTPUT if pin.startswith(bram_out_prefixes) else PinType.INPUT
+
+    return PinType.INPUT
+
+
+def _site_bel_type(site_type):
+    """Return the BEL/cell type name to expose in the hybrid chipdb."""
+    return site_type
+
+
+def add_site_bel(tt, site_data, z):
+    """Expose one prjxray site as a placeable BEL using its tile wires.
+
+    Note: BRAM_L/R tiles can contain overlapping 18K and 36K site views.
+    The hybrid chipdb exposes those site-level BELs directly, but it does not
+    yet model the exclusivity relation between paired RAMB18E1 sites and the
+    enclosing RAMB36E1 site.
+    """
+    site_type = site_data["type"]
+    pins = site_data.get("site_pins", {})
+    bel = tt.create_bel(site_data["name"], _site_bel_type(site_type), z=z)
+
+    for pin_name, pin_data in sorted(pins.items()):
+        if pin_data is None:
+            continue
+        wire = pin_data["wire"]
+        tt.add_bel_pin(bel, pin_name, wire, _infer_pin_dir(site_type, pin_name))
+
+    return bel
 
 
 def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
@@ -312,7 +392,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
 
     # Track which tile types we've created and their wire sets
     tile_wire_sets = {}  # xc7_type -> set of wire names
-    n_clb_bels = 0
+    bel_capacity = {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
 
     for xc7_type in all_xc7_types:
         tc_wires = tc_wire_sets.get(xc7_type, set())
@@ -324,7 +404,28 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
             for idx, site in enumerate(data.get("sites", [])):
                 if site.get("type") in ("SLICEL", "SLICEM"):
                     add_slice_bels(tt, site, z_offset=idx * 12)
-                    n_clb_bels += 4  # 4 LUT+FF per slice
+                    bel_capacity["LUT6"] += 4
+                    bel_capacity["DFF"] += 4
+
+        if xc7_type in BRAM_TILE_TYPES and data:
+            z = 0
+            for site in data.get("sites", []):
+                st = site.get("type")
+                if st in BRAM_SITE_TYPES:
+                    add_site_bel(tt, site, z)
+                    z += 1
+                    if st in bel_capacity:
+                        bel_capacity[st] += 1
+
+        if xc7_type in DSP_TILE_TYPES and data:
+            z = 0
+            for site in data.get("sites", []):
+                st = site.get("type")
+                if st in DSP_SITE_TYPES:
+                    add_site_bel(tt, site, z)
+                    z += 1
+                    if st in bel_capacity:
+                        bel_capacity[st] += 1
 
         # INT tiles: add IO bridge wires + PIPs for IO connectivity
         if xc7_type in int_types:
@@ -342,17 +443,23 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     tt.create_pip(lo_wire, f"IO_BRIDGE_IN{i}")
                     tt.create_pip(lo_wire, f"IO_BRIDGE_T{i}")
 
-    # n_clb_bels counts LUTs per tile type definition; multiply by tile instances later
-    bels_per_clb = {}  # xc7_type -> n_luts in that type
-    for xc7_type in clb_types:
-        bels_per_clb[xc7_type] = 0
-    # Recount from tile type data
-    for xc7_type in clb_types:
+    bels_per_type = {xc7_type: {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
+                     for xc7_type in all_xc7_types}
+    for xc7_type in all_xc7_types:
         data = load_tile_type_json(xray, xc7_type)
-        if data:
-            for site in data.get("sites", []):
-                if site.get("type") in ("SLICEL", "SLICEM"):
-                    bels_per_clb[xc7_type] += 4  # 4 sub-LUTs per SLICE
+        if not data:
+            continue
+        for site in data.get("sites", []):
+            st = site.get("type")
+            if st in ("SLICEL", "SLICEM"):
+                bels_per_type[xc7_type]["LUT6"] += 4
+                bels_per_type[xc7_type]["DFF"] += 4
+            elif st in DSP_SITE_TYPES:
+                bels_per_type[xc7_type]["DSP48E1"] += 1
+            elif st == "RAMB18E1":
+                bels_per_type[xc7_type]["RAMB18E1"] += 1
+            elif st == "RAMB36E1":
+                bels_per_type[xc7_type]["RAMB36E1"] += 1
     print(f"Created {len(all_xc7_types)} tile types from prjxray")
 
     # ------------------------------------------------------------------
@@ -381,14 +488,22 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 n_null += 1
 
     # Count total BELs across all tile instances
-    total_luts = 0
+    total_caps = {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
     for y in range(Y):
         for x in range(X):
             xc7_type = xc7_grid.get((x, y), "NULL")
-            if xc7_type in bels_per_clb:
-                total_luts += bels_per_clb[xc7_type]
+            if xc7_type in bels_per_type:
+                for bel_type, count in bels_per_type[xc7_type].items():
+                    total_caps[bel_type] += count
     print(f"Tile assignment: {n_int} INT, {n_clb} CLB, {n_io} IO, {n_routing} routing, {n_null} NULL")
-    print(f"Capacity: ~{total_luts} LUT6s, ~{total_luts} DFFs")
+    print(
+        "Capacity: "
+        f"~{total_caps['LUT6']} LUT6s, "
+        f"~{total_caps['DFF']} DFFs, "
+        f"~{total_caps['DSP48E1']} DSP48E1s, "
+        f"~{total_caps['RAMB18E1']} RAMB18E1s, "
+        f"~{total_caps['RAMB36E1']} RAMB36E1s"
+    )
 
     # ------------------------------------------------------------------
     # Inter-tile routing nodes from tileconn
@@ -420,7 +535,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # Only INT tiles are node endpoints (modeled types)
     # INT and CLB tiles are node endpoints — CLB tiles have BELs whose
     # pin wires need tileconn nodes to reach INT routing.
-    modeled_types = int_types | clb_types
+    modeled_types = int_types | clb_types | BRAM_TILE_TYPES | DSP_TILE_TYPES
 
     # Build tileconn adjacency
     tc_adj = defaultdict(list)
