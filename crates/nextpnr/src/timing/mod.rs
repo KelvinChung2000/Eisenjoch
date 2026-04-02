@@ -26,13 +26,13 @@ pub mod report;
 pub mod sort;
 
 pub use analyser::TimingAnalyser;
-pub use oracle::TimingOracle;
 pub use constraints::SdcConstraints;
 pub use delay::{DelayPair, DelayQuad, DelayT};
 pub use domain::{
     CellArc, CellArcType, ClockDomain, ClockDomainId, ClockDomainPair, DomainRegistry,
 };
 pub use kinds::{ClockEdge, TimingPortClass};
+pub use oracle::TimingOracle;
 pub use path::{PathSegment, TimingEndpoint, TimingPath, TimingPortInfo, TimingReport};
 pub use report::{
     format_constraint_coverage, format_cross_domain_report, format_path_detail, TimingSummary,

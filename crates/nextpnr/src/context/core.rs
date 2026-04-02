@@ -1,10 +1,13 @@
 use crate::chipdb::ChipDb;
 use crate::common::{IdString, IdStringPool, IntoIdString};
-use crate::netlist::{CellId, CellPin, Design, NetId};
 use crate::netlist::Property;
+use crate::netlist::{CellId, CellPin, Design, NetId};
 use rustc_hash::FxHashMap;
 
-use super::views::{Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView, Wire};
+use super::views::{
+    Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView,
+    Wire,
+};
 use super::Context;
 
 impl Context {
@@ -136,12 +139,16 @@ impl Context {
 
     #[inline]
     pub fn nets(&self) -> impl Iterator<Item = Net<'_>> {
-        self.design.iter_net_indices().map(|net_idx| self.net(net_idx))
+        self.design
+            .iter_net_indices()
+            .map(|net_idx| self.net(net_idx))
     }
 
     #[inline]
     pub fn net_by_name(&self, net_name: IdString) -> Option<Net<'_>> {
-        self.design.net_by_name(net_name).map(|net_idx| self.net(net_idx))
+        self.design
+            .net_by_name(net_name)
+            .map(|net_idx| self.net(net_idx))
     }
 
     #[inline]
@@ -156,12 +163,16 @@ impl Context {
 
     #[inline]
     pub fn cells(&self) -> impl Iterator<Item = Cell<'_>> {
-        self.design.iter_cell_indices().map(|cell_idx| self.cell(cell_idx))
+        self.design
+            .iter_cell_indices()
+            .map(|cell_idx| self.cell(cell_idx))
     }
 
     #[inline]
     pub fn cell_by_name(&self, cell_name: IdString) -> Option<Cell<'_>> {
-        self.design.cell_by_name(cell_name).map(|cell_idx| self.cell(cell_idx))
+        self.design
+            .cell_by_name(cell_name)
+            .map(|cell_idx| self.cell(cell_idx))
     }
 
     /// Generate a resource utilization report.

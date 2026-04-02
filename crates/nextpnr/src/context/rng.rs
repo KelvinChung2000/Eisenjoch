@@ -17,9 +17,7 @@ impl DeterministicRng {
     ///
     /// A seed of 0 is adjusted to 1 to avoid the xorshift zero fixpoint.
     pub fn new(seed: u64) -> Self {
-        Self {
-            state: seed.max(1),
-        }
+        Self { state: seed.max(1) }
     }
 
     /// Generate the next 64-bit pseudo-random value.

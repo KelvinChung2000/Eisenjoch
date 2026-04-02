@@ -130,11 +130,7 @@ pub fn estimate_congestion(ctx: &Context, threshold: f64) -> CongestionReport {
     let (h_capacity, v_capacity) = compute_tile_capacities(ctx);
 
     // Collect net indices for parallel iteration.
-    let net_indices: Vec<NetId> = ctx
-        .design
-        .iter_alive_nets()
-        .map(|(idx, _)| idx)
-        .collect();
+    let net_indices: Vec<NetId> = ctx.design.iter_alive_nets().map(|(idx, _)| idx).collect();
 
     // Parallel demand accumulation with per-thread grids, then reduce.
     let (h_demand, v_demand) = net_indices
@@ -159,7 +155,8 @@ pub fn estimate_congestion(ctx: &Context, threshold: f64) -> CongestionReport {
             },
         );
 
-    let ratios = compute_congestion_ratios(&h_demand, &v_demand, &h_capacity, &v_capacity, threshold);
+    let ratios =
+        compute_congestion_ratios(&h_demand, &v_demand, &h_capacity, &v_capacity, threshold);
 
     CongestionReport {
         h_demand,
@@ -221,7 +218,9 @@ pub fn compute_congestion_ratios(
                     result.hotspot_axis = Axis::Horizontal;
                 }
                 if ratio > threshold {
-                    result.hot_edges.push((x as i32, y as i32, Axis::Horizontal, ratio));
+                    result
+                        .hot_edges
+                        .push((x as i32, y as i32, Axis::Horizontal, ratio));
                 }
             }
 
@@ -236,7 +235,9 @@ pub fn compute_congestion_ratios(
                     result.hotspot_axis = Axis::Vertical;
                 }
                 if ratio > threshold {
-                    result.hot_edges.push((x as i32, y as i32, Axis::Vertical, ratio));
+                    result
+                        .hot_edges
+                        .push((x as i32, y as i32, Axis::Vertical, ratio));
                 }
             }
         }

@@ -157,15 +157,14 @@ impl Checkpoint {
     pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), CheckpointError> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| CheckpointError::SerializationFailed(e.to_string()))?;
-        std::fs::write(path, json)
-            .map_err(|e| CheckpointError::IoFailed(e.to_string()))?;
+        std::fs::write(path, json).map_err(|e| CheckpointError::IoFailed(e.to_string()))?;
         Ok(())
     }
 
     /// Load a checkpoint from a JSON file.
     pub fn load_from_file(path: &std::path::Path) -> Result<Self, CheckpointError> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| CheckpointError::IoFailed(e.to_string()))?;
+        let json =
+            std::fs::read_to_string(path).map_err(|e| CheckpointError::IoFailed(e.to_string()))?;
         let checkpoint: Self = serde_json::from_str(&json)
             .map_err(|e| CheckpointError::DeserializationFailed(e.to_string()))?;
         if checkpoint.version != CHECKPOINT_VERSION {

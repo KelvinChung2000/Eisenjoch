@@ -46,36 +46,52 @@ macro_rules! define_view {
             }
 
             #[inline]
-            pub fn id(&self) -> $id_type { self.id }
+            pub fn id(&self) -> $id_type {
+                self.id
+            }
         }
 
         impl std::ops::Deref for $name<'_> {
             type Target = $id_type;
             #[inline]
-            fn deref(&self) -> &$id_type { &self.id }
+            fn deref(&self) -> &$id_type {
+                &self.id
+            }
         }
 
         impl PartialEq for $name<'_> {
-            fn eq(&self, other: &Self) -> bool { self.id == other.id }
+            fn eq(&self, other: &Self) -> bool {
+                self.id == other.id
+            }
         }
         impl Eq for $name<'_> {}
 
         impl std::hash::Hash for $name<'_> {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.id.hash(state);
+            }
         }
 
         impl PartialEq<$id_type> for $name<'_> {
-            fn eq(&self, other: &$id_type) -> bool { self.id == *other }
+            fn eq(&self, other: &$id_type) -> bool {
+                self.id == *other
+            }
         }
         impl PartialEq<$name<'_>> for $id_type {
-            fn eq(&self, other: &$name<'_>) -> bool { *self == other.id }
+            fn eq(&self, other: &$name<'_>) -> bool {
+                *self == other.id
+            }
         }
 
         impl From<$name<'_>> for $id_type {
-            fn from(v: $name<'_>) -> $id_type { v.id }
+            fn from(v: $name<'_>) -> $id_type {
+                v.id
+            }
         }
         impl From<&$name<'_>> for $id_type {
-            fn from(v: &$name<'_>) -> $id_type { v.id }
+            fn from(v: &$name<'_>) -> $id_type {
+                v.id
+            }
         }
     };
 }
@@ -94,36 +110,52 @@ macro_rules! define_hardware_view {
             }
 
             #[inline]
-            pub fn id(&self) -> $id_type { self.id }
+            pub fn id(&self) -> $id_type {
+                self.id
+            }
         }
 
         impl std::ops::Deref for $name<'_> {
             type Target = $id_type;
             #[inline]
-            fn deref(&self) -> &$id_type { &self.id }
+            fn deref(&self) -> &$id_type {
+                &self.id
+            }
         }
 
         impl PartialEq for $name<'_> {
-            fn eq(&self, other: &Self) -> bool { self.id == other.id }
+            fn eq(&self, other: &Self) -> bool {
+                self.id == other.id
+            }
         }
         impl Eq for $name<'_> {}
 
         impl std::hash::Hash for $name<'_> {
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                self.id.hash(state);
+            }
         }
 
         impl PartialEq<$id_type> for $name<'_> {
-            fn eq(&self, other: &$id_type) -> bool { self.id == *other }
+            fn eq(&self, other: &$id_type) -> bool {
+                self.id == *other
+            }
         }
         impl PartialEq<$name<'_>> for $id_type {
-            fn eq(&self, other: &$name<'_>) -> bool { *self == other.id }
+            fn eq(&self, other: &$name<'_>) -> bool {
+                *self == other.id
+            }
         }
 
         impl From<$name<'_>> for $id_type {
-            fn from(v: $name<'_>) -> $id_type { v.id }
+            fn from(v: $name<'_>) -> $id_type {
+                v.id
+            }
         }
         impl From<&$name<'_>> for $id_type {
-            fn from(v: &$name<'_>) -> $id_type { v.id }
+            fn from(v: &$name<'_>) -> $id_type {
+                v.id
+            }
         }
 
         impl std::fmt::Display for $name<'_> {

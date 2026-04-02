@@ -23,9 +23,7 @@ impl TimingAnalyser {
                 // Add clock-to-Q delay.
                 if let Some(pd) = self.port_data.get(&port) {
                     for arc in &pd.cell_arcs {
-                        if arc.arc_type == CellArcType::ClockToQ
-                            && arc.other_port == clock_port
-                        {
+                        if arc.arc_type == CellArcType::ClockToQ && arc.other_port == clock_port {
                             init_arrival += arc.value.as_delay_pair().max_delay;
                             // Include clock routing delay for skew analysis.
                             if with_skew {
@@ -78,7 +76,11 @@ impl TimingAnalyser {
                         .map(|pd| pd.route_delay.max_delay)
                         .unwrap_or(0);
                     let next_arr = arrival + route_delay;
-                    if self.arrival_times.get(&target).map_or(true, |&old| next_arr > old) {
+                    if self
+                        .arrival_times
+                        .get(&target)
+                        .map_or(true, |&old| next_arr > old)
+                    {
                         self.arrival_times.insert(target, next_arr);
                         self.predecessors
                             .insert(target, (port, Some(net_idx), route_delay));
@@ -89,7 +91,8 @@ impl TimingAnalyser {
                 let Some(arrival) = self.arrival_times.get(&port).copied() else {
                     continue;
                 };
-                let arcs: Vec<_> = pd.cell_arcs
+                let arcs: Vec<_> = pd
+                    .cell_arcs
                     .iter()
                     .filter(|a| a.arc_type == CellArcType::Combinational)
                     .map(|a| (a.other_port, a.value.as_delay_pair().max_delay))
@@ -97,7 +100,11 @@ impl TimingAnalyser {
                 for (other_port, delay) in arcs {
                     let target = CellPin::new(port.cell, other_port);
                     let next_arr = arrival + delay;
-                    if self.arrival_times.get(&target).map_or(true, |&old| next_arr > old) {
+                    if self
+                        .arrival_times
+                        .get(&target)
+                        .map_or(true, |&old| next_arr > old)
+                    {
                         self.arrival_times.insert(target, next_arr);
                         self.predecessors.insert(target, (port, None, delay));
                     }
@@ -116,7 +123,10 @@ impl TimingAnalyser {
         // Initialize required times at endpoints.
         for dom_idx in 0..self.per_domain.len() {
             // Get the period for this domain.
-            let domain_period = self.domain_registry.get(super::domain::ClockDomainId(dom_idx as u32)).period;
+            let domain_period = self
+                .domain_registry
+                .get(super::domain::ClockDomainId(dom_idx as u32))
+                .period;
             let period = if domain_period > 0 {
                 domain_period
             } else {
@@ -186,7 +196,8 @@ impl TimingAnalyser {
                 let Some(required) = self.required_times.get(&port).copied() else {
                     continue;
                 };
-                let arcs: Vec<_> = pd.cell_arcs
+                let arcs: Vec<_> = pd
+                    .cell_arcs
                     .iter()
                     .filter(|a| a.arc_type == CellArcType::Combinational)
                     .map(|a| (a.other_port, a.value.as_delay_pair().max_delay))
@@ -441,7 +452,8 @@ impl TimingAnalyser {
 
             // Find combinational arc from this input to driver_port.
             let Some(arc) = input_pd.cell_arcs.iter().find(|a| {
-                a.arc_type == super::domain::CellArcType::Combinational && a.other_port == driver_port
+                a.arc_type == super::domain::CellArcType::Combinational
+                    && a.other_port == driver_port
             }) else {
                 continue;
             };

@@ -20,4 +20,7 @@ mod views;
 pub use crate::metrics::{ResourceRow, UtilizationReport};
 pub use definition::Context;
 pub use rng::DeterministicRng;
-pub use views::{Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView, TileView, Wire};
+pub use views::{
+    Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView,
+    TileView, Wire,
+};

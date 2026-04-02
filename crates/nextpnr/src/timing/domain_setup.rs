@@ -12,7 +12,11 @@ use crate::netlist::{CellId, CellPin, PortType};
 
 impl TimingAnalyser {
     /// Get or create a domain pair ID.
-    pub(super) fn domain_pair_id(&mut self, launch: ClockDomainId, capture: ClockDomainId) -> usize {
+    pub(super) fn domain_pair_id(
+        &mut self,
+        launch: ClockDomainId,
+        capture: ClockDomainId,
+    ) -> usize {
         let pair = ClockDomainPair { launch, capture };
         if let Some(&id) = self.pair_to_id.get(&pair) {
             return id;
@@ -104,8 +108,7 @@ impl TimingAnalyser {
                                 if !self.port_data.contains_key(&target) {
                                     continue;
                                 }
-                                if let Some(src_domains) =
-                                    port_arrival_domains.get(&port).cloned()
+                                if let Some(src_domains) = port_arrival_domains.get(&port).cloned()
                                 {
                                     let dst = port_arrival_domains.entry(target).or_default();
                                     for d in src_domains {
@@ -212,8 +215,7 @@ impl TimingAnalyser {
                                     if let Some(src_domains) =
                                         port_required_domains.get(&port).cloned()
                                     {
-                                        let dst =
-                                            port_required_domains.entry(target).or_default();
+                                        let dst = port_required_domains.entry(target).or_default();
                                         for d in src_domains {
                                             if dst.insert(d) {
                                                 updated = true;
@@ -299,10 +301,7 @@ impl TimingAnalyser {
         let period = if net.clock_constraint > 0 {
             net.clock_constraint
         } else {
-            self.clock_constraints
-                .get(&net.name)
-                .copied()
-                .unwrap_or(0)
+            self.clock_constraints.get(&net.name).copied().unwrap_or(0)
         };
 
         self.domain_registry.domain_id(net.name, edge, period)
@@ -347,7 +346,8 @@ impl TimingAnalyser {
                 let d1 = &clock_drivers[&c1];
                 let d2 = &clock_drivers[&c2];
 
-                let common: Vec<IdString> = d1.keys().filter(|k| d2.contains_key(k)).copied().collect();
+                let common: Vec<IdString> =
+                    d1.keys().filter(|k| d2.contains_key(k)).copied().collect();
                 if common.len() != 1 {
                     continue;
                 }

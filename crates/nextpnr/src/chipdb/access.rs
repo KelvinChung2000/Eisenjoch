@@ -1,6 +1,6 @@
 use super::*;
-use crate::read_packed;
 use crate::netlist::PortType;
+use crate::read_packed;
 use crate::timing::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use std::ffi::CStr;
 
@@ -201,14 +201,11 @@ impl ChipDb {
         let tile_insts = ci.tile_insts.get();
         let tile_types = ci.tile_types.get();
 
-        tile_insts
-            .iter()
-            .enumerate()
-            .map(move |(tile_idx, inst)| {
-                let tt_idx: i32 = unsafe { read_packed!(*inst, tile_type) };
-                let tt = &tile_types[tt_idx as usize];
-                (tile_idx as i32, count_fn(tt))
-            })
+        tile_insts.iter().enumerate().map(move |(tile_idx, inst)| {
+            let tt_idx: i32 = unsafe { read_packed!(*inst, tile_type) };
+            let tt = &tile_types[tt_idx as usize];
+            (tile_idx as i32, count_fn(tt))
+        })
     }
 
     pub fn bels(&self) -> impl Iterator<Item = BelId> + '_ {
@@ -316,10 +313,8 @@ impl ChipDb {
             .filter_map(|(wi, wire)| {
                 let bel_pins = wire.bel_pins.get();
                 if bel_pins.len() > 1 {
-                    let pins: Vec<(i32, i32)> = bel_pins
-                        .iter()
-                        .map(|bp| (bp.bel(), bp.pin()))
-                        .collect();
+                    let pins: Vec<(i32, i32)> =
+                        bel_pins.iter().map(|bp| (bp.bel(), bp.pin())).collect();
                     Some((wi as i32, pins))
                 } else {
                     None
@@ -337,7 +332,8 @@ impl ChipDb {
             .enumerate()
             .filter(|(_, tt)| {
                 tt.bels.get().iter().any(|bel| {
-                    self.constid_str(bel.bel_type()).is_some_and(|s| s == bel_type)
+                    self.constid_str(bel.bel_type())
+                        .is_some_and(|s| s == bel_type)
                 })
             })
             .map(|(i, _)| i as i32)
@@ -351,7 +347,8 @@ impl ChipDb {
             .get()
             .iter()
             .filter(|bel| {
-                self.constid_str(bel.bel_type()).is_some_and(|s| s == bel_type)
+                self.constid_str(bel.bel_type())
+                    .is_some_and(|s| s == bel_type)
             })
             .count()
     }
@@ -545,9 +542,17 @@ impl ChipDb {
     }
 
     /// Find cell timing index for a given type_variant constid index.
-    pub fn cell_timing_index(&self, speed_grade: &SpeedGradePod, type_variant: i32) -> Option<usize> {
+    pub fn cell_timing_index(
+        &self,
+        speed_grade: &SpeedGradePod,
+        type_variant: i32,
+    ) -> Option<usize> {
         let cell_types = speed_grade.cell_types.get();
-        Self::db_binary_search(cell_types, |ct| unsafe { read_packed!(*ct, type_variant) }, type_variant)
+        Self::db_binary_search(
+            cell_types,
+            |ct| unsafe { read_packed!(*ct, type_variant) },
+            type_variant,
+        )
     }
 
     /// Look up combinational delay through a cell pin.
@@ -560,11 +565,8 @@ impl ChipDb {
     ) -> Option<DelayQuad> {
         let ct = &speed_grade.cell_types.get()[type_idx];
         let pins = ct.pins.get();
-        let to_pin_idx = Self::db_binary_search(
-            pins,
-            |pd| unsafe { read_packed!(*pd, pin) },
-            to_port,
-        )?;
+        let to_pin_idx =
+            Self::db_binary_search(pins, |pd| unsafe { read_packed!(*pd, pin) }, to_port)?;
         let tp = &pins[to_pin_idx];
         let comb_arcs = tp.comb_arcs.get();
         let arc_idx = Self::db_binary_search(
@@ -589,11 +591,7 @@ impl ChipDb {
     ) -> Option<&'a [CellPinRegArcPod]> {
         let ct = &speed_grade.cell_types.get()[type_idx];
         let pins = ct.pins.get();
-        let pin_idx = Self::db_binary_search(
-            pins,
-            |pd| unsafe { read_packed!(*pd, pin) },
-            port,
-        )?;
+        let pin_idx = Self::db_binary_search(pins, |pd| unsafe { read_packed!(*pd, pin) }, port)?;
         Some(pins[pin_idx].reg_arcs.get())
     }
 
@@ -607,11 +605,7 @@ impl ChipDb {
     ) -> TimingPortClass {
         let ct = &speed_grade.cell_types.get()[type_idx];
         let pins = ct.pins.get();
-        let pin_idx = Self::db_binary_search(
-            pins,
-            |pd| unsafe { read_packed!(*pd, pin) },
-            port,
-        );
+        let pin_idx = Self::db_binary_search(pins, |pd| unsafe { read_packed!(*pd, pin) }, port);
         let Some(pin_idx) = pin_idx else {
             return match dir {
                 PortType::Out => TimingPortClass::Ignore,
@@ -651,7 +645,11 @@ impl ChipDb {
         let clk_q = unsafe { read_packed!(*arc, clk_q) };
         RegArcInfo {
             clock_port: clock,
-            edge: if edge == 0 { ClockEdge::Rising } else { ClockEdge::Falling },
+            edge: if edge == 0 {
+                ClockEdge::Rising
+            } else {
+                ClockEdge::Falling
+            },
             setup: DelayPair::new(setup.fast_min, setup.slow_max),
             hold: DelayPair::new(hold.fast_min, hold.slow_max),
             clock_to_q: DelayQuad::new(
@@ -665,11 +663,7 @@ impl ChipDb {
     ///
     /// Formula: int_delay + in_cap * in_res / 1e6 + (out_res + node_res/2) * node_cap / 1e6
     #[inline]
-    pub fn compute_pip_delay(
-        &self,
-        speed_grade: &SpeedGradePod,
-        pip: PipId,
-    ) -> DelayT {
+    pub fn compute_pip_delay(&self, speed_grade: &SpeedGradePod, pip: PipId) -> DelayT {
         let pip_tmg = match self.pip_timing(speed_grade, pip) {
             Some(t) => t,
             None => return 100, // Default notional delay (matches C++)
@@ -691,20 +685,16 @@ impl ChipDb {
             let out_res = unsafe { read_packed!(*pip_tmg, out_res) };
             let dst_res = unsafe { read_packed!(*dst_tmg, res) };
             let dst_cap = unsafe { read_packed!(*dst_tmg, cap) };
-            total_delay +=
-                ((out_res.slow_max as i64 + dst_res.slow_max as i64 / 2) * dst_cap.slow_max as i64)
-                    / 1_000_000;
+            total_delay += ((out_res.slow_max as i64 + dst_res.slow_max as i64 / 2)
+                * dst_cap.slow_max as i64)
+                / 1_000_000;
         }
 
         total_delay as DelayT
     }
 
     /// Compute wire delay from node timing data.
-    pub fn compute_wire_delay(
-        &self,
-        speed_grade: &SpeedGradePod,
-        wire: WireId,
-    ) -> DelayQuad {
+    pub fn compute_wire_delay(&self, speed_grade: &SpeedGradePod, wire: WireId) -> DelayQuad {
         if let Some(tmg) = self.node_timing(speed_grade, wire) {
             let delay = unsafe { read_packed!(*tmg, delay) };
             DelayQuad::new(

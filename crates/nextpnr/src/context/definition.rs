@@ -1,11 +1,11 @@
 //! Context struct definition and constructor.
 
+use super::storage::TileSlotMap;
+use super::DeterministicRng;
 use crate::chipdb::{BelId, ChipDb};
 use crate::common::{IdString, IdStringPool, PlaceStrength};
 use crate::netlist::{CellId, Design, NetId, Property};
 use rustc_hash::FxHashMap;
-use super::storage::TileSlotMap;
-use super::DeterministicRng;
 
 /// The central context for the nextpnr place-and-route flow.
 ///

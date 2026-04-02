@@ -35,13 +35,28 @@ pub struct UtilizationReport {
 impl fmt::Display for UtilizationReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Resource Utilization")?;
-        writeln!(f, "{:<20} {:>8} {:>10} {:>8}", "Resource", "Used", "Available", "Util%")?;
+        writeln!(
+            f,
+            "{:<20} {:>8} {:>10} {:>8}",
+            "Resource", "Used", "Available", "Util%"
+        )?;
         writeln!(f, "{}", "-".repeat(48))?;
         for row in &self.rows {
-            writeln!(f, "{:<20} {:>8} {:>10} {:>7.1}%", row.resource, row.used, row.available, row.percent())?;
+            writeln!(
+                f,
+                "{:<20} {:>8} {:>10} {:>7.1}%",
+                row.resource,
+                row.used,
+                row.available,
+                row.percent()
+            )?;
         }
         writeln!(f, "{}", "-".repeat(48))?;
-        writeln!(f, "Design: {} cells, {} nets, {}/{} placed", self.total_cells, self.total_nets, self.placed_cells, self.total_cells)
+        writeln!(
+            f,
+            "Design: {} cells, {} nets, {}/{} placed",
+            self.total_cells, self.total_nets, self.placed_cells, self.total_cells
+        )
     }
 }
 

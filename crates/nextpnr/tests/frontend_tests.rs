@@ -438,13 +438,21 @@ fn test_multibit_net_connections() {
     // Each input bit of buf0 should be connected to the corresponding IBUF output
     for i in 0..4 {
         let port_name = pool.intern(&format!("I[{}]", i));
-        assert!(design.cell(buf0_idx).port_net(port_name).is_some(), "buf0 I[{}] should be connected", i);
+        assert!(
+            design.cell(buf0_idx).port_net(port_name).is_some(),
+            "buf0 I[{}] should be connected",
+            i
+        );
     }
 
     // Each output bit of buf0 should drive a net
     for i in 0..4 {
         let port_name = pool.intern(&format!("O[{}]", i));
-        assert!(design.cell(buf0_idx).port_net(port_name).is_some(), "buf0 O[{}] should be connected", i);
+        assert!(
+            design.cell(buf0_idx).port_net(port_name).is_some(),
+            "buf0 O[{}] should be connected",
+            i
+        );
     }
 }
 

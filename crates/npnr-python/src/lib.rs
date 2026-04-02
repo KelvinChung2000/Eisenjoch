@@ -305,6 +305,15 @@ impl PyContext {
                 cfg.stagnation_warmup = stagnation_warmup;
                 cfg.legalization = legalization.to_string();
                 cfg.stagnation_patience = stagnation_patience;
+                if cfg.timing_weight > 0.0 {
+                    self.timing.setup_and_run(&self.ctx);
+                    cfg.timing_criticality = self
+                        .ctx
+                        .design
+                        .iter_alive_nets()
+                        .map(|(net_id, _)| (net_id, self.timing.net_criticality(net_id)))
+                        .collect();
+                }
                 if let Some(iters) = max_iters {
                     cfg.max_iters = iters;
                 }

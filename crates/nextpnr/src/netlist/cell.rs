@@ -67,7 +67,9 @@ impl CellInfo {
 
     #[inline]
     pub fn port(&self, name: IdString) -> Option<CellPin> {
-        self.ports.contains_key(&name).then(|| CellPin::new(CellId::NONE, name))
+        self.ports
+            .contains_key(&name)
+            .then(|| CellPin::new(CellId::NONE, name))
     }
 
     #[inline]

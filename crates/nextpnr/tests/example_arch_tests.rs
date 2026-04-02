@@ -87,7 +87,11 @@ fn find_constid(chipdb: &ChipDb, name: &str) -> i32 {
 
 /// Collect all wire names in a tile type.
 fn all_wire_names<'a>(chipdb: &'a ChipDb, tt: &TileTypePod) -> Vec<&'a str> {
-    tt.wires.get().iter().map(|w| tile_wire_name(chipdb, w)).collect()
+    tt.wires
+        .get()
+        .iter()
+        .map(|w| tile_wire_name(chipdb, w))
+        .collect()
 }
 
 // =====================================================================
@@ -253,7 +257,10 @@ fn bel_pin_wire_resolves_dff_pins() {
         let port = ctx.id(*pin_name);
         let bp = BelPin::new(dff_bel, port);
         let wire = ctx.bel_pin_wire(bp);
-        assert!(wire.is_some(), "DFF pin {pin_name} should resolve to a wire");
+        assert!(
+            wire.is_some(),
+            "DFF pin {pin_name} should resolve to a wire"
+        );
     }
 }
 
@@ -322,7 +329,10 @@ fn tile_names_and_types() {
 
     // tile_name should produce a readable string
     let name = chipdb.tile_name(interior);
-    assert!(name.contains("X1Y1"), "tile name should contain coordinates, got: {name}");
+    assert!(
+        name.contains("X1Y1"),
+        "tile name should contain coordinates, got: {name}"
+    );
 }
 
 #[test]
@@ -354,7 +364,10 @@ fn bel_buckets_contain_expected_types() {
     assert!(bucket_names.contains(&"LUT6"), "should have LUT6 bucket");
     assert!(bucket_names.contains(&"DFF"), "should have DFF bucket");
     assert!(bucket_names.contains(&"IOB"), "should have IOB bucket");
-    assert!(bucket_names.contains(&"BRAM_512X16"), "should have BRAM bucket");
+    assert!(
+        bucket_names.contains(&"BRAM_512X16"),
+        "should have BRAM bucket"
+    );
 }
 
 #[test]
@@ -439,7 +452,10 @@ fn heap_placement_medium() {
 #[test]
 fn speed_grades_present() {
     let ctx = common::make_example_context();
-    assert!(ctx.chipdb().num_speed_grades() > 0, "should have speed grade data");
+    assert!(
+        ctx.chipdb().num_speed_grades() > 0,
+        "should have speed grade data"
+    );
 }
 
 #[test]
@@ -585,7 +601,10 @@ fn logic_tile_has_lut_input_pips() {
     let l0_i0_idx = find_wire_in_tile(chipdb, tt, "L0_I0");
     let sources = uphill_source_names(chipdb, tt, l0_i0_idx);
 
-    assert!(!sources.is_empty(), "L0_I0 should have uphill PIPs from switch wires");
+    assert!(
+        !sources.is_empty(),
+        "L0_I0 should have uphill PIPs from switch wires"
+    );
     assert!(
         sources.iter().any(|n| n.starts_with("SWITCH")),
         "L0_I0 should be driven by a SWITCH wire"
@@ -661,8 +680,14 @@ fn logic_tile_has_constant_pips() {
     let switch0_idx = find_wire_in_tile(chipdb, tt, "SWITCH0");
     let sources = uphill_source_names(chipdb, tt, switch0_idx);
 
-    assert!(sources.contains(&"GND".to_string()), "SWITCH0 should have GND PIP");
-    assert!(sources.contains(&"VCC".to_string()), "SWITCH0 should have VCC PIP");
+    assert!(
+        sources.contains(&"GND".to_string()),
+        "SWITCH0 should have GND PIP"
+    );
+    assert!(
+        sources.contains(&"VCC".to_string()),
+        "SWITCH0 should have VCC PIP"
+    );
 }
 
 // =====================================================================
@@ -754,9 +779,18 @@ fn lut6_combinational_delays() {
 
     let lut6_id = find_constid(chipdb, "LUT6");
     let f_id = find_constid(chipdb, "F");
-    let type_idx = chipdb.cell_timing_index(&sg, lut6_id).expect("LUT6 should have timing data");
+    let type_idx = chipdb
+        .cell_timing_index(&sg, lut6_id)
+        .expect("LUT6 should have timing data");
 
-    let expected_delays = [(150, "I[0]"), (165, "I[1]"), (180, "I[2]"), (195, "I[3]"), (210, "I[4]"), (225, "I[5]")];
+    let expected_delays = [
+        (150, "I[0]"),
+        (165, "I[1]"),
+        (180, "I[2]"),
+        (195, "I[3]"),
+        (210, "I[4]"),
+        (225, "I[5]"),
+    ];
     for (expected_ps, pin_name) in &expected_delays {
         let pin_id = find_constid(chipdb, pin_name);
         let delay = chipdb
@@ -782,7 +816,9 @@ fn dff_register_timing() {
     let d_id = find_constid(chipdb, "D");
     let q_id = find_constid(chipdb, "Q");
 
-    let type_idx = chipdb.cell_timing_index(&sg, dff_id).expect("DFF should have timing data");
+    let type_idx = chipdb
+        .cell_timing_index(&sg, dff_id)
+        .expect("DFF should have timing data");
 
     // Check D pin has register arcs (setup/hold)
     let d_arcs = chipdb
@@ -791,7 +827,11 @@ fn dff_register_timing() {
     assert!(!d_arcs.is_empty(), "DFF D should have setup/hold arcs");
 
     let d_arc_info = nextpnr::chipdb::ChipDb::reg_arc_info(&d_arcs[0]);
-    assert_eq!(d_arc_info.edge, ClockEdge::Rising, "DFF should be rising edge");
+    assert_eq!(
+        d_arc_info.edge,
+        ClockEdge::Rising,
+        "DFF should be rising edge"
+    );
     // Setup time: TimingValue(150) → all corners = 150
     assert_eq!(d_arc_info.setup.max_delay, 150, "DFF setup should be 150ps");
     // Hold time: TimingValue(25) → all corners = 25
@@ -862,10 +902,7 @@ fn logic_tile_wire_count() {
 
     let wire_names = all_wire_names(chipdb, tt);
     for expected in &["L0_I0", "L7_Q", "CLK", "SWITCH0", "GND", "VCC", "N0"] {
-        assert!(
-            wire_names.contains(expected),
-            "should have {expected} wire"
-        );
+        assert!(wire_names.contains(expected), "should have {expected} wire");
     }
 }
 
@@ -878,7 +915,10 @@ fn bram_tile_has_expected_bel_pins() {
     let bel_info = chipdb.bel_info(bram_bel);
 
     let pin_count = bel_info.pins.get().len();
-    assert_eq!(pin_count, 53, "BRAM should have 53 pins (CLK + 9WA + 9RA + 2WE + 16DI + 16DO)");
+    assert_eq!(
+        pin_count, 53,
+        "BRAM should have 53 pins (CLK + 9WA + 9RA + 2WE + 16DI + 16DO)"
+    );
 
     let mut input_count = 0;
     let mut output_count = 0;
@@ -929,7 +969,10 @@ fn all_bel_pin_wires_resolve() {
         }
     }
     // Sanity check: we should have checked a large number of pins
-    assert!(total_pins > 1000, "should check many pins, got {total_pins}");
+    assert!(
+        total_pins > 1000,
+        "should check many pins, got {total_pins}"
+    );
 }
 
 // =====================================================================
@@ -962,7 +1005,10 @@ fn utilization_report_with_cells() {
 
     let lut_row = report.rows.iter().find(|r| r.resource == "LUT6").unwrap();
     assert_eq!(lut_row.used, 10);
-    assert_eq!(lut_row.available, 448, "10x10 grid has 56 LOGIC tiles * 8 LUTs");
+    assert_eq!(
+        lut_row.available, 448,
+        "10x10 grid has 56 LOGIC tiles * 8 LUTs"
+    );
 }
 
 #[test]
@@ -1002,7 +1048,11 @@ fn clock_wire_exists_in_all_non_null_tiles() {
 
     for tile in 0..chipdb.num_tiles() {
         let tt = chipdb.tile_type(tile);
-        let has_clk = tt.wires.get().iter().any(|w| tile_wire_name(chipdb, w) == "CLK");
+        let has_clk = tt
+            .wires
+            .get()
+            .iter()
+            .any(|w| tile_wire_name(chipdb, w) == "CLK");
         assert!(
             has_clk,
             "tile {} ({}) should have CLK wire",

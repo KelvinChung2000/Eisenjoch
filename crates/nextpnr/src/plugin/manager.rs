@@ -7,8 +7,7 @@ use crate::common::{IdString, IdStringPool};
 use crate::netlist::Design;
 
 use super::traits::{
-    DefaultPacker, DefaultPlacerHooks, DefaultRouterHooks, PackerPlugin, PlacerPlugin,
-    RouterPlugin,
+    DefaultPacker, DefaultPlacerHooks, DefaultRouterHooks, PackerPlugin, PlacerPlugin, RouterPlugin,
 };
 
 // ---------------------------------------------------------------------------

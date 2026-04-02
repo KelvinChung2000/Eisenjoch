@@ -367,7 +367,11 @@ fn pip_delay_from_timing_data() {
     let pip = PipId::new(0, 0);
     let delay = ctx.pip(pip).delay();
     // Synthetic chipdb has uniform pip timing: 100ps fast, 150ps slow
-    assert_ne!(delay, DelayQuad::default(), "pip should have non-zero timing");
+    assert_ne!(
+        delay,
+        DelayQuad::default(),
+        "pip should have non-zero timing"
+    );
 }
 
 #[test]
@@ -376,7 +380,11 @@ fn wire_delay_from_timing_data() {
     let wire = WireId::new(0, 0);
     let delay = ctx.wire(wire).delay();
     // Synthetic chipdb has uniform node timing: 50ps fast, 75ps slow
-    assert_ne!(delay, DelayQuad::default(), "wire should have non-zero timing");
+    assert_ne!(
+        delay,
+        DelayQuad::default(),
+        "wire should have non-zero timing"
+    );
 }
 
 // =========================================================================
@@ -520,8 +528,7 @@ fn full_routing_flow() {
 fn settings_operations() {
     let mut ctx = common::make_context();
     let key = ctx.id("opt_level");
-    ctx.settings_mut()
-        .insert(key, Property::int(2));
+    ctx.settings_mut().insert(key, Property::int(2));
     assert_eq!(ctx.settings().get(&key).and_then(|p| p.as_int()), Some(2));
 }
 

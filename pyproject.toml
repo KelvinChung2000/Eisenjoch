@@ -17,6 +17,7 @@ module-name = "nextpnr"
 
 [project.scripts]
 nextpnr-himbaechel = "nextpnr_cli:cli"
+nextpnr-ispd-benchmarks = "nextpnr.benchmarks.ispd_benchmarks:main"
 
 [project.optional-dependencies]
 cli = ["typer>=0.9"]

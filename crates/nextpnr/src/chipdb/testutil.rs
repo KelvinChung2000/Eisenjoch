@@ -100,8 +100,10 @@ impl SyntheticChipDbBuilder {
     /// Create a `TimingValue` with symmetric min/max for fast and slow corners.
     fn tv(fast: i32, slow: i32) -> TimingValue {
         TimingValue {
-            fast_min: fast, fast_max: fast,
-            slow_min: slow, slow_max: slow,
+            fast_min: fast,
+            fast_max: fast,
+            slow_min: slow,
+            slow_max: slow,
         }
     }
 
@@ -197,7 +199,11 @@ impl SyntheticChipDbBuilder {
         let constid_bba_field = constid_data_offset + 4; // after known_id_count
         let constid_data = ConstIdDataPod {
             known_id_count: 0,
-            bba_ids: Self::make_relslice(constid_bba_field, bba_ids_offset, str_offsets.len() as u32),
+            bba_ids: Self::make_relslice(
+                constid_bba_field,
+                bba_ids_offset,
+                str_offsets.len() as u32,
+            ),
         };
         db.append_val(&constid_data);
 
@@ -263,17 +269,11 @@ impl SyntheticChipDbBuilder {
         // BelPinRefPods for wires
         // =================================================================
         let bel_pin_ref0_offset = db.buf.len();
-        let bel_pin_ref0 = BelPinRefPod {
-            bel: 0,
-            pin: ID_I0,
-        };
+        let bel_pin_ref0 = BelPinRefPod { bel: 0, pin: ID_I0 };
         db.append_val(&bel_pin_ref0);
 
         let bel_pin_ref1_offset = db.buf.len();
-        let bel_pin_ref1 = BelPinRefPod {
-            bel: 0,
-            pin: ID_O,
-        };
+        let bel_pin_ref1 = BelPinRefPod { bel: 0, pin: ID_O };
         db.append_val(&bel_pin_ref1);
 
         // =================================================================
@@ -320,9 +320,9 @@ impl SyntheticChipDbBuilder {
         // TileTypePod (1 tile type: "LOGIC")
         // =================================================================
         let tile_type_offset = db.buf.len();
-        let tt_bels_field = tile_type_offset + 4;      // after type_name(4)
-        let tt_wires_field = tile_type_offset + 12;     // +8
-        let tt_pips_field = tile_type_offset + 20;      // +8
+        let tt_bels_field = tile_type_offset + 4; // after type_name(4)
+        let tt_wires_field = tile_type_offset + 12; // +8
+        let tt_pips_field = tile_type_offset + 20; // +8
 
         let tile_type = TileTypePod {
             type_name: ID_LOGIC,
@@ -435,14 +435,14 @@ impl SyntheticChipDbBuilder {
         // Fill in ChipInfoPod
         // =================================================================
         let ci = chip_info_offset;
-        let ci_uarch_field = ci + 16;           // magic(4)+version(4)+width(4)+height(4)
+        let ci_uarch_field = ci + 16; // magic(4)+version(4)+width(4)+height(4)
         let ci_name_field = ci + 20;
         let ci_gen_field = ci + 24;
         let ci_tile_types_field = ci + 28;
-        let ci_tile_insts_field = ci + 36;      // +8 (RelSlice)
-        let ci_tile_shapes_field = ci + 52;     // +8+8 (skip node_shapes)
-        let ci_speed_grades_field = ci + 68;    // +8+8 (skip packages)
-        let ci_extra_constids_field = ci + 76;  // +8 (skip speed_grades)
+        let ci_tile_insts_field = ci + 36; // +8 (RelSlice)
+        let ci_tile_shapes_field = ci + 52; // +8+8 (skip node_shapes)
+        let ci_speed_grades_field = ci + 68; // +8+8 (skip packages)
+        let ci_extra_constids_field = ci + 76; // +8 (skip speed_grades)
 
         let chip_info = ChipInfoPod {
             magic: CHIPDB_MAGIC,
@@ -466,7 +466,8 @@ impl SyntheticChipDbBuilder {
         // =================================================================
         // Fill in root RelPtr at offset 0
         // =================================================================
-        let root_relptr: RelPtr<ChipInfoPod> = Self::make_relptr(root_relptr_offset, chip_info_offset);
+        let root_relptr: RelPtr<ChipInfoPod> =
+            Self::make_relptr(root_relptr_offset, chip_info_offset);
         db.write_at(root_relptr_offset, &root_relptr);
 
         db.buf

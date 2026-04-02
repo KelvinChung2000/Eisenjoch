@@ -20,7 +20,7 @@ pub use hierarchy::{HierarchicalCell, HierarchicalNet};
 pub use indices::{CellId, FlatIndex, NetId, TimingIndex};
 pub use net::{NetInfo, PipMap};
 pub use port_kind::PortType;
-pub(crate) use ports::PortData;
 pub use ports::CellPin;
+pub(crate) use ports::PortData;
 pub use property::Property;
 pub use region::{Rect, RegionConstraint};

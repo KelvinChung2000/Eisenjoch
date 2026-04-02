@@ -40,24 +40,17 @@ impl TimingAnalyser {
             }
 
             // Get cell timing index from chipdb.
-            let type_idx = match cell
-                .timing_index
-                .map(|ti| ti.0 as usize)
-                .or_else(|| {
-                    ctx.chipdb()
-                        .cell_timing_index(speed_grade, cell.cell_type.index())
-                })
-            {
+            let type_idx = match cell.timing_index.map(|ti| ti.0 as usize).or_else(|| {
+                ctx.chipdb()
+                    .cell_timing_index(speed_grade, cell.cell_type.index())
+            }) {
                 Some(idx) => idx,
                 None => continue,
             };
 
-            let port_class = ctx.chipdb().port_timing_class(
-                speed_grade,
-                type_idx,
-                pin.port.index(),
-                port_type,
-            );
+            let port_class =
+                ctx.chipdb()
+                    .port_timing_class(speed_grade, type_idx, pin.port.index(), port_type);
 
             let mut arcs = Vec::new();
 
@@ -72,7 +65,8 @@ impl TimingAnalyser {
                         // Register inputs have setup/hold arcs.
                         if port_class == TimingPortClass::RegisterInput {
                             if let Some(reg_arc_pods) =
-                                ctx.chipdb().cell_reg_arcs(speed_grade, type_idx, pin.port.index())
+                                ctx.chipdb()
+                                    .cell_reg_arcs(speed_grade, type_idx, pin.port.index())
                             {
                                 for arc_pod in reg_arc_pods {
                                     let info = ChipDb::reg_arc_info(arc_pod);
@@ -121,7 +115,8 @@ impl TimingAnalyser {
                         // Register outputs have clock-to-Q arcs.
                         if port_class == TimingPortClass::RegisterOutput {
                             if let Some(reg_arc_pods) =
-                                ctx.chipdb().cell_reg_arcs(speed_grade, type_idx, pin.port.index())
+                                ctx.chipdb()
+                                    .cell_reg_arcs(speed_grade, type_idx, pin.port.index())
                             {
                                 for arc_pod in reg_arc_pods {
                                     let info = ChipDb::reg_arc_info(arc_pod);
@@ -180,7 +175,10 @@ impl TimingAnalyser {
                 };
                 let net = design.net(net_idx);
                 let has_clock = net.clock_constraint > 0
-                    || self.clock_constraints.get(&net.name).is_some_and(|&p| p > 0);
+                    || self
+                        .clock_constraints
+                        .get(&net.name)
+                        .is_some_and(|&p| p > 0);
                 if has_clock {
                     clock_ports.insert(*port_name);
                 }

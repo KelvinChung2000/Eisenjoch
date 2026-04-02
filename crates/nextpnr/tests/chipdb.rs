@@ -269,10 +269,10 @@ fn bel_pins_accessible() {
     assert_eq!(pins.len(), 2);
     let (_name, wire, dir) = db.bel_pin_fields(&pins[0]);
     assert_eq!(wire, 0); // I0 on wire W0
-    assert_eq!(dir, 0);  // input
+    assert_eq!(dir, 0); // input
     let (_name, wire, dir) = db.bel_pin_fields(&pins[1]);
     assert_eq!(wire, 1); // O on wire W1
-    assert_eq!(dir, 1);  // output
+    assert_eq!(dir, 1); // output
 }
 
 #[test]

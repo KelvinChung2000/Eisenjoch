@@ -3,8 +3,8 @@
 use rustc_hash::FxHashMap;
 
 use super::analyser::{PerPort, TimingAnalyser};
-use super::domain::{CellArcType, ClockDomain};
 use super::delay::DelayT;
+use super::domain::{CellArcType, ClockDomain};
 use super::kinds::{ClockEdge, TimingPortClass};
 use crate::common::IdString;
 use crate::netlist::{CellPin, Design, PortType};
@@ -15,7 +15,8 @@ impl TimingAnalyser {
         for (cell_idx, cell) in design.iter_alive_cells() {
             for (port_name, port_info) in &cell.ports {
                 let pin = CellPin::new(cell_idx, *port_name);
-                self.port_data.insert(pin, PerPort::new(port_info.port_type()));
+                self.port_data
+                    .insert(pin, PerPort::new(port_info.port_type()));
             }
         }
     }
@@ -114,7 +115,10 @@ impl TimingAnalyser {
                 let period = if net.clock_constraint > 0 {
                     Some(net.clock_constraint)
                 } else {
-                    self.clock_constraints.get(&net.name).copied().filter(|&p| p > 0)
+                    self.clock_constraints
+                        .get(&net.name)
+                        .copied()
+                        .filter(|&p| p > 0)
                 };
                 if let Some(period) = period {
                     clock_ports.insert(*port_name);

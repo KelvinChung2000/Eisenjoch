@@ -59,11 +59,7 @@ impl Context {
     /// Get all BELs for a given bucket that fall within a region.
     ///
     /// Results are cached. Call `invalidate_region_cache()` if regions change.
-    pub fn bels_for_bucket_in_region(
-        &mut self,
-        bucket: IdString,
-        region_idx: u32,
-    ) -> &[BelId] {
+    pub fn bels_for_bucket_in_region(&mut self, bucket: IdString, region_idx: u32) -> &[BelId] {
         let resolved = self.resolve_bucket(bucket);
         let key = (region_idx, resolved);
         self.region_bel_cache.entry(key).or_insert_with(|| {

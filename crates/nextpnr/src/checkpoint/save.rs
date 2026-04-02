@@ -2,8 +2,8 @@
 
 use crate::context::Context;
 
-use super::types::{CellPlacement, Checkpoint, CheckpointError, NetRoute, CHECKPOINT_VERSION};
 use super::restore::compute_fingerprint;
+use super::types::{CellPlacement, Checkpoint, CheckpointError, NetRoute, CHECKPOINT_VERSION};
 
 /// Save the current placement and routing state as a checkpoint.
 pub fn save(ctx: &Context, path: &std::path::Path) -> Result<(), CheckpointError> {

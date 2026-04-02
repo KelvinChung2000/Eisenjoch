@@ -289,7 +289,9 @@ fn manager_default_placer_works() {
     }
     {
         let ctx = PluginContext::new(&mut design, &chipdb, &pool);
-        assert!(mgr.placer().check_placement_validity(&ctx, BelId::new(0, 0)));
+        assert!(mgr
+            .placer()
+            .check_placement_validity(&ctx, BelId::new(0, 0)));
     }
 }
 
@@ -418,7 +420,10 @@ fn failing_packer_returns_error() {
     let mut packer = FailingPacker;
     let result = packer.pack(&mut ctx);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err().to_string(), "Plugin error: packing failed");
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Plugin error: packing failed"
+    );
 }
 
 #[test]
@@ -506,7 +511,9 @@ fn manager_set_custom_placer() {
     mgr.set_placer(Box::new(TestPlacerHooks::new(false)));
 
     let ctx = PluginContext::new(&mut design, &chipdb, &pool);
-    assert!(!mgr.placer().check_placement_validity(&ctx, BelId::new(0, 0)));
+    assert!(!mgr
+        .placer()
+        .check_placement_validity(&ctx, BelId::new(0, 0)));
 }
 
 #[test]

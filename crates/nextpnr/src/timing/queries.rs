@@ -244,7 +244,11 @@ impl TimingAnalyser {
     }
 
     /// Get port classification for a cell pin (for testing).
-    pub fn port_class(&self, cell: CellId, port: IdString) -> Option<super::kinds::TimingPortClass> {
+    pub fn port_class(
+        &self,
+        cell: CellId,
+        port: IdString,
+    ) -> Option<super::kinds::TimingPortClass> {
         self.port_data
             .get(&CellPin::new(cell, port))
             .map(|pd| pd.port_class)

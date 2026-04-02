@@ -5,8 +5,8 @@
 //! propagation levels, so they do not create ordering constraints on their
 //! driver cells.
 
-use crate::netlist::{CellId, Design};
 use crate::netlist::PortType;
+use crate::netlist::{CellId, Design};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 

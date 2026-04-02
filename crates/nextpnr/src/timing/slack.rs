@@ -33,9 +33,8 @@ impl TimingAnalyser {
                     let domain = self.port_domain_from_data(pin);
 
                     let from_endpoint = if let Some(first_seg) = segments.first() {
-                        let from_domain = self.port_domain_from_data(
-                            CellPin::new(first_seg.cell, first_seg.port),
-                        );
+                        let from_domain = self
+                            .port_domain_from_data(CellPin::new(first_seg.cell, first_seg.port));
                         TimingEndpoint {
                             cell: first_seg.cell,
                             port: first_seg.port,
@@ -110,10 +109,28 @@ impl TimingAnalyser {
     }
 
     pub(super) fn compute_criticality(&mut self, design: &Design) {
-        if self.worst_slack >= 0 {
+        let mut min_slack = DelayT::MAX;
+        let mut max_slack = DelayT::MIN;
+
+        for (_, net) in design.iter_alive_nets() {
+            for user in &net.users {
+                if !user.is_valid() {
+                    continue;
+                }
+                let user_pin = CellPin::new(user.cell, user.port);
+                let arrival = self.arrival_times.get(&user_pin).copied().unwrap_or(0);
+                let required = self.required_times.get(&user_pin).copied().unwrap_or(0);
+                let slack = required - arrival;
+                min_slack = min_slack.min(slack);
+                max_slack = max_slack.max(slack);
+            }
+        }
+
+        if min_slack == DelayT::MAX {
             return;
         }
-        let neg_ws = -self.worst_slack as f64;
+
+        let slack_span = (max_slack - min_slack).max(1) as f64;
 
         for (net_idx, net) in design.iter_alive_nets() {
             let mut max_crit: f32 = 0.0;
@@ -127,7 +144,7 @@ impl TimingAnalyser {
                 let required = self.required_times.get(&user_pin).copied().unwrap_or(0);
                 let slack = required - arrival;
                 let crit =
-                    (1.0 - ((slack - self.worst_slack) as f64 / neg_ws)).clamp(0.0, 1.0) as f32;
+                    (1.0 - ((slack - min_slack) as f64 / slack_span)).clamp(0.0, 1.0) as f32;
                 if crit > max_crit {
                     max_crit = crit;
                 }

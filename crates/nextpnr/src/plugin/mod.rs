@@ -11,6 +11,5 @@ pub mod traits;
 
 pub use manager::{PluginContext, PluginError, PluginManager};
 pub use traits::{
-    DefaultPacker, DefaultPlacerHooks, DefaultRouterHooks, PackerPlugin, PlacerPlugin,
-    RouterPlugin,
+    DefaultPacker, DefaultPlacerHooks, DefaultRouterHooks, PackerPlugin, PlacerPlugin, RouterPlugin,
 };

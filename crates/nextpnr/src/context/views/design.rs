@@ -48,10 +48,14 @@ impl<'a> Net<'a> {
     }
 
     #[inline]
-    pub fn name_id(&self) -> IdString { self.info().name }
+    pub fn name_id(&self) -> IdString {
+        self.info().name
+    }
 
     #[inline]
-    pub fn driver(&self) -> Option<crate::netlist::CellPin> { self.info().driver() }
+    pub fn driver(&self) -> Option<crate::netlist::CellPin> {
+        self.info().driver()
+    }
 
     #[inline]
     pub fn driver_view(&self) -> Option<CellPinView<'a>> {
@@ -59,22 +63,34 @@ impl<'a> Net<'a> {
     }
 
     #[inline]
-    pub fn driver_cell_port(&self) -> Option<crate::netlist::CellPin> { self.driver() }
+    pub fn driver_cell_port(&self) -> Option<crate::netlist::CellPin> {
+        self.driver()
+    }
 
     #[inline]
-    pub fn users(&self) -> &'a [crate::netlist::CellPin] { self.info().users() }
+    pub fn users(&self) -> &'a [crate::netlist::CellPin] {
+        self.info().users()
+    }
 
     #[inline]
-    pub fn wires(&self) -> &'a FxHashMap<WireId, PipMap> { &self.info().wires }
+    pub fn wires(&self) -> &'a FxHashMap<WireId, PipMap> {
+        &self.info().wires
+    }
 
     #[inline]
-    pub fn is_alive(&self) -> bool { self.info().alive }
+    pub fn is_alive(&self) -> bool {
+        self.info().alive
+    }
 
     #[inline]
-    pub fn has_driver(&self) -> bool { self.info().has_driver() }
+    pub fn has_driver(&self) -> bool {
+        self.info().has_driver()
+    }
 
     #[inline]
-    pub fn num_users(&self) -> usize { self.info().num_users() }
+    pub fn num_users(&self) -> usize {
+        self.info().num_users()
+    }
 
     #[inline]
     pub fn connected_users(&self) -> impl Iterator<Item = crate::netlist::CellPin> + 'a {
@@ -87,13 +103,19 @@ impl<'a> Net<'a> {
     }
 
     #[inline]
-    pub fn clock_constraint(&self) -> crate::timing::DelayT { self.info().clock_constraint }
+    pub fn clock_constraint(&self) -> crate::timing::DelayT {
+        self.info().clock_constraint
+    }
 
     #[inline]
-    pub fn region(&self) -> Option<u32> { self.info().region }
+    pub fn region(&self) -> Option<u32> {
+        self.info().region
+    }
 
     #[inline]
-    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }
+    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> {
+        &self.info().attrs
+    }
 }
 
 impl<'a> Cell<'a> {
@@ -118,28 +140,44 @@ impl<'a> Cell<'a> {
     }
 
     #[inline]
-    pub fn name_id(&self) -> IdString { self.info().name }
+    pub fn name_id(&self) -> IdString {
+        self.info().name
+    }
 
     #[inline]
-    pub fn cell_type_id(&self) -> IdString { self.info().cell_type }
+    pub fn cell_type_id(&self) -> IdString {
+        self.info().cell_type
+    }
 
     #[inline]
-    pub fn bel_id(&self) -> Option<BelId> { self.info().bel }
+    pub fn bel_id(&self) -> Option<BelId> {
+        self.info().bel
+    }
 
     #[inline]
-    pub fn bel_strength(&self) -> crate::common::PlaceStrength { self.info().bel_strength }
+    pub fn bel_strength(&self) -> crate::common::PlaceStrength {
+        self.info().bel_strength
+    }
 
     #[inline]
-    pub fn is_alive(&self) -> bool { self.info().alive }
+    pub fn is_alive(&self) -> bool {
+        self.info().alive
+    }
 
     #[inline]
     pub fn ports(&self) -> impl Iterator<Item = crate::netlist::CellPin> + '_ {
-        self.info().ports.keys().copied().map(move |port| crate::netlist::CellPin::new(self.id, port))
+        self.info()
+            .ports
+            .keys()
+            .copied()
+            .map(move |port| crate::netlist::CellPin::new(self.id, port))
     }
 
     #[inline]
     pub fn port(&self, name: IdString) -> Option<crate::netlist::CellPin> {
-        self.info().port_data(name).map(|_| crate::netlist::CellPin::new(self.id, name))
+        self.info()
+            .port_data(name)
+            .map(|_| crate::netlist::CellPin::new(self.id, name))
     }
 
     #[inline]
@@ -158,20 +196,32 @@ impl<'a> Cell<'a> {
     }
 
     #[inline]
-    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> { &self.info().attrs }
+    pub fn attrs(&self) -> &'a FxHashMap<IdString, Property> {
+        &self.info().attrs
+    }
 
     #[inline]
-    pub fn params(&self) -> &'a FxHashMap<IdString, Property> { &self.info().params }
+    pub fn params(&self) -> &'a FxHashMap<IdString, Property> {
+        &self.info().params
+    }
 
     #[inline]
-    pub fn cluster(&self) -> Option<CellId> { self.info().cluster }
+    pub fn cluster(&self) -> Option<CellId> {
+        self.info().cluster
+    }
 
     #[inline]
-    pub fn region(&self) -> Option<u32> { self.info().region }
+    pub fn region(&self) -> Option<u32> {
+        self.info().region
+    }
 
     #[inline]
-    pub fn flat_index(&self) -> Option<FlatIndex> { self.info().flat_index }
+    pub fn flat_index(&self) -> Option<FlatIndex> {
+        self.info().flat_index
+    }
 
     #[inline]
-    pub fn timing_index(&self) -> Option<TimingIndex> { self.info().timing_index }
+    pub fn timing_index(&self) -> Option<TimingIndex> {
+        self.info().timing_index
+    }
 }

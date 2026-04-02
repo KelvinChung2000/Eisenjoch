@@ -1,7 +1,7 @@
 use crate::chipdb::SpeedGradePod;
 use crate::chipdb::WireId;
-use crate::timing::DelayT;
 use crate::netlist::NetId;
+use crate::timing::DelayT;
 
 use super::Context;
 
@@ -43,7 +43,11 @@ impl Context {
     /// Node-aware delay estimate: considers the closest tile reachable
     /// via the wire's routing node (if any). More expensive than
     /// `estimate_delay` but gives tighter bounds for wires on long-range nodes.
-    pub fn estimate_delay_node_aware(&self, src: impl Into<WireId>, dst: impl Into<WireId>) -> DelayT {
+    pub fn estimate_delay_node_aware(
+        &self,
+        src: impl Into<WireId>,
+        dst: impl Into<WireId>,
+    ) -> DelayT {
         let src_wire = src.into();
         let dst_loc = self.chipdb.tile_xy(dst.into().tile());
         let mut best = manhattan_delay(self.chipdb.tile_xy(src_wire.tile()), dst_loc);

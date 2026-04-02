@@ -295,28 +295,19 @@ fn delay_quad_default() {
 
 #[test]
 fn delay_quad_min_delay() {
-    let dq = DelayQuad::new(
-        DelayPair::new(100, 200),
-        DelayPair::new(50, 250),
-    );
+    let dq = DelayQuad::new(DelayPair::new(100, 200), DelayPair::new(50, 250));
     assert_eq!(dq.min_delay(), 50);
 }
 
 #[test]
 fn delay_quad_max_delay() {
-    let dq = DelayQuad::new(
-        DelayPair::new(100, 200),
-        DelayPair::new(50, 250),
-    );
+    let dq = DelayQuad::new(DelayPair::new(100, 200), DelayPair::new(50, 250));
     assert_eq!(dq.max_delay(), 250);
 }
 
 #[test]
 fn delay_quad_as_delay_pair() {
-    let dq = DelayQuad::new(
-        DelayPair::new(100, 200),
-        DelayPair::new(50, 250),
-    );
+    let dq = DelayQuad::new(DelayPair::new(100, 200), DelayPair::new(50, 250));
     let dp = dq.as_delay_pair();
     assert_eq!(dp.min_delay, 50);
     assert_eq!(dp.max_delay, 250);
@@ -324,14 +315,8 @@ fn delay_quad_as_delay_pair() {
 
 #[test]
 fn delay_quad_add() {
-    let a = DelayQuad::new(
-        DelayPair::new(100, 200),
-        DelayPair::new(150, 250),
-    );
-    let b = DelayQuad::new(
-        DelayPair::new(10, 20),
-        DelayPair::new(15, 25),
-    );
+    let a = DelayQuad::new(DelayPair::new(100, 200), DelayPair::new(150, 250));
+    let b = DelayQuad::new(DelayPair::new(10, 20), DelayPair::new(15, 25));
     let c = a + b;
     assert_eq!(c.rise.min_delay, 110);
     assert_eq!(c.rise.max_delay, 220);
@@ -577,9 +562,18 @@ fn timing_port_class_is_clock() {
 
 #[test]
 fn timing_port_class_display() {
-    assert_eq!(format!("{}", TimingPortClass::Combinational), "COMBINATIONAL");
-    assert_eq!(format!("{}", TimingPortClass::RegisterInput), "REGISTER_INPUT");
-    assert_eq!(format!("{}", TimingPortClass::RegisterOutput), "REGISTER_OUTPUT");
+    assert_eq!(
+        format!("{}", TimingPortClass::Combinational),
+        "COMBINATIONAL"
+    );
+    assert_eq!(
+        format!("{}", TimingPortClass::RegisterInput),
+        "REGISTER_INPUT"
+    );
+    assert_eq!(
+        format!("{}", TimingPortClass::RegisterOutput),
+        "REGISTER_OUTPUT"
+    );
     assert_eq!(format!("{}", TimingPortClass::ClockInput), "CLOCK_INPUT");
     assert_eq!(format!("{}", TimingPortClass::GenClock), "GEN_CLOCK");
     assert_eq!(format!("{}", TimingPortClass::Ignore), "IGNORE");
@@ -587,7 +581,10 @@ fn timing_port_class_display() {
 
 #[test]
 fn timing_port_class_equality() {
-    assert_eq!(TimingPortClass::Combinational, TimingPortClass::Combinational);
+    assert_eq!(
+        TimingPortClass::Combinational,
+        TimingPortClass::Combinational
+    );
     assert_ne!(TimingPortClass::Combinational, TimingPortClass::Ignore);
 }
 

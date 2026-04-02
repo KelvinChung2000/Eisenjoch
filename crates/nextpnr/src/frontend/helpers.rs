@@ -44,7 +44,11 @@ pub fn parse_bit_value(val: &Value) -> Result<BitValue> {
 pub fn infer_port_direction(cell_type: &str, port_name: &str) -> PortType {
     match cell_type {
         "LUT4" | "LUT6" => {
-            if port_name == "F" { PortType::Out } else { PortType::In }
+            if port_name == "F" {
+                PortType::Out
+            } else {
+                PortType::In
+            }
         }
         "CARRY4" => {
             if port_name.starts_with("CO") || port_name.starts_with("O") {
@@ -169,7 +173,11 @@ pub fn collect_bit_indices(
 }
 
 /// Create a constant net (GND or VCC).
-pub fn create_constant_net(design: &mut Design, pool: &crate::common::IdStringPool, name: &str) -> NetId {
+pub fn create_constant_net(
+    design: &mut Design,
+    pool: &crate::common::IdStringPool,
+    name: &str,
+) -> NetId {
     design.add_net(pool.intern(name))
 }
 

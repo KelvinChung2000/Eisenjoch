@@ -2,7 +2,9 @@ use crate::chipdb::{BelId, PipId, WireId};
 use crate::common::{IdString, PlaceStrength};
 use crate::timing::DelayT;
 
-use super::{CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap, PortType, Property, TimingIndex};
+use super::{
+    CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap, PortType, Property, TimingIndex,
+};
 
 pub struct CellEditor<'a> {
     cell: &'a mut CellInfo,

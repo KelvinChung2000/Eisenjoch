@@ -54,8 +54,7 @@ impl TimingOracle for TimingAnalyser {
                 (self.arrival_times.get(pin), self.required_times.get(pin))
             {
                 let slack = req - arr;
-                let crit =
-                    (1.0 - ((slack - self.worst_slack) as f64 / neg_ws)).clamp(0.0, 1.0);
+                let crit = (1.0 - ((slack - self.worst_slack) as f64 / neg_ws)).clamp(0.0, 1.0);
                 if crit > max_crit {
                     max_crit = crit;
                 }

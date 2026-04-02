@@ -74,7 +74,12 @@ impl DomainRegistry {
     }
 
     /// Get or create a domain ID for the given clock net and edge.
-    pub fn domain_id(&mut self, clock_net: IdString, edge: ClockEdge, period: DelayT) -> ClockDomainId {
+    pub fn domain_id(
+        &mut self,
+        clock_net: IdString,
+        edge: ClockEdge,
+        period: DelayT,
+    ) -> ClockDomainId {
         let key = (clock_net, edge);
         if let Some(&id) = self.domain_map.get(&key) {
             return id;

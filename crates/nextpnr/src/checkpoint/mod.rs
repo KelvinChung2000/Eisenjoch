@@ -15,11 +15,11 @@
 //! ```
 
 mod diff;
+pub mod restore;
 mod save;
 mod types;
-pub mod restore;
 
-pub use types::*;
-pub use save::{save, build_checkpoint};
 pub use diff::diff_by_name;
 pub use restore::{compute_fingerprint, restore, RestoreReport};
+pub use save::{build_checkpoint, save};
+pub use types::*;

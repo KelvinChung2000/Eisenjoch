@@ -178,9 +178,7 @@ fn sa_respects_region_constraint() {
     ctx.design.cell_edit(cell0_idx).set_region(Some(region_idx));
 
     let cfg = PlacerSaCfg::default();
-    PlacerSa
-        .place(&mut ctx, &cfg)
-        .expect("SA should succeed");
+    PlacerSa.place(&mut ctx, &cfg).expect("SA should succeed");
 
     let cell0 = ctx.cell(cell0_idx);
     let bel = cell0.bel().expect("cell_0 should be placed");

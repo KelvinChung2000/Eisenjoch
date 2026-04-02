@@ -1,7 +1,7 @@
 use crate::common::IdString;
 use crate::context::Context;
-use crate::netlist::{CellPin, NetId};
 use crate::netlist::PortData;
+use crate::netlist::{CellPin, NetId};
 use crate::timing::DelayT;
 
 use super::common::IdStringView;
