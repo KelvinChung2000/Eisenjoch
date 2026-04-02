@@ -1,8 +1,8 @@
 mod common;
 
+use nextpnr::netlist::PortType;
 use nextpnr::packer::helpers::{connect_port, disconnect_port, get_net_for_port, is_single_fanout};
 use nextpnr::packer::{pack_default, passes};
-use nextpnr::netlist::PortType;
 
 fn setup_simple_ctx(ctx: &mut nextpnr::context::Context) {
     let cell_name = ctx.id("my_cell");
@@ -12,9 +12,13 @@ fn setup_simple_ctx(ctx: &mut nextpnr::context::Context) {
     let net_name = ctx.id("my_net");
     let cell_idx = ctx.design.add_cell(cell_name, cell_type);
     let net_idx = ctx.design.add_net(net_name);
-    ctx.design.cell_edit(cell_idx).add_port(port_o, PortType::Out);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_o, PortType::Out);
     connect_port(ctx, cell_idx, port_o, net_idx);
-    ctx.design.cell_edit(cell_idx).add_port(port_i, PortType::In);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_i, PortType::In);
 }
 
 // =====================================================================
@@ -71,7 +75,9 @@ fn connect_port_to_net() {
     let cell_idx = ctx.design.add_cell(ctx.id("c1"), ctx.id("FF"));
     let net_idx = ctx.design.add_net(ctx.id("n1"));
     let port_d = ctx.id("D");
-    ctx.design.cell_edit(cell_idx).add_port(port_d, PortType::In);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_d, PortType::In);
     connect_port(&mut ctx, cell_idx, port_d, net_idx);
     assert_eq!(get_net_for_port(&ctx, cell_idx, port_d), Some(net_idx));
 }
@@ -82,7 +88,9 @@ fn connect_port_as_driver() {
     let cell_idx = ctx.design.add_cell(ctx.id("c1"), ctx.id("LUT6"));
     let net_idx = ctx.design.add_net(ctx.id("n1"));
     let port_o = ctx.id("O");
-    ctx.design.cell_edit(cell_idx).add_port(port_o, PortType::Out);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_o, PortType::Out);
     connect_port(&mut ctx, cell_idx, port_o, net_idx);
     let net = ctx.design.net(net_idx);
     assert!(net.driver().is_some());
@@ -98,7 +106,9 @@ fn rename_port_basic() {
     let old_name = ctx.id("O");
     let new_name = ctx.id("Q");
     let net_before = get_net_for_port(&ctx, cell_idx, old_name);
-    ctx.design.cell_edit(cell_idx).rename_port(old_name, new_name);
+    ctx.design
+        .cell_edit(cell_idx)
+        .rename_port(old_name, new_name);
     assert!(ctx.design.cell(cell_idx).port(old_name).is_none());
     assert_eq!(get_net_for_port(&ctx, cell_idx, new_name), net_before);
 }
@@ -121,8 +131,12 @@ fn is_single_fanout_true() {
     let net_idx = ctx.design.add_net(ctx.id("n1"));
     let port_o = ctx.id("O");
     let port_d = ctx.id("D");
-    ctx.design.cell_edit(driver_idx).add_port(port_o, PortType::Out);
-    ctx.design.cell_edit(sink_idx).add_port(port_d, PortType::In);
+    ctx.design
+        .cell_edit(driver_idx)
+        .add_port(port_o, PortType::Out);
+    ctx.design
+        .cell_edit(sink_idx)
+        .add_port(port_d, PortType::In);
     connect_port(&mut ctx, driver_idx, port_o, net_idx);
     connect_port(&mut ctx, sink_idx, port_d, net_idx);
     assert!(is_single_fanout(&ctx, net_idx));
@@ -138,9 +152,15 @@ fn is_single_fanout_false_multi() {
     let port_o = ctx.id("O");
     let port_d = ctx.id("D");
     let port_d2 = ctx.id("D2");
-    ctx.design.cell_edit(driver_idx).add_port(port_o, PortType::Out);
-    ctx.design.cell_edit(sink1_idx).add_port(port_d, PortType::In);
-    ctx.design.cell_edit(sink2_idx).add_port(port_d2, PortType::In);
+    ctx.design
+        .cell_edit(driver_idx)
+        .add_port(port_o, PortType::Out);
+    ctx.design
+        .cell_edit(sink1_idx)
+        .add_port(port_d, PortType::In);
+    ctx.design
+        .cell_edit(sink2_idx)
+        .add_port(port_d2, PortType::In);
     connect_port(&mut ctx, driver_idx, port_o, net_idx);
     connect_port(&mut ctx, sink1_idx, port_d, net_idx);
     connect_port(&mut ctx, sink2_idx, port_d2, net_idx);
@@ -190,8 +210,12 @@ fn setup_io_cell(
     let port_o = ctx.id("O");
     let port_i = ctx.id("I");
     let cell_idx = ctx.design.add_cell(ctx.id(name), ctx.id(cell_type));
-    ctx.design.cell_edit(cell_idx).add_port(port_o, PortType::Out);
-    ctx.design.cell_edit(cell_idx).add_port(port_i, PortType::In);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_o, PortType::Out);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(port_i, PortType::In);
     cell_idx
 }
 
@@ -253,9 +277,9 @@ fn remove_cell_nonexistent_is_noop() {
 // Database-driven packer tests (new)
 // =====================================================================
 
+use nextpnr::packer::extractor::{CellTags, Extractor, SharedWireExtractor, TileTypeExtractor};
 use nextpnr::packer::rules;
 use nextpnr::packer::tagger::CellTagger;
-use nextpnr::packer::extractor::{Extractor, TileTypeExtractor, SharedWireExtractor, CellTags};
 
 #[test]
 fn tagger_extracts_compatible_tile_types_on_example_chipdb() {
@@ -274,7 +298,9 @@ fn tagger_extracts_shared_wire_constraints_on_example_chipdb() {
     // Create a DFF cell with a CLK port connected to a net
     let cell_idx = ctx.design.add_cell(ctx.id("ff0"), ctx.id("DFF"));
     let clk_port = ctx.id("CLK");
-    ctx.design.cell_edit(cell_idx).add_port(clk_port, PortType::In);
+    ctx.design
+        .cell_edit(cell_idx)
+        .add_port(clk_port, PortType::In);
     let net_idx = ctx.design.add_net(ctx.id("clk_net"));
     connect_port(&mut ctx, cell_idx, clk_port, net_idx);
 
@@ -462,10 +488,7 @@ fn full_pack_creates_clusters_on_example_chipdb() {
     // Check that the cells are clustered together
     let drv_cluster = ctx.design.cell(drv).cluster;
     let usr_cluster = ctx.design.cell(usr).cluster;
-    assert!(
-        drv_cluster.is_some(),
-        "driver cell should be in a cluster"
-    );
+    assert!(drv_cluster.is_some(), "driver cell should be in a cluster");
     assert_eq!(
         drv_cluster, usr_cluster,
         "driver and user should be in the same cluster"
@@ -507,19 +530,39 @@ fn packing_rule_local_vs_chain() {
     let id = nextpnr::common::IdString::EMPTY;
 
     let local_rule = PackingRule {
-        driver: CellTypePort { cell_type: id, port: id },
-        user: CellTypePort { cell_type: id, port: id },
-        rel_x: 0, rel_y: 0, rel_z: 1,
-        base_z: 0, is_base_rule: true, is_absolute: false,
+        driver: CellTypePort {
+            cell_type: id,
+            port: id,
+        },
+        user: CellTypePort {
+            cell_type: id,
+            port: id,
+        },
+        rel_x: 0,
+        rel_y: 0,
+        rel_z: 1,
+        base_z: 0,
+        is_base_rule: true,
+        is_absolute: false,
     };
     assert!(local_rule.is_local());
     assert!(!local_rule.is_chain());
 
     let chain_rule = PackingRule {
-        driver: CellTypePort { cell_type: id, port: id },
-        user: CellTypePort { cell_type: id, port: id },
-        rel_x: 0, rel_y: 1, rel_z: 0,
-        base_z: 0, is_base_rule: true, is_absolute: false,
+        driver: CellTypePort {
+            cell_type: id,
+            port: id,
+        },
+        user: CellTypePort {
+            cell_type: id,
+            port: id,
+        },
+        rel_x: 0,
+        rel_y: 1,
+        rel_z: 0,
+        base_z: 0,
+        is_base_rule: true,
+        is_absolute: false,
     };
     assert!(!chain_rule.is_local());
     assert!(chain_rule.is_chain());
@@ -544,7 +587,9 @@ fn chipdb_compatible_tile_types_for_bel_type() {
 #[test]
 fn chipdb_compatible_tile_types_nonexistent() {
     let ctx = common::make_context();
-    let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("NONEXISTENT");
+    let compatible = ctx
+        .chipdb()
+        .compatible_tile_types_for_bel_type("NONEXISTENT");
     assert!(compatible.is_empty());
 }
 
@@ -579,13 +624,18 @@ fn example_chipdb_shared_wires_exist() {
             break;
         }
     }
-    assert!(found_shared, "example chipdb should have at least one shared wire");
+    assert!(
+        found_shared,
+        "example chipdb should have at least one shared wire"
+    );
 }
 
 #[test]
 fn example_chipdb_lut6_compatible_tiles() {
     let ctx = common::make_example_context();
     let compatible = ctx.chipdb().compatible_tile_types_for_bel_type("LUT6");
-    assert!(!compatible.is_empty(), "LUT6 should be found in at least one tile type");
+    assert!(
+        !compatible.is_empty(),
+        "LUT6 should be found in at least one tile type"
+    );
 }
-

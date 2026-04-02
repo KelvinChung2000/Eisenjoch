@@ -16,10 +16,7 @@ impl CellTagger {
     pub fn new() -> Self {
         Self {
             tags: FxHashMap::default(),
-            extractors: vec![
-                Box::new(TileTypeExtractor),
-                Box::new(SharedWireExtractor),
-            ],
+            extractors: vec![Box::new(TileTypeExtractor), Box::new(SharedWireExtractor)],
             validators: vec![
                 Box::new(SharedWireValidator),
                 Box::new(SiteCapacityValidator),
@@ -49,12 +46,7 @@ impl CellTagger {
     }
 
     /// Check if two cells can be packed together.
-    pub fn check_packing(
-        &self,
-        ctx: &Context,
-        base: CellId,
-        new: CellId,
-    ) -> Result<(), String> {
+    pub fn check_packing(&self, ctx: &Context, base: CellId, new: CellId) -> Result<(), String> {
         for validator in &self.validators {
             validator.check(ctx, self, base, new)?;
         }

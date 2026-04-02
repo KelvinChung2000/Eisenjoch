@@ -60,9 +60,8 @@ impl Legalizer for SnapLegalizer {
         let snap_avg = snap_total_disp / n.max(1) as f64;
 
         // 2. Spread overcrowded tiles.
-        let spread_count = spread_overcrowded(
-            type_aware, &cell_buckets, &mut snapped_x, &mut snapped_y,
-        );
+        let spread_count =
+            spread_overcrowded(type_aware, &cell_buckets, &mut snapped_x, &mut snapped_y);
 
         // 3. Unbind movable cells.
         unbind_movable_cells(ctx, idx_to_cell);
@@ -93,7 +92,9 @@ impl Legalizer for SnapLegalizer {
                 None => {
                     return Err(PlacerError::NoBelsAvailable(format!(
                         "{} at ({}, {})",
-                        ctx.name_of(bucket), tx, ty,
+                        ctx.name_of(bucket),
+                        tx,
+                        ty,
                     )));
                 }
             }
@@ -118,7 +119,9 @@ fn find_nearest_bel(ctx: &Context, bucket: IdString, tx: i32, ty: i32) -> Option
     for radius in 0..=max_radius {
         for dx in -radius..=radius {
             for dy in -radius..=radius {
-                if dx.abs() + dy.abs() != radius { continue; } // Manhattan ring
+                if dx.abs() + dy.abs() != radius {
+                    continue;
+                } // Manhattan ring
                 let bx = tx + dx;
                 let by = ty + dy;
                 // Check BELs at this tile.
@@ -193,7 +196,9 @@ fn spread_overcrowded(
         for &(ci, _) in cell_dists.iter().skip(cap) {
             let mut best: Option<(i32, i32, f64)> = None;
             for (&(bt, bx, by), &cap_left) in &remaining_cap {
-                if bt != *bucket || cap_left == 0 { continue; }
+                if bt != *bucket || cap_left == 0 {
+                    continue;
+                }
                 let dx = (bx - tx) as f64;
                 let dy = (by - ty) as f64;
                 let d = dx * dx + dy * dy;

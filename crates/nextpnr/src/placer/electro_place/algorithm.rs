@@ -5,12 +5,11 @@ use log::info;
 use crate::context::Context;
 use crate::metrics::total_hpwl;
 use crate::placer::common::{
-    add_wa_wirelength_gradient, clamp_positions, compute_pin_weights,
-    NesterovLoopState,
+    add_wa_wirelength_gradient, clamp_positions, compute_pin_weights, NesterovLoopState,
 };
-use crate::solver::NesterovSolver;
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
+use crate::solver::NesterovSolver;
 
 use super::config::ElectroPlaceCfg;
 use super::density;
@@ -76,22 +75,33 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
         let mut grad_x = vec![0.0; n];
         let mut grad_y = vec![0.0; n];
         add_wa_wirelength_gradient(
-            ctx, &cell_to_idx, &cell_x, &cell_y, cfg.wl_coeff,
-            &mut grad_x, &mut grad_y, None,
+            ctx,
+            &cell_to_idx,
+            &cell_x,
+            &cell_y,
+            cfg.wl_coeff,
+            &mut grad_x,
+            &mut grad_y,
+            None,
         );
 
         // DCT-based density computation.
         let concrete_density = density::compute_concrete_density(&cell_x, &cell_y, grid_w, grid_h);
         let overlap = density::compute_overlap(&concrete_density);
 
-        let (field_x, field_y) = density::compute_density_field(
-            &concrete_density, grid_w, grid_h, cfg.target_density,
-        );
+        let (field_x, field_y) =
+            density::compute_density_field(&concrete_density, grid_w, grid_h, cfg.target_density);
         let mut density_grad_x = vec![0.0; n];
         let mut density_grad_y = vec![0.0; n];
         density::compute_density_gradient(
-            &cell_x, &cell_y, &field_x, &field_y, grid_w, grid_h,
-            &mut density_grad_x, &mut density_grad_y,
+            &cell_x,
+            &cell_y,
+            &field_x,
+            &field_y,
+            grid_w,
+            grid_h,
+            &mut density_grad_x,
+            &mut density_grad_y,
         );
 
         // Initialize or grow density penalty.
@@ -156,13 +166,22 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
             // Overlap-based convergence (only after minimum iterations to avoid
             // premature exit on sparse designs where initial overlap is already low).
             if iter >= CONVERGENCE_MIN_ITERS && overlap < OVERLAP_CONVERGE {
-                eprintln!("ElectroPlace converged at iteration {} (overlap {:.4} < {})", iter, overlap, OVERLAP_CONVERGE);
+                eprintln!(
+                    "ElectroPlace converged at iteration {} (overlap {:.4} < {})",
+                    iter, overlap, OVERLAP_CONVERGE
+                );
                 break;
             }
         }
     }
 
-    let _ = legalize_electro(ctx, &idx_to_cell, &loop_state.best_positions_x, &loop_state.best_positions_y, &type_aware)?;
+    let _ = legalize_electro(
+        ctx,
+        &idx_to_cell,
+        &loop_state.best_positions_x,
+        &loop_state.best_positions_y,
+        &type_aware,
+    )?;
 
     PlacerPipeline::validate(ctx)?;
     info!("ElectroPlace complete");

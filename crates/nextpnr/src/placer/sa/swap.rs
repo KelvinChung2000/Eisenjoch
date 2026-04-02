@@ -28,10 +28,7 @@ fn nets_for_cell(ctx: &Context, cell_idx: CellId) -> Vec<NetId> {
 pub(super) fn hpwl_for_nets(ctx: &Context, net_indices: &[NetId]) -> f64 {
     if net_indices.len() > 16 {
         use rayon::prelude::*;
-        net_indices
-            .par_iter()
-            .map(|&idx| net_hpwl(ctx, idx))
-            .sum()
+        net_indices.par_iter().map(|&idx| net_hpwl(ctx, idx)).sum()
     } else {
         net_indices.iter().map(|&idx| net_hpwl(ctx, idx)).sum()
     }

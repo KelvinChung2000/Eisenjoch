@@ -2,8 +2,8 @@ mod common;
 
 use nextpnr::chipdb::BelId;
 use nextpnr::common::PlaceStrength;
-use nextpnr::netlist::PortType;
 use nextpnr::metrics::{net_hpwl, total_hpwl};
+use nextpnr::netlist::PortType;
 use nextpnr::placer::common::initial_placement;
 use nextpnr::placer::sa::{revert_swap, try_swap, CongestionCache};
 

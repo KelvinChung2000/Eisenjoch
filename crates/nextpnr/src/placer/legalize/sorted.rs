@@ -7,8 +7,8 @@ use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -105,9 +105,7 @@ pub fn sorted_legalize(
         .map(|&idx| {
             let cell_idx = idx_to_cell[idx];
             let cell = ctx.cell(cell_idx);
-            let is_cluster_child = cell
-                .cluster()
-                .map_or(false, |root_id| root_id != cell_idx);
+            let is_cluster_child = cell.cluster().map_or(false, |root_id| root_id != cell_idx);
             CellLegalizeInfo {
                 cell_idx,
                 cell_type_id: cell.cell_type_id(),
@@ -176,8 +174,7 @@ pub fn sorted_legalize(
                 })
                 .collect();
 
-            candidates
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            candidates.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             candidates.into_iter().map(|(id, _)| id).collect()
         })
         .collect();

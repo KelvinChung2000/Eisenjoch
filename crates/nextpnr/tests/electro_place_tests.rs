@@ -14,7 +14,9 @@ fn place_electro_2_cells() {
     };
     place_electro(&mut ctx, &cfg).expect("ElectroPlace should succeed");
     for cell_view in ctx.cells() {
-        if !cell_view.is_alive() { continue; }
+        if !cell_view.is_alive() {
+            continue;
+        }
         assert!(cell_view.bel_id().is_some());
     }
 }
@@ -31,7 +33,9 @@ fn place_electro_4_cells() {
     place_electro(&mut ctx, &cfg).expect("ElectroPlace should succeed");
     let mut used_bels = std::collections::HashSet::new();
     for cell_view in ctx.cells() {
-        if !cell_view.is_alive() { continue; }
+        if !cell_view.is_alive() {
+            continue;
+        }
         let bel = cell_view.bel_id().expect("alive cell should be placed");
         assert!(used_bels.insert(bel));
     }
@@ -68,9 +72,16 @@ fn place_electro_deterministic() {
     place_electro(&mut ctx2, &cfg).expect("run 2");
 
     for c1 in ctx1.cells() {
-        if !c1.is_alive() { continue; }
+        if !c1.is_alive() {
+            continue;
+        }
         let c2 = ctx2.cell(c1.id());
-        assert_eq!(c1.bel_id(), c2.bel_id(), "cell {} placed differently", c1.id().raw());
+        assert_eq!(
+            c1.bel_id(),
+            c2.bel_id(),
+            "cell {} placed differently",
+            c1.id().raw()
+        );
     }
 }
 
@@ -83,7 +94,9 @@ fn place_electro_via_trait() {
         legalize_interval: 2,
         ..ElectroPlaceCfg::default()
     };
-    PlacerElectro.place(&mut ctx, &cfg).expect("trait dispatch should work");
+    PlacerElectro
+        .place(&mut ctx, &cfg)
+        .expect("trait dispatch should work");
 }
 
 #[test]

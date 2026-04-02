@@ -15,7 +15,13 @@ impl HeapState {
     pub(super) fn legalize(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
         // Delegate to shared sorted legalization.
         let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
-        sorted_legalize(ctx, &self.movable_cells, &self.cell_x, &self.cell_y, &type_aware)?;
+        sorted_legalize(
+            ctx,
+            &self.movable_cells,
+            &self.cell_x,
+            &self.cell_y,
+            &type_aware,
+        )?;
 
         // HeAP-specific: update cell_x/cell_y from bound BEL positions.
         for (i, &cell_idx) in self.movable_cells.iter().enumerate() {
@@ -60,34 +66,29 @@ impl HeapState {
                 let iy = cy.round() as i32;
 
                 // Get congestion at surrounding edges (0.0 if at boundary).
-                let east_c =
-                    if ix >= 0 && (ix as usize) + 1 < wu && iy >= 0 && (iy as usize) < hu {
-                        h_demand[iy as usize][ix as usize]
-                            / h_capacity[iy as usize][ix as usize]
-                    } else {
-                        0.0
-                    };
-                let west_c =
-                    if ix > 0 && (ix as usize) < wu && iy >= 0 && (iy as usize) < hu {
-                        h_demand[iy as usize][(ix - 1) as usize]
-                            / h_capacity[iy as usize][(ix - 1) as usize]
-                    } else {
-                        0.0
-                    };
-                let south_c =
-                    if iy >= 0 && (iy as usize) + 1 < hu && ix >= 0 && (ix as usize) < wu {
-                        v_demand[iy as usize][ix as usize]
-                            / v_capacity[iy as usize][ix as usize]
-                    } else {
-                        0.0
-                    };
-                let north_c =
-                    if iy > 0 && (iy as usize) < hu && ix >= 0 && (ix as usize) < wu {
-                        v_demand[(iy - 1) as usize][ix as usize]
-                            / v_capacity[(iy - 1) as usize][ix as usize]
-                    } else {
-                        0.0
-                    };
+                let east_c = if ix >= 0 && (ix as usize) + 1 < wu && iy >= 0 && (iy as usize) < hu {
+                    h_demand[iy as usize][ix as usize] / h_capacity[iy as usize][ix as usize]
+                } else {
+                    0.0
+                };
+                let west_c = if ix > 0 && (ix as usize) < wu && iy >= 0 && (iy as usize) < hu {
+                    h_demand[iy as usize][(ix - 1) as usize]
+                        / h_capacity[iy as usize][(ix - 1) as usize]
+                } else {
+                    0.0
+                };
+                let south_c = if iy >= 0 && (iy as usize) + 1 < hu && ix >= 0 && (ix as usize) < wu
+                {
+                    v_demand[iy as usize][ix as usize] / v_capacity[iy as usize][ix as usize]
+                } else {
+                    0.0
+                };
+                let north_c = if iy > 0 && (iy as usize) < hu && ix >= 0 && (ix as usize) < wu {
+                    v_demand[(iy - 1) as usize][ix as usize]
+                        / v_capacity[(iy - 1) as usize][ix as usize]
+                } else {
+                    0.0
+                };
 
                 // Displacement: push away from congested edges.
                 let dx = west_c - east_c; // positive = push east (away from west congestion)

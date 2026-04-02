@@ -56,20 +56,13 @@ pub fn pack_default(ctx: &mut Context) -> Result<(), PackerError> {
             .filter_map(|(_, net)| {
                 let driver = net.driver()?;
                 let drv_cell = ctx.design.cell(driver.cell);
-                if drv_cell.cell_type != rule.driver.cell_type
-                    || driver.port != rule.driver.port
-                {
+                if drv_cell.cell_type != rule.driver.cell_type || driver.port != rule.driver.port {
                     return None;
                 }
-                let user = net
-                    .users()
-                    .iter()
-                    .filter(|u| u.is_connected())
-                    .find(|u| {
-                        let usr_cell = ctx.design.cell(u.cell);
-                        usr_cell.cell_type == rule.user.cell_type
-                            && u.port == rule.user.port
-                    })?;
+                let user = net.users().iter().filter(|u| u.is_connected()).find(|u| {
+                    let usr_cell = ctx.design.cell(u.cell);
+                    usr_cell.cell_type == rule.user.cell_type && u.port == rule.user.port
+                })?;
                 Some((driver.cell, user.cell))
             })
             .collect();

@@ -50,7 +50,10 @@ pub trait Legalizer {
 /// - `"greedy"`: simple nearest-BEL greedy
 pub fn create_legalizer(name: &str) -> Box<dyn Legalizer> {
     match name {
-        "ring" => Box::new(RingLegalizer { x_offset: 0.0, y_offset: 0.0 }),
+        "ring" => Box::new(RingLegalizer {
+            x_offset: 0.0,
+            y_offset: 0.0,
+        }),
         "sorted" => Box::new(SortedLegalizer),
         "bipartite" => Box::new(BipartiteLegalizer {
             cost: Box::new(DistanceCost),

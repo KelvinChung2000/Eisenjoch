@@ -6,8 +6,8 @@ use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use rustc_hash::FxHashMap;
@@ -126,8 +126,7 @@ pub fn legalize_ring(
                                 let dist = (px as f64 - phys_x[solver_idx]).powi(2)
                                     + (py as f64 - phys_y[solver_idx]).powi(2);
                                 if best_bel.is_none() || dist < best_bel.as_ref().unwrap().3 {
-                                    best_bel =
-                                        Some((*bel_list.last().unwrap(), px, py, dist));
+                                    best_bel = Some((*bel_list.last().unwrap(), px, py, dist));
                                 }
                             }
                         }

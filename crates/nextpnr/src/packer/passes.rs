@@ -23,18 +23,44 @@ pub fn pack_constants(ctx: &mut Context) -> Result<(), PackerError> {
     // Himbaechel architectures typically use GND_DRV/VCC_DRV; fall back to GND/VCC.
     let gnd_drv = ctx.id("GND_DRV");
     let vcc_drv = ctx.id("VCC_DRV");
-    let gnd_type = if ctx.has_bel_type(gnd_drv) { gnd_drv } else { ctx.id("GND") };
-    let vcc_type = if ctx.has_bel_type(vcc_drv) { vcc_drv } else { ctx.id("VCC") };
+    let gnd_type = if ctx.has_bel_type(gnd_drv) {
+        gnd_drv
+    } else {
+        ctx.id("GND")
+    };
+    let vcc_type = if ctx.has_bel_type(vcc_drv) {
+        vcc_drv
+    } else {
+        ctx.id("VCC")
+    };
 
     // Output pin name: GND_DRV uses "GND", VCC_DRV uses "VCC", generic uses "Y".
-    let gnd_port = if gnd_type == gnd_drv { ctx.id("GND") } else { y_port };
-    let vcc_port = if vcc_type == vcc_drv { ctx.id("VCC") } else { y_port };
+    let gnd_port = if gnd_type == gnd_drv {
+        ctx.id("GND")
+    } else {
+        y_port
+    };
+    let vcc_port = if vcc_type == vcc_drv {
+        ctx.id("VCC")
+    } else {
+        y_port
+    };
 
     let gnd_idx = ensure_const_driver(
-        ctx, "$PACKER_GND", "$PACKER_GND_NET", gnd_type, gnd_port, y_port,
+        ctx,
+        "$PACKER_GND",
+        "$PACKER_GND_NET",
+        gnd_type,
+        gnd_port,
+        y_port,
     );
     let vcc_idx = ensure_const_driver(
-        ctx, "$PACKER_VCC", "$PACKER_VCC_NET", vcc_type, vcc_port, y_port,
+        ctx,
+        "$PACKER_VCC",
+        "$PACKER_VCC_NET",
+        vcc_type,
+        vcc_port,
+        y_port,
     );
 
     // Bind constant driver cells to BELs so the router can resolve their output wires.
@@ -119,11 +145,7 @@ pub fn pack_remaining(_ctx: &mut Context) -> Result<(), PackerError> {
 
 /// Bind a cell to the first available BEL of the given type.
 /// If no BEL is available (e.g. minimal/synthetic chipdb), silently skips.
-fn bind_to_first_available_bel(
-    ctx: &mut Context,
-    cell_idx: CellId,
-    bel_type: IdString,
-) {
+fn bind_to_first_available_bel(ctx: &mut Context, cell_idx: CellId, bel_type: IdString) {
     if ctx.design.cell(cell_idx).bel.is_some() {
         return;
     }

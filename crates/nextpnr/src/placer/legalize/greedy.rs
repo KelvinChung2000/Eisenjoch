@@ -3,8 +3,8 @@
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use super::Legalizer;
@@ -59,9 +59,8 @@ pub fn legalize_electro(
             }
         }
 
-        let bel = best_bel.ok_or_else(|| {
-            PlacerError::NoBelsAvailable(ctx.name_of(cell_type).to_owned())
-        })?;
+        let bel = best_bel
+            .ok_or_else(|| PlacerError::NoBelsAvailable(ctx.name_of(cell_type).to_owned()))?;
 
         if !ctx.bind_bel(bel, cell_id, PlaceStrength::Placer) {
             let cell_name = ctx.design.cell(cell_id).name;

@@ -7,8 +7,8 @@ use crate::chipdb::BelId;
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use ndarray::Array2;
@@ -31,7 +31,15 @@ impl Legalizer for BipartiteLegalizer {
         cell_y: &[f64],
         _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
-        legalize_bipartite(ctx, idx_to_cell, cell_x, cell_y, &*self.cost, self.lap_max_cells, _type_aware)
+        legalize_bipartite(
+            ctx,
+            idx_to_cell,
+            cell_x,
+            cell_y,
+            &*self.cost,
+            self.lap_max_cells,
+            _type_aware,
+        )
     }
 }
 

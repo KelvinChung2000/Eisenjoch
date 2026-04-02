@@ -76,12 +76,20 @@ impl CongestionCache {
     #[inline]
     fn update_edge(demand: &mut f64, capacity: f64, sign: f64, cached_cost: &mut f64) {
         let old_ratio = *demand / capacity;
-        let old_penalty = if old_ratio > 1.0 { old_ratio - 1.0 } else { 0.0 };
+        let old_penalty = if old_ratio > 1.0 {
+            old_ratio - 1.0
+        } else {
+            0.0
+        };
 
         *demand = (*demand + sign).max(0.0);
 
         let new_ratio = *demand / capacity;
-        let new_penalty = if new_ratio > 1.0 { new_ratio - 1.0 } else { 0.0 };
+        let new_penalty = if new_ratio > 1.0 {
+            new_ratio - 1.0
+        } else {
+            0.0
+        };
 
         *cached_cost += new_penalty - old_penalty;
     }
@@ -167,8 +175,7 @@ impl CongestionCache {
                 };
                 let sink_loc = ctx.chipdb().bel_loc(sink_bel);
 
-                let points =
-                    bresenham_line(driver_loc.x, driver_loc.y, sink_loc.x, sink_loc.y);
+                let points = bresenham_line(driver_loc.x, driver_loc.y, sink_loc.x, sink_loc.y);
                 self.apply_crossings(&points, sign);
                 point_lists.push(points);
             }

@@ -15,7 +15,7 @@ pub mod swap;
 pub use algorithm::place_sa;
 pub use config::PlacerSaCfg;
 pub use congestion::CongestionCache;
-pub use swap::{SwapResult, try_swap, revert_swap};
+pub use swap::{revert_swap, try_swap, SwapResult};
 
 use crate::context::Context;
 use crate::netlist::CellId;

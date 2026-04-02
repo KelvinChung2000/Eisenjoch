@@ -38,10 +38,7 @@ fn cell_bin_overlap(
 
 /// Compute the fractional overlap between a cell bounding box and a bin.
 #[inline]
-fn bin_overlap_area(
-    x_lo: f64, x_hi: f64, y_lo: f64, y_hi: f64,
-    bx: usize, by: usize,
-) -> f64 {
+fn bin_overlap_area(x_lo: f64, x_hi: f64, y_lo: f64, y_hi: f64, bx: usize, by: usize) -> f64 {
     let ox = (x_hi.min(bx as f64 + 1.0) - x_lo.max(bx as f64)).max(0.0);
     let oy = (y_hi.min(by as f64 + 1.0) - y_lo.max(by as f64)).max(0.0);
     ox * oy

@@ -1,7 +1,7 @@
 //! Main SA placement loop.
 
-use crate::common::IdString;
 use crate::chipdb::BelId;
+use crate::common::IdString;
 use crate::context::Context;
 use crate::metrics::total_hpwl;
 use crate::netlist::CellId;
@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 
 use super::config::PlacerSaCfg;
 use super::congestion::CongestionCache;
-use super::swap::{try_swap, revert_swap};
+use super::swap::{revert_swap, try_swap};
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
 
@@ -52,11 +52,9 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
     for &ci in &moveable {
         let cell = ctx.cell(ci);
         let cell_type = cell.cell_type_id();
-        bel_cache.entry(cell_type).or_insert_with(|| {
-            ctx.bels_for_bucket(cell_type)
-                .map(|bel| bel.id())
-                .collect()
-        });
+        bel_cache
+            .entry(cell_type)
+            .or_insert_with(|| ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect());
     }
 
     // Pre-cache region-filtered BELs for cells with region constraints.
@@ -65,19 +63,17 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
         let cell = ctx.cell(ci);
         let cell_type = cell.cell_type_id();
         if let Some(rid) = ctx.design.cell(ci).region {
-            region_bel_cache
-                .entry((cell_type, rid))
-                .or_insert_with(|| {
-                    bel_cache
-                        .get(&cell_type)
-                        .map(|bels| {
-                            bels.iter()
-                                .copied()
-                                .filter(|&b| ctx.is_bel_in_region(b, rid))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                });
+            region_bel_cache.entry((cell_type, rid)).or_insert_with(|| {
+                bel_cache
+                    .get(&cell_type)
+                    .map(|bels| {
+                        bels.iter()
+                            .copied()
+                            .filter(|&b| ctx.is_bel_in_region(b, rid))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
         }
     }
 
@@ -180,8 +176,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
             }
 
             // Compute combined delta including congestion penalty.
-            let total_delta =
-                result.delta_cost + cfg.congestion_weight * result.delta_congestion;
+            let total_delta = result.delta_cost + cfg.congestion_weight * result.delta_congestion;
 
             // Metropolis criterion: accept if delta < 0 or with probability exp(-delta/T).
             let accept = if total_delta <= 0.0 {

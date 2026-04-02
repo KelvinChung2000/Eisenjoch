@@ -6,6 +6,40 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+#[inline]
+fn scatter_bilinear_tile(
+    map: &mut FxHashMap<(i32, i32), f64>,
+    x: f64,
+    y: f64,
+    weight: f64,
+    grid_w: usize,
+    grid_h: usize,
+) {
+    if weight <= 0.0 || grid_w == 0 || grid_h == 0 {
+        return;
+    }
+
+    let x = x.clamp(0.0, grid_w.saturating_sub(1) as f64);
+    let y = y.clamp(0.0, grid_h.saturating_sub(1) as f64);
+
+    let x0 = x.floor() as i32;
+    let y0 = y.floor() as i32;
+    let x1 = (x0 + 1).min(grid_w as i32 - 1);
+    let y1 = (y0 + 1).min(grid_h as i32 - 1);
+    let fx = x - x0 as f64;
+    let fy = y - y0 as f64;
+
+    let w00 = (1.0 - fx) * (1.0 - fy);
+    let w10 = fx * (1.0 - fy);
+    let w01 = (1.0 - fx) * fy;
+    let w11 = fx * fy;
+
+    *map.entry((x0, y0)).or_insert(0.0) += weight * w00;
+    *map.entry((x1, y0)).or_insert(0.0) += weight * w10;
+    *map.entry((x0, y1)).or_insert(0.0) += weight * w01;
+    *map.entry((x1, y1)).or_insert(0.0) += weight * w11;
+}
+
 /// Lock cells whose BELs only exist on boundary/IO tiles.
 ///
 /// These cells (IOB, clock buffers, etc.) cannot benefit from the continuous
@@ -34,11 +68,7 @@ pub(crate) fn lock_boundary_cells(ctx: &mut Context) {
     }
 
     let mut locked_count = 0usize;
-    let cell_ids: Vec<_> = ctx
-        .design
-        .iter_alive_cells()
-        .map(|(id, _)| id)
-        .collect();
+    let cell_ids: Vec<_> = ctx.design.iter_alive_cells().map(|(id, _)| id).collect();
 
     for cell_id in cell_ids {
         let cell = ctx.design.cell(cell_id);
@@ -103,7 +133,9 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place constrained cells first.
         for (ci, region_idx) in &constrained {
-            let region_bels = ctx.bels_for_bucket_in_region(cell_type, *region_idx).to_vec();
+            let region_bels = ctx
+                .bels_for_bucket_in_region(cell_type, *region_idx)
+                .to_vec();
             let mut available: Vec<BelId> = region_bels
                 .iter()
                 .copied()
@@ -131,8 +163,7 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place unconstrained cells.
         if !unconstrained.is_empty() {
-            let bucket_bels: Vec<_> =
-                ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect();
+            let bucket_bels: Vec<_> = ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect();
             if bucket_bels.is_empty() {
                 return Err(PlacerError::NoBelsAvailable(cell_type_name));
             }
@@ -292,7 +323,7 @@ pub(crate) fn init_positions_center_drop(
     let n = idx_to_cell.len();
     for i in 0..n {
         let hash_x = ((i as u64).wrapping_mul(2654435761)) as f64 / u64::MAX as f64;
-        let hash_y = (((i as u64 + 1).wrapping_mul(2246822519))) as f64 / u64::MAX as f64;
+        let hash_y = ((i as u64 + 1).wrapping_mul(2246822519)) as f64 / u64::MAX as f64;
         cell_x[i] = center_x + (hash_x - 0.5) * 2.0;
         cell_y[i] = center_y + (hash_y - 0.5) * 2.0;
     }
@@ -337,15 +368,27 @@ pub(crate) fn add_wa_wirelength_gradient(
 
         if let Some(driver_pin) = net.driver() {
             collect_pin_position_xy(
-                ctx, cell_to_idx, cell_x, cell_y,
-                driver_pin.cell, &mut pin_xs, &mut pin_ys, &mut pin_indices,
+                ctx,
+                cell_to_idx,
+                cell_x,
+                cell_y,
+                driver_pin.cell,
+                &mut pin_xs,
+                &mut pin_ys,
+                &mut pin_indices,
             );
         }
 
         for user in net.users().iter() {
             collect_pin_position_xy(
-                ctx, cell_to_idx, cell_x, cell_y,
-                user.cell, &mut pin_xs, &mut pin_ys, &mut pin_indices,
+                ctx,
+                cell_to_idx,
+                cell_x,
+                cell_y,
+                user.cell,
+                &mut pin_xs,
+                &mut pin_ys,
+                &mut pin_indices,
             );
         }
 
@@ -399,7 +442,6 @@ fn collect_pin_position_xy(
         }
     }
 }
-
 
 /// Compute per-cell pin weights for the WA preconditioner.
 ///
@@ -513,7 +555,13 @@ impl NesterovLoopState {
     }
 
     /// Record a legalization result. Returns true if this is a new best.
-    pub fn record_metric(&mut self, metric: f64, cell_x: &[f64], cell_y: &[f64], iter: usize) -> bool {
+    pub fn record_metric(
+        &mut self,
+        metric: f64,
+        cell_x: &[f64],
+        cell_y: &[f64],
+        iter: usize,
+    ) -> bool {
         if metric < self.best_metric {
             self.best_metric = metric;
             self.best_iter = iter;
@@ -575,6 +623,10 @@ pub struct TypeAwarePlacement {
     pub valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>>,
     /// Per-tile capacity for each cell type: (vx, vy) → n_compatible_bels.
     pub tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>>,
+    /// Per-tile pin capacity for each cell type: (vx, vy) → sum of compatible BEL pins.
+    pub tile_pin_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>>,
+    /// Total per-tile pin capacity across all active placement buckets.
+    pub total_tile_pin_capacity: FxHashMap<(i32, i32), u32>,
 }
 
 impl TypeAwarePlacement {
@@ -594,11 +646,15 @@ impl TypeAwarePlacement {
         let mut valid_ys: FxHashMap<IdString, FxHashMap<i32, Vec<f64>>> = FxHashMap::default();
         let mut tile_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
             FxHashMap::default();
+        let mut tile_pin_capacity: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+            FxHashMap::default();
+        let mut total_tile_pin_capacity: FxHashMap<(i32, i32), u32> = FxHashMap::default();
 
         for &ct in &cell_types_present {
             let mut xs_set: FxHashSet<i32> = FxHashSet::default();
             let mut ys_per_x: FxHashMap<i32, FxHashSet<i32>> = FxHashMap::default();
             let cap_map = tile_capacity.entry(ct).or_default();
+            let pin_cap_map = tile_pin_capacity.entry(ct).or_default();
 
             for bel in ctx.bels_for_bucket(ct) {
                 let loc = bel.loc();
@@ -607,6 +663,9 @@ impl TypeAwarePlacement {
                 xs_set.insert(vx);
                 ys_per_x.entry(vx).or_default().insert(vy);
                 *cap_map.entry((vx, vy)).or_insert(0) += 1;
+                let bel_pin_count = ctx.chipdb().bel_info(bel.id()).pins.get().len() as u32;
+                *pin_cap_map.entry((vx, vy)).or_insert(0) += bel_pin_count;
+                *total_tile_pin_capacity.entry((vx, vy)).or_insert(0) += bel_pin_count;
             }
 
             let mut xs: Vec<f64> = xs_set.into_iter().map(|x| x as f64).collect();
@@ -625,10 +684,7 @@ impl TypeAwarePlacement {
         let n_types = cell_types_present.len();
         for ct in &cell_types_present {
             let n_pos = valid_xs.get(ct).map(|v| v.len()).unwrap_or(0);
-            let n_bels: u32 = tile_capacity
-                .get(ct)
-                .map(|m| m.values().sum())
-                .unwrap_or(0);
+            let n_bels: u32 = tile_capacity.get(ct).map(|m| m.values().sum()).unwrap_or(0);
             eprintln!(
                 "  type {}: {} valid columns, {} total BELs",
                 ctx.name_of(*ct),
@@ -642,6 +698,8 @@ impl TypeAwarePlacement {
             valid_xs,
             valid_ys,
             tile_capacity,
+            tile_pin_capacity,
+            total_tile_pin_capacity,
         }
     }
 
@@ -659,7 +717,11 @@ impl TypeAwarePlacement {
         } else {
             let left = xs[idx - 1];
             let right = xs[idx];
-            if (x - left) <= (right - x) { left } else { right }
+            if (x - left) <= (right - x) {
+                left
+            } else {
+                right
+            }
         }
     }
 
@@ -680,60 +742,185 @@ impl TypeAwarePlacement {
         } else {
             let left = ys[idx - 1];
             let right = ys[idx];
-            if (y - left) <= (right - y) { left } else { right }
+            if (y - left) <= (right - y) {
+                left
+            } else {
+                right
+            }
         }
     }
 
-    /// Compute max per-type tile overflow ratio.
+    /// Compute per-type tile overflow statistics.
     ///
     /// For each cell type, counts cells at each tile and divides by compatible
-    /// BEL capacity. Returns (max_overflow_ratio, n_tiles_over_capacity).
+    /// BEL capacity. Returns:
+    /// - `max_overflow_ratio`: worst tile occupancy / capacity ratio
+    /// - `n_tiles_over_capacity`: count of overflowing tiles
+    /// - `overflow_excess`: sum of overflow ratios above capacity
     pub fn compute_overflow(
         &self,
         cell_buckets: &[IdString],
+        cell_weights: &[f64],
         cell_x: &[f64],
         cell_y: &[f64],
         grid_w: usize,
         grid_h: usize,
-    ) -> (f64, usize) {
+    ) -> (f64, usize, f64) {
         let mut max_overflow = 0.0f64;
         let mut n_over = 0usize;
+        let mut overflow_excess = 0.0f64;
 
-        // Count cells per type per tile.
-        let mut type_tile_count: FxHashMap<IdString, FxHashMap<(i32, i32), u32>> =
+        // Count pin demand per type per tile using bilinear scatter so the
+        // occupancy field moves continuously with pin positions.
+        let mut type_tile_count: FxHashMap<IdString, FxHashMap<(i32, i32), f64>> =
             FxHashMap::default();
         for (i, &bucket) in cell_buckets.iter().enumerate() {
-            let tx = (cell_x[i].round() as i32).clamp(0, grid_w as i32 - 1);
-            let ty = (cell_y[i].round() as i32).clamp(0, grid_h as i32 - 1);
-            *type_tile_count
-                .entry(bucket)
-                .or_default()
-                .entry((tx, ty))
-                .or_insert(0) += 1;
+            let weight = cell_weights.get(i).copied().unwrap_or(0.0);
+            scatter_bilinear_tile(
+                type_tile_count.entry(bucket).or_default(),
+                cell_x[i],
+                cell_y[i],
+                weight,
+                grid_w,
+                grid_h,
+            );
         }
 
         for (bucket, tile_counts) in &type_tile_count {
-            let cap_map = match self.tile_capacity.get(bucket) {
+            let cap_map = match self.tile_pin_capacity.get(bucket) {
                 Some(m) => m,
                 None => continue,
             };
             for (&(tx, ty), &count) in tile_counts {
                 let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0);
                 if cap == 0 {
-                    if count > 0 {
-                        max_overflow = max_overflow.max(count as f64);
+                    if count > 0.0 {
+                        max_overflow = max_overflow.max(count);
                         n_over += 1;
+                        overflow_excess += count;
                     }
                 } else {
-                    let ratio = count as f64 / cap as f64;
+                    let ratio = count / cap as f64;
                     max_overflow = max_overflow.max(ratio);
-                    if count > cap {
+                    if count > cap as f64 {
                         n_over += 1;
+                        overflow_excess += ratio - 1.0;
                     }
                 }
             }
         }
 
-        (max_overflow, n_over)
+        (max_overflow, n_over, overflow_excess)
+    }
+
+    /// Compute unified pin-demand occupancy ratio per tile:
+    /// demand / available pin capacity.
+    pub fn compute_pin_utilization_map(
+        &self,
+        cell_weights: &[f64],
+        cell_x: &[f64],
+        cell_y: &[f64],
+        grid_w: usize,
+        grid_h: usize,
+    ) -> FxHashMap<(i32, i32), f64> {
+        let mut demand_per_tile: FxHashMap<(i32, i32), f64> = FxHashMap::default();
+        for i in 0..cell_weights.len() {
+            scatter_bilinear_tile(
+                &mut demand_per_tile,
+                cell_x[i],
+                cell_y[i],
+                cell_weights[i],
+                grid_w,
+                grid_h,
+            );
+        }
+
+        let mut util = FxHashMap::default();
+        for (tile, demand) in demand_per_tile {
+            let cap = self.total_tile_pin_capacity.get(&tile).copied().unwrap_or(0) as f64;
+            let ratio = if cap > 0.0 { demand / cap } else { demand };
+            util.insert(tile, ratio);
+        }
+        util
+    }
+
+    /// Compute the coarse-grid unified overflow hotspot field.
+    ///
+    /// For each coarse tile, this returns the maximum physical-tile
+    /// bucket-specific pin-demand / pin-capacity ratio inside that coarse tile.
+    /// This preserves local hotspots instead of averaging them away.
+    pub fn compute_overflow_map_coarse(
+        &self,
+        cell_buckets: &[IdString],
+        cell_weights: &[f64],
+        cell_x: &[f64],
+        cell_y: &[f64],
+        coarsen: usize,
+        grid_w: usize,
+        grid_h: usize,
+    ) -> FxHashMap<(i32, i32), f64> {
+        let coarsen = coarsen.max(1);
+        let coarse_w = grid_w.div_ceil(coarsen) as i32;
+        let coarse_h = grid_h.div_ceil(coarsen) as i32;
+
+        let mut demand_per_bucket_tile: FxHashMap<IdString, FxHashMap<(i32, i32), f64>> =
+            FxHashMap::default();
+        for (i, &bucket) in cell_buckets.iter().enumerate() {
+            scatter_bilinear_tile(
+                demand_per_bucket_tile.entry(bucket).or_default(),
+                cell_x[i],
+                cell_y[i],
+                cell_weights[i],
+                grid_w,
+                grid_h,
+            );
+        }
+
+        let mut util = FxHashMap::default();
+        let mut coarse_accum: FxHashMap<(i32, i32), (f64, f64)> = FxHashMap::default();
+        for (bucket, tile_demands) in demand_per_bucket_tile {
+            let Some(cap_map) = self.tile_pin_capacity.get(&bucket) else {
+                continue;
+            };
+            for ((tx, ty), demand) in tile_demands {
+                let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0) as f64;
+                let ratio = if cap > 0.0 { demand / cap } else { demand };
+                let cx = (tx / coarsen as i32).clamp(0, coarse_w - 1);
+                let cy = (ty / coarsen as i32).clamp(0, coarse_h - 1);
+                let entry = coarse_accum.entry((cx, cy)).or_insert((0.0, 0.0));
+                entry.0 += ratio * ratio;
+                entry.1 += 1.0;
+            }
+        }
+
+        for (coord, (sum_sq, count)) in coarse_accum {
+            util.insert(coord, (sum_sq / count.max(1.0)).sqrt());
+        }
+
+        util
+    }
+
+    /// Normalize coarse occupancy so coarse levels activate congestion on a
+    /// comparable scale to finer levels.
+    ///
+    /// The continuous scatter + coarse aggregation path dilutes L0 occupancy by
+    /// roughly the linear coarsening factor. Re-inflate by `coarsen` so a
+    /// meaningfully full coarse region produces a comparable congestion signal.
+    pub fn normalize_overflow_map_coarse(
+        field: &FxHashMap<(i32, i32), f64>,
+        coarsen: usize,
+    ) -> FxHashMap<(i32, i32), f64> {
+        let scale = coarsen.max(1) as f64;
+        field.iter().map(|(&k, &v)| (k, v * scale)).collect()
+    }
+
+    /// Direct destructive energy from the coarse overflow field.
+    ///
+    /// This uses the same unified pin-demand / pin-capacity ratio as the
+    /// overflow metric. We charge occupancy directly, rather than only the
+    /// amount above 1.0, so the destructive term remains visible before bins
+    /// are formally overfull.
+    pub fn overflow_energy_from_map(field: &FxHashMap<(i32, i32), f64>) -> f64 {
+        field.values().map(|&u| u * u).sum()
     }
 }

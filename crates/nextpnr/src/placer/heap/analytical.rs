@@ -1,7 +1,7 @@
 use crate::context::Context;
 // TODO: Update import when solver/ module is rebuilt in Phase 1
-use crate::solver::{Solver, SparseSystemBuilder};
 use crate::placer::PlacerError;
+use crate::solver::{Solver, SparseSystemBuilder};
 use log::debug;
 use rustc_hash::FxHashSet;
 
