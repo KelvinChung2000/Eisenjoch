@@ -1,21 +1,14 @@
 //! Main Beckmann OT placement algorithm.
 //!
-//! Progressive refinement with L-BFGS: starts on a coarse grid where cells
-//! bypass local minima, then progressively refines. At each resolution level,
-//! L-BFGS runs until convergence before moving to the next finer grid.
-//! Cell positions carry over as warm start; L-BFGS history resets per level.
-//! CHPWL may worsen at finer levels — that's expected and desired for routability.
+//! Fixed-resolution Adam driven by the per-net path solver.
 
 use crate::common::IdString;
 use crate::context::Context;
-use crate::metrics::{total_hpwl, total_line_estimate};
 use crate::placer::common;
 use crate::placer::pipeline::PlacerPipeline;
+use crate::placer::report;
 use crate::placer::PlacerError;
-use crate::solver::cg::{cg_scratch_size_nrhs, solve_cg_batched_reuse_with_par};
-use crate::solver::optimizer::LbfgsOptimizer;
-use crate::solver::sparse_matrix::{SparseMatrix, SparseMatrixOpRef};
-use log::info;
+use crate::solver::optimizer::AdamOptimizer;
 use rayon::{prelude::*, ThreadPoolBuilder};
 use rustc_hash::FxHashMap;
 
@@ -23,55 +16,21 @@ use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 
 use super::config::OptTransPlacerCfg;
-use super::demand::NetSolveInfo;
 use super::demand;
+use super::demand::NetSolveInfo;
 use super::network::PipeNetwork;
+use super::path_solver;
 use super::resistance::ResistanceModel;
 use std::env;
 
 #[derive(Clone, Copy, Debug)]
-struct OverflowScore {
+struct ObjectiveState {
+    energy: f64,
+    line: f64,
     chpwl: f64,
     max_overflow: f64,
     n_overflow: usize,
     overflow_excess: f64,
-}
-
-struct KirchhoffSystem {
-    laplacian: SparseMatrix,
-    pipe_to_offdiag: Vec<usize>,
-    diag_shift_scale: f64,
-    precond: crate::solver::preconditioner::JacobiPreconditioner,
-}
-
-#[derive(Default)]
-struct ChunkWorkspace {
-    rhs_batch: Vec<f64>,
-    pressure_batch: Vec<f64>,
-    rhs_touched: Vec<Vec<usize>>,
-    scratch: Option<dyn_stack::MemBuffer>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum LevelConvergenceReason {
-    EnergyDrop { rel_drop: f64, iter: usize },
-    Stagnation { stagnant_iters: usize, iter: usize },
-    MaxIters,
-}
-
-impl LevelConvergenceReason {
-    fn summary(self) -> String {
-        match self {
-            Self::EnergyDrop { rel_drop, iter } => {
-                format!("energy_rel_drop={rel_drop:.4} at iter {iter}")
-            }
-            Self::Stagnation {
-                stagnant_iters,
-                iter,
-            } => format!("stagnated {stagnant_iters} iters at iter {iter}"),
-            Self::MaxIters => "max_iters".to_string(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,96 +48,40 @@ struct IterSnapshot {
     rel_drop: f64,
 }
 
-fn fine_level_metric(score: OverflowScore) -> f64 {
-    score.max_overflow * 1000.0 + score.overflow_excess * 100.0 + score.n_overflow as f64
-}
-
-fn approx_leq(lhs: f64, rhs: f64, abs_eps: f64, rel_eps: f64) -> bool {
-    lhs <= rhs + abs_eps.max(rhs.abs() * rel_eps)
-}
-
-fn fine_level_better(candidate: OverflowScore, best: OverflowScore) -> bool {
-    const MAX_OVERFLOW_ABS_EPS: f64 = 0.25;
-    const MAX_OVERFLOW_REL_EPS: f64 = 0.05;
-    const EXCESS_ABS_EPS: f64 = 1.0;
-    const EXCESS_REL_EPS: f64 = 0.10;
-    const TILE_EPS: usize = 4;
-
-    let max_improved = candidate.max_overflow + MAX_OVERFLOW_ABS_EPS
-        < best.max_overflow * (1.0 - MAX_OVERFLOW_REL_EPS);
-    if max_improved
-        && approx_leq(
-            candidate.overflow_excess,
-            best.overflow_excess,
-            EXCESS_ABS_EPS,
-            EXCESS_REL_EPS,
-        )
-    {
-        return true;
-    }
-
-    let excess_improved =
-        candidate.overflow_excess + EXCESS_ABS_EPS < best.overflow_excess * (1.0 - EXCESS_REL_EPS);
-    if excess_improved
-        && approx_leq(
-            candidate.max_overflow,
-            best.max_overflow,
-            MAX_OVERFLOW_ABS_EPS,
-            MAX_OVERFLOW_REL_EPS,
-        )
-    {
-        return true;
-    }
-
-    let overflow_close = approx_leq(
-        candidate.max_overflow,
-        best.max_overflow,
-        MAX_OVERFLOW_ABS_EPS,
-        MAX_OVERFLOW_REL_EPS,
-    ) && approx_leq(
-        candidate.overflow_excess,
-        best.overflow_excess,
-        EXCESS_ABS_EPS,
-        EXCESS_REL_EPS,
-    );
-
-    if overflow_close {
-        if candidate.n_overflow + TILE_EPS < best.n_overflow {
-            return true;
-        }
-        if candidate.n_overflow.abs_diff(best.n_overflow) <= TILE_EPS
-            && candidate.chpwl < best.chpwl
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn update_kirchhoff_system_values(
+fn update_effective_conductance(
     solve_pool: &rayon::ThreadPool,
     network: &mut PipeNetwork,
     resistance_model: &ResistanceModel,
-    system: &mut KirchhoffSystem,
 ) {
-    let laplacian = &mut system.laplacian;
-    laplacian.diag_mut().fill(0.0);
     solve_pool.install(|| {
         network.pipes.par_iter_mut().for_each(|pipe| {
-            let r_eff = resistance_model.effective_resistance(pipe, 0.0);
+            let r_eff = resistance_model.effective_resistance(pipe);
             pipe.eff_conductance = 1.0 / r_eff.max(1e-12);
         });
     });
-    for (pipe, &off_idx) in network.pipes.iter().zip(system.pipe_to_offdiag.iter()) {
-        let w = pipe.eff_conductance;
-        laplacian.diag_mut()[pipe.from] += w;
-        laplacian.diag_mut()[pipe.to] += w;
-        laplacian.off_diag_mut()[off_idx].2 = -w;
-    }
-    let epsilon = system.diag_shift_scale * laplacian.diagonal_mean();
-    laplacian.add_uniform_diagonal_shift(epsilon);
-    system.precond.update(laplacian.diag());
+}
+
+/// Write the path solver's per-pipe usage back into `pipe.net_count` so that
+/// the next `update_effective_conductance` sweep can apply the parameterless
+/// log-barrier. `edge_usage` is the hard integer count of nets whose Dijkstra
+/// path traversed the pipe in the previous iteration (stored as f64 by the
+/// path solver; values are non-negative integers in practice).
+fn refresh_net_counts_from_usage(
+    solve_pool: &rayon::ThreadPool,
+    network: &mut PipeNetwork,
+    edge_usage: &[f64],
+) {
+    solve_pool.install(|| {
+        network
+            .pipes
+            .par_iter_mut()
+            .zip(edge_usage.par_iter())
+            .for_each(|(pipe, &usage)| {
+                // usage is non-negative by construction; saturate to u32 max.
+                let clamped = usage.max(0.0).min(u32::MAX as f64);
+                pipe.net_count = clamped as u32;
+            });
+    });
 }
 
 fn max_abs(v: &[f64]) -> f64 {
@@ -195,42 +98,10 @@ fn clone_network(network: &PipeNetwork) -> PipeNetwork {
         height: network.height,
         x0: network.x0,
         y0: network.y0,
-        resolution: network.resolution,
         zero_bel_tiles: network.zero_bel_tiles,
+        total_bels: network.total_bels,
         coarsen: network.coarsen,
     }
-}
-
-fn build_kirchhoff_system(
-    solve_pool: &rayon::ThreadPool,
-    network: &mut PipeNetwork,
-    resistance_model: &ResistanceModel,
-) -> KirchhoffSystem {
-    let n_nodes = network.num_nodes();
-    let mut laplacian = SparseMatrix::new(n_nodes);
-    laplacian.reserve_off_diag(network.num_pipes());
-    let mut pipe_to_offdiag = Vec::with_capacity(network.num_pipes());
-    for pipe in &network.pipes {
-        let (lo, hi) = if pipe.from < pipe.to {
-            (pipe.from, pipe.to)
-        } else {
-            (pipe.to, pipe.from)
-        };
-        pipe_to_offdiag.push(laplacian.off_diag().len());
-        laplacian.add_entry(lo, hi, 0.0);
-    }
-    let diag_shift_scale = env::var("NPNR_OT_DIAG_SHIFT_SCALE")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(1e-5);
-    let mut system = KirchhoffSystem {
-        laplacian,
-        pipe_to_offdiag,
-        diag_shift_scale,
-        precond: crate::solver::preconditioner::JacobiPreconditioner::new(&vec![1.0; n_nodes]),
-    };
-    update_kirchhoff_system_values(solve_pool, network, resistance_model, &mut system);
-    system
 }
 
 fn collect_net_infos(
@@ -306,104 +177,36 @@ fn update_pressure_and_flow(
                 node.pressure = p;
             });
         network.pipes.par_iter_mut().for_each(|pipe| {
-            pipe.flow = (global_pressure[pipe.from] - global_pressure[pipe.to]) * pipe.eff_conductance;
+            pipe.flow =
+                (global_pressure[pipe.from] - global_pressure[pipe.to]) * pipe.eff_conductance;
         });
     });
 }
 
-fn solve_net_chunks<State, Init, Process, Reduce>(
-    network: &PipeNetwork,
+#[derive(Clone, Debug)]
+struct FluxForwardStats {
+    global_pressure: Vec<f64>,
+    attraction_energy: f64,
+}
+
+fn compute_flux_forward_stats(
+    network: &mut PipeNetwork,
     net_infos: &[NetSolveInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
-    system: &mut KirchhoffSystem,
-    init: Init,
-    process: Process,
-    reduce: Reduce,
-) -> State
-where
-    State: Send,
-    Init: Fn() -> State + Sync + Send,
-    Process: Fn(&mut State, &NetSolveInfo, &[f64], &[f64]) + Sync + Send,
-    Reduce: Fn(State, State) -> State + Sync + Send,
-{
-    let n_nodes = network.num_nodes();
-    let op = SparseMatrixOpRef::from_matrix(&system.laplacian);
-    let precond = &system.precond;
-    let batch_size = cfg.cg_batch_size.max(1);
-
-    solve_pool.install(|| {
-        net_infos
-            .par_chunks(batch_size)
-            .fold(
-                || (init(), ChunkWorkspace::default()),
-                |(mut state, mut ws), net_chunk| {
-                    let nrhs = net_chunk.len();
-                    let batch_len = n_nodes * nrhs;
-                    if ws.rhs_batch.len() < batch_len {
-                        ws.rhs_batch.resize(batch_len, 0.0);
-                    }
-                    if ws.pressure_batch.len() < batch_len {
-                        ws.pressure_batch.resize(batch_len, 0.0);
-                    }
-                    if ws.rhs_touched.len() < nrhs {
-                        ws.rhs_touched.resize_with(nrhs, Vec::new);
-                    } else if ws.rhs_touched.len() > nrhs {
-                        ws.rhs_touched.truncate(nrhs);
-                    }
-                    let rhs_batch = &mut ws.rhs_batch[..batch_len];
-                    let pressure_batch = &mut ws.pressure_batch[..batch_len];
-                    let scratch_req = cg_scratch_size_nrhs(&op, precond, nrhs);
-
-                    for (col, net_info) in net_chunk.iter().enumerate() {
-                        let start = col * n_nodes;
-                        demand::build_net_rhs_reuse_into(
-                            net_info,
-                            cfg,
-                            &mut rhs_batch[start..start + n_nodes],
-                            &mut ws.rhs_touched[col],
-                        );
-                    }
-
-                    let scratch = ws
-                        .scratch
-                        .get_or_insert_with(|| dyn_stack::MemBuffer::new(scratch_req));
-                    if scratch.len() < scratch_req.size_bytes() {
-                        *scratch = dyn_stack::MemBuffer::new(scratch_req);
-                    }
-                    let rhs_mat = faer::MatRef::from_column_major_slice(rhs_batch, n_nodes, nrhs);
-                    let p_mat = faer::MatMut::from_column_major_slice_mut(
-                        pressure_batch,
-                        n_nodes,
-                        nrhs,
-                    );
-                    solve_cg_batched_reuse_with_par(
-                        &op,
-                        precond,
-                        rhs_mat,
-                        p_mat,
-                        cfg.cg_tol,
-                        cfg.cg_max_iters,
-                        faer::Par::Seq,
-                        scratch,
-                    );
-
-                    for (col, net_info) in net_chunk.iter().enumerate() {
-                        let start = col * n_nodes;
-                        process(
-                            &mut state,
-                            net_info,
-                            &rhs_batch[start..start + n_nodes],
-                            &pressure_batch[start..start + n_nodes],
-                        );
-                    }
-
-                    (state, ws)
-                },
-            )
-            .map(|(state, _)| state)
-            .reduce(|| init(), reduce)
-    })
+    objective_scale: f64,
+) -> FluxForwardStats {
+    let (forward, _stats) = path_solver::compute_path_forward_stats(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        objective_scale,
+    );
+    FluxForwardStats {
+        global_pressure: forward.global_pressure,
+        attraction_energy: forward.attraction_energy,
+    }
 }
 
 fn compute_kirchhoff_gradient_with_system(
@@ -412,115 +215,35 @@ fn compute_kirchhoff_gradient_with_system(
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
     n: usize,
-    system: &mut KirchhoffSystem,
-) -> (Vec<f64>, f64) {
-    let c = network.coarsen as f64;
-
-    struct Accum {
-        pressure: Vec<f64>,
-        grad: Vec<f64>,
-        energy: f64,
-    }
-
-    let n_nodes = network.num_nodes();
-    let accum = solve_net_chunks(
+    objective_scale: f64,
+) -> (Vec<f64>, f64, path_solver::PathStats) {
+    let (grad, forward, stats) = path_solver::compute_path_forward_and_gradient(
         network,
         net_infos,
         cfg,
         solve_pool,
-        system,
-        || Accum {
-            pressure: vec![0.0; n_nodes],
-            grad: vec![0.0; 2 * n],
-            energy: 0.0,
-        },
-        |local, net_info, rhs, pressure| {
-            for (dst, &src) in local.pressure.iter_mut().zip(pressure.iter()) {
-                *dst += src;
-            }
-            let raw_energy = demand::physical_net_energy(net_info, rhs, pressure);
-            let (net_energy, grad_weight) = demand::transformed_net_energy(raw_energy);
-            let (gx, gy) = local.grad.split_at_mut(n);
-            demand::accumulate_physical_energy_gradient(
-                net_info,
-                pressure,
-                network,
-                &cfg,
-                grad_weight,
-                gx,
-                gy,
-            );
-            local.energy += net_energy;
-        },
-        |mut a, b| {
-            for (dst, &src) in a.pressure.iter_mut().zip(b.pressure.iter()) {
-                *dst += src;
-            }
-            for (dst, &src) in a.grad.iter_mut().zip(b.grad.iter()) {
-                *dst += src;
-            }
-            a.energy += b.energy;
-            a
-        },
+        n,
+        objective_scale,
     );
-
-    let mut grad = accum.grad;
-    let energy = accum.energy;
-    let global_pressure = accum.pressure;
-    update_pressure_and_flow(network, &global_pressure, solve_pool);
-    if c > 1.0 {
-        grad.iter_mut().for_each(|g| *g /= c);
-    }
-    (grad, energy)
+    update_pressure_and_flow(network, &forward.global_pressure, solve_pool);
+    refresh_net_counts_from_usage(solve_pool, network, &forward.edge_usage);
+    (grad, forward.attraction_energy, stats)
 }
 
-fn compute_kirchhoff_energy_with_system(
+fn compute_objective_eval_with_system(
     network: &mut PipeNetwork,
     net_infos: &[NetSolveInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
-    system: &mut KirchhoffSystem,
     update_flow: bool,
-) -> f64 {
-    let n_nodes = network.num_nodes();
-
-    struct Accum {
-        pressure: Vec<f64>,
-        energy: f64,
-    }
-
-    let accum = solve_net_chunks(
-        network,
-        net_infos,
-        cfg,
-        solve_pool,
-        system,
-        || Accum {
-            pressure: vec![0.0; n_nodes],
-            energy: 0.0,
-        },
-        |local, net_info, rhs, pressure| {
-            for (dst, &src) in local.pressure.iter_mut().zip(pressure.iter()) {
-                *dst += src;
-            }
-            let raw_energy = demand::physical_net_energy(net_info, rhs, pressure);
-            let (net_energy, _) = demand::transformed_net_energy(raw_energy);
-            local.energy += net_energy;
-        },
-        |mut a, b| {
-            for (dst, &src) in a.pressure.iter_mut().zip(b.pressure.iter()) {
-                *dst += src;
-            }
-            a.energy += b.energy;
-            a
-        },
-    );
-
+) -> ObjectiveEval {
+    let forward = compute_flux_forward_stats(network, net_infos, cfg, solve_pool, 1.0);
     if update_flow {
-        let global_pressure = accum.pressure;
-        update_pressure_and_flow(network, &global_pressure, solve_pool);
+        update_pressure_and_flow(network, &forward.global_pressure, solve_pool);
     }
-    accum.energy
+    ObjectiveEval {
+        energy: forward.attraction_energy,
+    }
 }
 
 fn compute_kirchhoff_energy_terms_with_system(
@@ -528,83 +251,29 @@ fn compute_kirchhoff_energy_terms_with_system(
     net_infos: &[NetSolveInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
-    system: &mut KirchhoffSystem,
+    objective_scale: f64,
 ) -> Vec<NetEnergyTerm> {
-    let mut terms = solve_net_chunks(
-        network,
-        net_infos,
-        cfg,
-        solve_pool,
-        system,
-        Vec::<NetEnergyTerm>::new,
-        |local, net_info, rhs, pressure| {
-            let raw_energy = demand::physical_net_energy(net_info, rhs, pressure);
-            let (energy, _) = demand::transformed_net_energy(raw_energy);
-            local.push(NetEnergyTerm {
-                name: net_info.debug_name.clone(),
-                energy,
-                pins: net_info.pins.len(),
-            });
-        },
-        |mut a, mut b| {
-            a.append(&mut b);
-            a
-        },
-    );
+    let mut terms = Vec::with_capacity(net_infos.len());
+    for net_info in net_infos {
+        let (forward, _stats) = path_solver::compute_path_forward_stats(
+            network,
+            std::slice::from_ref(net_info),
+            cfg,
+            solve_pool,
+            objective_scale,
+        );
+        terms.push(NetEnergyTerm {
+            name: if net_info.debug_name.is_empty() {
+                format!("{:?}", net_info.net_id)
+            } else {
+                net_info.debug_name.clone()
+            },
+            energy: forward.attraction_energy,
+            pins: net_info.pins.len(),
+        });
+    }
     terms.sort_by(|a, b| b.energy.total_cmp(&a.energy));
     terms
-}
-
-/// Compute the Kirchhoff energy gradient for all nets on the 2D grid.
-fn compute_kirchhoff_gradient(
-    ctx: &Context,
-    net_ids: &[crate::netlist::NetId],
-    include_debug_names: bool,
-    network: &mut PipeNetwork,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    cfg: &OptTransPlacerCfg,
-    resistance_model: &ResistanceModel,
-    solve_pool: &rayon::ThreadPool,
-    n: usize,
-) -> (Vec<f64>, f64) {
-    let mut system = build_kirchhoff_system(solve_pool, network, resistance_model);
-    let net_infos = collect_net_infos(
-        ctx,
-        net_ids,
-        include_debug_names,
-        cell_to_idx,
-        cell_x,
-        cell_y,
-        network,
-    );
-    compute_kirchhoff_gradient_with_system(network, &net_infos, cfg, solve_pool, n, &mut system)
-}
-
-fn compute_kirchhoff_energy(
-    ctx: &Context,
-    net_ids: &[crate::netlist::NetId],
-    include_debug_names: bool,
-    network: &mut PipeNetwork,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    cfg: &OptTransPlacerCfg,
-    resistance_model: &ResistanceModel,
-    solve_pool: &rayon::ThreadPool,
-) -> f64 {
-    let mut system = build_kirchhoff_system(solve_pool, network, resistance_model);
-    let net_infos = collect_net_infos(
-        ctx,
-        net_ids,
-        include_debug_names,
-        cell_to_idx,
-        cell_x,
-        cell_y,
-        network,
-    );
-    compute_kirchhoff_energy_with_system(network, &net_infos, cfg, solve_pool, &mut system, true)
 }
 
 #[derive(Clone, Debug)]
@@ -617,7 +286,11 @@ struct NetEnergyTerm {
 #[derive(Clone, Copy, Debug)]
 struct EnergyBreakdown {
     total: f64,
-    base: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ObjectiveEval {
+    energy: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -638,30 +311,6 @@ struct UtilStats {
     mean_capacity: f64,
 }
 
-fn compute_kirchhoff_energy_terms(
-    ctx: &Context,
-    net_ids: &[crate::netlist::NetId],
-    network: &mut PipeNetwork,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    cfg: &OptTransPlacerCfg,
-    resistance_model: &ResistanceModel,
-    solve_pool: &rayon::ThreadPool,
-) -> Vec<NetEnergyTerm> {
-    let mut system = build_kirchhoff_system(solve_pool, network, resistance_model);
-    let net_infos = collect_net_infos(ctx, net_ids, true, cell_to_idx, cell_x, cell_y, network);
-    compute_kirchhoff_energy_terms_with_system(network, &net_infos, cfg, solve_pool, &mut system)
-}
-
-fn base_resistance_model() -> ResistanceModel {
-    ResistanceModel {
-        congestion_scale: 0.0,
-        congestion_power: 2.0,
-        timing_weight: 0.0,
-    }
-}
-
 fn compute_energy_breakdown(
     ctx: &Context,
     net_ids: &[crate::netlist::NetId],
@@ -671,36 +320,22 @@ fn compute_energy_breakdown(
     cell_x: &[f64],
     cell_y: &[f64],
     cfg: &OptTransPlacerCfg,
-    resistance_model: &ResistanceModel,
     solve_pool: &rayon::ThreadPool,
 ) -> EnergyBreakdown {
-    let mut total_network = clone_network(network);
-    let total = compute_kirchhoff_energy(
+    let mut eval_network = clone_network(network);
+    let net_infos = collect_net_infos(
         ctx,
         net_ids,
         include_debug_names,
-        &mut total_network,
         cell_to_idx,
         cell_x,
         cell_y,
-        cfg,
-        resistance_model,
-        solve_pool,
+        &eval_network,
     );
-    let mut base_network = clone_network(network);
-    let base = compute_kirchhoff_energy(
-        ctx,
-        net_ids,
-        include_debug_names,
-        &mut base_network,
-        cell_to_idx,
-        cell_x,
-        cell_y,
-        cfg,
-        &base_resistance_model(),
-        solve_pool,
-    );
-    EnergyBreakdown { total, base }
+    let stats = compute_flux_forward_stats(&mut eval_network, &net_infos, cfg, solve_pool, 1.0);
+    EnergyBreakdown {
+        total: stats.attraction_energy,
+    }
 }
 
 fn compute_util_stats(network: &PipeNetwork) -> UtilStats {
@@ -807,12 +442,7 @@ fn compute_util_stats(network: &PipeNetwork) -> UtilStats {
     }
 }
 
-/// Main Beckmann OT placement: progressive refinement with L-BFGS.
-///
-/// Outer loop: coarse -> fine grid (doubling resolution).
-/// Inner loop: L-BFGS at each level until convergence.
-/// Positions carry over; L-BFGS history resets per level.
-/// Always runs all levels -- finer levels improve routability even if CHPWL worsens.
+/// Main Beckmann OT placement using fixed-resolution Dijkstra gradients and Adam.
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     let mut cfg = cfg.clone();
     cfg.fanout_norm_exp = env::var("NPNR_OT_FANOUT_NORM_EXP")
@@ -820,15 +450,13 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(cfg.fanout_norm_exp)
         .clamp(0.0, 1.0);
-    cfg.fanout_weight_sqrt =
-        env::var("NPNR_OT_FANOUT_WEIGHT_SQRT").ok().as_deref() == Some("1")
-            || cfg.fanout_weight_sqrt;
+    cfg.fanout_weight_sqrt = env::var("NPNR_OT_FANOUT_WEIGHT_SQRT").ok().as_deref() == Some("1")
+        || cfg.fanout_weight_sqrt;
 
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
     crate::solver::set_solver_threads(cfg.num_threads);
 
-    let target_scale = cfg.subtile_resolution as f64;
-
+    let target_scale = 1.0;
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
     let alive_net_ids: Vec<_> = ctx
         .design
@@ -851,24 +479,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .num_threads(cfg.num_threads.max(1))
         .build()
         .map_err(|e| PlacerError::PlacementFailed(format!("thread pool: {e}")))?;
-
-    // Build level schedule: doubling scale from coarsest to target.
-    let mut levels: Vec<f64> = Vec::new();
-    {
-        let mut s = if env::var("NPNR_OT_EXTRA_COARSE").ok().as_deref() == Some("1") {
-            0.025
-        } else {
-            0.05
-        };
-        while s < target_scale - 1e-9 {
-            levels.push(s);
-            s *= 2.0;
-        }
-        levels.push(target_scale);
-    }
-
-    // Use coarsest level for init offset.
-    let init_network = PipeNetwork::from_context(ctx, levels[0]);
+    let mut network = PipeNetwork::from_context(ctx, target_scale);
 
     match cfg.init_strategy {
         super::config::InitStrategy::Centroid => {
@@ -880,15 +491,11 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     }
 
     solve_pool.install(|| {
-        cell_x
-            .par_iter_mut()
-            .for_each(|v| *v -= init_network.x0 as f64);
-        cell_y
-            .par_iter_mut()
-            .for_each(|v| *v -= init_network.y0 as f64);
+        cell_x.par_iter_mut().for_each(|v| *v -= network.x0 as f64);
+        cell_y.par_iter_mut().for_each(|v| *v -= network.y0 as f64);
     });
 
-    let type_aware = TypeAwarePlacement::build(ctx, init_network.x0, init_network.y0);
+    let type_aware = TypeAwarePlacement::build(ctx, network.x0, network.y0);
     let cell_buckets: Vec<IdString> = idx_to_cell
         .iter()
         .map(|&ci| ctx.resolve_bucket(ctx.design.cell(ci).cell_type))
@@ -903,242 +510,213 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         })
         .collect();
 
-    let mut resistance_model = ResistanceModel {
-        congestion_scale: 0.01,
-        congestion_power: 2.0,
-        timing_weight: cfg.timing_weight,
-    };
-
-    let mut global_iter = 0usize;
-    let freeze_resistance = env::var("NPNR_OT_FREEZE_RESISTANCE").ok().as_deref() == Some("1");
-    let plain_gd = env::var("NPNR_OT_PLAIN_GD").ok().as_deref() == Some("1");
     let debug_net_energy = env::var("NPNR_OT_DEBUG_NET_ENERGY").ok().as_deref() == Some("1");
-    let max_level_index = env::var("NPNR_OT_MAX_LEVEL")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
-    let energy_delta_tol = env::var("NPNR_OT_ENERGY_DELTA_TOL")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(0.01)
-        .max(0.0);
-    let gd_step = env::var("NPNR_OT_GD_STEP")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(1e-2);
 
     eprintln!(
-        "Progressive L-BFGS: {} cells, {} levels {:?}",
-        n,
-        levels.len(),
-        levels
-            .iter()
-            .map(|s| format!("{:.2}", s))
-            .collect::<Vec<_>>(),
+        "Fixed-resolution Adam: {} cells, scale {:.2}",
+        n, target_scale
     );
 
-    // --- Outer loop: progressive refinement, always run all levels ---
-    for (level_idx, &scale) in levels.iter().enumerate() {
-        if let Some(max_level) = max_level_index {
-            if level_idx > max_level {
-                break;
-            }
-        }
-        let t_level = std::time::Instant::now();
-        let mut network = PipeNetwork::from_context(ctx, scale);
+    let resistance_model = ResistanceModel;
+    let mut adam = AdamOptimizer::new(2 * n, 1.0);
+    let mut coarse_x_buf = Vec::with_capacity(n);
+    let mut coarse_y_buf = Vec::with_capacity(n);
+    let mut step = vec![0.0; 2 * n];
+    let mut prev_x = vec![0.0; n];
+    let mut prev_y = vec![0.0; n];
+    let mut best_x = cell_x.clone();
+    let mut best_y = cell_y.clone();
+    let mut best_state = ObjectiveState {
+        energy: f64::INFINITY,
+        line: f64::INFINITY,
+        chpwl: f64::INFINITY,
+        max_overflow: f64::INFINITY,
+        n_overflow: usize::MAX,
+        overflow_excess: f64::INFINITY,
+    };
+    let mut last_snapshot: Option<IterSnapshot> = None;
+    let mut total_iters = 0usize;
+    let mut finite_step_iters = 0usize;
+    let mut rel_progress_ema: f64 = 0.05;
+    let mut rel_progress_ref: f64 = 0.05;
+    let ema_beta = cfg.energy_progress_ema_beta.clamp(0.0, 0.999);
 
-        // Trust region scales with coarsen factor.
-        let max_disp = cfg.step_scale * (network.coarsen as f64) * 5.0;
-
-        // Fresh L-BFGS for this level.
-        let mut lbfgs = LbfgsOptimizer::new(7);
-        let mut level_stagnation = 0usize;
-        // More patience at fine levels: congestion reduction is slower than CHPWL.
-        let level_patience = if level_idx == 0 {
-            cfg.stagnation_patience
-        } else {
-            cfg.stagnation_patience * 3
-        };
-
-        // Track best at THIS level (not global).
-        let mut level_best_metric = f64::INFINITY;
-        let mut level_best_score = OverflowScore {
-            chpwl: f64::INFINITY,
-            max_overflow: f64::INFINITY,
-            n_overflow: usize::MAX,
-            overflow_excess: f64::INFINITY,
-        };
-        let mut level_best_x = cell_x.clone();
-        let mut level_best_y = cell_y.clone();
-        let mut flat_pos = vec![0.0; 2 * n];
-        let mut prev_x = vec![0.0; n];
-        let mut prev_y = vec![0.0; n];
-        let mut coarse_x_buf = Vec::with_capacity(n);
-        let mut coarse_y_buf = Vec::with_capacity(n);
-        let mut accepted_system = build_kirchhoff_system(&solve_pool, &mut network, &resistance_model);
-
-        eprintln!(
-            "Level {}/{}: scale={:.2} grid={}x{} (c={}, {} nodes) max_disp={:.1}",
-            level_idx,
-            levels.len() - 1,
-            scale,
-            network.width,
-            network.height,
-            network.coarsen,
-            network.num_nodes(),
-            max_disp,
-        );
-
-        let mut convergence_reason = LevelConvergenceReason::MaxIters;
-        let mut last_snapshot: Option<IterSnapshot> = None;
-
-        // --- Inner loop: L-BFGS until convergence at this level ---
-        for inner_iter in 0..cfg.max_iters {
-            let t_iter = std::time::Instant::now();
-            demand::update_net_counts(&alive_net_ids, &cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
-
-            let (prev_max_overflow, prev_n_overflow, prev_overflow_excess) =
-                type_aware.compute_overflow(
-                    &cell_buckets,
-                    &cell_pin_weights,
-                    &cell_x,
-                    &cell_y,
-                    phys_grid_w,
-                    phys_grid_h,
-                );
-            if inner_iter % cfg.report_interval == 0 {
-                eprintln!(
-                    "  overflow: max={:.1}x tiles_over={} excess={:.1}",
-                    prev_max_overflow,
-                    prev_n_overflow,
-                    prev_overflow_excess,
-                );
-            }
-
-            fill_coarse_coords(
-                &mut coarse_x_buf,
-                &mut coarse_y_buf,
+    for inner_iter in 0..cfg.max_iters {
+        let t_iter = std::time::Instant::now();
+        let (prev_max_overflow, prev_n_overflow, prev_overflow_excess) = type_aware
+            .compute_overflow(
+                &cell_buckets,
+                &cell_pin_weights,
                 &cell_x,
                 &cell_y,
-                network.coarsen as f64,
+                phys_grid_w,
+                phys_grid_h,
             );
-            let accepted_net_infos = collect_net_infos_from_coarse(
+        if inner_iter % cfg.report_interval == 0 {
+            eprintln!(
+                "  bin overuse: max={:.1}x bins_over={} excess={:.1}",
+                prev_max_overflow, prev_n_overflow, prev_overflow_excess,
+            );
+        }
+
+        fill_coarse_coords(
+            &mut coarse_x_buf,
+            &mut coarse_y_buf,
+            &cell_x,
+            &cell_y,
+            network.coarsen as f64,
+        );
+        let net_infos = collect_net_infos_from_coarse(
+            ctx,
+            &alive_net_ids,
+            debug_net_energy,
+            &cell_to_idx,
+            &coarse_x_buf,
+            &coarse_y_buf,
+            &network,
+        );
+        let t_phase = std::time::Instant::now();
+        update_effective_conductance(&solve_pool, &mut network, &resistance_model);
+        let update_ms = t_phase.elapsed().as_millis();
+        let t_phase = std::time::Instant::now();
+        let (grad, energy, path_stats) = compute_kirchhoff_gradient_with_system(
+            &mut network,
+            &net_infos,
+            &cfg,
+            &solve_pool,
+            n,
+            1.0,
+        );
+        let grad_ms = t_phase.elapsed().as_millis();
+
+        let prev_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        let prev_line =
+            demand::continuous_line_estimate(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+        let current_state = ObjectiveState {
+            energy,
+            line: prev_line,
+            chpwl: prev_chpwl,
+            max_overflow: prev_max_overflow,
+            n_overflow: prev_n_overflow,
+            overflow_excess: prev_overflow_excess,
+        };
+        if inner_iter == 0 {
+            best_state = current_state;
+            best_x.copy_from_slice(&cell_x);
+            best_y.copy_from_slice(&cell_y);
+        }
+
+        let prev_breakdown = if debug_net_energy && inner_iter % cfg.report_interval == 0 {
+            Some(compute_energy_breakdown(
                 ctx,
                 &alive_net_ids,
                 debug_net_energy,
-                &cell_to_idx,
-                &coarse_x_buf,
-                &coarse_y_buf,
-                &network,
-            );
-            update_kirchhoff_system_values(&solve_pool, &mut network, &resistance_model, &mut accepted_system);
-            let (grad, energy) = compute_kirchhoff_gradient_with_system(
                 &mut network,
-                &accepted_net_infos,
+                &cell_to_idx,
+                &cell_x,
+                &cell_y,
                 &cfg,
                 &solve_pool,
-                n,
-                &mut accepted_system,
-            );
+            ))
+        } else {
+            None
+        };
+        let prev_terms = if debug_net_energy && inner_iter % cfg.report_interval == 0 {
+            Some(compute_kirchhoff_energy_terms_with_system(
+                &network,
+                &net_infos,
+                &cfg,
+                &solve_pool,
+                1.0,
+            ))
+        } else {
+            None
+        };
 
-            // Step proposal: default L-BFGS, optionally plain gradient descent for diagnostics.
-            flat_pos[..n].copy_from_slice(&cell_x);
-            flat_pos[n..].copy_from_slice(&cell_y);
+        prev_x.copy_from_slice(&cell_x);
+        prev_y.copy_from_slice(&cell_y);
 
-            let target_disp = if prev_overflow_excess <= 8.0 {
-                max_disp * 0.25
-            } else if prev_overflow_excess <= 32.0 {
-                max_disp * 0.35
-            } else {
-                max_disp * 0.5
-            };
+        let progress_ratio = if rel_progress_ref > 1e-12 {
+            (rel_progress_ema / rel_progress_ref).sqrt()
+        } else {
+            1.0
+        };
+        let lr_base = (prev_chpwl / n as f64).sqrt().max(0.1);
+        let adam_lr = cfg.adam_lr_gain * lr_base * progress_ratio.clamp(0.02, 1.0);
+        adam.set_lr(adam_lr);
+        adam.step(&grad, &mut step);
+        let raw_step_max = max_abs(&step);
+        let directional_derivative: f64 = grad.iter().zip(step.iter()).map(|(g, s)| g * s).sum();
 
-            let step = if plain_gd {
-                grad.iter().map(|g| -gd_step * g).collect::<Vec<_>>()
-            } else {
-                let raw_step = lbfgs.step(&flat_pos, &grad);
-                let raw_max = max_abs(&raw_step);
-                if raw_max > 0.0 {
-                    let scale = (target_disp / raw_max).clamp(1.0, 1024.0);
-                    raw_step.into_iter().map(|v| v * scale).collect::<Vec<_>>()
-                } else {
-                    raw_step
-                }
-            };
-            prev_x.copy_from_slice(&cell_x);
-            prev_y.copy_from_slice(&cell_y);
-            let prev_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-            let prev_line = demand::continuous_line_estimate(
-                ctx,
-                &cell_to_idx,
+        for i in 0..n {
+            cell_x[i] = prev_x[i] + step[i];
+            cell_y[i] = prev_y[i] + step[n + i];
+        }
+        common::clamp_positions(&mut cell_x, &mut cell_y, phys_max_x, phys_max_y);
+
+        fill_coarse_coords(
+            &mut coarse_x_buf,
+            &mut coarse_y_buf,
+            &cell_x,
+            &cell_y,
+            network.coarsen as f64,
+        );
+        let trial_net_infos = collect_net_infos_from_coarse(
+            ctx,
+            &alive_net_ids,
+            debug_net_energy,
+            &cell_to_idx,
+            &coarse_x_buf,
+            &coarse_y_buf,
+            &network,
+        );
+        let mut trial_energy = compute_objective_eval_with_system(
+            &mut network,
+            &trial_net_infos,
+            &cfg,
+            &solve_pool,
+            false,
+        )
+        .energy;
+
+        // Update relative energy progress EMA.
+        let finite_step = trial_energy.is_finite();
+        if !finite_step {
+            cell_x.copy_from_slice(&prev_x);
+            cell_y.copy_from_slice(&prev_y);
+            trial_energy = energy;
+        }
+        let rel_progress = if finite_step && energy.abs() > 1e-12 {
+            ((energy - trial_energy) / energy.abs()).max(0.0)
+        } else {
+            0.0
+        };
+        rel_progress_ema = ema_beta * rel_progress_ema + (1.0 - ema_beta) * rel_progress;
+        if inner_iter == 3.min(cfg.max_iters.saturating_sub(1)) {
+            rel_progress_ref = rel_progress_ema.max(1e-12);
+        }
+
+        let mut trial_state = current_state;
+        let mut trial_breakdown = None;
+        let mut trial_terms = None;
+        if finite_step {
+            trial_state.energy = trial_energy;
+            trial_state.line =
+                demand::continuous_line_estimate(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+            trial_state.chpwl =
+                demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
+            (
+                trial_state.max_overflow,
+                trial_state.n_overflow,
+                trial_state.overflow_excess,
+            ) = type_aware.compute_overflow(
+                &cell_buckets,
+                &cell_pin_weights,
                 &cell_x,
                 &cell_y,
-                &network,
+                phys_grid_w,
+                phys_grid_h,
             );
-            let prev_breakdown = if debug_net_energy && inner_iter % cfg.report_interval == 0 {
-                Some(EnergyBreakdown {
-                    total: energy,
-                    base: {
-                        let mut base_network = clone_network(&network);
-                        let mut base_system =
-                            build_kirchhoff_system(&solve_pool, &mut base_network, &base_resistance_model());
-                        compute_kirchhoff_energy_with_system(
-                            &mut base_network,
-                            &accepted_net_infos,
-                            &cfg,
-                            &solve_pool,
-                            &mut base_system,
-                            false,
-                        )
-                    },
-                })
-            } else {
-                None
-            };
-            let prev_terms = if debug_net_energy && inner_iter % cfg.report_interval == 0 {
-                Some(compute_kirchhoff_energy_terms_with_system(
-                    &network,
-                    &accepted_net_infos,
-                    &cfg,
-                    &solve_pool,
-                    &mut accepted_system,
-                ))
-            } else {
-                None
-            };
-            let mut trial_energy = energy;
-            let mut trial_chpwl = prev_chpwl;
-            let mut trial_line = prev_line;
-            let mut trial_max_overflow = prev_max_overflow;
-            let mut trial_n_overflow = prev_n_overflow;
-            let mut trial_overflow_excess = prev_overflow_excess;
-            let mut trial_terms: Option<Vec<NetEnergyTerm>> = None;
-            let mut trial_breakdown: Option<EnergyBreakdown> = None;
-            let raw_step_max = max_abs(&step);
-            let directional_derivative: f64 =
-                grad.iter().zip(step.iter()).map(|(g, s)| g * s).sum();
-            for i in 0..n {
-                cell_x[i] += step[i].clamp(-max_disp, max_disp);
-                cell_y[i] += step[n + i].clamp(-max_disp, max_disp);
-            }
-            common::clamp_positions(&mut cell_x, &mut cell_y, phys_max_x, phys_max_y);
-            demand::update_net_counts(&alive_net_ids, &cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
-            fill_coarse_coords(
-                &mut coarse_x_buf,
-                &mut coarse_y_buf,
-                &cell_x,
-                &cell_y,
-                network.coarsen as f64,
-            );
-            let trial_net_infos = collect_net_infos_from_coarse(
-                ctx,
-                &alive_net_ids,
-                debug_net_energy,
-                &cell_to_idx,
-                &coarse_x_buf,
-                &coarse_y_buf,
-                &network,
-            );
-            update_kirchhoff_system_values(&solve_pool, &mut network, &resistance_model, &mut accepted_system);
             if debug_net_energy && inner_iter % cfg.report_interval == 0 {
                 trial_breakdown = Some(compute_energy_breakdown(
                     ctx,
@@ -1149,339 +727,290 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                     &cell_x,
                     &cell_y,
                     &cfg,
-                    &resistance_model,
                     &solve_pool,
                 ));
+                fill_coarse_coords(
+                    &mut coarse_x_buf,
+                    &mut coarse_y_buf,
+                    &cell_x,
+                    &cell_y,
+                    network.coarsen as f64,
+                );
+                let trial_net_infos = collect_net_infos_from_coarse(
+                    ctx,
+                    &alive_net_ids,
+                    debug_net_energy,
+                    &cell_to_idx,
+                    &coarse_x_buf,
+                    &coarse_y_buf,
+                    &network,
+                );
                 trial_terms = Some(compute_kirchhoff_energy_terms_with_system(
                     &network,
                     &trial_net_infos,
                     &cfg,
                     &solve_pool,
-                    &mut accepted_system,
-                ));
-            }
-            trial_energy = compute_kirchhoff_energy_with_system(
-                &mut network,
-                &trial_net_infos,
-                &cfg,
-                &solve_pool,
-                &mut accepted_system,
-                false,
-            );
-            if !trial_energy.is_finite() {
-                cell_x.copy_from_slice(&prev_x);
-                cell_y.copy_from_slice(&prev_y);
-                demand::update_net_counts(&alive_net_ids, &cell_to_idx, &cell_x, &cell_y, &mut network, ctx);
-                update_kirchhoff_system_values(&solve_pool, &mut network, &resistance_model, &mut accepted_system);
-                trial_energy = energy;
-                trial_chpwl = prev_chpwl;
-                trial_line = prev_line;
-                trial_max_overflow = prev_max_overflow;
-                trial_n_overflow = prev_n_overflow;
-                trial_overflow_excess = prev_overflow_excess;
-                trial_breakdown = prev_breakdown;
-                trial_terms = prev_terms.clone();
-            } else {
-                trial_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-                trial_line = demand::continuous_line_estimate(
-                    ctx,
-                    &cell_to_idx,
-                    &cell_x,
-                    &cell_y,
-                    &network,
-                );
-                (trial_max_overflow, trial_n_overflow, trial_overflow_excess) =
-                    type_aware.compute_overflow(
-                        &cell_buckets,
-                        &cell_pin_weights,
-                        &cell_x,
-                        &cell_y,
-                        phys_grid_w,
-                        phys_grid_h,
-                    );
-            }
-
-            let chpwl = trial_chpwl;
-            let max_overflow = trial_max_overflow;
-            let n_overflow = trial_n_overflow;
-            let overflow_excess = trial_overflow_excess;
-            let actual_drop = energy - trial_energy;
-            let predicted_drop = -directional_derivative;
-            let drop_ratio = if predicted_drop.abs() > 1e-12 {
-                actual_drop / predicted_drop
-            } else {
-                0.0
-            };
-            let rel_drop_ppm = if energy.abs() > 1e-12 {
-                actual_drop / energy * 1.0e6
-            } else {
-                0.0
-            };
-            let rel_drop = if energy.abs() > 1e-12 {
-                actual_drop / energy.abs()
-            } else {
-                0.0
-            };
-            last_snapshot = Some(IterSnapshot {
-                energy_before: energy,
-                energy_after: trial_energy,
-                chpwl_before: prev_chpwl,
-                chpwl_after: chpwl,
-                line_before: prev_line,
-                line_after: trial_line,
-                max_overflow_before: prev_max_overflow,
-                max_overflow_after: max_overflow,
-                overflow_excess_before: prev_overflow_excess,
-                overflow_excess_after: overflow_excess,
-                rel_drop,
-            });
-
-            let score = OverflowScore {
-                chpwl,
-                max_overflow,
-                n_overflow,
-                overflow_excess,
-            };
-
-            // Coarse levels optimize HPWL directly. Fine levels use a guarded
-            // Pareto comparison so small overflow gains do not justify large HPWL regressions.
-            let metric = if level_idx == 0 {
-                chpwl
-            } else {
-                fine_level_metric(score)
-            };
-
-            let improved = if level_idx == 0 {
-                metric < level_best_metric
-            } else {
-                fine_level_better(score, level_best_score)
-            };
-
-            if improved {
-                level_best_metric = metric;
-                level_best_score = score;
-                level_best_x.copy_from_slice(&cell_x);
-                level_best_y.copy_from_slice(&cell_y);
-                level_stagnation = 0;
-            } else {
-                level_stagnation += 1;
-            }
-
-            let iter_ms = t_iter.elapsed().as_millis();
-            if inner_iter % cfg.report_interval == 0 {
-                let grad_norm = grad.iter().map(|v| v * v).sum::<f64>().sqrt();
-                eprintln!(
-                    "  L{}.{:3}: energy={:.3}->{:.3} dE={:.3} pred={:.3} ratio={:.3} relppm={:.1} rawstep={:.3e} ls={:.3} chpwl={:.0}->{:.0} line={:.0}->{:.0} ovfl={:.1}x({}) excess={:.1} metric={:.0} grad={:.3e} {}ms",
-                    level_idx,
-                    inner_iter,
-                    energy,
-                    trial_energy,
-                    actual_drop,
-                    predicted_drop,
-                    drop_ratio,
-                    rel_drop_ppm,
-                    raw_step_max,
                     1.0,
-                    prev_chpwl,
-                    chpwl,
-                    prev_line,
-                    trial_line,
-                    max_overflow,
-                    n_overflow,
-                    overflow_excess,
-                    metric,
-                    grad_norm,
-                    iter_ms,
-                );
-                if let (Some(prev_breakdown), Some(trial_breakdown)) =
-                    (prev_breakdown, trial_breakdown)
-                {
-                    let util = compute_util_stats(&network);
-                    eprintln!(
-                        "    energy_split total={:.6}->{:.6} base={:.6}->{:.6} extra={:.6}->{:.6}",
-                        prev_breakdown.total,
-                        trial_breakdown.total,
-                        prev_breakdown.base,
-                        trial_breakdown.base,
-                        prev_breakdown.total - prev_breakdown.base,
-                        trial_breakdown.total - trial_breakdown.base,
-                    );
-                    eprintln!(
-                        "    net_count max={} mean={:.3} active_pipes={} bin_demand max={} mean={:.3} bin_avail max={} mean={:.3} overused_bins={} overuse_excess={} max_overuse={} flow max={:.6} mean={:.6} cap max={:.3} mean={:.3}",
-                        util.max_count,
-                        util.mean_count,
-                        util.active_pipes,
-                        util.max_bin_demand,
-                        util.mean_bin_demand,
-                        util.max_bin_avail,
-                        util.mean_bin_avail,
-                        util.overused_bins,
-                        util.overuse_excess,
-                        util.max_overuse,
-                        util.max_flow,
-                        util.mean_flow,
-                        util.max_capacity,
-                        util.mean_capacity,
-                    );
-                }
-                if let (Some(prev_terms), Some(trial_terms)) = (&prev_terms, &trial_terms) {
-                    let prev_total: f64 = prev_terms.iter().map(|t| t.energy).sum();
-                    let trial_total: f64 = trial_terms.iter().map(|t| t.energy).sum();
-                    let top_n = prev_terms.len().min(5);
-                    let prev_top_sum: f64 = prev_terms.iter().take(top_n).map(|t| t.energy).sum();
-                    let trial_top_sum: f64 =
-                        trial_terms.iter().take(top_n).map(|t| t.energy).sum();
-                    let trial_by_name: FxHashMap<&str, &NetEnergyTerm> = trial_terms
-                        .iter()
-                        .map(|term| (term.name.as_str(), term))
-                        .collect();
-                    eprintln!(
-                        "    net_energy total={:.3}->{:.3} top{}={:.3}({:.1}%) -> {:.3}({:.1}%) count={}",
-                        prev_total,
-                        trial_total,
-                        top_n,
-                        prev_top_sum,
-                        100.0 * prev_top_sum / prev_total.max(1e-12),
-                        trial_top_sum,
-                        100.0 * trial_top_sum / trial_total.max(1e-12),
-                        prev_terms.len(),
-                    );
-                    for (rank, prev_term) in prev_terms.iter().take(top_n).enumerate() {
-                        let trial_energy = trial_by_name
-                            .get(prev_term.name.as_str())
-                            .map(|term| term.energy)
-                            .unwrap_or(prev_term.energy);
-                        eprintln!(
-                            "      top{} {} pins={} energy={:.3}->{:.3} dE={:.3}",
-                            rank + 1,
-                            prev_term.name,
-                            prev_term.pins,
-                            prev_term.energy,
-                            trial_energy,
-                            prev_term.energy - trial_energy,
-                        );
-                    }
-                }
-            }
-
-            global_iter += 1;
-
-            if actual_drop >= 0.0 && energy.abs() > 1e-12 {
-                if rel_drop <= energy_delta_tol {
-                    eprintln!(
-                        "  Level {} converged at iter {} (energy_rel_drop={:.4} <= tol={:.4})",
-                        level_idx, inner_iter, rel_drop, energy_delta_tol,
-                    );
-                    convergence_reason = LevelConvergenceReason::EnergyDrop { rel_drop, iter: inner_iter };
-                    break;
-                }
-            }
-
-            // Converged at this level: the guarded score stopped improving.
-            if level_stagnation >= level_patience && inner_iter >= cfg.stagnation_warmup {
-                eprintln!(
-                    "  Level {} converged at iter {} (stagnated {} iters, best_metric={:.0})",
-                    level_idx, inner_iter, level_stagnation, level_best_metric,
-                );
-                convergence_reason = LevelConvergenceReason::Stagnation {
-                    stagnant_iters: level_stagnation,
-                    iter: inner_iter,
-                };
-                break;
+                ));
             }
         }
 
-        // Use this level's best as starting point for the next level.
-        cell_x.copy_from_slice(&level_best_x);
-        cell_y.copy_from_slice(&level_best_y);
+        total_iters = inner_iter + 1;
+        if finite_step {
+            finite_step_iters += 1;
+        }
 
-        let level_ms = t_level.elapsed().as_millis();
-        eprintln!(
-            "Level {} done: chpwl={:.0} ovfl={:.1}x({}) excess={:.1} ({:.1}s, reason={})",
-            level_idx,
-            level_best_score.chpwl,
-            level_best_score.max_overflow,
-            level_best_score.n_overflow,
-            level_best_score.overflow_excess,
-            level_ms as f64 / 1000.0,
-            convergence_reason.summary(),
-        );
-        if level_idx == 0 {
-            if let Some(snapshot) = last_snapshot {
+        let actual_drop = energy - trial_energy;
+        let predicted_drop = -directional_derivative;
+        let drop_ratio = if predicted_drop.abs() > 1e-12 {
+            actual_drop / predicted_drop
+        } else {
+            0.0
+        };
+        let rel_drop_ppm = if energy.abs() > 1e-12 {
+            actual_drop / energy * 1.0e6
+        } else {
+            0.0
+        };
+        let rel_drop = if energy.abs() > 1e-12 {
+            actual_drop / energy.abs()
+        } else {
+            0.0
+        };
+        last_snapshot = Some(IterSnapshot {
+            energy_before: energy,
+            energy_after: trial_energy,
+            chpwl_before: prev_chpwl,
+            chpwl_after: trial_state.chpwl,
+            line_before: prev_line,
+            line_after: trial_state.line,
+            max_overflow_before: prev_max_overflow,
+            max_overflow_after: trial_state.max_overflow,
+            overflow_excess_before: prev_overflow_excess,
+            overflow_excess_after: trial_state.overflow_excess,
+            rel_drop,
+        });
+
+        let improved = finite_step && trial_state.energy < best_state.energy;
+        if improved {
+            best_state = trial_state;
+            best_x.copy_from_slice(&cell_x);
+            best_y.copy_from_slice(&cell_y);
+        }
+
+        let iter_ms = t_iter.elapsed().as_millis();
+        if inner_iter % cfg.report_interval == 0 {
+            let grad_norm = grad.iter().map(|v| v * v).sum::<f64>().sqrt();
+            eprintln!(
+                "  I{:3}: step={} lr={:.3} ema={:.3e} energy={:.3}->{:.3} dE={:.3} pred={:.3} ratio={:.3} relppm={:.1} rawstep={:.3e} chpwl={:.0}->{:.0} line={:.0}->{:.0} bins={:.1}x({}) excess={:.1} metric={:.0} grad={:.3e} {}ms",
+                inner_iter,
+                if finite_step { "finite" } else { "nonfinite" },
+                adam_lr,
+                rel_progress_ema,
+                energy,
+                trial_energy,
+                actual_drop,
+                predicted_drop,
+                drop_ratio,
+                rel_drop_ppm,
+                raw_step_max,
+                prev_chpwl,
+                trial_state.chpwl,
+                prev_line,
+                trial_state.line,
+                trial_state.max_overflow,
+                trial_state.n_overflow,
+                trial_state.overflow_excess,
+                trial_state.energy,
+                grad_norm,
+                iter_ms,
+            );
+            let avg_pops = if path_stats.total_solves > 0 {
+                path_stats.total_heap_pops / path_stats.total_solves
+            } else {
+                0
+            };
+            eprintln!(
+                "    phases: update={}ms grad={}ms | path: {} solves, {} total_pops, {} avg_pops, {} max_pops, {} fail",
+                update_ms,
+                grad_ms,
+                path_stats.total_solves,
+                path_stats.total_heap_pops,
+                avg_pops,
+                path_stats.max_heap_pops,
+                path_stats.failures,
+            );
+            if let (Some(prev_breakdown), Some(trial_breakdown)) = (prev_breakdown, trial_breakdown)
+            {
+                let util = compute_util_stats(&network);
                 eprintln!(
-                    "L0 summary: energy={:.3}->{:.3} chpwl={:.0}->{:.0} line={:.0}->{:.0} ovfl={:.1}->{:.1} excess={:.1}->{:.1} rel_drop={:.4} reason={}",
-                    snapshot.energy_before,
-                    snapshot.energy_after,
-                    snapshot.chpwl_before,
-                    snapshot.chpwl_after,
-                    snapshot.line_before,
-                    snapshot.line_after,
-                    snapshot.max_overflow_before,
-                    snapshot.max_overflow_after,
-                    snapshot.overflow_excess_before,
-                    snapshot.overflow_excess_after,
-                    snapshot.rel_drop,
-                    convergence_reason.summary(),
+                    "    energy={:.6}->{:.6}",
+                    prev_breakdown.total, trial_breakdown.total
                 );
+                eprintln!(
+                    "    net_count max={} mean={:.3} active_pipes={} bin_demand max={} mean={:.3} bin_avail max={} mean={:.3} overused_bins={} overuse_excess={} max_overuse={} flow max={:.6} mean={:.6} cap max={:.3} mean={:.3}",
+                    util.max_count,
+                    util.mean_count,
+                    util.active_pipes,
+                    util.max_bin_demand,
+                    util.mean_bin_demand,
+                    util.max_bin_avail,
+                    util.mean_bin_avail,
+                    util.overused_bins,
+                    util.overuse_excess,
+                    util.max_overuse,
+                    util.max_flow,
+                    util.mean_flow,
+                    util.max_capacity,
+                    util.mean_capacity,
+                );
+            }
+            if let (Some(prev_terms), Some(trial_terms)) = (&prev_terms, &trial_terms) {
+                let prev_total: f64 = prev_terms.iter().map(|t| t.energy).sum();
+                let trial_total: f64 = trial_terms.iter().map(|t| t.energy).sum();
+                let top_n = prev_terms.len().min(5);
+                let prev_top_sum: f64 = prev_terms.iter().take(top_n).map(|t| t.energy).sum();
+                let trial_top_sum: f64 = trial_terms.iter().take(top_n).map(|t| t.energy).sum();
+                let trial_by_name: FxHashMap<&str, &NetEnergyTerm> = trial_terms
+                    .iter()
+                    .map(|term| (term.name.as_str(), term))
+                    .collect();
+                eprintln!(
+                    "    net_energy total={:.3}->{:.3} top{}={:.3}({:.1}%) -> {:.3}({:.1}%) count={}",
+                    prev_total,
+                    trial_total,
+                    top_n,
+                    prev_top_sum,
+                    100.0 * prev_top_sum / prev_total.max(1e-12),
+                    trial_top_sum,
+                    100.0 * trial_top_sum / trial_total.max(1e-12),
+                    prev_terms.len(),
+                );
+                for (rank, prev_term) in prev_terms.iter().take(top_n).enumerate() {
+                    let trial_energy = trial_by_name
+                        .get(prev_term.name.as_str())
+                        .map(|term| term.energy)
+                        .unwrap_or(prev_term.energy);
+                    eprintln!(
+                        "      top{} {} pins={} energy={:.3}->{:.3} dE={:.3}",
+                        rank + 1,
+                        prev_term.name,
+                        prev_term.pins,
+                        prev_term.energy,
+                        trial_energy,
+                        prev_term.energy - trial_energy,
+                    );
+                }
             }
         }
     }
 
-    // Final legalization at target scale.
-    let network = PipeNetwork::from_context(ctx, target_scale);
+    cell_x.copy_from_slice(&best_x);
+    cell_y.copy_from_slice(&best_y);
+
+    {
+        let mut coarse_x_buf = Vec::with_capacity(n);
+        let mut coarse_y_buf = Vec::with_capacity(n);
+        // Diagnostic-only gradient: use whatever `pipe.eff_conductance` was
+        // set to on the last accepted iteration. `compute_kirchhoff_gradient_with_system`
+        // will refresh `pipe.net_count` from the path solver's fresh edge
+        // usage at `best_x/best_y`, but that only matters for any subsequent
+        // operation — the exit block runs once for logging.
+        fill_coarse_coords(
+            &mut coarse_x_buf,
+            &mut coarse_y_buf,
+            &cell_x,
+            &cell_y,
+            network.coarsen as f64,
+        );
+        let exit_net_infos = collect_net_infos_from_coarse(
+            ctx,
+            &alive_net_ids,
+            debug_net_energy,
+            &cell_to_idx,
+            &coarse_x_buf,
+            &coarse_y_buf,
+            &network,
+        );
+        let (exit_grad, exit_energy, _) = compute_kirchhoff_gradient_with_system(
+            &mut network,
+            &exit_net_infos,
+            &cfg,
+            &solve_pool,
+            n,
+            1.0,
+        );
+        let grad_norm = exit_grad.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let grad_inf = exit_grad.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        let rel_grad = if exit_energy.abs() > 1e-12 {
+            grad_norm / exit_energy.abs()
+        } else {
+            0.0
+        };
+        let mut cell_grad_mags: Vec<f64> = (0..n)
+            .map(|i| (exit_grad[i].powi(2) + exit_grad[n + i].powi(2)).sqrt())
+            .collect();
+        cell_grad_mags.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let mean_cell_grad = cell_grad_mags.iter().sum::<f64>() / n as f64;
+        let median_cell_grad = cell_grad_mags[n / 2];
+        let top5_mean = cell_grad_mags.iter().take(5).sum::<f64>() / 5.0f64.min(n as f64);
+        let descent_potential = grad_norm * grad_norm;
+        eprintln!(
+            "Optimality: energy={:.3} grad_norm={:.3e} grad_inf={:.3e} rel_grad={:.6} cell_grad: max={:.3e} mean={:.3e} median={:.3e} top5_mean={:.3e} descent_potential={:.3e} accepted={}/{} iters",
+            exit_energy,
+            grad_norm,
+            grad_inf,
+            rel_grad,
+            cell_grad_mags[0],
+            mean_cell_grad,
+            median_cell_grad,
+            top5_mean,
+            descent_potential,
+            finite_step_iters,
+            total_iters,
+        );
+    }
+
+    eprintln!(
+        "Placement loop done: energy={:.3} chpwl={:.0} line={:.0} bins={:.1}x({}) excess={:.1} reason=max_iters",
+        best_state.energy,
+        best_state.chpwl,
+        best_state.line,
+        best_state.max_overflow,
+        best_state.n_overflow,
+        best_state.overflow_excess,
+    );
+    if let Some(snapshot) = last_snapshot {
+        eprintln!(
+            "Summary: energy={:.3}->{:.3} chpwl={:.0}->{:.0} line={:.0}->{:.0} bins={:.1}->{:.1} excess={:.1}->{:.1} rel_drop={:.4}",
+            snapshot.energy_before,
+            snapshot.energy_after,
+            snapshot.chpwl_before,
+            snapshot.chpwl_after,
+            snapshot.line_before,
+            snapshot.line_after,
+            snapshot.max_overflow_before,
+            snapshot.max_overflow_after,
+            snapshot.overflow_excess_before,
+            snapshot.overflow_excess_after,
+            snapshot.rel_drop,
+        );
+    }
+
     let pre_chpwl = demand::continuous_hpwl(ctx, &cell_to_idx, &cell_x, &cell_y, &network);
-    eprintln!("Final chpwl={:.0} ({} total iters)", pre_chpwl, global_iter,);
+    eprintln!("Final chpwl={:.0} ({} total iters)", pre_chpwl, total_iters);
 
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
     crate::placer::legalize::legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &cfg.legalization)?;
 
-    let post_hpwl = total_hpwl(ctx);
-    let post_line = total_line_estimate(ctx);
-    eprintln!(
-        "Post-legalization: HPWL={:.0}, line={:.0}, delta={:+.0} ({:+.1}%)",
-        post_hpwl,
-        post_line,
-        post_hpwl - pre_chpwl,
-        (post_hpwl - pre_chpwl) / pre_chpwl.max(1.0) * 100.0,
-    );
+    report::report_post_legalization(ctx, pre_chpwl);
+    report::report_top_net_hpwl(ctx, 10);
 
-    {
-        use crate::metrics::wirelength::net_hpwl;
-        let mut net_hpwls: Vec<(f64, usize, crate::netlist::NetId)> = Vec::new();
-        for (net_id, net) in ctx.design.iter_alive_nets() {
-            if net.driver().is_none() || net.num_users() == 0 {
-                continue;
-            }
-            net_hpwls.push((net_hpwl(ctx, net_id), net.num_users(), net_id));
-        }
-        net_hpwls.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        let total: f64 = net_hpwls.iter().map(|(h, _, _)| h).sum();
-        eprintln!("Per-net HPWL: {} nets, total={:.0}", net_hpwls.len(), total);
-        for (i, &(h, f, _)) in net_hpwls.iter().take(10).enumerate() {
-            eprintln!(
-                "  #{}: hpwl={:.0} fanout={} ({:.1}%)",
-                i,
-                h,
-                f,
-                h / total * 100.0
-            );
-        }
-        let mut cumul = 0.0;
-        for (i, &(h, _, _)) in net_hpwls.iter().enumerate() {
-            cumul += h;
-            if cumul > total * 0.5 {
-                eprintln!(
-                    "  50% of HPWL from top {} nets (of {})",
-                    i + 1,
-                    net_hpwls.len()
-                );
-                break;
-            }
-        }
-    }
+    // Dump cell positions + legalized positions to CSV if requested
+    report::dump_position_csv_from_env(ctx, "NPNR_OT_DUMP_CSV", &idx_to_cell, &phys_x, &phys_y)
+        .expect("dump placement CSV");
 
     PlacerPipeline::validate(ctx)?;
-    info!("OptTrans placement complete");
     Ok(())
 }

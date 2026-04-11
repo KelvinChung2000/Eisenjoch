@@ -1,4 +1,4 @@
-"""Benchmark: L-BFGS Beckmann OT placer + raster router vs HeAP."""
+"""Benchmark: Dijkstra/Adam Beckmann OT placer + raster router vs HeAP."""
 import nextpnr
 import time
 
@@ -36,7 +36,7 @@ def run_place_route(name, placer, **place_kwargs):
 
 results = []
 results.append(run_place_route('HeAP', 'heap'))
-results.append(run_place_route('L-BFGS OT', 'hydraulic', subtile_resolution=1, step_scale=0.5))
+results.append(run_place_route('Dijkstra OT', 'hydraulic', adam_lr_gain=0.5))
 
 print(f'\n{"Name":<12} {"HPWL":>8} {"LineEst":>8} {"RoutedWL":>10} {"PlaceT":>7} {"RouteT":>7} OK')
 print('-' * 70)

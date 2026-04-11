@@ -12,7 +12,7 @@ use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::Rect;
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use ::nextpnr::placer::opt_trans::config::{InitStrategy, PreconditionerType};
+use ::nextpnr::placer::opt_trans::config::InitStrategy;
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
@@ -219,20 +219,14 @@ impl PyContext {
     ///     placer: Placer algorithm name ("heap", "sa", "opt_trans", or "electro"). Default "heap".
     ///     seed: RNG seed for reproducibility. Default 1.
     ///     max_iters: Maximum iterations (default varies by placer).
-    ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 0.5.
+    ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 1.0.
     ///     io_boost: IO net demand amplification (opt_trans). Default 3.0.
-    ///     interference_weight: Flow interference weight for spreading (opt_trans). Default 1.0.
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
-    ///     subtile_resolution: Subtile grid resolution N (NxN per tile, opt_trans). Default 2.
     ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    ///     preconditioner: CG preconditioner ("jacobi" or "amg", opt_trans). Default "amg".
-    ///     use_anderson: Use Anderson acceleration (true) or direct step (false). Default true.
-    ///     step_scale: Step multiplier for direct mode. Default 5.0.
-    ///     step_decay: Stagnation step reduction factor. Default 0.7.
-    ///     stagnation_warmup: Skip stagnation check before this iteration. Default 20.
-    ///     stagnation_patience: Rollback after this many stagnant iterations. Default 5.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=0.5, io_boost=1.0, interference_weight=1.0, timing_weight=0.0, init_strategy="random_bel", subtile_resolution=2, num_threads=8, preconditioner="amg", use_anderson=true, step_scale=5.0, step_decay=0.7, stagnation_warmup=20, stagnation_patience=5, legalization="ring"))]
+    ///     adam_lr_gain: Global gain for opt_trans Adam learning rate. Default 1.0.
+    ///     energy_progress_ema_beta: EMA beta for opt_trans energy-progress adaptation. Default 0.8.
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="random_bel", num_threads=8, adam_lr_gain=1.0, energy_progress_ema_beta=0.8, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -240,17 +234,11 @@ impl PyContext {
         max_iters: Option<usize>,
         congestion_weight: f64,
         io_boost: f64,
-        interference_weight: f64,
         timing_weight: f64,
         init_strategy: &str,
-        subtile_resolution: usize,
         num_threads: usize,
-        preconditioner: &str,
-        use_anderson: bool,
-        step_scale: f64,
-        step_decay: f64,
-        stagnation_warmup: usize,
-        stagnation_patience: usize,
+        adam_lr_gain: f64,
+        energy_progress_ema_beta: f64,
         legalization: &str,
     ) -> PyResult<()> {
         match placer {
@@ -274,20 +262,10 @@ impl PyContext {
                 let mut cfg = OptTransPlacerCfg::default();
                 cfg.seed = seed;
                 cfg.io_boost = io_boost;
-                cfg.interference_weight = interference_weight;
                 cfg.timing_weight = timing_weight;
-                cfg.subtile_resolution = subtile_resolution;
                 cfg.num_threads = num_threads.max(1);
-                cfg.preconditioner = match preconditioner {
-                    "jacobi" => PreconditionerType::Jacobi,
-                    "amg" => PreconditionerType::Amg,
-                    other => {
-                        return Err(PyValueError::new_err(format!(
-                            "Unknown preconditioner: {}. Available: jacobi, amg",
-                            other
-                        )))
-                    }
-                };
+                cfg.adam_lr_gain = adam_lr_gain.max(0.0);
+                cfg.energy_progress_ema_beta = energy_progress_ema_beta.clamp(0.0, 0.999);
                 cfg.init_strategy = match init_strategy {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
@@ -299,12 +277,7 @@ impl PyContext {
                         )))
                     }
                 };
-                cfg.use_anderson = use_anderson;
-                cfg.step_scale = step_scale;
-                cfg.step_decay = step_decay;
-                cfg.stagnation_warmup = stagnation_warmup;
                 cfg.legalization = legalization.to_string();
-                cfg.stagnation_patience = stagnation_patience;
                 if cfg.timing_weight > 0.0 {
                     self.timing.setup_and_run(&self.ctx);
                     cfg.timing_criticality = self

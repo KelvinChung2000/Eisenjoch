@@ -169,9 +169,14 @@ pub fn legalize_ring(
         }
     }
 
+    let n = idx_to_cell.len() as f64;
+    let rms_disp = (total_displacement / n.max(1.0)).sqrt();
+    let _max_disp = total_displacement;
     eprintln!(
-        "  Legalization: {:.0}ms",
+        "  Legalization: {:.0}ms, rms_disp={:.2}, total_sq_disp={:.1}",
         t_start.elapsed().as_secs_f64() * 1000.0,
+        rms_disp,
+        total_displacement,
     );
 
     Ok(total_displacement)

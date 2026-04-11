@@ -124,6 +124,17 @@ impl SparseMatrix {
         self.cached_csc = None;
     }
 
+    /// Return a reference to the cached CSC matrix, if it has been built.
+    pub fn cached_csc(&self) -> Option<&SparseColMat<usize, f64>> {
+        self.cached_csc.as_ref()
+    }
+
+    /// Ensure the CSC matrix is built and cached. Call this after finishing
+    /// all modifications so that `cached_csc()` returns `Some`.
+    pub fn ensure_csc(&mut self) {
+        self.to_faer_symmetric();
+    }
+
     /// Get or build the full symmetric faer CSC matrix.
     pub fn to_faer_symmetric(&mut self) -> &SparseColMat<usize, f64> {
         if self.cached_csc.is_none() {
@@ -177,23 +188,25 @@ pub struct SparseMatrixOp {
     n: usize,
 }
 
-/// Borrowed sparse matrix operator over diagonal + upper-triangle entries.
+/// Borrowed sparse matrix operator referencing a pre-built faer CSC.
 ///
-/// This avoids rebuilding or cloning a faer CSC matrix when the numeric values
-/// are updated frequently but the sparsity pattern stays fixed.
+/// Uses the same faer `sparse_dense_matmul` as `SparseMatrixOp` but holds a
+/// borrowed reference to the CSC matrix instead of an owned clone.
+/// Call `SparseMatrix::ensure_csc()` before constructing this.
 pub struct SparseMatrixOpRef<'a> {
-    diag: &'a [f64],
-    off_diag: &'a [(usize, usize, f64)],
+    csc: &'a SparseColMat<usize, f64>,
     n: usize,
 }
 
 impl<'a> SparseMatrixOpRef<'a> {
+    /// Create from a `SparseMatrix` whose CSC has already been built.
+    ///
+    /// Panics if `ensure_csc()` / `to_faer_symmetric()` has not been called.
     pub fn from_matrix(mat: &'a SparseMatrix) -> Self {
-        Self {
-            diag: mat.diag(),
-            off_diag: mat.off_diag(),
-            n: mat.n(),
-        }
+        let csc = mat
+            .cached_csc()
+            .expect("CSC must be pre-built; call ensure_csc() or to_faer_symmetric() first");
+        Self { csc, n: mat.n() }
     }
 }
 
@@ -202,8 +215,6 @@ impl std::fmt::Debug for SparseMatrixOpRef<'_> {
         write!(f, "SparseMatrixOpRef(n={})", self.n)
     }
 }
-
-unsafe impl Sync for SparseMatrixOpRef<'_> {}
 
 impl faer::matrix_free::LinOp<f64> for SparseMatrixOpRef<'_> {
     fn apply_scratch(&self, _rhs_ncols: usize, _par: faer::Par) -> StackReq {
@@ -220,23 +231,19 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOpRef<'_> {
 
     fn apply(
         &self,
-        mut out: faer::MatMut<'_, f64>,
+        out: faer::MatMut<'_, f64>,
         rhs: faer::MatRef<'_, f64>,
-        _par: faer::Par,
+        par: faer::Par,
         _stack: &mut MemStack,
     ) {
-        let ncols = rhs.ncols();
-        for col in 0..ncols {
-            for i in 0..self.n {
-                out[(i, col)] = self.diag[i] * rhs[(i, col)];
-            }
-            for &(lo, hi, val) in self.off_diag {
-                let rhs_lo = rhs[(lo, col)];
-                let rhs_hi = rhs[(hi, col)];
-                out[(lo, col)] += val * rhs_hi;
-                out[(hi, col)] += val * rhs_lo;
-            }
-        }
+        faer::sparse::linalg::matmul::sparse_dense_matmul(
+            out,
+            faer::Accum::Replace,
+            self.csc.as_ref(),
+            rhs,
+            1.0,
+            par,
+        );
     }
 
     fn conj_apply(
@@ -244,9 +251,16 @@ impl faer::matrix_free::LinOp<f64> for SparseMatrixOpRef<'_> {
         out: faer::MatMut<'_, f64>,
         rhs: faer::MatRef<'_, f64>,
         par: faer::Par,
-        stack: &mut MemStack,
+        _stack: &mut MemStack,
     ) {
-        self.apply(out, rhs, par, stack);
+        faer::sparse::linalg::matmul::sparse_dense_matmul(
+            out,
+            faer::Accum::Replace,
+            self.csc.as_ref(),
+            rhs,
+            1.0,
+            par,
+        );
     }
 }
 
@@ -263,10 +277,6 @@ impl std::fmt::Debug for SparseMatrixOp {
         write!(f, "SparseMatrixOp(n={})", self.n)
     }
 }
-
-// SAFETY: SparseColMat<usize, f64> is Send+Sync (immutable data), and we only
-// read from it in apply/conj_apply.
-unsafe impl Sync for SparseMatrixOp {}
 
 impl faer::matrix_free::LinOp<f64> for SparseMatrixOp {
     fn apply_scratch(&self, _rhs_ncols: usize, _par: faer::Par) -> StackReq {

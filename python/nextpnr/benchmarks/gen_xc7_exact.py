@@ -44,6 +44,10 @@ Wl = 192
 Si = 6
 Sq = 6
 
+# Long-range wire counts per tile (inspired by real XC7 fabric).
+SPAN4_COUNT = 24   # horizontal and vertical span-4 wires
+SPAN12_COUNT = 12  # horizontal and vertical span-12 wires (HLONG/VLONG)
+
 INTERIOR_ROWS = 269
 LOGIC_TILES = TARGET_LUT // LUTS_PER_LOGIC_TILE  # 67250
 LOGIC_COLS = LOGIC_TILES // INTERIOR_ROWS  # 250
@@ -95,6 +99,33 @@ def create_switch_matrix(tt, inputs, outputs):
         for j, (d, dx, dy) in enumerate(dirs):
             tt.create_pip(f"{d}{(i + j) % Wl}", f"SWITCH{i}", timing_class="SWNEIGH")
             tt.create_pip(f"SWITCH{i}", f"{d}{(i + j) % Wl}", timing_class="SWNEIGH")
+    # Long-range span wires: each tile has endpoints for span-4 and span-12 wires.
+    # A span-N wire is a routing node that connects tile (x,y) to tile (x+N,y) (horizontal)
+    # or (x,y+N) (vertical). Each tile has "begin" wires (where the span starts)
+    # and "end" wires (where it terminates, arriving from N tiles away).
+    for i in range(SPAN4_COUNT):
+        tt.create_wire(f"H4BEG{i}", "SPAN4H")
+        tt.create_wire(f"H4END{i}", "SPAN4H")
+        tt.create_wire(f"V4BEG{i}", "SPAN4V")
+        tt.create_wire(f"V4END{i}", "SPAN4V")
+        # Connect span wires to switchbox.
+        sw_h = (i * 3) % Wl
+        sw_v = (i * 3 + 1) % Wl
+        tt.create_pip(f"SWITCH{sw_h}", f"H4BEG{i}", timing_class="SWNEIGH")
+        tt.create_pip(f"H4END{i}", f"SWITCH{sw_h}", timing_class="SWNEIGH")
+        tt.create_pip(f"SWITCH{sw_v}", f"V4BEG{i}", timing_class="SWNEIGH")
+        tt.create_pip(f"V4END{i}", f"SWITCH{sw_v}", timing_class="SWNEIGH")
+    for i in range(SPAN12_COUNT):
+        tt.create_wire(f"H12BEG{i}", "SPAN12H")
+        tt.create_wire(f"H12END{i}", "SPAN12H")
+        tt.create_wire(f"V12BEG{i}", "SPAN12V")
+        tt.create_wire(f"V12END{i}", "SPAN12V")
+        sw_h = (i * 5) % Wl
+        sw_v = (i * 5 + 2) % Wl
+        tt.create_pip(f"SWITCH{sw_h}", f"H12BEG{i}", timing_class="SWNEIGH")
+        tt.create_pip(f"H12END{i}", f"SWITCH{sw_h}", timing_class="SWNEIGH")
+        tt.create_pip(f"SWITCH{sw_v}", f"V12BEG{i}", timing_class="SWNEIGH")
+        tt.create_pip(f"V12END{i}", f"SWITCH{sw_v}", timing_class="SWNEIGH")
     for c in range(N_CLK):
         if not tt.has_wire(f"CLK{c}"):
             tt.create_wire(f"CLK{c}", "TILE_CLK")
@@ -370,26 +401,61 @@ def capacity_summary(layout_info):
     return counts
 
 
+def _valid_tile(x, y, width, height):
+    """Check if (x, y) is a valid non-corner tile."""
+    if x < 0 or x >= width or y < 0 or y >= height:
+        return False
+    return not is_corner(x, y, width, height)
+
+
 def create_nodes(ch, width, height):
     for y in range(height):
         for x in range(width):
             if not is_corner(x, y, width, height):
+                # Neighbor (SWITCH <-> NEIGH) nodes -- existing 8-connected grid.
                 local_nodes = [[NodeWire(x, y, f"SWITCH{i}")] for i in range(Wl)]
                 for d, dx, dy in dirs:
                     x1 = x - dx
                     y1 = y - dy
-                    if (
-                        x1 < 0
-                        or x1 >= width
-                        or y1 < 0
-                        or y1 >= height
-                        or is_corner(x1, y1, width, height)
-                    ):
+                    if not _valid_tile(x1, y1, width, height):
                         continue
                     for i in range(Wl):
                         local_nodes[i].append(NodeWire(x1, y1, f"{d}{i}"))
                 for n in local_nodes:
                     ch.add_node(n)
+
+                # Span-4 horizontal: H4BEG at (x,y) -> H4END at (x+4,y)
+                for i in range(SPAN4_COUNT):
+                    x_end = x + 4
+                    if _valid_tile(x_end, y, width, height):
+                        ch.add_node([
+                            NodeWire(x, y, f"H4BEG{i}"),
+                            NodeWire(x_end, y, f"H4END{i}"),
+                        ])
+                # Span-4 vertical: V4BEG at (x,y) -> V4END at (x,y+4)
+                for i in range(SPAN4_COUNT):
+                    y_end = y + 4
+                    if _valid_tile(x, y_end, width, height):
+                        ch.add_node([
+                            NodeWire(x, y, f"V4BEG{i}"),
+                            NodeWire(x, y_end, f"V4END{i}"),
+                        ])
+                # Span-12 horizontal: H12BEG at (x,y) -> H12END at (x+12,y)
+                for i in range(SPAN12_COUNT):
+                    x_end = x + 12
+                    if _valid_tile(x_end, y, width, height):
+                        ch.add_node([
+                            NodeWire(x, y, f"H12BEG{i}"),
+                            NodeWire(x_end, y, f"H12END{i}"),
+                        ])
+                # Span-12 vertical: V12BEG at (x,y) -> V12END at (x,y+12)
+                for i in range(SPAN12_COUNT):
+                    y_end = y + 12
+                    if _valid_tile(x, y_end, width, height):
+                        ch.add_node([
+                            NodeWire(x, y, f"V12BEG{i}"),
+                            NodeWire(x, y_end, f"V12END{i}"),
+                        ])
 
             for c in range(N_CLK):
                 gclk_tile_x = c + 1

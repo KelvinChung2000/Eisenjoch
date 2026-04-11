@@ -46,5 +46,4 @@ macro_rules! read_packed {
     };
 }
 
-#[cfg(feature = "test-utils")]
 pub mod testutil;

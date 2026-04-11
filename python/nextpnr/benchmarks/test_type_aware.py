@@ -18,6 +18,6 @@ for iters in [1, 5, 10]:
     ctx3.load_design(design)
     ctx3.pack()
     t0 = time.time()
-    ctx3.place(placer='hydraulic', seed=42, max_iters=iters, subtile_resolution=1, step_scale=0.5, init_strategy='centroid')
+    ctx3.place(placer='hydraulic', seed=42, max_iters=iters, adam_lr_gain=0.5, init_strategy='centroid')
     elapsed = time.time() - t0
     print(f"{iters:3d} iter: HPWL={ctx3.total_hpwl():.0f} line={ctx3.total_line_estimate():.0f} {elapsed:.1f}s")

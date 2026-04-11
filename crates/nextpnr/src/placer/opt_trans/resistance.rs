@@ -1,107 +1,88 @@
-//! Unified resistance model for the Beckmann optimal transport placer.
+//! Parameterless log-barrier congestion model.
 //!
-//! Resistance sigma encodes the active transport physics:
-//! - Congestion: increases with pipe competition (`net_count`)
-//! - Timing: critical nets resist stretching
+//! The effective resistance of a pipe grows as its usage approaches capacity:
+//!     R_eff = base * cap / max(EPS, cap - usage)
+//! At zero usage `R_eff = base`. As usage approaches `cap`, resistance grows
+//! smoothly and diverges, so the path solver routes around saturated pipes.
+//! `EPS` is a numerical clamp that activates at ~99.9% saturation; it is not
+//! a tuning knob. The only input is `pipe.net_count`, which carries the hard
+//! per-pipe usage count produced by the previous iteration's Dijkstra (set
+//! by `refresh_net_counts_from_usage` in `algorithm.rs`).
 
 use super::network::Pipe;
 
-/// Computes effective resistance for a pipe given congestion, interference,
-/// and timing state.
-pub struct ResistanceModel {
-    /// Gain applied to the passive net-count congestion response.
-    pub congestion_scale: f64,
-    /// Net-count is raised to this power before scaling resistance.
-    pub congestion_power: f64,
-    /// Weight for timing criticality term.
-    pub timing_weight: f64,
-}
+#[derive(Clone, Copy, Default)]
+pub struct ResistanceModel;
 
 impl ResistanceModel {
-    /// Compute effective resistance for a single pipe.
-    ///
-    /// R_eff = R_base * R_cong * R_timing where:
-    /// - R_cong = 1 + scale * net_count^power  (pipe competition congestion)
-    /// - R_timing = 1 + w_t * criticality  (timing resistance)
     #[inline(always)]
-    pub fn effective_resistance(&self, pipe: &Pipe, timing_criticality: f64) -> f64 {
-        let r_base = pipe.base_resistance;
-
-        let count = pipe.net_count.max(1) as f64;
-        let r_cong = if self.congestion_scale <= 0.0 {
-            1.0
-        } else {
-            1.0 + self.congestion_scale * count.powf(self.congestion_power.max(1.0))
-        };
-
-        // Timing: critical nets resist stretching
-        let r_timing = 1.0 + self.timing_weight * timing_criticality;
-
-        r_base * r_cong * r_timing
+    pub fn effective_resistance(&self, pipe: &Pipe) -> f64 {
+        let base = pipe.base_resistance;
+        let cap = pipe.capacity;
+        if cap <= 0.0 {
+            return base;
+        }
+        const EPS: f64 = 1e-3;
+        let usage = pipe.net_count as f64;
+        let headroom = (cap - usage).max(EPS);
+        base * cap / headroom
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::placer::opt_trans::network::PipeType;
+    use crate::placer::opt_trans::network::{Direction, PipeType};
 
-    fn test_pipe(flow: f64, capacity: f64, net_count: u32) -> Pipe {
+    fn test_pipe(capacity: f64, net_count: u32) -> Pipe {
         Pipe {
             from: 0,
             to: 1,
             base_resistance: 1.0,
             capacity,
-            flow,
+            flow: 0.0,
             net_count,
             raw_cell_density: 0.0,
             cell_density: 0.0,
             eff_conductance: 1.0,
-            pipe_type: PipeType::IntraTile,
+            pipe_type: PipeType::InterTile(Direction::East),
         }
     }
 
     #[test]
-    fn zero_flow_gives_base_resistance() {
-        let model = ResistanceModel {
-            congestion_scale: 0.01,
-            congestion_power: 2.0,
-            timing_weight: 0.0,
-        };
-        let pipe = test_pipe(0.0, 10.0, 1);
-        let r = model.effective_resistance(&pipe, 0.0);
+    fn zero_usage_returns_base_resistance() {
+        let model = ResistanceModel;
+        let pipe = test_pipe(10.0, 0);
+        let r = model.effective_resistance(&pipe);
+        // base * cap / (cap - 0) = base = 1.0
         assert!((r - 1.0).abs() < 1e-12);
     }
 
     #[test]
-    fn congestion_increases_resistance() {
-        let model = ResistanceModel {
-            congestion_scale: 0.01,
-            congestion_power: 2.0,
-            timing_weight: 0.0,
-        };
-        let mut pipe_low = test_pipe(1.0, 10.0, 1);
-        let mut pipe_high = test_pipe(9.0, 10.0, 1);
-        pipe_low.net_count = 1;
-        pipe_high.net_count = 4;
-        assert!(
-            model.effective_resistance(&pipe_high, 0.0)
-                > model.effective_resistance(&pipe_low, 0.0)
-        );
+    fn resistance_grows_with_usage() {
+        let model = ResistanceModel;
+        let r_low = model.effective_resistance(&test_pipe(10.0, 2));
+        let r_high = model.effective_resistance(&test_pipe(10.0, 8));
+        // 1 * 10 / (10-2) = 1.25 vs 1 * 10 / (10-8) = 5.0
+        assert!(r_high > r_low);
+        assert!((r_low - 1.25).abs() < 1e-12);
+        assert!((r_high - 5.0).abs() < 1e-12);
     }
 
     #[test]
-    fn net_count_no_longer_changes_resistance_directly() {
-        let model = ResistanceModel {
-            congestion_scale: 0.01,
-            congestion_power: 2.0,
-            timing_weight: 0.0,
-        };
-        let pipe_1net = test_pipe(5.0, 10.0, 1);
-        let pipe_5nets = test_pipe(5.0, 10.0, 5);
-        assert_eq!(
-            model.effective_resistance(&pipe_5nets, 0.0),
-            model.effective_resistance(&pipe_1net, 0.0)
-        );
+    fn saturated_pipe_clamps_to_finite_value() {
+        let model = ResistanceModel;
+        // usage >= cap: headroom clamps to EPS = 1e-3
+        let r = model.effective_resistance(&test_pipe(10.0, 20));
+        assert!(r.is_finite());
+        // base * cap / EPS = 1 * 10 / 1e-3 = 1e4
+        assert!((r - 1.0e4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn zero_capacity_returns_base() {
+        let model = ResistanceModel;
+        let r = model.effective_resistance(&test_pipe(0.0, 5));
+        assert!((r - 1.0).abs() < 1e-12);
     }
 }

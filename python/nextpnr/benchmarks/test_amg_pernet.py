@@ -21,16 +21,16 @@ heap_line = ctx_h.total_line_estimate()
 print(f"HeAP: HPWL={heap_hpwl:.0f} line={heap_line:.0f} {heap_t:.1f}s")
 del ctx_h
 
-print("\n=== Beckmann OT with AMG + Adam (centroid init, lr=0.5, 5 iters) ===")
+print("\n=== Beckmann OT with Dijkstra + Adam (centroid init, lr_gain=0.5, 5 iters) ===")
 ctx = nextpnr.Context(chipdb=chipdb)
 ctx.load_design(design)
 ctx.pack()
 t0 = time.time()
 ctx.place(
     placer='hydraulic', seed=42,
-    subtile_resolution=1,
+    
     max_iters=5,
-    step_scale=0.5,
+    adam_lr_gain=0.5,
     init_strategy="centroid",
 )
 ot_t = time.time() - t0

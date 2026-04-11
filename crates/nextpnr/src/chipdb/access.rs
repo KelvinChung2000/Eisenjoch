@@ -407,6 +407,18 @@ impl ChipDb {
         classes.get(idx as usize)
     }
 
+    /// If wire `wire_idx` in `tile` is a routing node root, return its NodeShapePod.
+    pub fn wire_node_shape(&self, tile: i32, wire_idx: usize) -> Option<&NodeShapePod> {
+        let shape = self.tile_shape(tile);
+        let node_ref = shape.wire_to_node.get().get(wire_idx)?;
+        let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
+        if dx_mode != RelNodeRefPod::MODE_IS_ROOT {
+            return None;
+        }
+        let shape_idx = Self::node_shape_idx(node_ref);
+        self.chip_info().node_shapes.get().get(shape_idx as usize)
+    }
+
     /// Compute the node shape index from a root node ref.
     ///
     /// Matches C++: `uint16_t(dy) | (uint32_t(wire) << 16)`

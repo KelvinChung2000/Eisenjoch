@@ -51,7 +51,6 @@ impl ChipDb {
         })
     }
 
-    #[cfg(feature = "test-utils")]
     pub unsafe fn from_bytes(bytes: &[u8]) -> Result<Self, ChipDbError> {
         let min_size = std::mem::size_of::<RelPtr<ChipInfoPod>>();
         if bytes.len() < min_size {

@@ -11,6 +11,7 @@
 //! - `wa` / `lse`: smooth wirelength approximations
 
 pub mod cg;
+pub mod compressed;
 pub mod direct;
 pub mod lse;
 pub mod optimizer;

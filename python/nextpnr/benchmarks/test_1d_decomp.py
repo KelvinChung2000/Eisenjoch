@@ -24,7 +24,7 @@ ctx = nextpnr.Context(chipdb=CHIPDB)
 ctx.load_design(DESIGN)
 ctx.pack()
 t0 = time.time()
-ctx.place(placer='hydraulic', seed=42, subtile_resolution=1, step_scale=0.5)
+ctx.place(placer='hydraulic', seed=42, adam_lr_gain=0.5)
 t_1d = time.time() - t0
 hpwl_1d = ctx.total_hpwl()
 line_1d = ctx.total_line_estimate()

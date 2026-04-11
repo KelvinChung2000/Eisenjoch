@@ -794,18 +794,16 @@ impl TypeAwarePlacement {
             for (&(tx, ty), &count) in tile_counts {
                 let cap = cap_map.get(&(tx, ty)).copied().unwrap_or(0);
                 if cap == 0 {
-                    if count > 0.0 {
-                        max_overflow = max_overflow.max(count);
-                        n_over += 1;
-                        overflow_excess += count;
-                    }
-                } else {
-                    let ratio = count / cap as f64;
-                    max_overflow = max_overflow.max(ratio);
-                    if count > cap as f64 {
-                        n_over += 1;
-                        overflow_excess += ratio - 1.0;
-                    }
+                    // Zero-capacity tile (wrong type): skip. Cells here will
+                    // be snapped to valid tiles during legalization. Counting
+                    // them as overflow produces misleading metrics.
+                    continue;
+                }
+                let ratio = count / cap as f64;
+                max_overflow = max_overflow.max(ratio);
+                if count > cap as f64 {
+                    n_over += 1;
+                    overflow_excess += ratio - 1.0;
                 }
             }
         }
@@ -837,7 +835,11 @@ impl TypeAwarePlacement {
 
         let mut util = FxHashMap::default();
         for (tile, demand) in demand_per_tile {
-            let cap = self.total_tile_pin_capacity.get(&tile).copied().unwrap_or(0) as f64;
+            let cap = self
+                .total_tile_pin_capacity
+                .get(&tile)
+                .copied()
+                .unwrap_or(0) as f64;
             let ratio = if cap > 0.0 { demand / cap } else { demand };
             util.insert(tile, ratio);
         }

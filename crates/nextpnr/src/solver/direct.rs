@@ -9,6 +9,8 @@ use faer::sparse::linalg::solvers::{Llt, SymbolicLlt};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::Side;
 
+use crate::solver::sparse_matrix::SparseMatrix;
+
 /// Direct sparse solver for symmetric positive-definite systems using faer's
 /// sparse Cholesky factorization with AMD fill-reducing ordering.
 ///
@@ -21,6 +23,8 @@ pub struct FaerDirectSolver {
     expected_offdiag_len: usize,
     /// Cached symbolic factorization (includes AMD ordering).
     symbolic: SymbolicLlt<usize>,
+    /// Cached numeric factorization for reuse across multiple solves.
+    llt: Option<Llt<usize, f64>>,
 }
 
 impl FaerDirectSolver {
@@ -49,7 +53,45 @@ impl FaerDirectSolver {
             n,
             expected_offdiag_len: pipe_endpoints.len(),
             symbolic,
+            llt: None,
         }
+    }
+
+    /// Factorize a matrix from an existing `SparseMatrix`, reusing the cached
+    /// symbolic structure and storing the numeric LLT for subsequent solves.
+    pub fn factorize_from_sparse_matrix(&mut self, mat: &mut SparseMatrix) {
+        debug_assert_eq!(mat.n(), self.n);
+        debug_assert_eq!(
+            mat.off_diag().len(),
+            self.expected_offdiag_len,
+            "sparsity pattern changed: expected {} off-diag entries, got {}",
+            self.expected_offdiag_len,
+            mat.off_diag().len(),
+        );
+
+        // Build the full symmetric CSC so callers can use SparseMatrixOpRef.
+        let _ = mat.to_faer_symmetric();
+
+        // faer's LLT with `Side::Upper` expects upper-triangle storage only,
+        // so we build a separate upper-triangle CSC for factorization.
+        let triplets = build_upper_triplets(mat.n(), Some(mat.diag()), mat.off_diag());
+        let upper = SparseColMat::<usize, f64>::try_new_from_triplets(mat.n(), mat.n(), &triplets)
+            .expect("failed to build sparse matrix");
+
+        self.llt = Some(
+            Llt::try_new_with_symbolic(self.symbolic.clone(), upper.as_ref(), Side::Upper)
+                .expect("numeric Cholesky factorization failed"),
+        );
+    }
+
+    /// Solve in place using a previously factorized matrix.
+    ///
+    /// `x` contains RHS columns on input and solution columns on output.
+    pub fn solve_in_place(&self, x: faer::MatMut<'_, f64>) {
+        self.llt
+            .as_ref()
+            .expect("solve_in_place called before factorize_from_sparse_matrix")
+            .solve_in_place_with_conj(faer::Conj::No, x);
     }
 
     /// Solve A*x = rhs where A is defined by diagonal and off-diagonal entries.
@@ -77,13 +119,15 @@ impl FaerDirectSolver {
             .expect("failed to build sparse matrix");
 
         // Numeric factorization using cached symbolic structure.
-        let llt = Llt::try_new_with_symbolic(self.symbolic.clone(), mat.as_ref(), Side::Upper)
-            .expect("numeric Cholesky factorization failed");
+        self.llt = Some(
+            Llt::try_new_with_symbolic(self.symbolic.clone(), mat.as_ref(), Side::Upper)
+                .expect("numeric Cholesky factorization failed"),
+        );
 
         // Solve: copy rhs into a dense column vector, solve in place.
         x.copy_from_slice(rhs);
         let mut x_mat = faer::MatMut::from_column_major_slice_mut(x, self.n, 1);
-        llt.solve_in_place_with_conj(faer::Conj::No, x_mat.as_mut());
+        self.solve_in_place(x_mat.as_mut());
     }
 
     /// Matrix dimension.
@@ -170,6 +214,60 @@ mod tests {
                 ax_i,
                 rhs[i]
             );
+        }
+    }
+
+    #[test]
+    fn direct_solver_multi_rhs() {
+        let n = 4;
+        let pipes: Vec<(usize, usize)> = (0..n - 1).map(|i| (i, i + 1)).collect();
+        let mut solver = FaerDirectSolver::new(n, &pipes);
+
+        let mut mat = SparseMatrix::new(n);
+        for i in 0..n {
+            mat.set_diag(i, 4.0);
+        }
+        for i in 0..n - 1 {
+            mat.add_entry(i, i + 1, -1.0);
+        }
+
+        solver.factorize_from_sparse_matrix(&mut mat);
+
+        let expected = [
+            [1.0, 0.0, 2.0, -1.0],
+            [0.5, -1.0, 1.5, 0.25],
+            [2.0, 3.0, -0.5, 1.0],
+        ];
+        let mut rhs = vec![0.0; n * expected.len()];
+
+        for (col, sol) in expected.iter().enumerate() {
+            for i in 0..n {
+                let mut ax_i = 4.0 * sol[i];
+                if i > 0 {
+                    ax_i += -1.0 * sol[i - 1];
+                }
+                if i + 1 < n {
+                    ax_i += -1.0 * sol[i + 1];
+                }
+                rhs[col * n + i] = ax_i;
+            }
+        }
+
+        let x = faer::MatMut::from_column_major_slice_mut(&mut rhs, n, expected.len());
+        solver.solve_in_place(x);
+
+        for (col, sol) in expected.iter().enumerate() {
+            for i in 0..n {
+                let got = rhs[col * n + i];
+                assert!(
+                    (got - sol[i]).abs() < 1e-8,
+                    "column {}, row {}: got {}, expected {}",
+                    col,
+                    i,
+                    got,
+                    sol[i]
+                );
+            }
         }
     }
 }

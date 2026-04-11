@@ -5,6 +5,7 @@ use nextpnr::common::PlaceStrength;
 use nextpnr::metrics::{compute_bbox, BoundingBox};
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
+use nextpnr::router::common::NegotiationCfg;
 use nextpnr::router::negotiation::{astar_route_r2, R2QueueEntry, Router2Cfg, Router2State};
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;
@@ -12,6 +13,10 @@ use std::collections::BinaryHeap;
 /// Helper: create an FxHashSet from a slice of WireIds.
 fn wire_set(wires: &[WireId]) -> FxHashSet<WireId> {
     wires.iter().copied().collect()
+}
+
+fn r2_state(cfg: &Router2Cfg) -> Router2State {
+    Router2State::new(cfg.negotiation.clone())
 }
 
 #[test]
@@ -107,20 +112,23 @@ fn compute_bbox_with_margin() {
 
 #[test]
 fn wire_cost_base_only() {
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     assert!((state.wire_cost(WireId::new(0, 0), NetId::from_raw(0)) - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]
 fn wire_cost_with_congestion() {
     let cfg = Router2Cfg {
-        base_cost: 1.0,
-        present_cost_multiplier: 2.0,
-        initial_present_cost: 1.0,
-        history_cost_multiplier: 1.0,
+        negotiation: NegotiationCfg {
+            base_cost: 1.0,
+            present_cost_multiplier: 2.0,
+            initial_present_cost: 1.0,
+            history_cost_multiplier: 1.0,
+            ..NegotiationCfg::default()
+        },
         ..Router2Cfg::default()
     };
-    let mut state = Router2State::new(&cfg);
+    let mut state = r2_state(&cfg);
     let wire = WireId::new(0, 0);
     let net_a = NetId::from_raw(0);
     let net_b = NetId::from_raw(1);
@@ -133,13 +141,16 @@ fn wire_cost_with_congestion() {
 #[test]
 fn wire_cost_with_history() {
     let cfg = Router2Cfg {
-        base_cost: 1.0,
-        present_cost_multiplier: 2.0,
-        initial_present_cost: 1.0,
-        history_cost_multiplier: 3.0,
+        negotiation: NegotiationCfg {
+            base_cost: 1.0,
+            present_cost_multiplier: 2.0,
+            initial_present_cost: 1.0,
+            history_cost_multiplier: 3.0,
+            ..NegotiationCfg::default()
+        },
         ..Router2Cfg::default()
     };
-    let mut state = Router2State::new(&cfg);
+    let mut state = r2_state(&cfg);
     let wire = WireId::new(0, 0);
     state.wire_history.insert(wire, 5.0);
     assert!((state.wire_cost(wire, NetId::from_raw(0)) - 16.0).abs() < f64::EPSILON);
@@ -148,13 +159,16 @@ fn wire_cost_with_history() {
 #[test]
 fn wire_cost_combined() {
     let cfg = Router2Cfg {
-        base_cost: 1.0,
-        present_cost_multiplier: 2.0,
-        initial_present_cost: 1.0,
-        history_cost_multiplier: 1.0,
+        negotiation: NegotiationCfg {
+            base_cost: 1.0,
+            present_cost_multiplier: 2.0,
+            initial_present_cost: 1.0,
+            history_cost_multiplier: 1.0,
+            ..NegotiationCfg::default()
+        },
         ..Router2Cfg::default()
     };
-    let mut state = Router2State::new(&cfg);
+    let mut state = r2_state(&cfg);
     let wire = WireId::new(0, 0);
     state.wire_usage.insert(wire, 2);
     state.wire_owner.insert(wire, NetId::from_raw(0));
@@ -164,7 +178,7 @@ fn wire_cost_combined() {
 
 #[test]
 fn update_history_no_congestion() {
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     let wire = WireId::new(0, 0);
     state.wire_usage.insert(wire, 1);
     state.update_history();
@@ -173,7 +187,7 @@ fn update_history_no_congestion() {
 
 #[test]
 fn update_history_with_congestion() {
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     let wire = WireId::new(0, 0);
     state.wire_usage.insert(wire, 3);
     state.update_history();
@@ -182,7 +196,7 @@ fn update_history_with_congestion() {
 
 #[test]
 fn update_history_accumulates() {
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     let wire = WireId::new(0, 0);
     state.wire_usage.insert(wire, 2);
     state.update_history();
@@ -193,7 +207,7 @@ fn update_history_accumulates() {
 #[test]
 fn update_usage_empty_design() {
     let ctx = common::make_context();
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.update_usage(&ctx.design);
     assert!(state.wire_usage.is_empty());
     assert!(state.wire_owner.is_empty());
@@ -207,7 +221,7 @@ fn update_usage_single_net() {
     ctx.design
         .net_edit(net_idx)
         .add_wire(wire, None, PlaceStrength::Strong);
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.update_usage(&ctx.design);
     assert_eq!(state.wire_usage[&wire], 1);
     assert_eq!(state.wire_owner[&wire], net_idx);
@@ -225,7 +239,7 @@ fn update_usage_multiple_nets_same_wire() {
     ctx.design
         .net_edit(net_b)
         .add_wire(wire, None, PlaceStrength::Strong);
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.update_usage(&ctx.design);
     assert_eq!(state.wire_usage[&wire], 2);
     let owner = state.wire_owner[&wire];
@@ -239,7 +253,7 @@ fn find_congested_nets_none() {
     ctx.design
         .net_edit(net_idx)
         .add_wire(WireId::new(0, 0), None, PlaceStrength::Strong);
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.update_usage(&ctx.design);
     assert!(state.find_congested_nets(&ctx.design).is_empty());
 }
@@ -256,7 +270,7 @@ fn find_congested_nets_shared_wire() {
     ctx.design
         .net_edit(net_b)
         .add_wire(wire, None, PlaceStrength::Strong);
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.update_usage(&ctx.design);
     let set: FxHashSet<NetId> = state.find_congested_nets(&ctx.design).into_iter().collect();
     assert!(set.contains(&net_a));
@@ -305,7 +319,7 @@ fn r2_queue_tiebreak_by_cost() {
 #[test]
 fn astar_r2_same_wire_returns_empty_path() {
     let ctx = common::make_context();
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     let wire = WireId::new(0, 0);
     let bbox = BoundingBox {
         x0: 0,
@@ -328,7 +342,7 @@ fn astar_r2_same_wire_returns_empty_path() {
 #[test]
 fn astar_r2_single_pip_path() {
     let ctx = common::make_context();
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     let bbox = BoundingBox {
         x0: 0,
         y0: 0,
@@ -352,7 +366,7 @@ fn astar_r2_single_pip_path() {
 #[test]
 fn astar_r2_no_path_returns_none() {
     let ctx = common::make_context();
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     let bbox = BoundingBox {
         x0: 0,
         y0: 0,
@@ -373,7 +387,7 @@ fn astar_r2_no_path_returns_none() {
 #[test]
 fn astar_r2_bbox_prunes_out_of_range() {
     let ctx = common::make_context();
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     let bbox = BoundingBox {
         x0: 0,
         y0: 0,
@@ -394,7 +408,7 @@ fn astar_r2_bbox_prunes_out_of_range() {
 #[test]
 fn astar_r2_empty_sources_returns_none() {
     let ctx = common::make_context();
-    let state = Router2State::new(&Router2Cfg::default());
+    let state = r2_state(&Router2Cfg::default());
     let bbox = BoundingBox {
         x0: 0,
         y0: 0,
@@ -415,21 +429,27 @@ fn astar_r2_empty_sources_returns_none() {
 #[test]
 fn present_cost_initialized_from_config() {
     let cfg = Router2Cfg {
-        initial_present_cost: 2.5,
+        negotiation: NegotiationCfg {
+            initial_present_cost: 2.5,
+            ..NegotiationCfg::default()
+        },
         ..Router2Cfg::default()
     };
-    let state = Router2State::new(&cfg);
+    let state = r2_state(&cfg);
     assert!((state.present_cost - 2.5).abs() < f64::EPSILON);
 }
 
 #[test]
 fn present_cost_grows() {
     let cfg = Router2Cfg {
-        initial_present_cost: 1.0,
-        present_cost_growth: 2.0,
+        negotiation: NegotiationCfg {
+            initial_present_cost: 1.0,
+            present_cost_growth: 2.0,
+            ..NegotiationCfg::default()
+        },
         ..Router2Cfg::default()
     };
-    let mut state = Router2State::new(&cfg);
+    let mut state = r2_state(&cfg);
     state.present_cost *= state.cfg.present_cost_growth;
     state.present_cost *= state.cfg.present_cost_growth;
     assert!((state.present_cost - 4.0).abs() < f64::EPSILON);
@@ -437,7 +457,7 @@ fn present_cost_grows() {
 
 #[test]
 fn count_congested_wires_none() {
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.wire_usage.insert(WireId::new(0, 0), 1);
     state.wire_usage.insert(WireId::new(0, 1), 1);
     assert_eq!(state.count_congested_wires(), 0);
@@ -445,7 +465,7 @@ fn count_congested_wires_none() {
 
 #[test]
 fn count_congested_wires_some() {
-    let mut state = Router2State::new(&Router2Cfg::default());
+    let mut state = r2_state(&Router2Cfg::default());
     state.wire_usage.insert(WireId::new(0, 0), 2);
     state.wire_usage.insert(WireId::new(0, 1), 1);
     state.wire_usage.insert(WireId::new(1, 0), 3);

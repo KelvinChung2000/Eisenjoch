@@ -1,14 +1,15 @@
-//! Subtile grid network model for FPGA placement (Beckmann formulation).
+//! Tile-level network model for FPGA placement (Beckmann formulation).
 //!
-//! Each tile is decomposed into an N×N grid of subtile nodes, where N is
-//! the configurable `subtile_resolution`. This produces a regular 2D lattice
-//! of (W·N) × (H·N) nodes that AMG can coarsen cleanly.
+//! One node per tile (or per coarsened group). Bilinear interpolation across
+//! tile boundaries provides smooth gradients for the optimizer.
 //!
 //! Connections:
-//! - Intra-tile: adjacent subtiles within the same tile (4-connected grid)
-//! - Inter-tile: boundary subtiles of adjacent tiles connected across tile edges
+//! - Inter-tile: adjacent tiles connected across tile edges (4-connected)
+//! - Long-range: multi-tile span pipes from chipdb routing analysis
 
+use crate::chipdb::ChipDb;
 use crate::context::Context;
+use crate::read_packed;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -19,37 +20,25 @@ pub enum Direction {
     South,
 }
 
-/// Distinguishes intra-tile (internal) from inter-tile (boundary) pipes.
+/// Pipe type: inter-tile or long-range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipeType {
     InterTile(Direction),
-    IntraTile,
+    /// Long-range pipe spanning multiple coarse cells (dx, dy in coarse coords).
+    LongRange {
+        dx: i32,
+        dy: i32,
+    },
 }
 
-/// A subtile node in the network.
+/// A node in the network (one per tile or coarsened group).
 #[derive(Debug, Clone)]
 pub struct Node {
     /// Tile coordinate.
     pub tile_x: i32,
     pub tile_y: i32,
-    /// Subtile coordinate within the tile (0..N).
-    pub sub_x: usize,
-    pub sub_y: usize,
-    /// Pressure (solved by Kirchhoff system).
+    /// Diagnostic pressure-like field written from path costs.
     pub pressure: f64,
-}
-
-impl Node {
-    /// Physical center of this subtile in tile coordinates.
-    #[inline]
-    pub fn center_x(&self, resolution: usize) -> f64 {
-        self.tile_x as f64 + (self.sub_x as f64 + 0.5) / resolution as f64
-    }
-
-    #[inline]
-    pub fn center_y(&self, resolution: usize) -> f64 {
-        self.tile_y as f64 + (self.sub_y as f64 + 0.5) / resolution as f64
-    }
 }
 
 /// A pipe connecting two nodes.
@@ -61,7 +50,7 @@ pub struct Pipe {
     pub base_resistance: f64,
     /// Routing capacity (wire count or BEL count).
     pub capacity: f64,
-    /// Current flow through this pipe (updated each Kirchhoff solve).
+    /// Diagnostic flow-like field derived from the current effective conductance.
     pub flow: f64,
     /// Number of distinct nets using this pipe (for interference).
     pub net_count: u32,
@@ -74,7 +63,7 @@ pub struct Pipe {
     pub pipe_type: PipeType,
 }
 
-/// The subtile pipe network over the FPGA tile grid.
+/// The pipe network over the FPGA tile grid.
 pub struct PipeNetwork {
     pub nodes: Vec<Node>,
     pub pipes: Vec<Pipe>,
@@ -86,10 +75,10 @@ pub struct PipeNetwork {
     /// Grid origin offset: the virtual grid starts at (x0, y0) in physical coordinates.
     pub x0: i32,
     pub y0: i32,
-    /// Subtile resolution: N×N subtiles per tile.
-    pub resolution: usize,
     /// Number of tiles with zero BELs (routing-only, BRAM, etc.).
     pub zero_bel_tiles: usize,
+    /// Total BEL count across all tiles.
+    pub total_bels: usize,
     /// Coarsening factor: C×C tiles grouped into one node.
     pub coarsen: usize,
 }
@@ -100,7 +89,7 @@ impl PipeNetwork {
         if self.coarsen > 1 {
             1.0 / self.coarsen as f64
         } else {
-            self.resolution as f64
+            1.0
         }
     }
 
@@ -110,50 +99,41 @@ impl PipeNetwork {
     ///   - 0.0 → 1×1 grid (whole chip = 1 node)
     ///   - 0.5 → coarsened: ~74×105 nodes (groups of 2×2 tiles)
     ///   - 1.0 → tile-level: 148×209 nodes (one per tile)
-    ///   - 2.0 → 2×2 subtiles per tile: 296×418 nodes
     ///
     /// For scale < 1.0: coarsen = max(1, round(1/scale)), groups C×C tiles.
-    /// For scale >= 1.0: subtile_resolution = round(scale), N×N subtiles per tile.
+    /// For scale >= 1.0: one node per tile.
     ///
     /// Cell positions are always in tile coordinates.
     pub fn from_context(ctx: &Context, scale: f64) -> Self {
         let full_w = ctx.chipdb().width();
         let full_h = ctx.chipdb().height();
 
-        let (coarsen, resolution) = if scale < 1.0 {
-            let c = if scale <= 0.0 {
+        let coarsen = if scale < 1.0 {
+            if scale <= 0.0 {
                 full_w.max(full_h) as usize // 1×1 grid
             } else {
                 (1.0 / scale).round().max(1.0) as usize
-            };
-            (c, 1)
+            }
         } else {
-            (1, scale.round().max(1.0) as usize)
+            1
         };
 
         let w = ((full_w as usize + coarsen - 1) / coarsen) as i32;
         let h = ((full_h as usize + coarsen - 1) / coarsen) as i32;
         let n_coarse = (w * h) as usize;
-        let n_per_tile = resolution * resolution;
 
         let x0 = 0;
         let y0 = 0;
 
-        // Create nodes: one per coarse cell when coarsened, or N×N subtiles per tile.
-        let mut nodes = Vec::with_capacity(n_coarse * n_per_tile);
+        // Create nodes: one per coarse cell.
+        let mut nodes = Vec::with_capacity(n_coarse);
         for cy in 0..h {
             for cx in 0..w {
-                for sy in 0..resolution {
-                    for sx in 0..resolution {
-                        nodes.push(Node {
-                            tile_x: cx,
-                            tile_y: cy,
-                            sub_x: sx,
-                            sub_y: sy,
-                            pressure: 0.0,
-                        });
-                    }
-                }
+                nodes.push(Node {
+                    tile_x: cx,
+                    tile_y: cy,
+                    pressure: 0.0,
+                });
             }
         }
 
@@ -161,10 +141,8 @@ impl PipeNetwork {
         let mut pipes = Vec::new();
         let mut node_pipes = vec![Vec::new(); total_nodes];
 
-        // Helper: node index for coarse cell (cx, cy) and subtile (sx, sy).
-        let idx = |cx: i32, cy: i32, sx: usize, sy: usize| -> usize {
-            ((cy * w + cx) as usize) * n_per_tile + sy * resolution + sx
-        };
+        // Helper: node index for coarse cell (cx, cy).
+        let idx = |cx: i32, cy: i32| -> usize { (cy * w + cx) as usize };
 
         // 1. Aggregate tile properties into coarse cells and build connectivity.
         let mut zero_bel_tiles = 0usize;
@@ -191,56 +169,11 @@ impl PipeNetwork {
             }
         }
 
-        // Build intra-cell pipes for the subtile lattice when resolution > 1.
-        if resolution > 1 {
-            for cy in 0..h {
-                for cx in 0..w {
-                    let ci = (cy * w + cx) as usize;
-                    let g = intra_tile_conductance(coarse_routing[ci], resolution);
-                    let r = 1.0 / g.max(1e-12);
-                    let cap = (coarse_routing[ci] as f64 / resolution as f64).max(1.0);
-                    for sy in 0..resolution {
-                        for sx in 0..resolution {
-                            let from = idx(cx, cy, sx, sy);
-                            if sx + 1 < resolution {
-                                let to = idx(cx, cy, sx + 1, sy);
-                                add_pipe(
-                                    &mut pipes,
-                                    &mut node_pipes,
-                                    from,
-                                    to,
-                                    r,
-                                    cap,
-                                    PipeType::IntraTile,
-                                );
-                            }
-                            if sy + 1 < resolution {
-                                let to = idx(cx, cy, sx, sy + 1);
-                                add_pipe(
-                                    &mut pipes,
-                                    &mut node_pipes,
-                                    from,
-                                    to,
-                                    r,
-                                    cap,
-                                    PipeType::IntraTile,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Inter-cell pipes on the coarse grid (4-connected).
+        // Inter-tile pipes on the coarse grid (4-connected).
         for cy in 0..h {
             for cx in 0..w {
-                let ci = (cy * w + cx) as usize;
-                let cap_here = coarse_routing[ci] as f64;
-
                 // East neighbor.
                 if cx + 1 < w {
-                    let ni = (cy * w + (cx + 1)) as usize;
                     let mut total_wires = 0usize;
                     let boundary_x = ((cx + 1) as usize * coarsen).min(full_w as usize) as i32 - 1;
                     for fy in
@@ -249,27 +182,21 @@ impl PipeNetwork {
                         total_wires +=
                             estimate_wire_count(ctx, boundary_x, fy as i32, Direction::East);
                     }
-                    let g = inter_tile_conductance(total_wires, resolution);
-                    // Capacity on an inter-tile pipe should reflect the routing
-                    // bottleneck across this specific boundary, not the aggregate
-                    // routing resources inside the adjacent coarse cells.
-                    let cap = (total_wires as f64 / resolution as f64).max(1.0);
-                    for sy in 0..resolution {
-                        add_pipe(
-                            &mut pipes,
-                            &mut node_pipes,
-                            idx(cx, cy, resolution - 1, sy),
-                            idx(cx + 1, cy, 0, sy),
-                            1.0 / g,
-                            cap,
-                            PipeType::InterTile(Direction::East),
-                        );
-                    }
+                    let g = inter_tile_conductance(total_wires);
+                    let cap = (total_wires as f64).max(1.0);
+                    add_pipe(
+                        &mut pipes,
+                        &mut node_pipes,
+                        idx(cx, cy),
+                        idx(cx + 1, cy),
+                        1.0 / g,
+                        cap,
+                        PipeType::InterTile(Direction::East),
+                    );
                 }
 
                 // South neighbor.
                 if cy + 1 < h {
-                    let ni = ((cy + 1) * w + cx) as usize;
                     let mut total_wires = 0usize;
                     let boundary_y = ((cy + 1) as usize * coarsen).min(full_h as usize) as i32 - 1;
                     for fx in
@@ -278,33 +205,82 @@ impl PipeNetwork {
                         total_wires +=
                             estimate_wire_count(ctx, fx as i32, boundary_y, Direction::South);
                     }
-                    let g = inter_tile_conductance(total_wires, resolution);
-                    // Capacity on an inter-tile pipe should reflect the routing
-                    // bottleneck across this specific boundary, not the aggregate
-                    // routing resources inside the adjacent coarse cells.
-                    let cap = (total_wires as f64 / resolution as f64).max(1.0);
-                    for sx in 0..resolution {
+                    let g = inter_tile_conductance(total_wires);
+                    let cap = (total_wires as f64).max(1.0);
+                    add_pipe(
+                        &mut pipes,
+                        &mut node_pipes,
+                        idx(cx, cy),
+                        idx(cx, cy + 1),
+                        1.0 / g,
+                        cap,
+                        PipeType::InterTile(Direction::South),
+                    );
+                }
+            }
+        }
+
+        // 3. Long-range pipes from chipdb routing node analysis.
+        // Histograms are in raw tile coordinates; we convert to coarse coords here.
+        let span_histograms = build_span_histograms(ctx.chipdb());
+        let pre_long_range = pipes.len();
+
+        // Deduplicate: multiple raw (dx,dy) entries may map to the same coarse cell pair.
+        // Aggregate wire counts for each unique coarse delta.
+        let coarsen_i = coarsen as i32;
+        for cy in 0..h {
+            for cx in 0..w {
+                // Use center tile of the coarse cell as representative.
+                let repr_fx = (cx as usize * coarsen + coarsen / 2).min(full_w as usize - 1) as i32;
+                let repr_fy = (cy as usize * coarsen + coarsen / 2).min(full_h as usize - 1) as i32;
+                let repr_tile = ctx.chipdb().tile_by_xy(repr_fx, repr_fy);
+                let tt_idx = ctx.chipdb().tile_type_index(repr_tile) as usize;
+
+                if let Some(hist) = span_histograms.get(tt_idx) {
+                    // Aggregate raw entries into coarse deltas.
+                    let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+                    for (&(raw_dx, raw_dy), &wire_count) in hist {
+                        let cdx = raw_dx / coarsen_i;
+                        let cdy = raw_dy / coarsen_i;
+                        let coarse_span = cdx.abs() + cdy.abs();
+                        if coarse_span < 2 {
+                            continue;
+                        }
+                        *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
+                    }
+
+                    for ((cdx, cdy), wire_count) in coarse_agg {
+                        let nx = cx + cdx;
+                        let ny = cy + cdy;
+                        if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                            continue;
+                        }
+                        let span = (cdx.abs() + cdy.abs()) as usize;
+                        let g = long_range_conductance(wire_count, span);
+                        let cap = (wire_count as f64).max(1.0);
                         add_pipe(
                             &mut pipes,
                             &mut node_pipes,
-                            idx(cx, cy, sx, resolution - 1),
-                            idx(cx, cy + 1, sx, 0),
+                            idx(cx, cy),
+                            idx(nx, ny),
                             1.0 / g,
                             cap,
-                            PipeType::InterTile(Direction::South),
+                            PipeType::LongRange { dx: cdx, dy: cdy },
                         );
                     }
                 }
             }
         }
 
+        let n_long_range = pipes.len() - pre_long_range;
         log::debug!(
-            "network: {}x{} (coarsen={}) = {} nodes, {} pipes",
+            "network: {}x{} (coarsen={}) = {} nodes, {} pipes ({} long-range)",
             w,
             h,
             coarsen,
             total_nodes,
             pipes.len(),
+            n_long_range,
         );
         let pipe_lookup = build_pipe_lookup(&pipes);
 
@@ -317,34 +293,16 @@ impl PipeNetwork {
             height: h,
             x0,
             y0,
-            resolution,
             zero_bel_tiles,
+            total_bels,
             coarsen,
         }
     }
 
-    /// Index of node at tile (tx, ty), subtile (sx, sy).
+    /// Index of node at tile (tx, ty).
     #[inline]
-    pub fn node_index(&self, tx: i32, ty: i32, sx: usize, sy: usize) -> usize {
-        let n = self.resolution;
-        ((ty * self.width + tx) as usize) * (n * n) + sy * n + sx
-    }
-
-    /// Number of nodes per tile (N²).
-    #[inline]
-    pub fn nodes_per_tile(&self) -> usize {
-        self.resolution * self.resolution
-    }
-
-    /// Total grid dimensions in subtile units.
-    #[inline]
-    pub fn subtile_width(&self) -> usize {
-        self.width as usize * self.resolution
-    }
-
-    #[inline]
-    pub fn subtile_height(&self) -> usize {
-        self.height as usize * self.resolution
+    pub fn node_index(&self, tx: i32, ty: i32) -> usize {
+        (ty * self.width + tx) as usize
     }
 
     /// Number of tiles with zero BELs.
@@ -428,8 +386,6 @@ impl PipeNetwork {
             nodes.push(Node {
                 tile_x: tx,
                 tile_y: ty,
-                sub_x: 0,
-                sub_y: 0,
                 pressure: 0.0,
             });
         }
@@ -501,8 +457,8 @@ impl PipeNetwork {
             height: grid_h,
             x0: 0,
             y0: 0,
-            resolution: 1,
             zero_bel_tiles,
+            total_bels: bels_per_node.iter().sum(),
             coarsen: 1,
         }
     }
@@ -549,21 +505,9 @@ fn build_pipe_lookup(pipes: &[Pipe]) -> FxHashMap<u64, usize> {
         .collect()
 }
 
-/// Intra-tile conductance: log-normalized.
-///
-/// Raw PIP/wire counts create 130x conductance ratios between adjacent tiles,
-/// producing artificial pressure barriers. Using log compresses the range
-/// while preserving the relative structure (routing-rich tiles still conduct
-/// more, but the ratio is ~3x instead of 130x).
-fn intra_tile_conductance(n_pips: usize, resolution: usize) -> f64 {
-    let g_base = (1.0 + n_pips as f64).ln().max(0.1);
-    g_base * resolution as f64
-}
-
 /// Inter-tile conductance: log-normalized from wire count.
-fn inter_tile_conductance(wire_count: usize, resolution: usize) -> f64 {
-    let g = (1.0 + wire_count as f64).ln().max(0.1);
-    g / resolution as f64
+fn inter_tile_conductance(wire_count: usize) -> f64 {
+    (1.0 + wire_count as f64).ln().max(0.1)
 }
 
 /// Estimate routing capacity between adjacent tiles in the given direction.
@@ -589,31 +533,101 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
     (min_cap / 4).max(1)
 }
 
+/// Long-range pipe conductance: log-normalized, resistance scales with Manhattan span.
+fn long_range_conductance(wire_count: usize, span: usize) -> f64 {
+    let g = (1.0 + wire_count as f64).ln().max(0.1);
+    g / span.max(1) as f64
+}
+
+/// Per tile-type histogram: maps raw (dx, dy) in tile coords -> wire_count for long-range nodes.
+type SpanHistogram = FxHashMap<(i32, i32), usize>;
+
+/// Analyze chipdb routing node shapes to build per-tile-type span histograms.
+///
+/// For each unique tile type, picks one representative tile, iterates its root-node
+/// wires, and counts how many routing nodes span each raw (dx, dy) distance.
+/// Returns a Vec indexed by tile_type_index. The histogram is in raw tile coordinates;
+/// conversion to coarse coordinates happens at pipe creation time.
+fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
+    let num_tt = chipdb.num_tile_types();
+    let num_tiles = chipdb.num_tiles();
+    let mut histograms = vec![SpanHistogram::default(); num_tt];
+
+    // Find one representative tile per tile type.
+    let mut repr_tile: Vec<Option<i32>> = vec![None; num_tt];
+    for tile in 0..num_tiles {
+        let tt_idx = chipdb.tile_type_index(tile) as usize;
+        if repr_tile[tt_idx].is_none() {
+            repr_tile[tt_idx] = Some(tile);
+        }
+    }
+
+    for tt_idx in 0..num_tt {
+        let Some(tile) = repr_tile[tt_idx] else {
+            continue;
+        };
+        let tt = chipdb.tile_type(tile);
+        let n_wires = tt.wires.len();
+
+        for wire_idx in 0..n_wires {
+            let Some(ns) = chipdb.wire_node_shape(tile, wire_idx) else {
+                continue;
+            };
+            let tile_wires = ns.tile_wires.get();
+            for tw in tile_wires {
+                let dx: i16 = unsafe { read_packed!(*tw, dx) };
+                let dy: i16 = unsafe { read_packed!(*tw, dy) };
+                let raw_span = (dx as i32).abs() + (dy as i32).abs();
+                // Canonical half: only count positive direction to avoid double-counting.
+                if dx < 0 || (dx == 0 && dy <= 0) {
+                    continue;
+                }
+                // Skip same-tile (span 0) and nearest-neighbor (span 1).
+                if raw_span <= 1 {
+                    continue;
+                }
+                // Store raw tile coordinates; coarse conversion happens at pipe creation.
+                *histograms[tt_idx]
+                    .entry((dx as i32, dy as i32))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Log summary.
+    let total_entries: usize = histograms.iter().map(|h| h.len()).sum();
+    let max_span = histograms
+        .iter()
+        .flat_map(|h| h.keys())
+        .map(|(dx, dy)| dx.abs() + dy.abs())
+        .max()
+        .unwrap_or(0);
+    let total_wires: usize = histograms.iter().flat_map(|h| h.values()).sum();
+    log::debug!(
+        "span_histograms: {} tile types with long-range entries, {} unique (dx,dy) pairs, \
+         max span={}, total long-range wires={}",
+        histograms.iter().filter(|h| !h.is_empty()).count(),
+        total_entries,
+        max_span,
+        total_wires,
+    );
+
+    histograms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn intra_conductance_scales_with_resolution() {
-        let g2 = intra_tile_conductance(8, 2);
-        let g4 = intra_tile_conductance(8, 4);
-        // Higher resolution → proportionally higher per-edge conductance
-        // so total tile conductance stays consistent.
-        assert!(g4 > g2);
-        assert!((g4 / g2 - 2.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn inter_conductance_splits_across_boundary() {
-        let g1 = inter_tile_conductance(100, 1);
-        let g2 = inter_tile_conductance(100, 2);
-        // Each boundary edge gets half the total conductance at N=2.
-        assert!((g1 / g2 - 2.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn empty_tile_has_passthrough() {
-        let g = intra_tile_conductance(0, 2);
+    fn inter_conductance_positive() {
+        let g = inter_tile_conductance(100);
         assert!(g > 0.0);
+    }
+
+    #[test]
+    fn inter_conductance_zero_wires() {
+        let g = inter_tile_conductance(0);
+        assert!(g >= 0.1);
     }
 }

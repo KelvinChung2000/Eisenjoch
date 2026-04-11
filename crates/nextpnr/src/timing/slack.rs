@@ -143,8 +143,7 @@ impl TimingAnalyser {
                 let arrival = self.arrival_times.get(&user_pin).copied().unwrap_or(0);
                 let required = self.required_times.get(&user_pin).copied().unwrap_or(0);
                 let slack = required - arrival;
-                let crit =
-                    (1.0 - ((slack - min_slack) as f64 / slack_span)).clamp(0.0, 1.0) as f32;
+                let crit = (1.0 - ((slack - min_slack) as f64 / slack_span)).clamp(0.0, 1.0) as f32;
                 if crit > max_crit {
                     max_crit = crit;
                 }

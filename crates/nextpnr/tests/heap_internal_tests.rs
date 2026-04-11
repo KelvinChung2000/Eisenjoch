@@ -38,7 +38,9 @@ fn solve_cg_simple(
     }
     let op = nextpnr::solver::sparse_matrix::SparseMatrixOp::from_matrix(&mut mat);
     let precond = nextpnr::solver::JacobiPreconditioner::new(diag);
-    let result = nextpnr::solver::solve_cg(&op, &precond, rhs, x, tol, max_iters);
+    let rhs_mat = faer::MatRef::from_column_major_slice(rhs, n, 1);
+    let x_mat = faer::MatMut::from_column_major_slice_mut(x, n, 1);
+    let result = nextpnr::solver::solve_cg(&op, &precond, rhs_mat, x_mat, tol, max_iters);
     result.iterations
 }
 

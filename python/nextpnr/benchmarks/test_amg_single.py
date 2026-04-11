@@ -26,9 +26,9 @@ else:
     init = "_".join(parts[:-2]).replace("-", "_")
     ctx.place(
         placer='hydraulic', seed=42,
-        subtile_resolution=1,
+        
         max_iters=iters,
-        step_scale=lr,
+        adam_lr_gain=lr,
         init_strategy=init,
     )
     elapsed = time.time() - t0
