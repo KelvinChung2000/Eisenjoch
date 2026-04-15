@@ -1,15 +1,14 @@
-//! Parameterless log-barrier congestion model.
+//! BPR congestion model for pipe costs.
 //!
-//! The effective resistance of a pipe grows as its usage approaches capacity:
-//!     R_eff = base * cap / max(EPS, cap - usage)
-//! At zero usage `R_eff = base`. As usage approaches `cap`, resistance grows
-//! smoothly and diverges, so the path solver routes around saturated pipes.
-//! `EPS` is a numerical clamp that activates at ~99.9% saturation; it is not
-//! a tuning knob. The only input is `pipe.net_count`, which carries the hard
-//! per-pipe usage count produced by the previous iteration's Dijkstra (set
-//! by `refresh_net_counts_from_usage` in `algorithm.rs`).
+//! The effective resistance of a pipe follows:
+//!     R_eff = base * (1 + alpha * (usage / capacity)^beta)
+//! with a bounded utilization ratio. The cap keeps a few severely overfull
+//! template edges from numerically dominating the whole placement objective.
 
 use super::network::Pipe;
+
+pub(crate) const BPR_ALPHA: f64 = 0.05;
+pub(crate) const BPR_BETA: f64 = 4.0;
 
 #[derive(Clone, Copy, Default)]
 pub struct ResistanceModel;
@@ -22,10 +21,9 @@ impl ResistanceModel {
         if cap <= 0.0 {
             return base;
         }
-        const EPS: f64 = 1e-3;
-        let usage = pipe.net_count as f64;
-        let headroom = (cap - usage).max(EPS);
-        base * cap / headroom
+        let usage = pipe.net_count.max(0.0);
+        let ratio = usage / cap;
+        base * (1.0 + BPR_ALPHA * ratio.powf(BPR_BETA))
     }
 }
 
@@ -34,7 +32,7 @@ mod tests {
     use super::*;
     use crate::placer::opt_trans::network::{Direction, PipeType};
 
-    fn test_pipe(capacity: f64, net_count: u32) -> Pipe {
+    fn test_pipe(capacity: f64, net_count: f64) -> Pipe {
         Pipe {
             from: 0,
             to: 1,
@@ -52,37 +50,47 @@ mod tests {
     #[test]
     fn zero_usage_returns_base_resistance() {
         let model = ResistanceModel;
-        let pipe = test_pipe(10.0, 0);
+        let pipe = test_pipe(10.0, 0.0);
         let r = model.effective_resistance(&pipe);
         // base * cap / (cap - 0) = base = 1.0
         assert!((r - 1.0).abs() < 1e-12);
     }
 
     #[test]
-    fn resistance_grows_with_usage() {
+    fn half_capacity_is_mild() {
         let model = ResistanceModel;
-        let r_low = model.effective_resistance(&test_pipe(10.0, 2));
-        let r_high = model.effective_resistance(&test_pipe(10.0, 8));
-        // 1 * 10 / (10-2) = 1.25 vs 1 * 10 / (10-8) = 5.0
-        assert!(r_high > r_low);
-        assert!((r_low - 1.25).abs() < 1e-12);
-        assert!((r_high - 5.0).abs() < 1e-12);
+        let r = model.effective_resistance(&test_pipe(10.0, 5.0));
+        let expected = 1.0 * (1.0 + BPR_ALPHA * 0.5f64.powf(BPR_BETA));
+        assert!((r - expected).abs() < 1e-12);
     }
 
     #[test]
-    fn saturated_pipe_clamps_to_finite_value() {
+    fn full_capacity_is_alpha_over_base() {
         let model = ResistanceModel;
-        // usage >= cap: headroom clamps to EPS = 1e-3
-        let r = model.effective_resistance(&test_pipe(10.0, 20));
-        assert!(r.is_finite());
-        // base * cap / EPS = 1 * 10 / 1e-3 = 1e4
-        assert!((r - 1.0e4).abs() < 1e-6);
+        let r = model.effective_resistance(&test_pipe(10.0, 10.0));
+        assert!((r - (1.0 + BPR_ALPHA)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn overload_grows_polynomially() {
+        let model = ResistanceModel;
+        let r = model.effective_resistance(&test_pipe(10.0, 20.0));
+        let expected = 1.0 * (1.0 + BPR_ALPHA * 2.0f64.powf(BPR_BETA));
+        assert!((r - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn overload_grows_unbounded() {
+        let model = ResistanceModel;
+        let r = model.effective_resistance(&test_pipe(1.0, 100.0));
+        let expected = 1.0 * (1.0 + BPR_ALPHA * 100.0f64.powf(BPR_BETA));
+        assert!((r - expected).abs() < 1e-6);
     }
 
     #[test]
     fn zero_capacity_returns_base() {
         let model = ResistanceModel;
-        let r = model.effective_resistance(&test_pipe(0.0, 5));
+        let r = model.effective_resistance(&test_pipe(0.0, 5.0));
         assert!((r - 1.0).abs() < 1e-12);
     }
 }

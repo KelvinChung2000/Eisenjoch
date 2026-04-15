@@ -1,8 +1,8 @@
 //! Main Beckmann OT placement algorithm.
 //!
-//! Uses inner/outer decomposition: expensive Dijkstra solves in the outer loop
-//! cache distance fields, cheap discrete coordinate descent in the inner loop
-//! moves cells to minimum-cost grid nodes.
+//! Uses inner/outer decomposition: expensive Dial-logit solves in the outer
+//! loop cache soft-cost fields, cheap discrete coordinate descent in the inner
+//! loop moves cells to minimum-cost grid nodes.
 
 use crate::common::IdString;
 use crate::context::Context;

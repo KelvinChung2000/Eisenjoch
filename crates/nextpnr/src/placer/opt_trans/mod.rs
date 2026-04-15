@@ -1,8 +1,7 @@
 //! Beckmann optimal transport placer.
 //!
-//! Uses per-net Dijkstra paths on the pipe network to compute the placement
-//! gradient, then steps floating-point cell positions with Adam. Adam's
-//! learning rate is adapted from an EMA of relative energy progress.
+//! Uses per-net Dial-logit soft path costs over a BPR pipe network, then
+//! moves cells with discrete coordinate descent.
 
 mod algorithm;
 pub mod config;
@@ -10,14 +9,13 @@ pub mod congestion;
 mod coord_descent;
 mod demand;
 pub(crate) mod diag;
-pub(crate) mod eikonal;
 pub(crate) mod network;
 pub mod path_solver;
 pub(crate) mod region_min;
 mod resistance;
 
 pub use algorithm::place_opt_trans;
-pub use config::{OptTransPlacerCfg, SweepMode};
+pub use config::{OptTransPlacerCfg, PathModel, SweepMode};
 
 use rustc_hash::FxHashSet;
 

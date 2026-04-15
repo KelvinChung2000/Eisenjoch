@@ -156,10 +156,7 @@ impl DiagCtx {
     /// One-shot cell metadata dump.
     /// `rows` is (cell_idx, cell_name, bucket, num_nets, max_fanout_of_any_touching_net,
     ///           total_fanout_sum, has_fixed_pin_on_any_net).
-    pub fn dump_cell_metadata(
-        &self,
-        rows: &[(usize, String, String, u32, u32, u32, bool)],
-    ) {
+    pub fn dump_cell_metadata(&self, rows: &[(usize, String, String, u32, u32, u32, bool)]) {
         if !self.enabled {
             return;
         }
@@ -189,7 +186,9 @@ impl DiagCtx {
         self.plateau.resize(n_cells, PlateauStat::default());
         self.moves.clear();
         if self.history.len() != n_cells {
-            self.history = (0..n_cells).map(|_| VecDeque::with_capacity(OSC_HISTORY)).collect();
+            self.history = (0..n_cells)
+                .map(|_| VecDeque::with_capacity(OSC_HISTORY))
+                .collect();
         }
     }
 
@@ -312,7 +311,12 @@ impl DiagCtx {
             }
             n_scanned = n_scanned.max(s.n_scanned);
         }
-        let n_valid = self.plateau.iter().filter(|s| s.n_scanned > 0).count().max(1);
+        let n_valid = self
+            .plateau
+            .iter()
+            .filter(|s| s.n_scanned > 0)
+            .count()
+            .max(1);
         let mean1 = sum1 as f64 / n_valid as f64;
         let mean5 = sum5 as f64 / n_valid as f64;
         let meant = sumt as f64 / n_valid as f64;
@@ -402,7 +406,9 @@ impl DiagCtx {
         if n_scanned == 0 {
             return;
         }
-        let p = self.out_dir.join(format!("plateau_sweep_{:02}.csv", self.sweep_idx));
+        let p = self
+            .out_dir
+            .join(format!("plateau_sweep_{:02}.csv", self.sweep_idx));
         let Ok(f) = File::create(&p) else { return };
         let mut w = BufWriter::new(f);
         let _ = writeln!(
@@ -416,7 +422,14 @@ impl DiagCtx {
             let _ = writeln!(
                 w,
                 "{},{:.3},{:.3},{:.3},{},{},{},{}",
-                ci, s.best_cost, s.cost_min, s.cost_max, s.n_within_1pct, s.n_within_5pct, s.n_tied_at_min, s.n_scanned
+                ci,
+                s.best_cost,
+                s.cost_min,
+                s.cost_max,
+                s.n_within_1pct,
+                s.n_within_5pct,
+                s.n_tied_at_min,
+                s.n_scanned
             );
         }
     }
@@ -425,7 +438,9 @@ impl DiagCtx {
         if mags.is_empty() {
             return;
         }
-        let p = self.out_dir.join(format!("move_hist_sweep_{:02}.csv", self.sweep_idx));
+        let p = self
+            .out_dir
+            .join(format!("move_hist_sweep_{:02}.csv", self.sweep_idx));
         let Ok(f) = File::create(&p) else { return };
         let mut w = BufWriter::new(f);
         let _ = writeln!(w, "cheb_distance,count");
@@ -451,7 +466,9 @@ impl DiagCtx {
         // Top-K by absolute HPWL.
         let mut by_hpwl: Vec<usize> = (0..n).collect();
         by_hpwl.sort_unstable_by(|&a, &b| {
-            net_hpwl[b].partial_cmp(&net_hpwl[a]).unwrap_or(std::cmp::Ordering::Equal)
+            net_hpwl[b]
+                .partial_cmp(&net_hpwl[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Top-K by |delta| vs previous sweep.
@@ -462,9 +479,12 @@ impl DiagCtx {
         } else {
             Vec::new()
         };
-        by_churn.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        by_churn
+            .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let p = self.out_dir.join(format!("net_top_sweep_{:02}.csv", self.sweep_idx));
+        let p = self
+            .out_dir
+            .join(format!("net_top_sweep_{:02}.csv", self.sweep_idx));
         let Ok(f) = File::create(&p) else { return };
         let mut w = BufWriter::new(f);
         let _ = writeln!(w, "rank_kind,rank,net_idx,name,fanout,hpwl,delta_hpwl");
@@ -478,13 +498,21 @@ impl DiagCtx {
             } else {
                 0.0
             };
-            let _ = writeln!(w, "hpwl,{},{},{},{},{:.2},{:.2}", r, idx, name, fanout, net_hpwl[idx], d);
+            let _ = writeln!(
+                w,
+                "hpwl,{},{},{},{},{:.2},{:.2}",
+                r, idx, name, fanout, net_hpwl[idx], d
+            );
         }
         for r in 0..k.min(by_churn.len()) {
             let (idx, delta) = by_churn[r];
             let name = net_names.get(idx).map(|s| s.as_str()).unwrap_or("");
             let fanout = net_fanout.get(idx).copied().unwrap_or(0);
-            let _ = writeln!(w, "churn,{},{},{},{},{:.2},{:.2}", r, idx, name, fanout, net_hpwl[idx], delta);
+            let _ = writeln!(
+                w,
+                "churn,{},{},{},{},{:.2},{:.2}",
+                r, idx, name, fanout, net_hpwl[idx], delta
+            );
         }
     }
 
@@ -495,13 +523,13 @@ impl DiagCtx {
         }
 
         // Histogram buckets.
-        let buckets: [(&str, Box<dyn Fn(u32) -> bool>); 6] = [
-            ("0", Box::new(|n| n == 0)),
-            ("1", Box::new(|n| n == 1)),
-            ("2", Box::new(|n| n == 2)),
-            ("3+", Box::new(|n| n >= 3)),
-            ("5+", Box::new(|n| n >= 5)),
-            ("10+", Box::new(|n| n >= 10)),
+        let buckets: [(&str, Box<dyn Fn(f64) -> bool>); 6] = [
+            ("0", Box::new(|n| n == 0.0)),
+            ("0.5+", Box::new(|n| n >= 0.5)),
+            ("1+", Box::new(|n| n >= 1.0)),
+            ("2+", Box::new(|n| n >= 2.0)),
+            ("5+", Box::new(|n| n >= 5.0)),
+            ("10+", Box::new(|n| n >= 10.0)),
         ];
         let p = self.out_dir.join("pipe_usage_hist.csv");
         if let Ok(f) = File::create(&p) {
@@ -516,33 +544,45 @@ impl DiagCtx {
 
         // Top-K congested pipes.
         let mut idx: Vec<usize> = (0..network.pipes.len()).collect();
-        idx.sort_unstable_by_key(|&i| std::cmp::Reverse(network.pipes[i].net_count));
+        idx.sort_unstable_by(|&a, &b| {
+            network.pipes[b]
+                .net_count
+                .total_cmp(&network.pipes[a].net_count)
+        });
         let p = self.out_dir.join("pipe_top.csv");
         if let Ok(f) = File::create(&p) {
             let mut w = BufWriter::new(f);
-            let _ = writeln!(w, "rank,pipe_idx,from,to,net_count,capacity,base_resistance,eff_conductance");
+            let _ = writeln!(
+                w,
+                "rank,pipe_idx,from,to,net_count,capacity,base_resistance,eff_conductance"
+            );
             for (r, &i) in idx.iter().take(50).enumerate() {
                 let pipe = &network.pipes[i];
                 let _ = writeln!(
                     w,
-                    "{},{},{},{},{},{:.1},{:.3},{:.3}",
-                    r, i, pipe.from, pipe.to, pipe.net_count, pipe.capacity, pipe.base_resistance, pipe.eff_conductance
+                    "{},{},{},{},{:.3},{:.1},{:.3},{:.3}",
+                    r,
+                    i,
+                    pipe.from,
+                    pipe.to,
+                    pipe.net_count,
+                    pipe.capacity,
+                    pipe.base_resistance,
+                    pipe.eff_conductance
                 );
             }
         }
 
         // Gini coefficient of pipe usage.
-        let mut counts: Vec<u32> = network.pipes.iter().map(|p| p.net_count).collect();
-        counts.sort_unstable();
+        let mut counts: Vec<f64> = network.pipes.iter().map(|p| p.net_count).collect();
+        counts.sort_unstable_by(|a, b| a.total_cmp(b));
         let n = counts.len() as f64;
-        let sum: f64 = counts.iter().map(|&x| x as f64).sum();
+        let sum: f64 = counts.iter().sum();
         let gini = if sum > 0.0 && n > 0.0 {
-            let mut cum = 0.0f64;
             let mut weighted = 0.0f64;
             for (i, &c) in counts.iter().enumerate() {
                 let rank = (i + 1) as f64;
-                weighted += rank * c as f64;
-                cum += c as f64;
+                weighted += rank * c;
             }
             (2.0 * weighted) / (n * sum) - (n + 1.0) / n
         } else {

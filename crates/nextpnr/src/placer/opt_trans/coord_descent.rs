@@ -2,7 +2,7 @@
 //!
 //! The DCD loop treats placement as a `2 * n_cells` dimensional discrete
 //! optimization problem. Within a sweep the resistance field is frozen, trial
-//! moves are evaluated with scratch Dijkstra workspaces, and only the winning
+//! moves are evaluated with cached Dial-logit soft costs, and only the winning
 //! moves update the cached distance fields. Pipe usage and effective
 //! conductance are refreshed between sweeps.
 
@@ -11,11 +11,12 @@ use rustc_hash::FxHashMap;
 
 use crate::common::IdString;
 use crate::context::Context;
+use crate::metrics::congestion::bresenham_line;
 use crate::netlist::{CellId, NetId};
 use crate::placer::common;
 use crate::placer::common::{CellValidityMask, TypeAwarePlacement};
 
-use super::config::OptTransPlacerCfg;
+use super::config::{OptTransPlacerCfg, PathModel};
 use super::demand;
 use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat};
 use super::network::PipeNetwork;
@@ -87,45 +88,6 @@ impl DistCache {
     }
 }
 
-/// Per-net stored routing paths: `paths[net_idx]` lists every pipe index used on
-/// the driver→sinks tree from the most recent Dijkstra. Used to update
-/// `pipe.net_count` between sweeps without rerunning Dijkstra.
-struct NetPaths {
-    paths: Vec<Vec<u32>>,
-}
-
-impl NetPaths {
-    fn new(n_nets: usize) -> Self {
-        Self {
-            paths: vec![Vec::new(); n_nets],
-        }
-    }
-
-    fn ensure_shape(&mut self, n_nets: usize) {
-        if self.paths.len() != n_nets {
-            self.paths = vec![Vec::new(); n_nets];
-        }
-        // Note: do NOT clear when length matches — we deliberately preserve
-        // stored paths between outer iterations so refresh_resistance can use
-        // the previous sweep's tree to update pipe.net_count.
-    }
-
-    fn is_empty_for_all(&self) -> bool {
-        self.paths.iter().all(|p| p.is_empty())
-    }
-}
-
-/// Unsafe wrapper for parallel mutable access to disjoint NetPaths entries.
-struct PathSlicePtr(*mut Vec<u32>, usize);
-unsafe impl Send for PathSlicePtr {}
-unsafe impl Sync for PathSlicePtr {}
-impl PathSlicePtr {
-    fn get_mut(&self, idx: usize) -> &mut Vec<u32> {
-        assert!(idx < self.1);
-        unsafe { &mut *self.0.add(idx) }
-    }
-}
-
 struct CellNetMap {
     /// For each cell, the list of (net_idx, pin_idx) pairs it participates in.
     map: Vec<Vec<(usize, usize)>>,
@@ -158,15 +120,27 @@ impl CellNetMap {
         let mut in_degree: Vec<u32> = vec![0; n_cells];
 
         for info in net_infos {
-            let Some(drv) = info.pins.iter().find(|p| p.is_driver) else { continue };
+            let Some(drv) = info.pins.iter().find(|p| p.is_driver) else {
+                continue;
+            };
             let Some(drv_ci) = drv.cell_idx else { continue };
-            if drv.is_fixed || drv_ci >= n_cells { continue; }
+            if drv.is_fixed || drv_ci >= n_cells {
+                continue;
+            }
 
             for sink in &info.pins {
-                if sink.is_driver { continue; }
-                let Some(sink_ci) = sink.cell_idx else { continue };
-                if sink.is_fixed || sink_ci >= n_cells { continue; }
-                if sink_ci == drv_ci { continue; }
+                if sink.is_driver {
+                    continue;
+                }
+                let Some(sink_ci) = sink.cell_idx else {
+                    continue;
+                };
+                if sink.is_fixed || sink_ci >= n_cells {
+                    continue;
+                }
+                if sink_ci == drv_ci {
+                    continue;
+                }
 
                 out_edges[drv_ci].push(sink_ci);
                 in_degree[sink_ci] += 1;
@@ -181,11 +155,15 @@ impl CellNetMap {
             let mut best: Option<usize> = None;
             let mut best_deg = u32::MAX;
             for ci in 0..n_cells {
-                if placed[ci] { continue; }
+                if placed[ci] {
+                    continue;
+                }
                 if deg[ci] < best_deg {
                     best_deg = deg[ci];
                     best = Some(ci);
-                    if best_deg == 0 { break; }
+                    if best_deg == 0 {
+                        break;
+                    }
                 }
             }
             let Some(ci) = best else { break };
@@ -216,26 +194,10 @@ struct SolveAccum {
     stats: PathStats,
 }
 
-struct PipeStamp {
-    stamp: Vec<u32>,
-    epoch: u32,
-}
-
-impl PipeStamp {
-    fn new(n_pipes: usize) -> Self {
-        Self {
-            stamp: vec![0; n_pipes],
-            epoch: 1,
-        }
-    }
-
-    fn begin_net(&mut self) {
-        self.epoch = self.epoch.wrapping_add(1);
-        if self.epoch == 0 {
-            self.stamp.fill(0);
-            self.epoch = 1;
-        }
-    }
+#[inline]
+fn pipe_lookup_key(a: usize, b: usize) -> u64 {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    ((lo as u64) << 32) | hi as u64
 }
 
 #[inline]
@@ -373,7 +335,11 @@ fn collect_net_infos_simple(
 }
 
 fn net_path_weight(info: &NetInfo, cfg: &OptTransPlacerCfg) -> f64 {
-    let io_factor = if info.has_fixed_pin { cfg.io_boost } else { 1.0 };
+    let io_factor = if info.has_fixed_pin {
+        cfg.io_boost
+    } else {
+        1.0
+    };
     let crit = cfg
         .timing_criticality
         .get(&info.net_id)
@@ -390,81 +356,6 @@ fn source_node(info: &NetInfo) -> Option<usize> {
         .map(|pin| pin.node)
 }
 
-fn sink_nodes(info: &NetInfo) -> Vec<usize> {
-    let mut sinks: Vec<_> = info
-        .pins
-        .iter()
-        .filter(|pin| !pin.is_driver)
-        .map(|pin| pin.node)
-        .collect();
-    sinks.sort_unstable();
-    sinks.dedup();
-    sinks
-}
-
-fn net_cost(info: &NetInfo, dist: &[f64], cfg: &OptTransPlacerCfg) -> f64 {
-    let mut cost = 0.0;
-    for pin in &info.pins {
-        if pin.is_driver {
-            continue;
-        }
-        let d = dist[pin.node];
-        if !d.is_finite() {
-            return f64::INFINITY;
-        }
-        cost += d;
-    }
-    net_path_weight(info, cfg) * cost
-}
-
-fn mark_path_edge_usage(
-    node: usize,
-    source_node: usize,
-    network: &PipeNetwork,
-    ws: &PathSolverWorkspace,
-    pipe_stamp: &mut PipeStamp,
-    edge_usage: &mut [f64],
-) {
-    let epoch = pipe_stamp.epoch;
-    path_solver::walk_path_back(
-        node,
-        source_node,
-        network,
-        &ws.prev_pipe,
-        &mut pipe_stamp.stamp,
-        epoch,
-        |pipe_idx, _pipe, is_new| {
-            if is_new {
-                edge_usage[pipe_idx] += 1.0;
-            }
-        },
-    );
-}
-
-fn collect_path_pipes(
-    node: usize,
-    source_node: usize,
-    network: &PipeNetwork,
-    ws: &PathSolverWorkspace,
-    pipe_stamp: &mut PipeStamp,
-    path_pipes: &mut Vec<u32>,
-) {
-    let epoch = pipe_stamp.epoch;
-    path_solver::walk_path_back(
-        node,
-        source_node,
-        network,
-        &ws.prev_pipe,
-        &mut pipe_stamp.stamp,
-        epoch,
-        |pipe_idx, _pipe, is_new| {
-            if is_new {
-                path_pipes.push(pipe_idx as u32);
-            }
-        },
-    );
-}
-
 /// Unsafe wrapper for parallel mutable access to disjoint rows of the flat
 /// `DistCache` buffer. Each row is a contiguous slice of length `stride`.
 struct DistSlicePtr {
@@ -477,9 +368,7 @@ unsafe impl Sync for DistSlicePtr {}
 impl DistSlicePtr {
     fn row_mut(&self, idx: usize) -> &mut [f64] {
         assert!(idx < self.n_nets);
-        unsafe {
-            std::slice::from_raw_parts_mut(self.base.add(idx * self.stride), self.stride)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.base.add(idx * self.stride), self.stride) }
     }
 }
 
@@ -490,8 +379,18 @@ fn solve_all_nets(
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
     collect_usage: bool,
-    paths_out: Option<&mut NetPaths>,
 ) -> SolveAccum {
+    if cfg.path_model == PathModel::BresenhamLogit {
+        return solve_all_nets_bresenham_logit(
+            network,
+            net_infos,
+            cfg,
+            solve_pool,
+            dist_cache,
+            collect_usage,
+        );
+    }
+
     let n_nodes = network.num_nodes();
     let n_pipes = network.num_pipes();
     let batch_size = cfg.net_parallel_batch_size.max(1);
@@ -501,15 +400,6 @@ fn solve_all_nets(
         stride: dist_cache.n_nodes,
         n_nets: dist_cache.n_nets,
     };
-    let path_access = paths_out.map(|p| {
-        for entry in &mut p.paths {
-            entry.clear();
-        }
-        let len = p.paths.len();
-        PathSlicePtr(p.paths.as_mut_ptr(), len)
-    });
-    let path_access = &path_access;
-
     solve_pool.install(|| {
         net_infos
             .par_chunks(batch_size)
@@ -523,10 +413,9 @@ fn solve_all_nets(
                             stats: PathStats::default(),
                         },
                         PathSolverWorkspace::new(n_nodes, n_pipes),
-                        PipeStamp::new(n_pipes),
                     )
                 },
-                |(mut accum, mut ws, mut pipe_stamp), (chunk_idx, chunk)| {
+                |(mut accum, mut ws), (chunk_idx, chunk)| {
                     let base_net_idx = chunk_idx * batch_size;
                     for (local_idx, info) in chunk.iter().enumerate() {
                         let net_idx = base_net_idx + local_idx;
@@ -534,79 +423,63 @@ fn solve_all_nets(
                             accum.stats.failures += 1;
                             continue;
                         };
-                        let sinks = sink_nodes(info);
-                        if sinks.is_empty() {
+                        // Demand normalization: each NET represents ONE physical
+                        // wire that the driver fans out to K sinks. Summed
+                        // source-edge flow must therefore be 1 wire per net,
+                        // not K. Splitting `1/K` across sinks gives the
+                        // correct per-net source load; edge usage on shared
+                        // common-path pipes accumulates to 1, which is the
+                        // physical wire count.
+                        let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
+                        if n_sinks == 0 {
                             accum.stats.failures += 1;
                             continue;
                         }
+                        let per_sink = 1.0 / n_sinks as f64;
+                        let sink_demands: Vec<(usize, f64)> = info
+                            .pins
+                            .iter()
+                            .filter(|pin| !pin.is_driver)
+                            .map(|pin| (pin.node, per_sink))
+                            .collect();
 
                         ws.begin_net();
-                        ws.mark_sinks(&sinks);
-                        let heap_pops = if cfg.use_eikonal {
-                            super::eikonal::fsm_solve(
+                        let result = if collect_usage {
+                            path_solver::dial_logit_load(
                                 network,
                                 source,
-                                sinks.len(),
+                                &sink_demands,
                                 &mut ws,
+                                Some(&mut accum.edge_usage),
                             )
                         } else {
-                            path_solver::dijkstra_early_terminate(
+                            path_solver::dial_logit_load(
                                 network,
                                 source,
-                                sinks.len(),
+                                &sink_demands,
                                 &mut ws,
+                                None,
                             )
                         };
-                        ws.clear_sinks(&sinks);
 
                         accum.stats.total_solves += 1;
-                        accum.stats.total_heap_pops += heap_pops;
-                        accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(heap_pops);
+                        accum.stats.total_heap_pops += result.heap_pops;
+                        accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(result.heap_pops);
+                        if result.missing_demand > 0.0 {
+                            accum.stats.failures += 1;
+                        }
 
                         let dist_out = dist_access.row_mut(net_idx);
                         dist_out.fill(f64::INFINITY);
                         for &node in &ws.touched {
-                            dist_out[node] = ws.phys_dist[node];
+                            dist_out[node] = ws.dist[node];
                         }
-
-                        accum.energy += net_cost(info, &ws.dist, cfg);
-
-                        if collect_usage {
-                            pipe_stamp.begin_net();
-                            for pin in &info.pins {
-                                if pin.is_driver || !ws.dist[pin.node].is_finite() {
-                                    continue;
-                                }
-                                mark_path_edge_usage(
-                                    pin.node,
-                                    source,
-                                    network,
-                                    &ws,
-                                    &mut pipe_stamp,
-                                    &mut accum.edge_usage,
-                                );
-                            }
-                        }
-
-                        if let Some(pa) = path_access.as_ref() {
-                            let path_out = pa.get_mut(net_idx);
-                            path_out.clear();
-                            pipe_stamp.begin_net();
-                            for pin in &info.pins {
-                                if pin.is_driver || !ws.dist[pin.node].is_finite() {
-                                    continue;
-                                }
-                                collect_path_pipes(
-                                    pin.node, source, network, &ws,
-                                    &mut pipe_stamp, path_out,
-                                );
-                            }
-                        }
+                        accum.energy += net_path_weight(info, cfg) * result.energy;
                     }
-                    (accum, ws, pipe_stamp)
+                    (accum, ws)
                 },
             )
-            .map(|(accum, _, _)| accum)
+            .map(|(accum, _)| accum)
             .reduce(
                 || SolveAccum {
                     edge_usage: vec![0.0; n_pipes],
@@ -628,85 +501,554 @@ fn solve_all_nets(
     })
 }
 
+#[derive(Default)]
+struct TemplateAccum {
+    edge_usage: Vec<f64>,
+    energy: f64,
+    failures: usize,
+}
+
+fn solve_all_nets_bresenham_logit(
+    network: &PipeNetwork,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+    dist_cache: &mut DistCache,
+    collect_usage: bool,
+) -> SolveAccum {
+    let n_pipes = network.num_pipes();
+    let batch_size = cfg.net_parallel_batch_size.max(1);
+    let dist_access = DistSlicePtr {
+        base: dist_cache.dist.as_mut_ptr(),
+        stride: dist_cache.n_nodes,
+        n_nets: dist_cache.n_nets,
+    };
+
+    solve_pool
+        .install(|| {
+            net_infos
+                .par_chunks(batch_size)
+                .enumerate()
+                .fold(
+                    || TemplateAccum {
+                        edge_usage: vec![0.0; n_pipes],
+                        energy: 0.0,
+                        failures: 0,
+                    },
+                    |mut accum, (chunk_idx, chunk)| {
+                        let base_net_idx = chunk_idx * batch_size;
+                        for (local_idx, info) in chunk.iter().enumerate() {
+                            let net_idx = base_net_idx + local_idx;
+                            let dist_out = dist_access.row_mut(net_idx);
+                            dist_out.fill(f64::INFINITY);
+
+                            let Some(source) = source_node(info) else {
+                                accum.failures += 1;
+                                continue;
+                            };
+                            fill_bresenham_surrogate_field(network, source, dist_out);
+
+                            let sinks: Vec<usize> = info
+                                .pins
+                                .iter()
+                                .filter(|pin| !pin.is_driver)
+                                .map(|pin| pin.node)
+                                .collect();
+                            if sinks.is_empty() {
+                                accum.failures += 1;
+                                continue;
+                            }
+                            let result = solve_net_bresenham_logit(
+                                network,
+                                source,
+                                &sinks,
+                                if collect_usage {
+                                    Some(&mut accum.edge_usage)
+                                } else {
+                                    None
+                                },
+                            );
+                            if result.failures > 0 {
+                                accum.failures += result.failures;
+                            }
+                            accum.energy += net_path_weight(info, cfg) * result.energy;
+                        }
+                        accum
+                    },
+                )
+                .reduce(
+                    || TemplateAccum {
+                        edge_usage: vec![0.0; n_pipes],
+                        energy: 0.0,
+                        failures: 0,
+                    },
+                    |mut a, b| {
+                        for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
+                            *dst += src;
+                        }
+                        a.energy += b.energy;
+                        a.failures += b.failures;
+                        a
+                    },
+                )
+        })
+        .into_solve_accum(net_infos.len())
+}
+
+fn solve_bresenham_usage_only(
+    network: &PipeNetwork,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+) -> SolveAccum {
+    let n_pipes = network.num_pipes();
+    let batch_size = cfg.net_parallel_batch_size.max(1);
+
+    solve_pool
+        .install(|| {
+            net_infos
+                .par_chunks(batch_size)
+                .fold(
+                    || TemplateAccum {
+                        edge_usage: vec![0.0; n_pipes],
+                        energy: 0.0,
+                        failures: 0,
+                    },
+                    |mut accum, chunk| {
+                        for info in chunk {
+                            let Some(source) = source_node(info) else {
+                                accum.failures += 1;
+                                continue;
+                            };
+                            let sinks: Vec<usize> = info
+                                .pins
+                                .iter()
+                                .filter(|pin| !pin.is_driver)
+                                .map(|pin| pin.node)
+                                .collect();
+                            if sinks.is_empty() {
+                                accum.failures += 1;
+                                continue;
+                            }
+                            let result = solve_net_bresenham_logit(
+                                network,
+                                source,
+                                &sinks,
+                                Some(&mut accum.edge_usage),
+                            );
+                            accum.failures += result.failures;
+                            accum.energy += net_path_weight(info, cfg) * result.energy;
+                        }
+                        accum
+                    },
+                )
+                .reduce(
+                    || TemplateAccum {
+                        edge_usage: vec![0.0; n_pipes],
+                        energy: 0.0,
+                        failures: 0,
+                    },
+                    |mut a, b| {
+                        for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
+                            *dst += src;
+                        }
+                        a.energy += b.energy;
+                        a.failures += b.failures;
+                        a
+                    },
+                )
+        })
+        .into_solve_accum(net_infos.len())
+}
+
+impl TemplateAccum {
+    fn into_solve_accum(self, total_solves: usize) -> SolveAccum {
+        SolveAccum {
+            edge_usage: self.edge_usage,
+            energy: self.energy,
+            stats: PathStats {
+                total_solves,
+                total_heap_pops: 0,
+                max_heap_pops: 0,
+                failures: self.failures,
+            },
+        }
+    }
+}
+
+struct TemplateSolveResult {
+    energy: f64,
+    failures: usize,
+}
+
+fn solve_net_bresenham_logit(
+    network: &PipeNetwork,
+    source: usize,
+    sinks: &[usize],
+    mut edge_usage: Option<&mut [f64]>,
+) -> TemplateSolveResult {
+    let mut energy = 0.0;
+    let mut failures = 0usize;
+    for &sink in sinks {
+        let templates = build_route_templates(network, source, sink);
+        if templates.is_empty() {
+            failures += 1;
+            continue;
+        }
+
+        let mut min_cost = f64::INFINITY;
+        let mut costs = Vec::with_capacity(templates.len());
+        for path in &templates {
+            let cost = template_path_cost(network, path);
+            if cost.is_finite() {
+                min_cost = min_cost.min(cost);
+            }
+            costs.push(cost);
+        }
+        if !min_cost.is_finite() {
+            failures += 1;
+            continue;
+        }
+
+        let mut z = 0.0f64;
+        let mut weights = Vec::with_capacity(costs.len());
+        for &cost in &costs {
+            let w = if cost.is_finite() {
+                (-path_solver::LOGIT_THETA * (cost - min_cost)).exp()
+            } else {
+                0.0
+            };
+            z += w;
+            weights.push(w);
+        }
+        if z <= 0.0 || !z.is_finite() {
+            failures += 1;
+            continue;
+        }
+
+        // Canonical per-net energy: shortest template-path cost (demand=1 per
+        // sink in the Bresenham surrogate). `z`/`weights` still drive the
+        // logit edge-usage spread below, but the scalar we report/minimize is
+        // the same physical "routed cost" as the dial-logit path uses.
+        energy += min_cost;
+        if let Some(usage) = edge_usage.as_deref_mut() {
+            for (path, weight) in templates.iter().zip(weights) {
+                if weight <= 0.0 {
+                    continue;
+                }
+                let p = weight / z;
+                for &pipe_idx in path {
+                    usage[pipe_idx] += p;
+                }
+            }
+        }
+    }
+
+    TemplateSolveResult { energy, failures }
+}
+
+fn template_path_cost(network: &PipeNetwork, path: &[usize]) -> f64 {
+    if path.is_empty() {
+        return 0.0;
+    }
+    let mut cost = 0.0;
+    for &pipe_idx in path {
+        let pipe = &network.pipes[pipe_idx];
+        let g = pipe.eff_conductance;
+        if !g.is_finite() || g <= 0.0 {
+            return f64::INFINITY;
+        }
+        cost += 1.0 / g;
+    }
+    cost
+}
+
+fn fill_bresenham_surrogate_field(network: &PipeNetwork, source: usize, dist_out: &mut [f64]) {
+    let src = &network.nodes[source];
+    for (node_idx, node) in network.nodes.iter().enumerate() {
+        let dx = (node.tile_x - src.tile_x).abs() as f64;
+        let dy = (node.tile_y - src.tile_y).abs() as f64;
+        let manhattan = dx + dy;
+        // Sparse route templates provide the usage estimate. The DCD field is
+        // deliberately a cheap smooth surrogate: route length plus a local
+        // BPR-like pressure sample around the candidate node.
+        dist_out[node_idx] = manhattan + local_node_pressure(network, node_idx);
+    }
+}
+
+fn local_node_pressure(network: &PipeNetwork, node: usize) -> f64 {
+    let model = ResistanceModel;
+    let mut pressure = 0.0;
+    let mut n = 0usize;
+    for &pipe_idx in &network.node_pipes[node] {
+        let pipe = &network.pipes[pipe_idx];
+        if pipe.capacity <= 0.0 || pipe.base_resistance <= 0.0 {
+            continue;
+        }
+        if pipe.net_count > 0.0 {
+            let r_ratio = model.effective_resistance(pipe) / pipe.base_resistance;
+            pressure += (r_ratio - 1.0).max(0.0);
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        pressure / n as f64
+    }
+}
+
+fn build_route_templates(network: &PipeNetwork, source: usize, sink: usize) -> Vec<Vec<usize>> {
+    let s = &network.nodes[source];
+    let t = &network.nodes[sink];
+    let mut templates = Vec::with_capacity(5);
+
+    push_template_from_points(
+        network,
+        &bresenham_line(s.tile_x, s.tile_y, t.tile_x, t.tile_y),
+        &mut templates,
+    );
+    push_template_from_points(
+        network,
+        &orthogonal_points(s.tile_x, s.tile_y, t.tile_x, t.tile_y, true),
+        &mut templates,
+    );
+    push_template_from_points(
+        network,
+        &orthogonal_points(s.tile_x, s.tile_y, t.tile_x, t.tile_y, false),
+        &mut templates,
+    );
+
+    let span = (t.tile_x - s.tile_x).abs() + (t.tile_y - s.tile_y).abs();
+    let offset = (span / 8).clamp(2, 16);
+    let (px, py) = perpendicular_step(t.tile_x - s.tile_x, t.tile_y - s.tile_y);
+    for sign in [1, -1] {
+        let ox = px * offset * sign;
+        let oy = py * offset * sign;
+        let a = (
+            (s.tile_x + ox).clamp(0, network.width - 1),
+            (s.tile_y + oy).clamp(0, network.height - 1),
+        );
+        let b = (
+            (t.tile_x + ox).clamp(0, network.width - 1),
+            (t.tile_y + oy).clamp(0, network.height - 1),
+        );
+        let mut points = Vec::new();
+        append_points(&mut points, &bresenham_line(s.tile_x, s.tile_y, a.0, a.1));
+        append_points(&mut points, &bresenham_line(a.0, a.1, b.0, b.1));
+        append_points(&mut points, &bresenham_line(b.0, b.1, t.tile_x, t.tile_y));
+        push_template_from_points(network, &points, &mut templates);
+    }
+
+    templates.sort();
+    templates.dedup();
+    templates
+}
+
+fn append_points(dst: &mut Vec<(i32, i32)>, src: &[(i32, i32)]) {
+    for &p in src {
+        if dst.last().copied() != Some(p) {
+            dst.push(p);
+        }
+    }
+}
+
+fn perpendicular_step(dx: i32, dy: i32) -> (i32, i32) {
+    if dx.abs() >= dy.abs() {
+        (0, dy.signum().max(1))
+    } else {
+        (dx.signum().max(1), 0)
+    }
+}
+
+fn orthogonal_points(x0: i32, y0: i32, x1: i32, y1: i32, x_first: bool) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    out.push((x0, y0));
+    if x_first {
+        step_axis(&mut out, x1, y0);
+        step_axis(&mut out, x1, y1);
+    } else {
+        step_axis(&mut out, x0, y1);
+        step_axis(&mut out, x1, y1);
+    }
+    out
+}
+
+fn step_axis(out: &mut Vec<(i32, i32)>, x1: i32, y1: i32) {
+    let Some(&(mut x, mut y)) = out.last() else {
+        return;
+    };
+    while x != x1 {
+        x += (x1 - x).signum();
+        out.push((x, y));
+    }
+    while y != y1 {
+        y += (y1 - y).signum();
+        out.push((x, y));
+    }
+}
+
+fn push_template_from_points(
+    network: &PipeNetwork,
+    points: &[(i32, i32)],
+    templates: &mut Vec<Vec<usize>>,
+) {
+    let mut path = Vec::new();
+    for pair in points.windows(2) {
+        let (x0, y0) = pair[0];
+        let (x1, y1) = pair[1];
+        if x0 == x1 && y0 == y1 {
+            continue;
+        }
+        if !append_orthogonal_step(network, x0, y0, x1, y1, &mut path) {
+            return;
+        }
+    }
+    templates.push(path);
+}
+
+fn append_orthogonal_step(
+    network: &PipeNetwork,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    out: &mut Vec<usize>,
+) -> bool {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    if dx.abs() + dy.abs() == 1 {
+        return append_adjacent_pipe(network, x0, y0, x1, y1, out);
+    }
+    if dx.abs() == 1 && dy.abs() == 1 {
+        let x_mid = (x1, y0);
+        let y_mid = (x0, y1);
+        let mut path_x = Vec::new();
+        let mut path_y = Vec::new();
+        let ok_x = append_adjacent_pipe(network, x0, y0, x_mid.0, x_mid.1, &mut path_x)
+            && append_adjacent_pipe(network, x_mid.0, x_mid.1, x1, y1, &mut path_x);
+        let ok_y = append_adjacent_pipe(network, x0, y0, y_mid.0, y_mid.1, &mut path_y)
+            && append_adjacent_pipe(network, y_mid.0, y_mid.1, x1, y1, &mut path_y);
+        match (ok_x, ok_y) {
+            (true, true) => {
+                if template_path_cost(network, &path_x) <= template_path_cost(network, &path_y) {
+                    out.extend(path_x);
+                } else {
+                    out.extend(path_y);
+                }
+                true
+            }
+            (true, false) => {
+                out.extend(path_x);
+                true
+            }
+            (false, true) => {
+                out.extend(path_y);
+                true
+            }
+            (false, false) => false,
+        }
+    } else {
+        false
+    }
+}
+
+fn append_adjacent_pipe(
+    network: &PipeNetwork,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    out: &mut Vec<usize>,
+) -> bool {
+    if x0 < 0 || x0 >= network.width || y0 < 0 || y0 >= network.height {
+        return false;
+    }
+    if x1 < 0 || x1 >= network.width || y1 < 0 || y1 >= network.height {
+        return false;
+    }
+    let a = network.node_index(x0, y0);
+    let b = network.node_index(x1, y1);
+    let Some(&pipe_idx) = network.pipe_lookup.get(&pipe_lookup_key(a, b)) else {
+        return false;
+    };
+    out.push(pipe_idx);
+    true
+}
+
 fn update_effective_conductance(
     network: &mut PipeNetwork,
     solve_pool: &rayon::ThreadPool,
     resistance_model: &ResistanceModel,
 ) {
     solve_pool.install(|| {
-        network.pipes.par_iter_mut().for_each(|pipe| {
-            let r_eff = resistance_model.effective_resistance(pipe);
-            pipe.eff_conductance = 1.0 / r_eff.max(1e-12);
-        });
+        let pipes = &mut network.pipes;
+        let pipe_costs = &mut network.pipe_costs;
+        pipes
+            .par_iter_mut()
+            .zip(pipe_costs.par_iter_mut())
+            .for_each(|(pipe, cost)| {
+                let r_eff = resistance_model.effective_resistance(pipe);
+                let r = r_eff.max(1e-12);
+                pipe.eff_conductance = 1.0 / r;
+                *cost = r;
+            });
     });
 }
 
-
-/// Compute `pipe.net_count` from the stored per-net paths, applying the
-/// blend-with-previous damping that the old pass-1 used.
-fn update_net_count_from_paths(
+fn update_net_count_from_usage(
     network: &mut PipeNetwork,
-    paths: &NetPaths,
+    usage: &[f64],
     blend_alpha: f64,
     solve_pool: &rayon::ThreadPool,
 ) {
-    let n_pipes = network.pipes.len();
-    let mut usage = vec![0u32; n_pipes];
-    for net_path in &paths.paths {
-        for &pipe_idx in net_path {
-            let i = pipe_idx as usize;
-            if i < n_pipes {
-                usage[i] = usage[i].saturating_add(1);
-            }
-        }
-    }
     solve_pool.install(|| {
         network
             .pipes
             .par_iter_mut()
             .zip(usage.par_iter())
             .for_each(|(pipe, &u)| {
-                let new_count = u as f64;
-                let blended = blend_alpha * pipe.net_count as f64
-                    + (1.0 - blend_alpha) * new_count;
-                pipe.net_count = blended.round() as u32;
+                pipe.net_count = blend_alpha * pipe.net_count + (1.0 - blend_alpha) * u;
             });
     });
 }
 
-fn refresh_resistance(
-    network: &mut PipeNetwork,
+fn solve_distance_cache(
+    network: &PipeNetwork,
     net_infos: &[NetInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
-    resistance_model: &ResistanceModel,
     dist_cache: &mut DistCache,
-    paths: &mut NetPaths,
-) -> (f64, PathStats) {
-    let blend_alpha = cfg.blend_alpha;
-
-    if paths.is_empty_for_all() {
-        // Bootstrap: first refresh has no stored paths. Run one solve under
-        // current R_eff to populate dist_cache AND record paths. The R_eff
-        // update happens on the next refresh from these paths.
-        dist_cache.reset();
-        let solve = solve_all_nets(
-            network, net_infos, cfg, solve_pool, dist_cache, false, Some(paths),
-        );
-        return (solve.energy, solve.stats);
-    }
-
-    // Use the last stored paths to update pipe.net_count (no Dijkstra).
-    update_net_count_from_paths(network, paths, blend_alpha, solve_pool);
-    update_effective_conductance(network, solve_pool, resistance_model);
-
-    // Single Dijkstra pass under the new R_eff: refills dist_cache AND records
-    // fresh paths for the next refresh.
+) -> SolveAccum {
     dist_cache.reset();
-    let solve = solve_all_nets(
-        network, net_infos, cfg, solve_pool, dist_cache, false, Some(paths),
-    );
-    (solve.energy, solve.stats)
+    solve_all_nets(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        dist_cache,
+        false,
+    )
+}
+
+fn solve_usage_and_energy(
+    network: &PipeNetwork,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+    dist_cache: &mut DistCache,
+) -> SolveAccum {
+    dist_cache.reset();
+    solve_all_nets(network, net_infos, cfg, solve_pool, dist_cache, true)
+}
+
+fn apply_usage_for_next_iter(
+    network: &mut PipeNetwork,
+    usage: &[f64],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+) {
+    update_net_count_from_usage(network, usage, cfg.blend_alpha, solve_pool);
 }
 
 fn evaluate_cell_at(
@@ -721,7 +1063,7 @@ fn evaluate_cell_at(
     validity: &CellValidityMask,
 ) -> f64 {
     // Refuse tiles that can't host this cell type. This propagates
-    // through every caller (BB, fullscan, bisection, tally) via their
+    // through every caller (BB, fullscan, bisection) via their
     // existing "pick min finite cost" logic — no per-caller edit needed.
     if !validity.is_valid(cell_idx, gx, gy) {
         return f64::INFINITY;
@@ -854,10 +1196,18 @@ fn compute_bounding_boxes(
     let mut mny = f64::INFINITY;
     let mut mxy = f64::NEG_INFINITY;
     for i in 0..n {
-        if cell_x[i] < mnx { mnx = cell_x[i]; }
-        if cell_x[i] > mxx { mxx = cell_x[i]; }
-        if cell_y[i] < mny { mny = cell_y[i]; }
-        if cell_y[i] > mxy { mxy = cell_y[i]; }
+        if cell_x[i] < mnx {
+            mnx = cell_x[i];
+        }
+        if cell_x[i] > mxx {
+            mxx = cell_x[i];
+        }
+        if cell_y[i] < mny {
+            mny = cell_y[i];
+        }
+        if cell_y[i] > mxy {
+            mxy = cell_y[i];
+        }
     }
     let movable_w = (mxx - mnx).max(0.0).round() as i32;
     let movable_h = (mxy - mny).max(0.0).round() as i32;
@@ -872,10 +1222,18 @@ fn compute_bounding_boxes(
     for info in net_infos {
         for pin in &info.pins {
             let node = &network.nodes[pin.node];
-            if node.tile_x < amnx { amnx = node.tile_x; }
-            if node.tile_x > amxx { amxx = node.tile_x; }
-            if node.tile_y < amny { amny = node.tile_y; }
-            if node.tile_y > amxy { amxy = node.tile_y; }
+            if node.tile_x < amnx {
+                amnx = node.tile_x;
+            }
+            if node.tile_x > amxx {
+                amxx = node.tile_x;
+            }
+            if node.tile_y < amny {
+                amny = node.tile_y;
+            }
+            if node.tile_y > amxy {
+                amxy = node.tile_y;
+            }
         }
     }
     let all_w = (amxx - amnx).max(0);
@@ -903,7 +1261,11 @@ fn collect_design_summary(
 
     let mut summary = Vec::new();
     summary.push(format!("=== Design summary ==="));
-    summary.push(format!("chipdb: w={} h={} (tile grid)", ctx.chipdb().width(), ctx.chipdb().height()));
+    summary.push(format!(
+        "chipdb: w={} h={} (tile grid)",
+        ctx.chipdb().width(),
+        ctx.chipdb().height()
+    ));
     summary.push(format!(
         "network: nodes={} pipes={} width={} height={} origin=({},{})",
         network.num_nodes(),
@@ -925,12 +1287,20 @@ fn collect_design_summary(
         let bucket = ctx.name_of(ctx.resolve_bucket(cell.cell_type)).to_string();
         let has_bel = cell.bel.is_some();
         let locked = cell.bel_strength.is_locked();
-        if has_bel { cells_with_bel += 1; }
-        if locked { locked_cells += 1; }
+        if has_bel {
+            cells_with_bel += 1;
+        }
+        if locked {
+            locked_cells += 1;
+        }
         let entry = design_by_bucket.entry(bucket).or_insert((0, 0, 0));
         entry.0 += 1;
-        if has_bel { entry.1 += 1; }
-        if locked { entry.2 += 1; }
+        if has_bel {
+            entry.1 += 1;
+        }
+        if locked {
+            entry.2 += 1;
+        }
         let _ = cell_id;
     }
 
@@ -950,7 +1320,9 @@ fn collect_design_summary(
     // Count movable cells by bucket (the subset the placer touches).
     let mut movable_by_bucket: BTreeMap<String, usize> = BTreeMap::new();
     for &b in cell_buckets {
-        *movable_by_bucket.entry(ctx.name_of(b).to_string()).or_insert(0) += 1;
+        *movable_by_bucket
+            .entry(ctx.name_of(b).to_string())
+            .or_insert(0) += 1;
     }
     summary.push(format!(""));
     summary.push(format!("=== Movable cells (placer sees these) ==="));
@@ -961,7 +1333,9 @@ fn collect_design_summary(
 
     // Chipdb BEL capacity per bucket (from type_aware).
     summary.push(format!(""));
-    summary.push(format!("=== Chipdb BEL capacity (from TypeAwarePlacement) ==="));
+    summary.push(format!(
+        "=== Chipdb BEL capacity (from TypeAwarePlacement) ==="
+    ));
     for (bucket, cap_map) in &type_aware.tile_capacity {
         let bucket_name = ctx.name_of(*bucket).to_string();
         let n_tiles = cap_map.len();
@@ -983,10 +1357,14 @@ fn collect_design_summary(
     let mut io_ys = Vec::<i32>::new();
     for (cell_id, cell_raw) in ctx.design.iter_alive_cells() {
         let locked = cell_raw.bel_strength.is_locked();
-        if !locked { continue; }
+        if !locked {
+            continue;
+        }
         let Some(bel) = cell_raw.bel else { continue };
         let loc = ctx.bel(bel).loc();
-        let bucket = ctx.name_of(ctx.resolve_bucket(cell_raw.cell_type)).to_string();
+        let bucket = ctx
+            .name_of(ctx.resolve_bucket(cell_raw.cell_type))
+            .to_string();
         let name = ctx.name_of(cell_raw.name).to_string();
         // Fanout: max of ports that resolve to a net with users.
         let mut fanout = 0u32;
@@ -995,7 +1373,9 @@ fn collect_design_summary(
             if let Some(net_id) = cell_view.port_net(pin.port) {
                 let net = ctx.design.net(net_id);
                 let f = net.num_users() as u32;
-                if f > fanout { fanout = f; }
+                if f > fanout {
+                    fanout = f;
+                }
             }
         }
         fixed_rows.push((name, bucket, loc.x, loc.y, fanout));
@@ -1009,11 +1389,18 @@ fn collect_design_summary(
         let mny = *io_ys.iter().min().unwrap();
         let mxy = *io_ys.iter().max().unwrap();
         summary.push(format!(""));
-        summary.push(format!("=== Fixed/locked cell positions (IOs and locked cells) ==="));
+        summary.push(format!(
+            "=== Fixed/locked cell positions (IOs and locked cells) ==="
+        ));
         summary.push(format!("n_fixed: {}", io_xs.len()));
         summary.push(format!(
             "BB: x=[{},{}] w={}  y=[{},{}] h={}",
-            mnx, mxx, mxx - mnx, mny, mxy, mxy - mny
+            mnx,
+            mxx,
+            mxx - mnx,
+            mny,
+            mxy,
+            mxy - mny
         ));
         summary.push(format!(
             "chip frac: w={:.2}%  h={:.2}%",
@@ -1087,7 +1474,9 @@ fn collect_design_summary(
                 }
             }
         }
-        if has_fixed { n_nets_with_fixed += 1; }
+        if has_fixed {
+            n_nets_with_fixed += 1;
+        }
     }
     summary.push(format!(""));
     summary.push(format!("=== Net summary ==="));
@@ -1124,19 +1513,20 @@ fn collect_cell_metadata(
         for &(net_idx, _) in cell_nets {
             let info = &net_infos[net_idx];
             let fan = info.pins.len().saturating_sub(1) as u32;
-            if fan > max_fan { max_fan = fan; }
+            if fan > max_fan {
+                max_fan = fan;
+            }
             tot_fan += fan;
-            if info.has_fixed_pin { has_fixed = true; }
+            if info.has_fixed_pin {
+                has_fixed = true;
+            }
         }
         out.push((ci, cell_name, bucket, n_nets, max_fan, tot_fan, has_fixed));
     }
     out
 }
 
-fn per_net_hpwl(
-    net_infos: &[NetInfo],
-    network: &PipeNetwork,
-) -> (Vec<String>, Vec<u32>, Vec<f64>) {
+fn per_net_hpwl(net_infos: &[NetInfo], network: &PipeNetwork) -> (Vec<String>, Vec<u32>, Vec<f64>) {
     let n = net_infos.len();
     let mut names = Vec::with_capacity(n);
     let mut fanout = Vec::with_capacity(n);
@@ -1153,10 +1543,18 @@ fn per_net_hpwl(
         let (mut mny, mut mxy) = (first.tile_y, first.tile_y);
         for pin in info.pins.iter().skip(1) {
             let node = &network.nodes[pin.node];
-            if node.tile_x < mnx { mnx = node.tile_x; }
-            if node.tile_x > mxx { mxx = node.tile_x; }
-            if node.tile_y < mny { mny = node.tile_y; }
-            if node.tile_y > mxy { mxy = node.tile_y; }
+            if node.tile_x < mnx {
+                mnx = node.tile_x;
+            }
+            if node.tile_x > mxx {
+                mxx = node.tile_x;
+            }
+            if node.tile_y < mny {
+                mny = node.tile_y;
+            }
+            if node.tile_y > mxy {
+                mxy = node.tile_y;
+            }
         }
         hpwl.push((mxx - mnx) as f64 + (mxy - mny) as f64);
     }
@@ -1173,6 +1571,178 @@ fn per_net_hpwl(
 /// The damping (alpha ∈ (0, 1]) prevents overshoot when multiple cells
 /// compete for the same region — each cell moves partway toward its ideal,
 /// and shared-net conflicts resolve by compromise rather than greedy race.
+/// Online log-sum-exp softmin accumulator.
+///
+/// Tracks the softmin-weighted expected position `(Σ w_i·gx_i, Σ w_i·gy_i) / Σ w_i`
+/// where `w_i = exp(-theta · (c_i − c_min))`. Uses a running `anchor` at the
+/// lowest cost seen so far so `exp()` stays bounded in `[0, 1]`; when a new
+/// lower cost arrives the accumulated sums are rescaled down to keep the
+/// anchor fresh. Also tracks the hard argmin for fallback.
+#[derive(Clone, Copy, Debug)]
+struct SoftminAccumulator {
+    anchor: f64,
+    s_w: f64,
+    s_wx: f64,
+    s_wy: f64,
+    best_x: i32,
+    best_y: i32,
+    best_cost: f64,
+    theta: f64,
+}
+
+impl SoftminAccumulator {
+    fn new(theta: f64) -> Self {
+        Self {
+            anchor: f64::INFINITY,
+            s_w: 0.0,
+            s_wx: 0.0,
+            s_wy: 0.0,
+            best_x: 0,
+            best_y: 0,
+            best_cost: f64::INFINITY,
+            theta: theta.max(0.0),
+        }
+    }
+
+    #[inline]
+    fn observe(&mut self, gx: i32, gy: i32, cost: f64) {
+        if !cost.is_finite() {
+            return;
+        }
+        if cost < self.best_cost {
+            self.best_cost = cost;
+            self.best_x = gx;
+            self.best_y = gy;
+        }
+        // If this probe lowers the anchor, shift accumulated sums down so
+        // they remain expressed relative to the new anchor.
+        if cost < self.anchor {
+            if self.anchor.is_finite() && self.theta > 0.0 && self.s_w > 0.0 {
+                let shift = self.anchor - cost;
+                let scale = (-self.theta * shift).exp();
+                if scale.is_finite() {
+                    self.s_w *= scale;
+                    self.s_wx *= scale;
+                    self.s_wy *= scale;
+                } else {
+                    self.s_w = 0.0;
+                    self.s_wx = 0.0;
+                    self.s_wy = 0.0;
+                }
+            }
+            self.anchor = cost;
+        }
+        let w = (-self.theta * (cost - self.anchor)).exp();
+        if !w.is_finite() || w <= 0.0 {
+            return;
+        }
+        self.s_w += w;
+        self.s_wx += w * gx as f64;
+        self.s_wy += w * gy as f64;
+    }
+
+    fn argmin(&self) -> (i32, i32) {
+        (self.best_x, self.best_y)
+    }
+
+    /// Softmin expected position as continuous `(fx, fy)`. Falls back to the
+    /// argmin if we saw no finite probe or the weights underflowed.
+    fn softmin_continuous(&self) -> (f64, f64) {
+        if self.s_w > 0.0 && self.s_w.is_finite() {
+            (self.s_wx / self.s_w, self.s_wy / self.s_w)
+        } else {
+            (self.best_x as f64, self.best_y as f64)
+        }
+    }
+
+    /// Rounded + grid-clamped softmin tile. Returns argmin when softmin is
+    /// disabled (`theta <= 0`) or when the rounded tile is invalid for this
+    /// cell (validity mask rejects it).
+    fn softmin_tile(
+        &self,
+        cell_idx: usize,
+        validity: &CellValidityMask,
+        width: i32,
+        height: i32,
+    ) -> (i32, i32) {
+        if self.theta <= 0.0 {
+            return self.argmin();
+        }
+        let (fx, fy) = self.softmin_continuous();
+        let gx = fx.round() as i32;
+        let gy = fy.round() as i32;
+        let gx = gx.clamp(0, width.saturating_sub(1).max(0));
+        let gy = gy.clamp(0, height.saturating_sub(1).max(0));
+        if validity.is_valid(cell_idx, gx, gy) {
+            (gx, gy)
+        } else {
+            self.argmin()
+        }
+    }
+}
+
+/// Unified fullscan probe: one pass over the W×H grid computing both the
+/// hard argmin and the softmin accumulator under a given `theta`. When
+/// `theta <= 0` the softmin result falls back to argmin so callers can use
+/// a single code path.
+fn fullscan_sweep_probe(
+    cell_idx: usize,
+    cell_nets: &[(usize, usize)],
+    net_infos: &[NetInfo],
+    dist_cache: &DistCache,
+    network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
+    validity: &CellValidityMask,
+    theta: f64,
+    collect_stats: bool,
+) -> (SoftminAccumulator, Option<PlateauStat>) {
+    let cur_node = current_cell_node(cell_idx, cell_nets, net_infos);
+    let cur_x = network.nodes[cur_node].tile_x;
+    let cur_y = network.nodes[cur_node].tile_y;
+
+    let mut acc = SoftminAccumulator::new(theta);
+    // Prime argmin with current position so a fully-INF scan still returns
+    // something sensible.
+    acc.best_x = cur_x;
+    acc.best_y = cur_y;
+
+    let mut cost_buf: Vec<f64> = if collect_stats {
+        Vec::with_capacity((network.width as usize) * (network.height as usize))
+    } else {
+        Vec::new()
+    };
+    let mut stat = PlateauStat {
+        cost_min: f64::INFINITY,
+        cost_max: f64::NEG_INFINITY,
+        ..PlateauStat::default()
+    };
+
+    for gy in 0..network.height {
+        for gx in 0..network.width {
+            let cost = evaluate_cell_at(
+                cell_idx, gx, gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
+            );
+            if collect_stats {
+                diag::update_plateau(&mut stat, cost);
+                if cost.is_finite() {
+                    cost_buf.push(cost);
+                }
+            }
+            acc.observe(gx, gy, cost);
+        }
+    }
+
+    let stats = if collect_stats {
+        if acc.best_cost.is_finite() {
+            diag::classify_plateau(&mut stat, &cost_buf, acc.best_cost);
+        }
+        Some(stat)
+    } else {
+        None
+    };
+    (acc, stats)
+}
+
 fn place_dcd_sweep(
     net_infos: &mut [NetInfo],
     cell_net_map: &CellNetMap,
@@ -1183,6 +1753,7 @@ fn place_dcd_sweep(
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
     diag: &mut DiagCtx,
+    theta: f64,
 ) -> usize {
     let n = cell_x.len();
     let alpha = cfg.jacobi_alpha.clamp(0.0, 1.0);
@@ -1191,9 +1762,14 @@ fn place_dcd_sweep(
     }
 
     let collect_stats = diag.enabled;
+    let use_softmin = cfg.softmin_enabled && theta > 0.0;
 
-    // Phase 1: compute each cell's best position against the frozen landscape.
-    // This is embarrassingly parallel — each cell reads shared read-only state.
+    // Phase 1: compute each cell's softmin/argmin position against the frozen
+    // landscape. Embarrassingly parallel — each cell reads shared read-only
+    // state. Each probe returns (chosen_xy, argmin_xy, stats): `chosen_xy` is
+    // the softmin-weighted tile (falling back to argmin when softmin is
+    // disabled or lands on an invalid tile); `argmin_xy` is kept for
+    // plateau/diag reporting.
     let best: Vec<((i32, i32), Option<PlateauStat>)> = (0..n)
         .into_par_iter()
         .map(|ci| {
@@ -1203,7 +1779,7 @@ fn place_dcd_sweep(
                 let gy = network.tile_to_net(cell_y[ci]).round() as i32;
                 return ((gx, gy), None);
             }
-            fullscan_find_best_position_with_stats(
+            let (acc, stats) = fullscan_sweep_probe(
                 ci,
                 cell_nets,
                 net_infos,
@@ -1211,8 +1787,15 @@ fn place_dcd_sweep(
                 network,
                 cfg,
                 validity,
+                if use_softmin { theta } else { 0.0 },
                 collect_stats,
-            )
+            );
+            let chosen = if use_softmin {
+                acc.softmin_tile(ci, validity, network.width, network.height)
+            } else {
+                acc.argmin()
+            };
+            (chosen, stats)
         })
         .collect();
 
@@ -1403,10 +1986,22 @@ fn bisect_2d(
             n_improve += 1;
             // Shrink window to the winning quadrant.
             match idx {
-                0 => { hi_x = cx; hi_y = cy; }            // SW
-                1 => { lo_x = cx; hi_y = cy; }            // SE
-                2 => { hi_x = cx; lo_y = cy; }            // NW
-                _ => { lo_x = cx; lo_y = cy; }            // NE
+                0 => {
+                    hi_x = cx;
+                    hi_y = cy;
+                } // SW
+                1 => {
+                    lo_x = cx;
+                    hi_y = cy;
+                } // SE
+                2 => {
+                    hi_x = cx;
+                    lo_y = cy;
+                } // NW
+                _ => {
+                    lo_x = cx;
+                    lo_y = cy;
+                } // NE
             }
         } else {
             // No improvement — shrink window around the current best.
@@ -1423,37 +2018,38 @@ fn bisect_2d(
 /// 1D bisection on one axis with energy-monotone acceptance.
 ///
 /// `fixed_coord` is the coordinate held constant on the other axis.
-/// Re-run Dijkstra for one net and overwrite `dist_cache[net_idx]` in place.
+/// Re-run Dial-logit loading for one net and overwrite `dist_cache[net_idx]`.
 /// Used after a driver cell moves so subsequent cells see the live field.
 fn refresh_net_dist_cache(
     net_idx: usize,
     info: &NetInfo,
     dist_cache: &mut DistCache,
     network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
+    _cfg: &OptTransPlacerCfg,
     ws: &mut PathSolverWorkspace,
 ) {
     let Some(source) = source_node(info) else {
         return;
     };
-    let sinks = sink_nodes(info);
-    if sinks.is_empty() {
+    let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
+    if n_sinks == 0 {
         return;
     }
+    let per_sink = 1.0 / n_sinks as f64;
+    let sink_demands: Vec<(usize, f64)> = info
+        .pins
+        .iter()
+        .filter(|pin| !pin.is_driver)
+        .map(|pin| (pin.node, per_sink))
+        .collect();
 
     ws.begin_net();
-    ws.mark_sinks(&sinks);
-    if cfg.use_eikonal {
-        super::eikonal::fsm_solve(network, source, sinks.len(), ws);
-    } else {
-        path_solver::dijkstra_early_terminate(network, source, sinks.len(), ws);
-    }
-    ws.clear_sinks(&sinks);
+    path_solver::dial_logit_load(network, source, &sink_demands, ws, None);
 
     let dist_out = dist_cache.row_mut(net_idx);
     dist_out.fill(f64::INFINITY);
     for &node in &ws.touched {
-        dist_out[node] = ws.phys_dist[node];
+        dist_out[node] = ws.dist[node];
     }
 }
 
@@ -1462,8 +2058,7 @@ fn refresh_net_dist_cache(
 /// Mirrors `place_dcd_sweep` (Jacobi + fullscan) but swaps the per-cell
 /// search to `bisect_2d`, which costs ~112 evals/cell vs fullscan's 16k.
 /// The whole sweep evaluates against a frozen `dist_cache` snapshot — no
-/// in-sweep refresh, no per-move Dijkstra. Between-sweep `refresh_resistance`
-/// updates the field as before.
+/// in-sweep refresh. The outer loop updates the field between sweeps.
 fn place_dcd_sweep_jacobi_bisection(
     net_infos: &mut [NetInfo],
     cell_net_map: &CellNetMap,
@@ -1494,9 +2089,8 @@ fn place_dcd_sweep_jacobi_bisection(
                 ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
             );
             let (bx, by, _bc, _np, _ni, _im) = bisect_2d(
-                ci, cell_nets, net_infos, dist_cache, network, cfg,
-                validity,
-                old_gx, old_gy, cur_cost,
+                ci, cell_nets, net_infos, dist_cache, network, cfg, validity, old_gx, old_gy,
+                cur_cost,
             );
             (bx, by)
         })
@@ -1549,20 +2143,34 @@ fn place_dcd_sweep_jacobi_bisection(
 /// ascending; ties by `level` descending so coarser regions expand first
 /// (wider exploration).
 #[derive(Copy, Clone)]
-struct BbNode { bound: f64, level: i32, cx: i32, cy: i32 }
+struct BbNode {
+    bound: f64,
+    level: i32,
+    cx: i32,
+    cy: i32,
+}
 impl PartialEq for BbNode {
-    fn eq(&self, o: &Self) -> bool { self.bound == o.bound && self.level == o.level }
+    fn eq(&self, o: &Self) -> bool {
+        self.bound == o.bound && self.level == o.level
+    }
 }
 impl Eq for BbNode {}
 impl Ord for BbNode {
     fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-        let a = o.bound.partial_cmp(&self.bound).unwrap_or(std::cmp::Ordering::Equal);
-        if a != std::cmp::Ordering::Equal { return a; }
+        let a = o
+            .bound
+            .partial_cmp(&self.bound)
+            .unwrap_or(std::cmp::Ordering::Equal);
+        if a != std::cmp::Ordering::Equal {
+            return a;
+        }
         o.level.cmp(&self.level)
     }
 }
 impl PartialOrd for BbNode {
-    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) }
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
 }
 
 fn bb_active_nets(
@@ -1601,7 +2209,9 @@ fn bb_bound(
         } else {
             pyramids[ni].at(level, cx, cy) as f64
         };
-        if !m.is_finite() { return f64::INFINITY; }
+        if !m.is_finite() {
+            return f64::INFINITY;
+        }
         b += wt * m;
     }
     b
@@ -1648,21 +2258,33 @@ fn bb_2d(
     if max_level >= 1 {
         let b = bb_bound(&active_nets, dist_cache, pyramids, w, max_level, 0, 0);
         if b.is_finite() && b < best_cost {
-            pq.push(BbNode { bound: b, level: max_level, cx: 0, cy: 0 });
+            pq.push(BbNode {
+                bound: b,
+                level: max_level,
+                cx: 0,
+                cy: 0,
+            });
         }
     } else {
         for gy in 0..h {
             for gx in 0..w {
                 let c = bb_bound(&active_nets, dist_cache, pyramids, w, 0, gx, gy);
                 if c.is_finite() && c < best_cost {
-                    pq.push(BbNode { bound: c, level: 0, cx: gx, cy: gy });
+                    pq.push(BbNode {
+                        bound: c,
+                        level: 0,
+                        cx: gx,
+                        cy: gy,
+                    });
                 }
             }
         }
     }
 
     while let Some(node) = pq.pop() {
-        if node.bound >= best_cost { break; }
+        if node.bound >= best_cost {
+            break;
+        }
         if node.level == 0 {
             n_evals += 1;
             if node.bound < best_cost {
@@ -1677,10 +2299,17 @@ fn bb_2d(
         for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
             let ccx = 2 * node.cx + dx;
             let ccy = 2 * node.cy + dy;
-            if ccx >= child_w || ccy >= child_h { continue; }
+            if ccx >= child_w || ccy >= child_h {
+                continue;
+            }
             let b = bb_bound(&active_nets, dist_cache, pyramids, w, child_level, ccx, ccy);
             if b.is_finite() && b < best_cost {
-                pq.push(BbNode { bound: b, level: child_level, cx: ccx, cy: ccy });
+                pq.push(BbNode {
+                    bound: b,
+                    level: child_level,
+                    cx: ccx,
+                    cy: ccy,
+                });
             }
         }
     }
@@ -1718,21 +2347,33 @@ fn bb_2d_multi(
     if max_level >= 1 {
         let b = bb_bound(&active_nets, dist_cache, pyramids, w, max_level, 0, 0);
         if b.is_finite() && b <= best_cost {
-            pq.push(BbNode { bound: b, level: max_level, cx: 0, cy: 0 });
+            pq.push(BbNode {
+                bound: b,
+                level: max_level,
+                cx: 0,
+                cy: 0,
+            });
         }
     } else {
         for gy in 0..h {
             for gx in 0..w {
                 let c = bb_bound(&active_nets, dist_cache, pyramids, w, 0, gx, gy);
                 if c.is_finite() && c <= best_cost {
-                    pq.push(BbNode { bound: c, level: 0, cx: gx, cy: gy });
+                    pq.push(BbNode {
+                        bound: c,
+                        level: 0,
+                        cx: gx,
+                        cy: gy,
+                    });
                 }
             }
         }
     }
 
     while let Some(node) = pq.pop() {
-        if node.bound > best_cost { break; }
+        if node.bound > best_cost {
+            break;
+        }
         if node.level == 0 {
             n_evals += 1;
             if node.bound < best_cost {
@@ -1751,10 +2392,17 @@ fn bb_2d_multi(
         for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
             let ccx = 2 * node.cx + dx;
             let ccy = 2 * node.cy + dy;
-            if ccx >= child_w || ccy >= child_h { continue; }
+            if ccx >= child_w || ccy >= child_h {
+                continue;
+            }
             let b = bb_bound(&active_nets, dist_cache, pyramids, w, child_level, ccx, ccy);
             if b.is_finite() && b <= best_cost {
-                pq.push(BbNode { bound: b, level: child_level, cx: ccx, cy: ccy });
+                pq.push(BbNode {
+                    bound: b,
+                    level: child_level,
+                    cx: ccx,
+                    cy: ccy,
+                });
             }
         }
     }
@@ -1766,26 +2414,17 @@ fn bb_2d_multi(
     (tied, best_cost, n_evals)
 }
 
-/// Sequential tally-aware BB sweep.
+/// Branch-and-bound DCD sweep.
 ///
 /// Process cells in `iter_order` (topo forward or reversed). For each cell:
 /// 1. Find ALL cost-tied optimum candidates via `bb_2d_multi`.
-/// 2. Break ties by LEX ordering on (current_tally, self_overlap):
-///    - `current_tally(P)` = Σ over pipes adjacent to node(P) of `pipe_tally[pipe]`
-///    - `self_overlap(P)`  = count of pipes adjacent to node(P) that are ALSO
-///       in cell c's net_paths union — proxy for "how much this candidate's
-///       post-commit tally would grow from c's own nets being committed".
+/// 2. Prefer the current position when it is tied; otherwise use lexicographic order.
 /// 3. Commit cell to the winner.
-/// 4. Increment `pipe_tally[pipe]` for every pipe in c's nets' `net_paths`.
-///
-/// `pipe_tally` is expected to be zeroed at the start of each pass.
-fn place_dcd_sweep_jacobi_bb_tally(
+fn place_dcd_sweep_jacobi_bb(
     net_infos: &mut [NetInfo],
     cell_net_map: &CellNetMap,
     dist_cache: &DistCache,
     pyramids: &[RegionMinPyramid],
-    net_paths: &NetPaths,
-    pipe_tally: &mut [u32],
     cell_x: &mut [f64],
     cell_y: &mut [f64],
     network: &PipeNetwork,
@@ -1795,20 +2434,6 @@ fn place_dcd_sweep_jacobi_bb_tally(
     iter_order: &[usize],
 ) -> usize {
     let want_perf = std::env::var("NPNR_OT_BB_PERF").ok().as_deref() == Some("1");
-
-    // Precompute per-cell union of net_paths pipes, as a sorted Vec<u32>. Used
-    // for self_overlap lookups via binary search.
-    let n = cell_x.len();
-    let mut cell_pipes: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for (ci, nets) in cell_net_map.map.iter().enumerate() {
-        let mut u: Vec<u32> = Vec::new();
-        for &(net_idx, _pin_idx) in nets {
-            u.extend_from_slice(&net_paths.paths[net_idx]);
-        }
-        u.sort_unstable();
-        u.dedup();
-        cell_pipes[ci] = u;
-    }
 
     // Phase A (parallel): compute each cell's tied-cost candidate list against
     // the frozen dist_cache. This is the expensive step and is embarrassingly
@@ -1829,57 +2454,41 @@ fn place_dcd_sweep_jacobi_bb_tally(
                 ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
             );
             let (tied, _best_cost, n_evals) = bb_2d_multi(
-                cell_nets, net_infos, dist_cache, pyramids, network, cfg,
-                old_gx, old_gy, cur_cost,
+                cell_nets, net_infos, dist_cache, pyramids, network, cfg, old_gx, old_gy, cur_cost,
             );
             (tied, n_evals)
         })
         .collect();
 
-    // Phase B (sequential): commit in topo order with live `pipe_tally` so
-    // later cells see the updated tally from earlier commits. Cheap per-cell.
+    // Phase B (sequential): commit in topo order.
     let mut moved = 0usize;
     let mut total_ties = 0usize;
     let mut total_evals = 0usize;
 
     for (order_idx, &ci) in iter_order.iter().enumerate() {
         let cell_nets = &cell_net_map.map[ci];
-        if cell_nets.is_empty() { continue; }
+        if cell_nets.is_empty() {
+            continue;
+        }
 
         let (tied, n_evals) = &tied_per_cell[order_idx];
         total_evals += n_evals;
-        if tied.len() > 1 { total_ties += 1; }
+        if tied.len() > 1 {
+            total_ties += 1;
+        }
         if tied.is_empty() {
             // No valid candidate position under the current dist_cache and
             // validity mask — leave cell where it is.
             continue;
         }
 
-        // Lex tiebreak: pick candidate minimizing (current_tally, self_overlap).
-        let self_pipes = &cell_pipes[ci];
-        let mut best_idx = 0usize;
-        let mut best_key = (u64::MAX, u32::MAX);
-        for (i, &(px, py)) in tied.iter().enumerate() {
-            let node = coord_to_node(network, px, py);
-            let adj = &network.node_pipes[node];
-            let mut ct: u64 = 0;
-            let mut ov: u32 = 0;
-            for &pipe_idx in adj {
-                ct += pipe_tally[pipe_idx] as u64;
-                if self_pipes.binary_search(&(pipe_idx as u32)).is_ok() {
-                    ov += 1;
-                }
-            }
-            let key = (ct, ov);
-            if key < best_key {
-                best_key = key;
-                best_idx = i;
-            }
-        }
-        let (new_gx, new_gy) = tied[best_idx];
-
         let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
         let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+        let (new_gx, new_gy) = if tied.iter().any(|&(x, y)| x == old_gx && y == old_gy) {
+            (old_gx, old_gy)
+        } else {
+            tied.iter().copied().min().unwrap()
+        };
         if new_gx != old_gx || new_gy != old_gy {
             cell_x[ci] = network.net_to_tile(new_gx as f64);
             cell_y[ci] = network.net_to_tile(new_gy as f64);
@@ -1890,21 +2499,19 @@ fn place_dcd_sweep_jacobi_bb_tally(
             if diag.enabled {
                 diag.record_move(MoveRecord {
                     cell_idx: ci,
-                    old_gx, old_gy, new_gx, new_gy,
+                    old_gx,
+                    old_gy,
+                    new_gx,
+                    new_gy,
                 });
             }
             moved += 1;
-        }
-
-        // Update tally: mark c's net_paths pipes as "used this sweep".
-        for &pipe_idx in self_pipes {
-            pipe_tally[pipe_idx as usize] += 1;
         }
     }
 
     if want_perf {
         eprintln!(
-            "    bb_tally: moved={} total_evals={} cells_with_ties={}",
+            "    bb: moved={} total_evals={} cells_with_ties={}",
             moved, total_evals, total_ties,
         );
     }
@@ -1916,10 +2523,10 @@ fn place_dcd_sweep_jacobi_bb_tally(
 ///
 /// Cells are processed in topological order (drivers before sinks). For each
 /// cell we bisect on x, then on y, accepting only strict energy decreases.
-/// After committing, nets where this cell is the driver have their Dijkstra
-/// distances recomputed so the next cell evaluates against the live field.
-/// Pipe usage / R_eff stay frozen within the sweep; the outer loop refreshes
-/// them between sweeps.
+/// After committing, nets where this cell is the driver have their Dial soft
+/// costs recomputed so the next cell evaluates against the live field. Pipe
+/// usage / R_eff stay frozen within the sweep; the outer loop refreshes them
+/// between sweeps.
 fn place_dcd_sweep_sequential_bisection(
     net_infos: &mut [NetInfo],
     cell_net_map: &CellNetMap,
@@ -1931,7 +2538,6 @@ fn place_dcd_sweep_sequential_bisection(
     validity: &CellValidityMask,
     diag: &mut DiagCtx,
 ) -> usize {
-    let n = cell_x.len();
     let n_nodes = network.num_nodes();
     let n_pipes = network.num_pipes();
     let mut ws = PathSolverWorkspace::new(n_nodes, n_pipes);
@@ -1958,9 +2564,7 @@ fn place_dcd_sweep_sequential_bisection(
 
         let t0 = std::time::Instant::now();
         let (new_gx, new_gy, _best_cost, _np, _ni, _im) = bisect_2d(
-            ci, cell_nets, net_infos, dist_cache, network, cfg,
-            validity,
-            old_gx, old_gy, cur_cost,
+            ci, cell_nets, net_infos, dist_cache, network, cfg, validity, old_gx, old_gy, cur_cost,
         );
         if want_perf {
             t_search_ns += t0.elapsed().as_nanos();
@@ -1981,10 +2585,9 @@ fn place_dcd_sweep_sequential_bisection(
         // Region-aware refresh: only rebuild dist_cache when the cell crosses
         // a coarse region boundary. Within-region moves leave the resistance
         // field's apparent cost approximately unchanged, so we can defer the
-        // Dijkstra to the between-sweep refresh.
+        // path refresh to the between-sweep solve.
         let r = cfg.bisect_refresh_region.max(1);
-        let crossed_region =
-            (old_gx / r) != (new_gx / r) || (old_gy / r) != (new_gy / r);
+        let crossed_region = (old_gx / r) != (new_gx / r) || (old_gy / r) != (new_gy / r);
         let t1 = std::time::Instant::now();
         let mut driver_count = 0usize;
         if crossed_region {
@@ -2005,7 +2608,9 @@ fn place_dcd_sweep_sequential_bisection(
         if want_perf {
             t_refresh_ns += t1.elapsed().as_nanos();
             n_refreshes += driver_count;
-            if driver_count > 0 { n_driver_moves += 1; }
+            if driver_count > 0 {
+                n_driver_moves += 1;
+            }
         }
 
         if diag.enabled {
@@ -2067,7 +2672,6 @@ pub fn run_inner_outer(
     let n = cell_x.len();
     let n_nodes = network.num_nodes();
     let mut dist_cache = DistCache::new(0, n_nodes);
-    let mut net_paths = NetPaths::new(0);
     let max_iter = cfg.max_outer_iters.max(1);
     let mut diag_ctx = DiagCtx::from_env();
 
@@ -2078,13 +2682,23 @@ pub fn run_inner_outer(
         CellValidityMask::build(ctx, _idx_to_cell, type_aware, network.width, network.height);
     let validity = &validity;
     if diag_ctx.enabled {
-        eprintln!("DCD diag: instrumentation ON, output dir /tmp/claude/ot_diag (or $NPNR_OT_DIAG_DIR)");
+        eprintln!(
+            "DCD diag: instrumentation ON, output dir /tmp/claude/ot_diag (or $NPNR_OT_DIAG_DIR)"
+        );
     }
 
     eprintln!(
         "DCD placer: {} cells, {} nodes, outer_iters={}, dcd_iters_per_cell={}",
         n, n_nodes, max_iter, cfg.dcd_iters_per_cell,
     );
+    if cfg.softmin_enabled {
+        eprintln!(
+            "Softmin position update: enabled, theta {:.3} -> {:.3} (anneal over {} iters)",
+            cfg.softmin_theta_start, cfg.softmin_theta_end, max_iter,
+        );
+    } else {
+        eprintln!("Softmin position update: disabled (hard argmin commit)");
+    }
 
     let mut best_x = cell_x.to_vec();
     let mut best_y = cell_y.to_vec();
@@ -2103,25 +2717,39 @@ pub fn run_inner_outer(
 
     let mut stalls = 0usize;
     let max_stalls = 5;
+    let mut prev_energy: Option<f64> = None;
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
-        let mut net_infos =
-            collect_net_infos_simple(ctx, alive_net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+        // Exponential θ anneal: `theta_start → theta_end` over `max_iter`
+        // outer iterations. `theta_iter = theta_start · (end/start)^(i/(N-1))`.
+        // At iter 0 → theta_start (broad, exploratory); at last iter →
+        // theta_end (sharp, argmin-like).
+        let theta_iter = if !cfg.softmin_enabled {
+            0.0
+        } else if max_iter <= 1 {
+            cfg.softmin_theta_end
+        } else {
+            let t = outer as f64 / (max_iter as f64 - 1.0);
+            let s = cfg.softmin_theta_start.max(1e-9);
+            let e = cfg.softmin_theta_end.max(1e-9);
+            s * (e / s).powf(t)
+        };
+        let mut net_infos = collect_net_infos_simple(
+            ctx,
+            alive_net_ids,
+            cell_to_idx,
+            cell_x,
+            cell_y,
+            network,
+            cfg,
+        );
         let cell_net_map = CellNetMap::build(&net_infos, n);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
-        net_paths.ensure_shape(net_infos.len());
 
         let t_refresh = std::time::Instant::now();
-        let refresh = refresh_resistance(
-            network,
-            &net_infos,
-            cfg,
-            solve_pool,
-            resistance_model,
-            &mut dist_cache,
-            &mut net_paths,
-        );
-        let refresh_ms = t_refresh.elapsed().as_millis();
+        update_effective_conductance(network, solve_pool, resistance_model);
+        let pre_solve = solve_distance_cache(network, &net_infos, cfg, solve_pool, &mut dist_cache);
+        let pre_refresh_ms = t_refresh.elapsed().as_millis();
 
         // Cell-placement-by-tile-type histogram (iter 0 only). Confirms that
         // LUT/FF cells land on CLB tiles, not BRAM/DSP/IO columns.
@@ -2149,8 +2777,8 @@ pub fn run_inner_outer(
             }
         }
 
-        // HPWL vs routed-star sanity check. Runs RIGHT after refresh_resistance
-        // so `dist_cache.dist[net][node]` (phys_dist from driver) is consistent
+        // HPWL vs routed-star sanity check. Runs RIGHT after the pre-sweep
+        // solve so `dist_cache.dist[net][node]` is consistent
         // with the current pin.node values in net_infos. The sweep below will
         // update pin.node, so running this after the sweep compares stale
         // dist_cache entries against post-sweep pin positions — meaningless.
@@ -2164,45 +2792,84 @@ pub fn run_inner_outer(
             let mut n_ratio_lt02 = 0usize;
             let mut ratios: Vec<(f64, usize, f64, f64, u32)> = Vec::new();
             for (net_idx, info) in net_infos.iter().enumerate() {
-                if info.pins.is_empty() { continue; }
-                let Some(first) = info.pins.first() else { continue };
+                if info.pins.is_empty() {
+                    continue;
+                }
+                let Some(first) = info.pins.first() else {
+                    continue;
+                };
                 let first_node = &network.nodes[first.node];
                 let (mut mnx, mut mxx) = (first_node.tile_x, first_node.tile_x);
                 let (mut mny, mut mxy) = (first_node.tile_y, first_node.tile_y);
                 for pin in info.pins.iter().skip(1) {
                     let node = &network.nodes[pin.node];
-                    if node.tile_x < mnx { mnx = node.tile_x; }
-                    if node.tile_x > mxx { mxx = node.tile_x; }
-                    if node.tile_y < mny { mny = node.tile_y; }
-                    if node.tile_y > mxy { mxy = node.tile_y; }
+                    if node.tile_x < mnx {
+                        mnx = node.tile_x;
+                    }
+                    if node.tile_x > mxx {
+                        mxx = node.tile_x;
+                    }
+                    if node.tile_y < mny {
+                        mny = node.tile_y;
+                    }
+                    if node.tile_y > mxy {
+                        mxy = node.tile_y;
+                    }
                 }
                 let hpwl = (mxx - mnx) as f64 + (mxy - mny) as f64;
                 let mut star = 0.0f64;
                 let mut ok = true;
                 let mut fanout = 0u32;
                 for pin in &info.pins {
-                    if pin.is_driver { continue; }
+                    if pin.is_driver {
+                        continue;
+                    }
                     fanout += 1;
                     let d = dist_cache.get(net_idx, pin.node);
-                    if !d.is_finite() { ok = false; break; }
+                    if !d.is_finite() {
+                        ok = false;
+                        break;
+                    }
                     star += d;
                 }
-                if !ok || fanout == 0 { continue; }
+                if !ok || fanout == 0 {
+                    continue;
+                }
                 n_valid += 1;
                 sum_hpwl += hpwl;
                 sum_star += star;
                 if star > 0.5 {
                     let r = hpwl / star;
-                    if r > 2.0 { n_ratio_gt2 += 1; }
-                    if r > 5.0 { n_ratio_gt5 += 1; }
-                    if r < 0.5 { n_ratio_lt05 += 1; }
-                    if r < 0.2 { n_ratio_lt02 += 1; }
+                    if r > 2.0 {
+                        n_ratio_gt2 += 1;
+                    }
+                    if r > 5.0 {
+                        n_ratio_gt5 += 1;
+                    }
+                    if r < 0.5 {
+                        n_ratio_lt05 += 1;
+                    }
+                    if r < 0.2 {
+                        n_ratio_lt02 += 1;
+                    }
                     ratios.push((r, net_idx, hpwl, star, fanout));
                 }
             }
-            let mean_hpwl = if n_valid > 0 { sum_hpwl / n_valid as f64 } else { 0.0 };
-            let mean_star = if n_valid > 0 { sum_star / n_valid as f64 } else { 0.0 };
-            let global_ratio = if sum_star > 0.0 { sum_hpwl / sum_star } else { 0.0 };
+            let mean_hpwl = if n_valid > 0 {
+                sum_hpwl / n_valid as f64
+            } else {
+                0.0
+            };
+            let mean_star = if n_valid > 0 {
+                sum_star / n_valid as f64
+            } else {
+                0.0
+            };
+            let global_ratio = if sum_star > 0.0 {
+                sum_hpwl / sum_star
+            } else {
+                0.0
+            };
             eprintln!(
                 "    HPWL_check (pre-sweep): n_valid={} sum_hpwl={:.0} sum_star={:.0} global_ratio={:.3} mean_hpwl={:.1} mean_star={:.1}  hpwl/star buckets: >5x={} >2x={} <0.5x={} <0.2x={}",
                 n_valid, sum_hpwl, sum_star, global_ratio, mean_hpwl, mean_star,
@@ -2211,7 +2878,10 @@ pub fn run_inner_outer(
             ratios.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             let n_show = ratios.len().min(10);
             if n_show > 0 {
-                eprintln!("    Top {} nets by hpwl/star (HPWL overstates routing):", n_show);
+                eprintln!(
+                    "    Top {} nets by hpwl/star (HPWL overstates routing):",
+                    n_show
+                );
                 for (r, ni, h, s, f) in ratios.iter().take(n_show) {
                     eprintln!(
                         "      net={} fanout={} hpwl={:.0} star={:.1} ratio={:.2}  name={}",
@@ -2222,50 +2892,16 @@ pub fn run_inner_outer(
             ratios.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             if !ratios.is_empty() {
                 let n_show_lo = ratios.len().min(10);
-                eprintln!("    Top {} nets by star/hpwl (HPWL understates routing):", n_show_lo);
+                eprintln!(
+                    "    Top {} nets by star/hpwl (HPWL understates routing):",
+                    n_show_lo
+                );
                 for (r, ni, h, s, f) in ratios.iter().take(n_show_lo) {
                     eprintln!(
                         "      net={} fanout={} hpwl={:.0} star={:.1} ratio={:.2}  name={}",
                         ni, f, h, s, r, net_infos[*ni].debug_name,
                     );
                 }
-            }
-        }
-
-        // Validate Eikonal vs Dijkstra distances on first iteration.
-        if outer == 0 && cfg.use_eikonal {
-            let mut ws_dij = PathSolverWorkspace::new(n_nodes, network.num_pipes());
-            let mut ws_fsm = PathSolverWorkspace::new(n_nodes, network.num_pipes());
-            for ni in 0..5.min(net_infos.len()) {
-                let info = &net_infos[ni];
-                let Some(src) = source_node(info) else { continue };
-                let sinks = sink_nodes(info);
-                if sinks.is_empty() { continue; }
-
-                ws_dij.begin_net();
-                ws_dij.mark_sinks(&sinks);
-                path_solver::dijkstra_early_terminate(network, src, sinks.len(), &mut ws_dij);
-                ws_dij.clear_sinks(&sinks);
-
-                ws_fsm.begin_net();
-                ws_fsm.mark_sinks(&sinks);
-                super::eikonal::fsm_solve(network, src, sinks.len(), &mut ws_fsm);
-                ws_fsm.clear_sinks(&sinks);
-
-                let mut max_phys_err = 0.0f64;
-                let mut max_dist_err = 0.0f64;
-                let mut n_cmp = 0usize;
-                for &s in &sinks {
-                    if ws_dij.phys_dist[s].is_finite() && ws_fsm.phys_dist[s].is_finite() {
-                        max_phys_err = max_phys_err.max((ws_fsm.phys_dist[s] - ws_dij.phys_dist[s]).abs());
-                        max_dist_err = max_dist_err.max((ws_fsm.dist[s] - ws_dij.dist[s]).abs());
-                        n_cmp += 1;
-                    }
-                }
-                eprintln!(
-                    "    FSM vs Dijkstra net={} sinks={}: max_phys_err={:.6} max_dist_err={:.6}",
-                    ni, sinks.len(), max_phys_err, max_dist_err,
-                );
             }
         }
 
@@ -2289,27 +2925,96 @@ pub fn run_inner_outer(
             let mut n_examined = 0usize;
             for ci in 0..n {
                 let cell_nets = &cell_net_map.map[ci];
-                if cell_nets.is_empty() { continue; }
+                if cell_nets.is_empty() {
+                    continue;
+                }
                 let cur_gx_tmp = network.tile_to_net(cell_x[ci]).round() as i32;
                 let cur_gy_tmp = network.tile_to_net(cell_y[ci]).round() as i32;
-                let cur_cost_tmp = evaluate_cell_at(ci, cur_gx_tmp, cur_gy_tmp, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
-                let (bis_x, bis_y, _bis_c, n_probes, n_probes_inf, n_improve_steps) =
-                    bisect_2d(ci, cell_nets, &net_infos, &dist_cache, network, cfg, validity, cur_gx_tmp, cur_gy_tmp, cur_cost_tmp);
-                let (fs_x, fs_y) = fullscan_find_best_position(ci, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
-                let bis_cost = evaluate_cell_at(ci, bis_x, bis_y, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
-                let fs_cost = evaluate_cell_at(ci, fs_x, fs_y, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
+                let cur_cost_tmp = evaluate_cell_at(
+                    ci,
+                    cur_gx_tmp,
+                    cur_gy_tmp,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                );
+                let (bis_x, bis_y, _bis_c, n_probes, n_probes_inf, n_improve_steps) = bisect_2d(
+                    ci,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                    cur_gx_tmp,
+                    cur_gy_tmp,
+                    cur_cost_tmp,
+                );
+                let (fs_x, fs_y) = fullscan_find_best_position(
+                    ci,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                );
+                let bis_cost = evaluate_cell_at(
+                    ci,
+                    bis_x,
+                    bis_y,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                );
+                let fs_cost = evaluate_cell_at(
+                    ci,
+                    fs_x,
+                    fs_y,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                );
                 let cur_gx = network.tile_to_net(cell_x[ci]).round() as i32;
                 let cur_gy = network.tile_to_net(cell_y[ci]).round() as i32;
-                let cur_cost = evaluate_cell_at(ci, cur_gx, cur_gy, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
+                let cur_cost = evaluate_cell_at(
+                    ci,
+                    cur_gx,
+                    cur_gy,
+                    cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    network,
+                    cfg,
+                    validity,
+                );
                 let d_bis_fs = (bis_x - fs_x).abs() + (bis_y - fs_y).abs();
                 let d_cur_fs = (cur_gx - fs_x).abs() + (cur_gy - fs_y).abs();
                 let d_cur_bis = (cur_gx - bis_x).abs() + (cur_gy - bis_y).abs();
                 let gap_bis_fs = (bis_cost - fs_cost).max(0.0);
                 let gap_cur_fs = (cur_cost - fs_cost).max(0.0);
-                if bis_x != fs_x || bis_y != fs_y { mismatch += 1; }
+                if bis_x != fs_x || bis_y != fs_y {
+                    mismatch += 1;
+                }
                 sum_d += d_bis_fs as i64;
-                if d_bis_fs > max_d { max_d = d_bis_fs; }
-                if gap_bis_fs.is_finite() { sum_gap += gap_bis_fs; if gap_bis_fs > max_gap { max_gap = gap_bis_fs; } }
+                if d_bis_fs > max_d {
+                    max_d = d_bis_fs;
+                }
+                if gap_bis_fs.is_finite() {
+                    sum_gap += gap_bis_fs;
+                    if gap_bis_fs > max_gap {
+                        max_gap = gap_bis_fs;
+                    }
+                }
                 n_examined += 1;
                 if want_csv {
                     // Count positions where every net touching this cell has
@@ -2366,8 +3071,16 @@ pub fn run_inner_outer(
                     ));
                 }
             }
-            let avg_d = if n_examined > 0 { sum_d as f64 / n_examined as f64 } else { 0.0 };
-            let avg_gap = if n_examined > 0 { sum_gap / n_examined as f64 } else { 0.0 };
+            let avg_d = if n_examined > 0 {
+                sum_d as f64 / n_examined as f64
+            } else {
+                0.0
+            };
+            let avg_gap = if n_examined > 0 {
+                sum_gap / n_examined as f64
+            } else {
+                0.0
+            };
             eprintln!(
                 "    Bisection vs fullscan (iter 0, {} cells): mismatch={}/{}  avg_manhattan={:.2}  max_manhattan={}  avg_cost_gap={:.3}  max_cost_gap={:.3}",
                 n_examined, mismatch, n_examined, avg_d, max_d, avg_gap, max_gap,
@@ -2396,15 +3109,15 @@ pub fn run_inner_outer(
             // pipes where net_count > capacity. Distinguishes "just 1 net too
             // many" (mild) from "15 nets on a cap-1 pipe" (severe / barrier
             // rejecting outright).
-            let mut n_over = 0usize;       // net_count > capacity
-            let mut max_excess = 0i64;     // max(net_count - capacity) in wires
-            let mut sum_excess = 0i64;
-            let mut excess_1 = 0usize;     // excess == 1
-            let mut excess_2_5 = 0usize;   // 2..=5
-            let mut excess_6_20 = 0usize;  // 6..=20
-            let mut excess_gt20 = 0usize;  // >20
-            // Capacity bucketing of OVERLOADED pipes to see if saturation hits
-            // skinny (cap=1..2) wires vs fat pipes.
+            let mut n_over = 0usize; // net_count > capacity
+            let mut max_excess = 0.0f64; // max(net_count - capacity) in wires
+            let mut sum_excess = 0.0f64;
+            let mut excess_1 = 0usize; // excess == 1
+            let mut excess_2_5 = 0usize; // 2..=5
+            let mut excess_6_20 = 0usize; // 6..=20
+            let mut excess_gt20 = 0usize; // >20
+                                          // Capacity bucketing of OVERLOADED pipes to see if saturation hits
+                                          // skinny (cap=1..2) wires vs fat pipes.
             let mut over_cap1 = 0usize;
             let mut over_cap2 = 0usize;
             let mut over_cap3_5 = 0usize;
@@ -2421,23 +3134,33 @@ pub fn run_inner_outer(
             let mut exc1_cap2_5 = 0usize;
             let mut exc1_cap_gt5 = 0usize;
             // Worst offender
-            let mut worst_nc = 0u32;
+            let mut worst_nc = 0.0f64;
             let mut worst_cap = 0.0f64;
             let mut worst_span = 0i32;
             for pipe in &network.pipes {
-                if pipe.capacity <= 0.0 { continue; }
+                if pipe.capacity <= 0.0 {
+                    continue;
+                }
                 n_with_cap += 1;
-                let util = pipe.net_count as f64 / pipe.capacity;
-                if pipe.net_count > 0 { n_used += 1; }
-                if util > 0.5 { n_congested += 1; }
-                if util > 0.9 { n_saturated += 1; }
-                if util > max_util { max_util = util; }
+                let util = pipe.net_count / pipe.capacity;
+                if pipe.net_count > 0.0 {
+                    n_used += 1;
+                }
+                if util > 0.5 {
+                    n_congested += 1;
+                }
+                if util > 0.9 {
+                    n_saturated += 1;
+                }
+                if util > max_util {
+                    max_util = util;
+                }
                 sum_util += util;
-                let nc = pipe.net_count as i64;
-                let cap_i = pipe.capacity as i64;
-                if nc > cap_i {
+                let nc = pipe.net_count;
+                let cap = pipe.capacity;
+                if nc > cap {
                     n_over += 1;
-                    let excess = nc - cap_i;
+                    let excess = nc - cap;
                     sum_excess += excess;
                     // Span: 1 for InterTile; |dx|+|dy| for LongRange.
                     let span = match pipe.pipe_type {
@@ -2450,20 +3173,22 @@ pub fn run_inner_outer(
                         worst_cap = pipe.capacity;
                         worst_span = span;
                     }
-                    match excess {
-                        1 => {
-                            excess_1 += 1;
-                            match cap_i {
-                                1 => exc1_cap1 += 1,
-                                2..=5 => exc1_cap2_5 += 1,
-                                _ => exc1_cap_gt5 += 1,
-                            }
+                    if excess <= 1.0 {
+                        excess_1 += 1;
+                        let cap_i = cap.round() as i64;
+                        match cap_i {
+                            1 => exc1_cap1 += 1,
+                            2..=5 => exc1_cap2_5 += 1,
+                            _ => exc1_cap_gt5 += 1,
                         }
-                        2..=5 => excess_2_5 += 1,
-                        6..=20 => excess_6_20 += 1,
-                        _ => excess_gt20 += 1,
+                    } else if excess <= 5.0 {
+                        excess_2_5 += 1;
+                    } else if excess <= 20.0 {
+                        excess_6_20 += 1;
+                    } else {
+                        excess_gt20 += 1;
                     }
-                    match cap_i {
+                    match cap.round() as i64 {
                         1 => over_cap1 += 1,
                         2 => over_cap2 += 1,
                         3..=5 => over_cap3_5 += 1,
@@ -2478,10 +3203,18 @@ pub fn run_inner_outer(
                     }
                 }
             }
-            let avg_util = if n_with_cap > 0 { sum_util / n_with_cap as f64 } else { 0.0 };
-            let avg_excess = if n_over > 0 { sum_excess as f64 / n_over as f64 } else { 0.0 };
+            let avg_util = if n_with_cap > 0 {
+                sum_util / n_with_cap as f64
+            } else {
+                0.0
+            };
+            let avg_excess = if n_over > 0 {
+                sum_excess / n_over as f64
+            } else {
+                0.0
+            };
             eprintln!(
-                "    Overflow: over={} ({:.1}% of used) avg_excess={:.2} max_excess={} (nc={} cap={:.0} span={})  excess_buckets: 1={} 2-5={} 6-20={} >20={}  by_cap: cap1={} cap2={} cap3-5={} cap>5={}  by_span: s1={} s2-3={} s4-6={} s7-12={} s>12={}  exc1_cross: cap1={} cap2-5={} cap>5={}",
+                "    Overflow: over={} ({:.1}% of used) avg_excess={:.2} max_excess={:.2} (nc={:.2} cap={:.0} span={})  excess_buckets: <=1={} 1-5={} 5-20={} >20={}  by_cap: cap1={} cap2={} cap3-5={} cap>5={}  by_span: s1={} s2-3={} s4-6={} s7-12={} s>12={}  le1_cross: cap1={} cap2-5={} cap>5={}",
                 n_over,
                 100.0 * n_over as f64 / n_used.max(1) as f64,
                 avg_excess, max_excess, worst_nc, worst_cap, worst_span,
@@ -2495,55 +3228,42 @@ pub fn run_inner_outer(
                 total_pipes, n_used, n_congested, n_saturated, max_util, avg_util,
             );
 
-            // Which nets are piling onto the top-N saturated pipes? Walk
-            // net_paths to find every net that listed the pipe in its tree.
-            // Useful to answer "who's the ringleader of this hot spot?"
             if std::env::var("NPNR_OT_HOT_NETS").ok().as_deref() == Some("1") {
-                let mut ranked: Vec<(i64, usize, u32, f64, i32)> = Vec::new(); // (excess, pipe_idx, nc, cap, span)
+                let mut ranked: Vec<(f64, usize, f64, f64, i32)> = Vec::new();
                 for (pi, pipe) in network.pipes.iter().enumerate() {
-                    let cap_i = pipe.capacity as i64;
-                    if cap_i <= 0 { continue; }
-                    let nc = pipe.net_count as i64;
-                    if nc <= cap_i { continue; }
+                    if pipe.capacity <= 0.0 || pipe.net_count <= pipe.capacity {
+                        continue;
+                    }
                     let span = match pipe.pipe_type {
                         super::network::PipeType::InterTile(_) => 1i32,
                         super::network::PipeType::LongRange { dx, dy } => dx.abs() + dy.abs(),
                     };
-                    ranked.push((nc - cap_i, pi, pipe.net_count, pipe.capacity, span));
+                    ranked.push((
+                        pipe.net_count - pipe.capacity,
+                        pi,
+                        pipe.net_count,
+                        pipe.capacity,
+                        span,
+                    ));
                 }
-                ranked.sort_by(|a, b| b.0.cmp(&a.0));
-                let top_n = ranked.len().min(5);
-                for (excess, pi, nc, cap, span) in ranked.iter().take(top_n) {
-                    let mut users: Vec<(usize, u32, String)> = Vec::new();
-                    for (net_idx, path) in net_paths.paths.iter().enumerate() {
-                        if path.iter().any(|&p| p as usize == *pi) {
-                            let info = &net_infos[net_idx];
-                            let fanout = info.pins.len().saturating_sub(1) as u32;
-                            users.push((net_idx, fanout, info.debug_name.clone()));
-                        }
-                    }
-                    users.sort_by(|a, b| b.1.cmp(&a.1));
+                ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+                for (excess, pi, nc, cap, span) in ranked.iter().take(5) {
                     let node_from = &network.nodes[network.pipes[*pi].from];
                     let node_to = &network.nodes[network.pipes[*pi].to];
-                    let tt_from = ctx.chipdb().tile_type_name(
-                        ctx.chipdb().tile_by_xy(node_from.tile_x, node_from.tile_y)
-                    ).to_string();
-                    let tt_to = ctx.chipdb().tile_type_name(
-                        ctx.chipdb().tile_by_xy(node_to.tile_x, node_to.tile_y)
-                    ).to_string();
+                    let tt_from = ctx
+                        .chipdb()
+                        .tile_type_name(ctx.chipdb().tile_by_xy(node_from.tile_x, node_from.tile_y))
+                        .to_string();
+                    let tt_to = ctx
+                        .chipdb()
+                        .tile_type_name(ctx.chipdb().tile_by_xy(node_to.tile_x, node_to.tile_y))
+                        .to_string();
                     eprintln!(
-                        "    HotPipe[{}]: excess={} nc={} cap={:.0} span={} endpoints=({},{}:{})<->({},{}:{})  {} nets on pipe (top fanout shown):",
+                        "    HotPipe[{}]: excess={:.2} usage={:.2} cap={:.0} span={} endpoints=({},{}:{})<->({},{}:{})",
                         pi, excess, nc, cap, span,
                         node_from.tile_x, node_from.tile_y, tt_from,
                         node_to.tile_x, node_to.tile_y, tt_to,
-                        users.len(),
                     );
-                    for (ni, fo, name) in users.iter().take(10) {
-                        eprintln!("      net={} fanout={} name={}", ni, fo, name);
-                    }
-                    if users.len() > 10 {
-                        eprintln!("      ... and {} more", users.len() - 10);
-                    }
                 }
             }
         }
@@ -2556,9 +3276,6 @@ pub fn run_inner_outer(
             diag_ctx.dump_design_summary(&summary_lines);
             diag_ctx.dump_fixed_cells(&fixed_rows);
         }
-
-        let pre_sweep_x: Vec<f64> = cell_x.to_vec();
-        let pre_sweep_y: Vec<f64> = cell_y.to_vec();
 
         diag_ctx.sweep_begin(n, outer);
         let t_dcd = std::time::Instant::now();
@@ -2573,6 +3290,7 @@ pub fn run_inner_outer(
                 cfg,
                 validity,
                 &mut diag_ctx,
+                theta_iter,
             ),
             super::config::SweepMode::SequentialBisection => place_dcd_sweep_sequential_bisection(
                 &mut net_infos,
@@ -2622,8 +3340,7 @@ pub fn run_inner_outer(
                 // First-iter verification: BB must match fullscan argmin
                 // (same cost). Different (x,y) is allowed when the cost surface
                 // has ties.
-                if outer == 0
-                    && std::env::var("NPNR_OT_BB_VS_FS_DIAG").ok().as_deref() == Some("1")
+                if outer == 0 && std::env::var("NPNR_OT_BB_VS_FS_DIAG").ok().as_deref() == Some("1")
                 {
                     let mut cost_mismatch = 0usize;
                     let mut pos_mismatch = 0usize;
@@ -2631,23 +3348,64 @@ pub fn run_inner_outer(
                     let mut sum_cost_gap = 0.0f64;
                     for ci in 0..n {
                         let cell_nets = &cell_net_map.map[ci];
-                        if cell_nets.is_empty() { continue; }
+                        if cell_nets.is_empty() {
+                            continue;
+                        }
                         let ogx = network.tile_to_net(cell_x[ci]).round() as i32;
                         let ogy = network.tile_to_net(cell_y[ci]).round() as i32;
-                        let cur = evaluate_cell_at(ci, ogx, ogy, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
+                        let cur = evaluate_cell_at(
+                            ci,
+                            ogx,
+                            ogy,
+                            cell_nets,
+                            &net_infos,
+                            &dist_cache,
+                            network,
+                            cfg,
+                            validity,
+                        );
                         let (bx, by, bc, _ne) = bb_2d(
-                            cell_nets, &net_infos, &dist_cache, &pyramids, network, cfg,
-                            ogx, ogy, cur,
+                            cell_nets,
+                            &net_infos,
+                            &dist_cache,
+                            &pyramids,
+                            network,
+                            cfg,
+                            ogx,
+                            ogy,
+                            cur,
                         );
                         let (fx, fy) = fullscan_find_best_position(
-                            ci, cell_nets, &net_infos, &dist_cache, network, cfg, validity,
+                            ci,
+                            cell_nets,
+                            &net_infos,
+                            &dist_cache,
+                            network,
+                            cfg,
+                            validity,
                         );
-                        let fc = evaluate_cell_at(ci, fx, fy, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
-                        if bx != fx || by != fy { pos_mismatch += 1; }
+                        let fc = evaluate_cell_at(
+                            ci,
+                            fx,
+                            fy,
+                            cell_nets,
+                            &net_infos,
+                            &dist_cache,
+                            network,
+                            cfg,
+                            validity,
+                        );
+                        if bx != fx || by != fy {
+                            pos_mismatch += 1;
+                        }
                         let gap = (bc - fc).abs();
-                        if gap > 1e-9 { cost_mismatch += 1; }
+                        if gap > 1e-9 {
+                            cost_mismatch += 1;
+                        }
                         if gap.is_finite() {
-                            if gap > max_cost_gap { max_cost_gap = gap; }
+                            if gap > max_cost_gap {
+                                max_cost_gap = gap;
+                            }
                             sum_cost_gap += gap;
                         }
                     }
@@ -2657,60 +3415,62 @@ pub fn run_inner_outer(
                         n, cost_mismatch, pos_mismatch, avg, max_cost_gap,
                     );
                 }
-                // Forward pass: tally-aware sequential commit in topo order.
-                let topo_fwd = &cell_net_map.topo_order;
-                let mut pipe_tally = vec![0u32; network.pipes.len()];
-                let moved_fwd = place_dcd_sweep_jacobi_bb_tally(
+                place_dcd_sweep_jacobi_bb(
                     &mut net_infos,
                     &cell_net_map,
                     &dist_cache,
                     &pyramids,
-                    &net_paths,
-                    &mut pipe_tally,
                     cell_x,
                     cell_y,
                     network,
                     cfg,
                     validity,
                     &mut diag_ctx,
-                    topo_fwd,
-                );
-
-                // Backward pass runs against the SAME dist_cache / pyramids
-                // / net_paths as the forward pass — no mid-iter refresh. The
-                // full refresh (and implicit R_eff update via net_count blend)
-                // happens once per outer iter in `refresh_resistance` at the
-                // top of the next iter. Within an outer iter, only cell
-                // positions and the per-sweep `pipe_tally` mutate; the
-                // distance field is held constant across both passes.
-                //
-                // Reset tally for the backward pass; iterate in reversed
-                // topological order.
-                for v in pipe_tally.iter_mut() { *v = 0; }
-                let topo_rev: Vec<usize> =
-                    cell_net_map.topo_order.iter().rev().copied().collect();
-                let moved_bwd = place_dcd_sweep_jacobi_bb_tally(
-                    &mut net_infos,
-                    &cell_net_map,
-                    &dist_cache,
-                    &pyramids,
-                    &net_paths,
-                    &mut pipe_tally,
-                    cell_x,
-                    cell_y,
-                    network,
-                    cfg,
-                    validity,
-                    &mut diag_ctx,
-                    &topo_rev,
-                );
-
-                moved_fwd + moved_bwd
+                    &cell_net_map.topo_order,
+                )
             }
         };
         let dcd_ms = t_dcd.elapsed().as_millis();
 
         common::clamp_positions(cell_x, cell_y, phys_max_x, phys_max_y);
+
+        let t_post_refresh = std::time::Instant::now();
+        let post_net_infos = collect_net_infos_simple(
+            ctx,
+            alive_net_ids,
+            cell_to_idx,
+            cell_x,
+            cell_y,
+            network,
+            cfg,
+        );
+        let post_cell_net_map = CellNetMap::build(&post_net_infos, n);
+        let (state_energy, refresh_ms, solve_stats) = if cfg.path_model == PathModel::BresenhamLogit
+        {
+            let post_solve = solve_bresenham_usage_only(network, &post_net_infos, cfg, solve_pool);
+            apply_usage_for_next_iter(network, &post_solve.edge_usage, cfg, solve_pool);
+            let refresh_ms = pre_refresh_ms + t_post_refresh.elapsed().as_millis();
+
+            let mut solve_stats = pre_solve.stats;
+            solve_stats.total_solves += post_solve.stats.total_solves;
+            solve_stats.failures += post_solve.stats.failures;
+            (post_solve.energy, refresh_ms, solve_stats)
+        } else {
+            dist_cache.ensure_shape(post_net_infos.len(), n_nodes);
+            let post_solve =
+                solve_usage_and_energy(network, &post_net_infos, cfg, solve_pool, &mut dist_cache);
+            apply_usage_for_next_iter(network, &post_solve.edge_usage, cfg, solve_pool);
+            let refresh_ms = pre_refresh_ms + t_post_refresh.elapsed().as_millis();
+
+            let mut solve_stats = pre_solve.stats;
+            solve_stats.total_solves += post_solve.stats.total_solves;
+            solve_stats.total_heap_pops += post_solve.stats.total_heap_pops;
+            solve_stats.max_heap_pops = solve_stats
+                .max_heap_pops
+                .max(post_solve.stats.max_heap_pops);
+            solve_stats.failures += post_solve.stats.failures;
+            (post_solve.energy, refresh_ms, solve_stats)
+        };
 
         let chpwl = demand::continuous_hpwl(ctx, cell_to_idx, cell_x, cell_y, network);
         let line = demand::continuous_line_estimate(ctx, cell_to_idx, cell_x, cell_y, network);
@@ -2725,7 +3485,7 @@ pub fn run_inner_outer(
         );
 
         let state = ObjState {
-            energy: refresh.0,
+            energy: state_energy,
             chpwl,
             line,
             friction,
@@ -2734,41 +3494,52 @@ pub fn run_inner_outer(
             overflow_excess,
         };
 
-        // DCD objective: energy under current R_eff. Energy is a function of
-        // (positions, R_eff); R_eff is intentionally updated between iters to
-        // reflect congestion, so energy naturally drifts iter-to-iter even as
-        // positions improve. We therefore do NOT revert on energy increase and
-        // do NOT early-stop on "no new energy minimum". The lowest-energy
-        // iterate is still tracked so the placer returns the best snapshot.
-        // Convergence signals that ARE meaningful: `moved == 0` (positions
-        // stable) and a small relative-energy delta between successive iters
-        // (physical equilibrium of positions + R_eff).
-        let improved = state.energy < best_state.energy;
-        let d_energy = state.energy - best_state.energy;
-        let d_hpwl = state.chpwl - best_state.chpwl;
-        let d_friction = state.friction - best_state.friction;
+        // DCD objective: post-sweep Dial energy under the conductance field
+        // used during the sweep. The loaded usage is blended only for the next
+        // iteration's BPR field.
+        let improved = if cfg.path_model == PathModel::BresenhamLogit {
+            state.chpwl < best_state.chpwl
+        } else {
+            state.energy < best_state.energy
+        };
+        let d_energy = prev_energy.map_or(0.0, |prev| state.energy - prev);
+        let d_hpwl = if best_state.chpwl.is_finite() {
+            state.chpwl - best_state.chpwl
+        } else {
+            0.0
+        };
+        let d_friction = if best_state.friction.is_finite() {
+            state.friction - best_state.friction
+        } else {
+            0.0
+        };
         if improved {
             best_state = state;
-            best_x.copy_from_slice(&pre_sweep_x);
-            best_y.copy_from_slice(&pre_sweep_y);
+            best_x.copy_from_slice(cell_x);
+            best_y.copy_from_slice(cell_y);
         }
         // Relative-energy stability stall: iters where |dE| / E < 0.5% in a row
         // indicate the physical system has equilibrated.
-        let rel_de = if state.energy.abs() > 1e-12 {
-            (d_energy / state.energy.abs()).abs()
+        let rel_de = if let Some(prev) = prev_energy {
+            if state.energy.abs() > 1e-12 {
+                ((state.energy - prev) / state.energy.abs()).abs()
+            } else {
+                0.0
+            }
         } else {
-            0.0
+            f64::INFINITY
         };
         if rel_de < 0.005 {
             stalls += 1;
         } else {
             stalls = 0;
         }
+        prev_energy = Some(state.energy);
 
         // Diagnostic: per-net HPWL (tile coords via network nodes) and sweep summary.
         if diag_ctx.enabled {
-            let (net_names, net_fanout, net_hpwl) = per_net_hpwl(&net_infos, network);
-            let bb = compute_bounding_boxes(cell_x, cell_y, &net_infos, network);
+            let (net_names, net_fanout, net_hpwl) = per_net_hpwl(&post_net_infos, network);
+            let bb = compute_bounding_boxes(cell_x, cell_y, &post_net_infos, network);
             diag_ctx.sweep_end(
                 n,
                 chpwl,
@@ -2802,33 +3573,58 @@ pub fn run_inner_outer(
         let mut n_sat = 0usize;
         let mut max_util = 0.0f64;
         for pipe in &network.pipes {
-            let nc = pipe.net_count as f64;
-            if nc <= 0.0 { continue; }
-            let r_eff = if pipe.eff_conductance > 0.0 { 1.0 / pipe.eff_conductance } else { pipe.base_resistance };
+            let nc = pipe.net_count;
+            if nc <= 0.0 {
+                continue;
+            }
+            let r_eff = if pipe.eff_conductance > 0.0 {
+                1.0 / pipe.eff_conductance
+            } else {
+                pipe.base_resistance
+            };
             sum_base += pipe.base_resistance * nc;
             sum_eff += r_eff * nc;
             if pipe.capacity > 0.0 {
                 let u = nc / pipe.capacity;
-                if u > max_util { max_util = u; }
-                if u > 0.9 { n_sat += 1; }
+                if u > max_util {
+                    max_util = u;
+                }
+                if u > 0.9 {
+                    n_sat += 1;
+                }
             }
         }
-        let cong_share = if sum_eff > 0.0 { (sum_eff - sum_base) / sum_eff } else { 0.0 };
+        let cong_share = if sum_eff > 0.0 {
+            (sum_eff - sum_base) / sum_eff
+        } else {
+            0.0
+        };
         // R_eff / base ratio distribution on USED pipes. Buckets quantify
         // which congestion regime each pipe is in; pool-flipping across
         // iters is what drives energy oscillation.
-        let mut r_lo = 0usize;  // <=2x base (healthy)
+        let mut r_lo = 0usize; // <=2x base (healthy)
         let mut r_med = 0usize; // 2x..10x
-        let mut r_hi = 0usize;  // 10x..100x
+        let mut r_hi = 0usize; // 10x..100x
         let mut r_sat = 0usize; // >=100x (near / at eps clamp)
         for pipe in &network.pipes {
-            if pipe.net_count == 0 || pipe.base_resistance <= 0.0 { continue; }
-            let r_eff = if pipe.eff_conductance > 0.0 { 1.0 / pipe.eff_conductance } else { pipe.base_resistance };
+            if pipe.net_count == 0.0 || pipe.base_resistance <= 0.0 {
+                continue;
+            }
+            let r_eff = if pipe.eff_conductance > 0.0 {
+                1.0 / pipe.eff_conductance
+            } else {
+                pipe.base_resistance
+            };
             let ratio = r_eff / pipe.base_resistance;
-            if ratio < 2.0 { r_lo += 1; }
-            else if ratio < 10.0 { r_med += 1; }
-            else if ratio < 100.0 { r_hi += 1; }
-            else { r_sat += 1; }
+            if ratio < 2.0 {
+                r_lo += 1;
+            } else if ratio < 10.0 {
+                r_med += 1;
+            } else if ratio < 100.0 {
+                r_hi += 1;
+            } else {
+                r_sat += 1;
+            }
         }
         eprintln!(
             "    E_decomp: base={:.1} eff={:.1} cong={:.1} cong_share={:.1}% sat_pipes={} max_util={:.2}  R_buckets: 1-2x={} 2-10x={} 10-100x={} >=100x={}",
@@ -2850,8 +3646,13 @@ pub fn run_inner_outer(
         {
             if n_probe > 0 && n >= 2 {
                 // xorshift64 (no external rand dep needed for a diagnostic)
-                let mut rng_state = cfg.seed.wrapping_add(outer as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
-                if rng_state == 0 { rng_state = 1; }
+                let mut rng_state = cfg
+                    .seed
+                    .wrapping_add(outer as u64)
+                    .wrapping_add(0x9E37_79B9_7F4A_7C15);
+                if rng_state == 0 {
+                    rng_state = 1;
+                }
                 let mut xs = || -> u64 {
                     let mut x = rng_state;
                     x ^= x << 13;
@@ -2872,8 +3673,8 @@ pub fn run_inner_outer(
                     while j == i {
                         j = (xs() as usize) % n;
                     }
-                    let nets_i = &cell_net_map.map[i];
-                    let nets_j = &cell_net_map.map[j];
+                    let nets_i = &post_cell_net_map.map[i];
+                    let nets_j = &post_cell_net_map.map[j];
                     if nets_i.is_empty() || nets_j.is_empty() {
                         continue;
                     }
@@ -2881,11 +3682,55 @@ pub fn run_inner_outer(
                     let yi = network.tile_to_net(cell_y[i]).round() as i32;
                     let xj = network.tile_to_net(cell_x[j]).round() as i32;
                     let yj = network.tile_to_net(cell_y[j]).round() as i32;
-                    let pre_i = evaluate_cell_at(i, xi, yi, nets_i, &net_infos, &dist_cache, network, cfg, validity);
-                    let pre_j = evaluate_cell_at(j, xj, yj, nets_j, &net_infos, &dist_cache, network, cfg, validity);
-                    let post_i = evaluate_cell_at(i, xj, yj, nets_i, &net_infos, &dist_cache, network, cfg, validity);
-                    let post_j = evaluate_cell_at(j, xi, yi, nets_j, &net_infos, &dist_cache, network, cfg, validity);
-                    if !(pre_i.is_finite() && pre_j.is_finite() && post_i.is_finite() && post_j.is_finite()) {
+                    let pre_i = evaluate_cell_at(
+                        i,
+                        xi,
+                        yi,
+                        nets_i,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    let pre_j = evaluate_cell_at(
+                        j,
+                        xj,
+                        yj,
+                        nets_j,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    let post_i = evaluate_cell_at(
+                        i,
+                        xj,
+                        yj,
+                        nets_i,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    let post_j = evaluate_cell_at(
+                        j,
+                        xi,
+                        yi,
+                        nets_j,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    if !(pre_i.is_finite()
+                        && pre_j.is_finite()
+                        && post_i.is_finite()
+                        && post_j.is_finite())
+                    {
                         continue;
                     }
                     let delta = (post_i + post_j) - (pre_i + pre_j);
@@ -2901,9 +3746,21 @@ pub fn run_inner_outer(
                         }
                     }
                 }
-                let pct = if n_tested > 0 { 100.0 * n_improve as f64 / n_tested as f64 } else { 0.0 };
-                let avg_imp = if n_improve > 0 { sum_improve / n_improve as f64 } else { 0.0 };
-                let avg_delta = if n_tested > 0 { sum_delta / n_tested as f64 } else { 0.0 };
+                let pct = if n_tested > 0 {
+                    100.0 * n_improve as f64 / n_tested as f64
+                } else {
+                    0.0
+                };
+                let avg_imp = if n_improve > 0 {
+                    sum_improve / n_improve as f64
+                } else {
+                    0.0
+                };
+                let avg_delta = if n_tested > 0 {
+                    sum_delta / n_tested as f64
+                } else {
+                    0.0
+                };
                 let bp = best_pair
                     .map(|(i, j, d)| format!("best=(ci={},cj={},d=-{:.2})", i, j, d))
                     .unwrap_or_else(|| "best=none".to_string());
@@ -2915,12 +3772,12 @@ pub fn run_inner_outer(
         }
 
         eprintln!(
-            "  DCD {:3}: nets={} chpwl={:.0} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} pops={} refresh={}ms dcd={}ms total={}ms",
+            "  DCD {:3}: nets={} chpwl={:.0} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
             outer,
-            net_infos.len(),
+            post_net_infos.len(),
             chpwl,
             line,
-            refresh.0,
+            state.energy,
             d_energy,
             friction,
             max_overflow,
@@ -2928,8 +3785,9 @@ pub fn run_inner_outer(
             overflow_excess,
             moved,
             stalls,
-            refresh.1.total_solves,
-            refresh.1.total_heap_pops,
+            solve_stats.total_solves,
+            solve_stats.total_heap_pops,
+            theta_iter,
             refresh_ms,
             dcd_ms,
             t_outer.elapsed().as_millis(),
@@ -2940,7 +3798,10 @@ pub fn run_inner_outer(
             break;
         }
         if stalls >= max_stalls {
-            eprintln!("  DCD stopped: {} consecutive non-improving iterations", max_stalls);
+            eprintln!(
+                "  DCD stopped: {} consecutive non-improving iterations",
+                max_stalls
+            );
             break;
         }
     }
@@ -2960,4 +3821,95 @@ pub fn run_inner_outer(
         best_state.n_overflow,
         best_state.overflow_excess,
     );
+}
+
+#[cfg(test)]
+mod softmin_tests {
+    use super::SoftminAccumulator;
+
+    #[test]
+    fn collapses_to_argmin_at_large_theta() {
+        // Three probes, distinct costs. theta=1000 forces softmin ≈ argmin.
+        let mut acc = SoftminAccumulator::new(1000.0);
+        acc.observe(5, 5, 10.0);
+        acc.observe(10, 10, 1.0); // unique min
+        acc.observe(0, 0, 5.0);
+        let (fx, fy) = acc.softmin_continuous();
+        assert!((fx - 10.0).abs() < 1e-6, "fx={}", fx);
+        assert!((fy - 10.0).abs() < 1e-6, "fy={}", fy);
+        assert_eq!(acc.argmin(), (10, 10));
+    }
+
+    #[test]
+    fn averages_symmetric_bimodal_at_small_theta() {
+        // Two equal-cost probes 10 tiles apart. Softmin should land at midpoint.
+        let mut acc = SoftminAccumulator::new(0.1);
+        acc.observe(0, 0, 3.0);
+        acc.observe(10, 10, 3.0);
+        let (fx, fy) = acc.softmin_continuous();
+        assert!((fx - 5.0).abs() < 1e-9, "fx={}", fx);
+        assert!((fy - 5.0).abs() < 1e-9, "fy={}", fy);
+    }
+
+    #[test]
+    fn ignores_infinite_cost_probes() {
+        // INF probes represent invalid tiles — must not pollute softmin.
+        let mut acc = SoftminAccumulator::new(0.5);
+        acc.observe(0, 0, f64::INFINITY);
+        acc.observe(7, 3, 2.0);
+        acc.observe(9, 9, f64::INFINITY);
+        let (fx, fy) = acc.softmin_continuous();
+        assert!((fx - 7.0).abs() < 1e-9);
+        assert!((fy - 3.0).abs() < 1e-9);
+        assert_eq!(acc.argmin(), (7, 3));
+    }
+
+    #[test]
+    fn empty_observation_returns_argmin_seed() {
+        // If nothing finite is observed, softmin_continuous falls back to best.
+        let mut acc = SoftminAccumulator::new(0.5);
+        acc.best_x = 4;
+        acc.best_y = 6;
+        acc.observe(1, 1, f64::INFINITY);
+        let (fx, fy) = acc.softmin_continuous();
+        assert!((fx - 4.0).abs() < 1e-9);
+        assert!((fy - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn running_anchor_stays_stable_under_descending_costs() {
+        // Feed probes in descending cost order; the anchor rescale must keep
+        // the weighted mean exact.
+        let probes: Vec<(i32, i32, f64)> = vec![
+            (0, 0, 20.0),
+            (10, 0, 5.0),
+            (10, 10, 2.0),
+            (0, 10, 2.0),
+        ];
+        // Reference: recompute softmin with the standard two-pass LSE.
+        let theta = 0.3;
+        let c_min = probes
+            .iter()
+            .map(|&(_, _, c)| c)
+            .fold(f64::INFINITY, f64::min);
+        let mut ref_sw = 0.0;
+        let mut ref_sx = 0.0;
+        let mut ref_sy = 0.0;
+        for &(gx, gy, c) in &probes {
+            let w = (-theta * (c - c_min)).exp();
+            ref_sw += w;
+            ref_sx += w * gx as f64;
+            ref_sy += w * gy as f64;
+        }
+        let ref_fx = ref_sx / ref_sw;
+        let ref_fy = ref_sy / ref_sw;
+
+        let mut acc = SoftminAccumulator::new(theta);
+        for &(gx, gy, c) in &probes {
+            acc.observe(gx, gy, c);
+        }
+        let (fx, fy) = acc.softmin_continuous();
+        assert!((fx - ref_fx).abs() < 1e-9, "fx={} ref={}", fx, ref_fx);
+        assert!((fy - ref_fy).abs() < 1e-9, "fy={} ref={}", fy, ref_fy);
+    }
 }

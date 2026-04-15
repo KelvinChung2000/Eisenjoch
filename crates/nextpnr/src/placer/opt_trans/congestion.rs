@@ -56,7 +56,7 @@ pub fn compute_friction_energy(network: &PipeNetwork) -> f64 {
         if cap <= 0.0 {
             continue;
         }
-        let ratio = pipe.net_count as f64 / cap;
+        let ratio = pipe.net_count / cap;
         friction += ratio * ratio;
     }
     friction
@@ -68,7 +68,7 @@ mod tests {
     use crate::placer::opt_trans::network::{Direction, Node, Pipe, PipeNetwork, PipeType};
     use rustc_hash::FxHashMap;
 
-    fn make_pipe(from: usize, to: usize, base: f64, capacity: f64, net_count: u32) -> Pipe {
+    fn make_pipe(from: usize, to: usize, base: f64, capacity: f64, net_count: f64) -> Pipe {
         Pipe {
             from,
             to,
@@ -90,10 +90,15 @@ mod tests {
             node_pipes[pipe.from].push(i);
             node_pipes[pipe.to].push(i);
         }
+        let pipe_costs: Vec<f64> = pipes
+            .iter()
+            .map(|p| 1.0 / p.eff_conductance.max(1e-12))
+            .collect();
         PipeNetwork {
             nodes,
             pipes,
             node_pipes,
+            pipe_costs,
             pipe_lookup: FxHashMap::default(),
             width: 2,
             height: 2,
@@ -108,10 +113,18 @@ mod tests {
     #[test]
     fn zero_usage_gives_zero_pressure() {
         let nodes = vec![
-            Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
-            Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
+            Node {
+                tile_x: 0,
+                tile_y: 0,
+                pressure: 0.0,
+            },
+            Node {
+                tile_x: 1,
+                tile_y: 0,
+                pressure: 0.0,
+            },
         ];
-        let pipes = vec![make_pipe(0, 1, 1.0, 10.0, 0)];
+        let pipes = vec![make_pipe(0, 1, 1.0, 10.0, 0.0)];
         let network = make_network(nodes, pipes);
         let model = ResistanceModel;
         let pressure = compute_congestion_pressure(&network, &model);
@@ -121,35 +134,44 @@ mod tests {
     }
 
     #[test]
-    fn half_saturated_gives_base_resistance_pressure() {
+    fn half_saturated_pipe_gives_expected_bpr_pressure() {
+        // At u/c = 0.5 under BPR(α=0.05, β=4):
+        //   R_eff = base · (1 + 0.05 · 0.5^4) = base · 1.003125
+        //   R_excess = 0.003125 · base
         let nodes = vec![
             Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
             Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
         ];
-        let pipes = vec![make_pipe(0, 1, 1.0, 10.0, 5)];
+        let pipes = vec![make_pipe(0, 1, 1.0, 10.0, 5.0)];
         let network = make_network(nodes, pipes);
         let model = ResistanceModel;
         let pressure = compute_congestion_pressure(&network, &model);
-        assert!((pressure[0] - 1.0).abs() < 1e-9, "got {}", pressure[0]);
-        assert!((pressure[1] - 1.0).abs() < 1e-9, "got {}", pressure[1]);
+        let expected = 0.05 * 0.5f64.powi(4);
+        assert!((pressure[0] - expected).abs() < 1e-9, "got {}", pressure[0]);
+        assert!((pressure[1] - expected).abs() < 1e-9, "got {}", pressure[1]);
     }
 
     #[test]
-    fn node_with_multiple_pipes_averages() {
+    fn node_with_multiple_pipes_averages_bpr() {
+        // Node 1 sits between an empty pipe (excess=0) and a half-saturated
+        // pipe (excess = 0.05 · 0.5^4 = 0.003125). Mean = 0.0015625.
+        // Node 2 only touches the half-saturated pipe, so it carries the full
+        // per-pipe excess.
         let nodes = vec![
             Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
             Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
             Node { tile_x: 2, tile_y: 0, pressure: 0.0 },
         ];
         let pipes = vec![
-            make_pipe(0, 1, 1.0, 10.0, 0),
-            make_pipe(1, 2, 1.0, 10.0, 5),
+            make_pipe(0, 1, 1.0, 10.0, 0.0),
+            make_pipe(1, 2, 1.0, 10.0, 5.0),
         ];
         let network = make_network(nodes, pipes);
         let model = ResistanceModel;
         let pressure = compute_congestion_pressure(&network, &model);
+        let per_pipe_excess = 0.05 * 0.5f64.powi(4);
         assert!(pressure[0].abs() < 1e-12);
-        assert!((pressure[1] - 0.5).abs() < 1e-9, "got {}", pressure[1]);
-        assert!((pressure[2] - 1.0).abs() < 1e-9, "got {}", pressure[2]);
+        assert!((pressure[1] - per_pipe_excess / 2.0).abs() < 1e-9, "got {}", pressure[1]);
+        assert!((pressure[2] - per_pipe_excess).abs() < 1e-9, "got {}", pressure[2]);
     }
 }

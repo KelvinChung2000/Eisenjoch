@@ -54,8 +54,8 @@ pub struct Pipe {
     pub capacity: f64,
     /// Diagnostic flow-like field derived from the current effective conductance.
     pub flow: f64,
-    /// Number of distinct nets using this pipe (for interference).
-    pub net_count: u32,
+    /// Expected net usage assigned to this pipe.
+    pub net_count: f64,
     /// Raw continuous occupancy projected from the unified pin-demand field.
     pub raw_cell_density: f64,
     /// Normalized occupancy used by the passive congestion law.
@@ -70,6 +70,10 @@ pub struct PipeNetwork {
     pub nodes: Vec<Node>,
     pub pipes: Vec<Pipe>,
     pub node_pipes: Vec<Vec<usize>>,
+    /// Per-pipe routing cost `1.0 / eff_conductance`. Refreshed alongside
+    /// `eff_conductance` in `update_effective_conductance`. Hot Dijkstra loop
+    /// reads this directly instead of recomputing `1.0 / g` per edge visit.
+    pub pipe_costs: Vec<f64>,
     pub pipe_lookup: FxHashMap<u64, usize>,
     /// Tile grid dimensions.
     pub width: i32,
@@ -185,19 +189,37 @@ impl PipeNetwork {
         //
         //   base_resistance = sqrt(|cdx| + |cdy|)   (r1 = 1; same model for all spans)
         //   capacity        = summed wire_count
+        // A coarse cell is "truly NULL" iff every fine tile inside it has no
+        // BELs AND no wires AND no pips. Such a cell represents dead silicon
+        // (padding / corner gaps in the composite fabric) — the placer can
+        // never land a cell there (CellValidityMask already disallows it), and
+        // routing through it is meaningless. Skipping it as both pipe source
+        // and destination prunes phantom edges without breaking connectivity,
+        // because genuine pure-routing tiles (INT_L, HCLK, CLK_HROW) have
+        // wires/pips and stay in the graph.
+        let is_null_coarse = |ci: usize| coarse_bels[ci] == 0 && coarse_routing[ci] == 0;
+        let n_null_coarse: usize = (0..n_coarse).filter(|&ci| is_null_coarse(ci)).count();
+
         let coarsen_i = coarsen as i32;
         let mut n_span1 = 0usize;
         let mut n_long_range = 0usize;
+        let mut n_skipped_null_src = 0usize;
+        let mut n_skipped_null_dst = 0usize;
         for cy in 0..h {
             for cx in 0..w {
+                let src_ci = idx(cx, cy);
+                if is_null_coarse(src_ci) {
+                    n_skipped_null_src += 1;
+                    continue;
+                }
                 let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
                 let mut fallback_east = 0usize;
                 let mut fallback_south = 0usize;
-                for fy in (cy as usize * coarsen)
-                    ..((cy as usize + 1) * coarsen).min(full_h as usize)
+                for fy in
+                    (cy as usize * coarsen)..((cy as usize + 1) * coarsen).min(full_h as usize)
                 {
-                    for fx in (cx as usize * coarsen)
-                        ..((cx as usize + 1) * coarsen).min(full_w as usize)
+                    for fx in
+                        (cx as usize * coarsen)..((cx as usize + 1) * coarsen).min(full_w as usize)
                     {
                         let tile = ctx.chipdb().tile_by_xy(fx as i32, fy as i32);
                         let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
@@ -237,6 +259,11 @@ impl PipeNetwork {
                     if nx < 0 || nx >= w || ny < 0 || ny >= h {
                         continue;
                     }
+                    let dst_ci = idx(nx, ny);
+                    if is_null_coarse(dst_ci) {
+                        n_skipped_null_dst += 1;
+                        continue;
+                    }
                     let span = (cdx.abs() + cdy.abs()) as usize;
                     let base = (span as f64).sqrt();
                     let cap = (wire_count as f64).max(1.0);
@@ -255,8 +282,8 @@ impl PipeNetwork {
                     add_pipe(
                         &mut pipes,
                         &mut node_pipes,
-                        idx(cx, cy),
-                        idx(nx, ny),
+                        src_ci,
+                        dst_ci,
                         base,
                         cap,
                         pipe_type,
@@ -265,12 +292,17 @@ impl PipeNetwork {
             }
         }
         let _ = n_span1;
+        eprintln!(
+            "  Skipped truly-null coarse cells: {} (of {} total); pruned pipes: src_null={} dst_null={}",
+            n_null_coarse, n_coarse, n_skipped_null_src, n_skipped_null_dst,
+        );
         log::debug!(
-            "network: {}x{} (coarsen={}) = {} nodes, {} pipes ({} long-range)",
+            "network: {}x{} (coarsen={}) = {} nodes ({} null), {} pipes ({} long-range)",
             w,
             h,
             coarsen,
             total_nodes,
+            n_null_coarse,
             pipes.len(),
             n_long_range,
         );
@@ -292,8 +324,12 @@ impl PipeNetwork {
                     .or_insert((0usize, 0.0, f64::INFINITY, 0.0, 0.0));
                 e.0 += 1;
                 e.1 += pipe.capacity;
-                if pipe.capacity < e.2 { e.2 = pipe.capacity; }
-                if pipe.capacity > e.3 { e.3 = pipe.capacity; }
+                if pipe.capacity < e.2 {
+                    e.2 = pipe.capacity;
+                }
+                if pipe.capacity > e.3 {
+                    e.3 = pipe.capacity;
+                }
                 e.4 += pipe.capacity * pipe.capacity;
             }
             let mut spans: Vec<i32> = by_span.keys().copied().collect();
@@ -427,20 +463,22 @@ impl PipeNetwork {
                 if shown >= 10 {
                     break;
                 }
-                eprintln!(
-                    "    ref_cap(span={}) = {:.1}",
-                    s, ref_cap_by_span[s]
-                );
+                eprintln!("    ref_cap(span={}) = {:.1}", s, ref_cap_by_span[s]);
                 shown += 1;
             }
         }
 
         let pipe_lookup = build_pipe_lookup(&pipes);
+        let pipe_costs: Vec<f64> = pipes
+            .iter()
+            .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
+            .collect();
 
         Self {
             nodes,
             pipes,
             node_pipes,
+            pipe_costs,
             pipe_lookup,
             width: w,
             height: h,
@@ -492,7 +530,7 @@ impl PipeNetwork {
         });
         self.pipes.par_iter_mut().for_each(|p| {
             p.flow = 0.0;
-            p.net_count = 0;
+            p.net_count = 0.0;
             p.cell_density = 0.0;
         });
     }
@@ -600,11 +638,16 @@ impl PipeNetwork {
             pipes.len(),
         );
         let pipe_lookup = build_pipe_lookup(&pipes);
+        let pipe_costs: Vec<f64> = pipes
+            .iter()
+            .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
+            .collect();
 
         Self {
             nodes,
             pipes,
             node_pipes,
+            pipe_costs,
             pipe_lookup,
             width: grid_w,
             height: grid_h,
@@ -634,7 +677,7 @@ fn add_pipe(
         base_resistance,
         capacity,
         flow: 0.0,
-        net_count: 0,
+        net_count: 0.0,
         raw_cell_density: 0.0,
         cell_density: 0.0,
         eff_conductance: 1.0 / base_resistance.max(1e-12),
@@ -760,4 +803,3 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
 
     histograms
 }
-

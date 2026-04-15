@@ -15,8 +15,7 @@ pub enum SweepMode {
     SequentialBisection,
     /// Pure parallel bisection: every cell runs the 2D quadtree (with K×K seed)
     /// against a frozen dist_cache via rayon par_iter; all winning moves are
-    /// applied simultaneously. No in-sweep refresh; rely on the between-sweep
-    /// `refresh_resistance` to update the field.
+    /// applied simultaneously. The outer loop refreshes the field between sweeps.
     JacobiBisection,
     /// Best-first branch-and-bound over a per-net region-min pyramid. For each
     /// cell, the search is guaranteed to return the same argmin that an
@@ -28,6 +27,21 @@ pub enum SweepMode {
 impl Default for SweepMode {
     fn default() -> Self {
         Self::JacobiFullscan
+    }
+}
+
+/// Path/load model used to build DCD costs and fractional pipe usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathModel {
+    /// Shortest-label Dial-logit assignment over the pipe graph.
+    DialLogit,
+    /// Sparse Bresenham/dogleg route-template logit assignment.
+    BresenhamLogit,
+}
+
+impl Default for PathModel {
+    fn default() -> Self {
+        Self::DialLogit
     }
 }
 
@@ -77,24 +91,24 @@ pub struct OptTransPlacerCfg {
     pub max_outer_iters: usize,
     /// Trisection depth per coordinate for each cell in each outer iteration.
     pub dcd_iters_per_cell: usize,
-    /// Use Eikonal (FSM) solver instead of Dijkstra for distance computation.
-    pub use_eikonal: bool,
     /// Damping factor for Jacobi-style simultaneous position update.
     /// 1.0 = full jump to individual optimum (overshoots under conflicts),
     /// 0.0 = no movement. 0.5 is a reasonable starting point.
     pub jacobi_alpha: f64,
     /// Which sweep strategy to use inside the DCD outer loop.
     pub sweep_mode: SweepMode,
+    /// Which path model to use for per-net cost and usage refresh.
+    pub path_model: PathModel,
     /// Number of uniform seed samples taken before bisection refines, per axis.
     /// Purpose: pick the correct basin of a multi-modal cost surface before
     /// the log-depth search locks in on a local minimum.
     pub bisect_seed_k: usize,
     /// Region size (in tiles) for skipping per-move dist_cache refresh in the
     /// sequential bisection sweep. A move is treated as "in the same region"
-    /// when `(gx/R, gy/R)` is unchanged; in that case the Dijkstra refresh is
+    /// when `(gx/R, gy/R)` is unchanged; in that case the Dial refresh is
     /// skipped and the cached distances are reused for subsequent cells.
     /// Set to `1` to always refresh (conservative). Larger values trade some
-    /// staleness inside a sweep for fewer Dijkstra calls.
+    /// staleness inside a sweep for fewer per-net path solves.
     pub bisect_refresh_region: i32,
 
     // --- Scarcity-scaled pipe cost (always on) ---
@@ -106,10 +120,25 @@ pub struct OptTransPlacerCfg {
     /// IOB/NULL/CLK boundary wires don't get used as general routing. Default 10.0.
     pub scarcity_k: f64,
 
-    /// EMA blend factor for updating `pipe.net_count` from stored paths between
-    /// outer iterations: `net_count = (1-α) * net_count + α * new_count`.
+    /// EMA old-usage blend for updating fractional `pipe.net_count` between
+    /// outer iterations: `net_count = α * net_count + (1-α) * new_usage`.
     /// Default 0.5.
     pub blend_alpha: f64,
+
+    // --- Softmin position update ---
+    /// If true, the Jacobi commit step picks a softmin-weighted expected
+    /// position over the cell's probe set instead of the hard argmin. This
+    /// matches the logit path assignment philosophy: a cell at iter N does
+    /// not collapse onto one tile but spreads mass over nearby tiles in
+    /// proportion to `exp(-theta * cost)`. With theta → ∞ the update reduces
+    /// to argmin.
+    pub softmin_enabled: bool,
+    /// Starting softmin stiffness (low = broad, exploratory).
+    /// Default 0.25, matching `path_solver::LOGIT_THETA`.
+    pub softmin_theta_start: f64,
+    /// Ending softmin stiffness (high = argmin-like).
+    /// Default 5.0 — `exp(-5)` ≈ 0.007 on a 1-unit cost gap.
+    pub softmin_theta_end: f64,
     /// If true, constant (GND/VCC) nets are excluded from the solve set.
     pub skip_constants: bool,
     /// If true, clock-like nets (name contains "clk"/"clock") are excluded.
@@ -134,9 +163,9 @@ impl Default for OptTransPlacerCfg {
             legalization: "ring".to_string(),
             max_outer_iters: 50,
             dcd_iters_per_cell: 8,
-            use_eikonal: false,
             jacobi_alpha: 1.0,
             sweep_mode: SweepMode::JacobiFullscan,
+            path_model: PathModel::DialLogit,
             bisect_seed_k: 8,
             bisect_refresh_region: 1,
             scarcity_k: 10.0,
@@ -144,6 +173,9 @@ impl Default for OptTransPlacerCfg {
             skip_constants: true,
             skip_clocks: false,
             exclude_globals: false,
+            softmin_enabled: true,
+            softmin_theta_start: 0.25,
+            softmin_theta_end: 5.0,
         }
     }
 }
@@ -154,9 +186,6 @@ impl OptTransPlacerCfg {
     /// outer iteration or per cell.
     pub fn apply_env_overrides(&mut self) {
         use std::env;
-        if env::var("NPNR_OT_USE_EIKONAL").ok().as_deref() == Some("1") {
-            self.use_eikonal = true;
-        }
         if let Some(v) = env::var("NPNR_OT_BLEND_ALPHA")
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
@@ -173,6 +202,24 @@ impl OptTransPlacerCfg {
         if env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1") {
             self.exclude_globals = true;
             self.skip_clocks = true;
+        }
+        if env::var("NPNR_OT_BRESENHAM_LOGIT").ok().as_deref() == Some("1") {
+            self.path_model = PathModel::BresenhamLogit;
+        }
+        if let Some(v) = env::var("NPNR_OT_SOFTMIN").ok() {
+            self.softmin_enabled = matches!(v.as_str(), "1" | "true" | "TRUE");
+        }
+        if let Some(v) = env::var("NPNR_OT_SOFTMIN_THETA_START")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.softmin_theta_start = v.max(1e-6);
+        }
+        if let Some(v) = env::var("NPNR_OT_SOFTMIN_THETA_END")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.softmin_theta_end = v.max(1e-6);
         }
     }
 }

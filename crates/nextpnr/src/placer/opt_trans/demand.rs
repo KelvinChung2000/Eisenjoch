@@ -1,7 +1,7 @@
 //! Net demand computation and bilinear interpolation for the Beckmann placer.
 //!
 //! Interpolation operates on the tile or coarsened tile grid used by the
-//! Dijkstra path solver. Cell positions are mapped to four neighboring network
+//! path solver. Cell positions are mapped to four neighboring network
 //! nodes, and the distance-field interpolation Jacobian provides the gradient.
 
 use crate::context::Context;
@@ -186,7 +186,7 @@ pub(crate) fn bilinear_jacobian_stencil(
     BilinearJacobianStencil { dw_dx, dw_dy }
 }
 
-/// Collect nets that need per-net Dijkstra path solves.
+/// Collect nets that need per-net path solves.
 ///
 /// Returns all nets with at least one movable pin (those are the cells
 /// we need to move). ALL pins inject demand — the flow-vector extraction
