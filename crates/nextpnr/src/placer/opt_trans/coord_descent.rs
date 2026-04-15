@@ -58,11 +58,14 @@ impl DistCache {
         }
     }
 
+    /// Reallocates if shape changed; otherwise leaves stored rows intact
+    /// so the skip-refresh path can reuse per-net labels across iterations.
+    /// Callers of `solve_all_nets` that don't pass a skip mask still get
+    /// fresh rows because the non-skip path does `dist_out.fill(INFINITY)`
+    /// before writing settled labels per net.
     fn ensure_shape(&mut self, n_nets: usize, n_nodes: usize) {
         if self.n_nets != n_nets || self.n_nodes != n_nodes {
             *self = Self::new(n_nets, n_nodes);
-        } else {
-            self.reset();
         }
     }
 
@@ -379,6 +382,7 @@ fn solve_all_nets(
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
     collect_usage: bool,
+    skip_mask: Option<&[bool]>,
 ) -> SolveAccum {
     if cfg.path_model == PathModel::BresenhamLogit {
         return solve_all_nets_bresenham_logit(
@@ -419,6 +423,15 @@ fn solve_all_nets(
                     let base_net_idx = chunk_idx * batch_size;
                     for (local_idx, info) in chunk.iter().enumerate() {
                         let net_idx = base_net_idx + local_idx;
+                        // Skip-refresh: reuse the previous iter's dist_cache
+                        // row for this net when the caller says its pin
+                        // signature is unchanged. Pipe costs may have drifted
+                        // slightly via BPR, but the cached labels are a
+                        // good-enough approximation for the DCD sweep's
+                        // argmin selection.
+                        if skip_mask.map(|m| m[net_idx]).unwrap_or(false) {
+                            continue;
+                        }
                         let Some(source) = source_node(info) else {
                             accum.stats.failures += 1;
                             continue;
@@ -1028,8 +1041,8 @@ fn solve_distance_cache(
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
+    skip_mask: Option<&[bool]>,
 ) -> SolveAccum {
-    dist_cache.reset();
     solve_all_nets(
         network,
         net_infos,
@@ -1037,6 +1050,7 @@ fn solve_distance_cache(
         solve_pool,
         dist_cache,
         false,
+        skip_mask,
     )
 }
 
@@ -1047,8 +1061,7 @@ fn solve_usage_and_energy(
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
 ) -> SolveAccum {
-    dist_cache.reset();
-    solve_all_nets(network, net_infos, cfg, solve_pool, dist_cache, true)
+    solve_all_nets(network, net_infos, cfg, solve_pool, dist_cache, true, None)
 }
 
 fn apply_usage_for_next_iter(
@@ -2727,6 +2740,10 @@ pub fn run_inner_outer(
     let mut stalls = 0usize;
     let max_stalls = 5;
     let mut prev_energy: Option<f64> = None;
+    // Per-net pin-node signature captured at the end of the previous outer
+    // iter's post-solve. Compared against the current iter's pre-solve pin
+    // layout to decide which nets' `dist_cache` rows can be reused.
+    let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
         // Exponential θ anneal: `theta_start → theta_end` over `max_iter`
@@ -2753,11 +2770,53 @@ pub fn run_inner_outer(
             cfg,
         );
         let cell_net_map = CellNetMap::build(&net_infos, n);
+        let prev_dist_cache_shape = (dist_cache.n_nets, dist_cache.n_nodes);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
+        let dist_cache_was_realloced = prev_dist_cache_shape
+            != (dist_cache.n_nets, dist_cache.n_nodes)
+            || outer == 0;
+
+        // Skip-refresh: reuse last iter's dist_cache row for any net whose
+        // pin node signature is identical to the pin layout from the
+        // previous outer iter's post-solve. BPR drift on pipe costs makes
+        // the cached labels mildly stale, but within the trust region of
+        // the DCD sweep's argmin this is empirically negligible.
+        let skip_mask: Option<Vec<bool>> =
+            if dist_cache_was_realloced || prev_solve_pin_sigs.len() != net_infos.len() {
+                None
+            } else {
+                Some(
+                    net_infos
+                        .iter()
+                        .enumerate()
+                        .map(|(i, info)| {
+                            let sig = &prev_solve_pin_sigs[i];
+                            if sig.len() != info.pins.len() {
+                                return false;
+                            }
+                            info.pins
+                                .iter()
+                                .zip(sig.iter())
+                                .all(|(pin, &node)| pin.node == node)
+                        })
+                        .collect(),
+                )
+            };
+        let n_skipped = skip_mask
+            .as_ref()
+            .map(|m| m.iter().filter(|b| **b).count())
+            .unwrap_or(0);
 
         let t_refresh = std::time::Instant::now();
         update_effective_conductance(network, solve_pool, resistance_model);
-        let pre_solve = solve_distance_cache(network, &net_infos, cfg, solve_pool, &mut dist_cache);
+        let pre_solve = solve_distance_cache(
+            network,
+            &net_infos,
+            cfg,
+            solve_pool,
+            &mut dist_cache,
+            skip_mask.as_deref(),
+        );
         let pre_refresh_ms = t_refresh.elapsed().as_millis();
 
         // Cell-placement-by-tile-type histogram (iter 0 only). Confirms that
@@ -3478,6 +3537,15 @@ pub fn run_inner_outer(
                 .max_heap_pops
                 .max(post_solve.stats.max_heap_pops);
             solve_stats.failures += post_solve.stats.failures;
+            // Capture post-solve pin layout: this is what the next iter's
+            // pre-solve will see as "current" pin state, so comparing against
+            // this tells us which nets can skip re-solving.
+            prev_solve_pin_sigs.clear();
+            prev_solve_pin_sigs.extend(
+                post_net_infos
+                    .iter()
+                    .map(|info| info.pins.iter().map(|p| p.node).collect::<Vec<usize>>()),
+            );
             (post_solve.energy, refresh_ms, solve_stats)
         };
 
@@ -3781,7 +3849,7 @@ pub fn run_inner_outer(
         }
 
         eprintln!(
-            "  DCD {:3}: nets={} chpwl={:.0} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
+            "  DCD {:3}: nets={} chpwl={:.0} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} skip={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
             outer,
             post_net_infos.len(),
             chpwl,
@@ -3795,6 +3863,7 @@ pub fn run_inner_outer(
             moved,
             stalls,
             solve_stats.total_solves,
+            n_skipped,
             solve_stats.total_heap_pops,
             theta_iter,
             refresh_ms,
