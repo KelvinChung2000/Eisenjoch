@@ -630,31 +630,44 @@ pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f
 }
 
 #[inline(never)]
-/// Bucket-Dial Dijkstra over quantized u32 pipe costs.
+/// Fused bucket-Dial Dijkstra **and** Dial forward pass.
 ///
 /// Each bucket `buckets[d]` holds nodes whose tentative quantized distance
 /// equals `d`. We advance `cur` monotonically and pop one node at a time
-/// from the non-empty bucket under `cur`; when empty we step `cur += 1`.
-/// Every relaxed neighbour is pushed to `buckets[cur + cost]`, never below
-/// `cur`, so buckets empty out naturally as the frontier advances.
+/// from the non-empty bucket under `cur`; empty buckets cause `cur += 1`.
 ///
-/// After settling, we translate `dist_int` to the float `dist` array for
-/// downstream consumers (Dial forward/backward and the per-net dist cache).
-fn dijkstra_all_labels(
+/// When a node is popped it is settled at `dist_int[node] == cur`. In the
+/// same edge iteration we already need for relaxation, we also compute
+/// `path_weight[node]` by pulling contributions from every upstream-settled
+/// predecessor (edges whose neighbour has `dist_int < cur`). Because the
+/// graph is undirected, `node_pipes[node]` exposes both incoming (upstream)
+/// and outgoing (not-yet-settled) edges in the same adjacency list — each
+/// edge falls into exactly one branch of the dispatch below, so this fuses
+/// Dijkstra + Dial forward into a single pass over the edge set.
+///
+/// The original two-pass layout (Dijkstra then a second forward sweep) is
+/// strictly equivalent; fusing halves the edge iterations for dial_logit.
+fn dijkstra_and_forward(
     network: &PipeNetwork,
     source_node: usize,
     ws: &mut PathSolverWorkspace,
     use_corridor: bool,
 ) -> usize {
+    use super::network::DIST_SCALE;
+    let inv_scale = 1.0 / DIST_SCALE;
+
     let dist_int = &mut ws.dist_int;
     let settle_order = &mut ws.settle_order;
+    let path_weight = &mut ws.path_weight;
     let in_corridor = &ws.in_corridor;
     let pipes = &network.pipes;
     let pipe_costs_int = &network.pipe_costs_int;
+    let pipe_costs = &network.pipe_costs;
     let node_pipes = &network.node_pipes;
     let buckets = &mut ws.buckets;
 
     dist_int[source_node] = 0;
+    path_weight[source_node] = 1.0;
     if buckets.is_empty() {
         buckets.push(Vec::new());
     }
@@ -677,7 +690,7 @@ fn dijkstra_all_labels(
         };
         let node = node_u32 as usize;
         // Stale entry: a later push shortened this node's dist; the fresh
-        // copy lives in a smaller bucket that we've already processed, and
+        // copy lives in a smaller bucket we've already processed, and
         // `dist_int[node] < cur` so we must skip.
         if dist_int[node] < cur {
             continue;
@@ -685,37 +698,56 @@ fn dijkstra_all_labels(
         pops += 1;
         settle_order.push(node);
 
+        let node_label = (cur as f64) * inv_scale;
+        // Start from whatever `path_weight[node]` already holds.
+        // - Source was pre-set to 1.0 above.
+        // - Every other settled node was initialised to 0.0 by `begin_net`;
+        //   it accumulates from its upstream-settled predecessors below.
+        let mut acc_weight = path_weight[node];
+
         for &pipe_idx in &node_pipes[node] {
             let pipe = &pipes[pipe_idx];
-            // XOR trick: this pipe has `node` as one endpoint; the other is
-            // `pipe.from ^ pipe.to ^ node`.
-            let next = pipe.from ^ pipe.to ^ node;
-            if use_corridor && !in_corridor[next] {
+            let neighbour = pipe.from ^ pipe.to ^ node;
+            if use_corridor && !in_corridor[neighbour] {
                 continue;
             }
-            let cost = pipe_costs_int[pipe_idx];
-            let candidate = cur.saturating_add(cost);
-            if candidate < dist_int[next] {
-                dist_int[next] = candidate;
-                let idx = candidate as usize;
-                if idx >= buckets.len() {
-                    buckets.resize(idx + 1, Vec::new());
+
+            let neigh_dist_int = dist_int[neighbour];
+            if neigh_dist_int < cur {
+                // Upstream settled predecessor: forward-pass contribution.
+                let neigh_weight = path_weight[neighbour];
+                if neigh_weight > 0.0 && neigh_weight.is_finite() {
+                    let neigh_label = (neigh_dist_int as f64) * inv_scale;
+                    let cost_f = pipe_costs[pipe_idx];
+                    let likelihood = link_likelihood(neigh_label, node_label, cost_f);
+                    if likelihood > 0.0 && likelihood.is_finite() {
+                        acc_weight += neigh_weight * likelihood;
+                    }
                 }
-                buckets[idx].push(next as u32);
-                if candidate > max_bucket {
-                    max_bucket = candidate;
+            } else {
+                // Not yet settled (or equal dist tie): standard Dijkstra relax.
+                let cost_int = pipe_costs_int[pipe_idx];
+                let candidate = cur.saturating_add(cost_int);
+                if candidate < neigh_dist_int {
+                    dist_int[neighbour] = candidate;
+                    let idx = candidate as usize;
+                    if idx >= buckets.len() {
+                        buckets.resize(idx + 1, Vec::new());
+                    }
+                    buckets[idx].push(neighbour as u32);
+                    if candidate > max_bucket {
+                        max_bucket = candidate;
+                    }
                 }
             }
         }
+
+        path_weight[node] = acc_weight;
     }
 
     ws.max_bucket = max_bucket;
 
-    // Materialise f64 labels from quantized dist for downstream consumers.
-    // Only settled nodes need conversion; every other node keeps
-    // `dist == INFINITY` from the previous `begin_net`.
-    use super::network::DIST_SCALE;
-    let inv_scale = 1.0 / DIST_SCALE;
+    // Materialise f64 labels for settled nodes; unvisited ones keep INF.
     for &node in settle_order.iter() {
         ws.dist[node] = dist_int[node] as f64 * inv_scale;
     }
@@ -768,47 +800,14 @@ fn dial_logit_load_inner(
     mut edge_usage: Option<&mut [f64]>,
     use_corridor: bool,
 ) -> DialLogitResult {
-    let heap_pops = dijkstra_all_labels(network, source_node, ws, use_corridor);
+    // Dijkstra + Dial forward pass are fused: `path_weight` and `dist` are
+    // already populated for every settled node when this returns.
+    let heap_pops = dijkstra_and_forward(network, source_node, ws, use_corridor);
 
-    // Dijkstra settle order is already sorted by dist ascending — no post-hoc
-    // sort needed. We read `settle_order` via a borrow-split into a scratch
-    // slice so the forward/backward edge loops can still mutably borrow
-    // `ws.path_weight` and `ws.node_load`.
     let pipes = &network.pipes;
     let pipe_costs = &network.pipe_costs;
     let node_pipes = &network.node_pipes;
-
-    ws.path_weight[source_node] = 1.0;
-    // Forward pass: spread Dial weight along strictly-downhill edges.
-    // Iterate settle_order indices (avoids cloning/borrow-splitting the vec).
     let n_settled = ws.settle_order.len();
-    for i in 0..n_settled {
-        let node = ws.settle_order[i];
-        let node_weight = ws.path_weight[node];
-        if node_weight <= 0.0 || !node_weight.is_finite() {
-            continue;
-        }
-        let label = ws.dist[node];
-        let in_corridor = &ws.in_corridor;
-        let dist = &ws.dist;
-        let path_weight = &mut ws.path_weight;
-        for &pipe_idx in &node_pipes[node] {
-            let pipe = &pipes[pipe_idx];
-            let next = pipe.from ^ pipe.to ^ node;
-            if use_corridor && !in_corridor[next] {
-                continue;
-            }
-            let next_label = dist[next];
-            if !next_label.is_finite() || next_label <= label + REASONABLE_EPS {
-                continue;
-            }
-            let cost = pipe_costs[pipe_idx];
-            let likelihood = link_likelihood(label, next_label, cost);
-            if likelihood > 0.0 && likelihood.is_finite() {
-                path_weight[next] += node_weight * likelihood;
-            }
-        }
-    }
 
     // Canonical per-net energy: `demand * label` summed across sinks.
     // `label` is the Dijkstra shortest-path distance under R_eff edges, so this
