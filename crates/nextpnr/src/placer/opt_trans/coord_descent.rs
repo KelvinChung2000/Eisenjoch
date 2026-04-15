@@ -39,22 +39,26 @@ struct NetInfo {
     has_fixed_pin: bool,
 }
 
+/// Flat `n_nets × n_nodes` dist grid stored as a strided `Vec<f64>`. Row `ni`
+/// starts at `ni * n_nodes`. Per-net slices are contiguous so cache-line reuse
+/// across adjacent `node` indices is optimal.
 struct DistCache {
-    /// Forward: phys_dist from driver to each node (for sink evaluation).
-    dist: Vec<Vec<f64>>,
+    dist: Vec<f64>,
+    n_nets: usize,
+    n_nodes: usize,
 }
 
 impl DistCache {
     fn new(n_nets: usize, n_nodes: usize) -> Self {
         Self {
-            dist: vec![vec![f64::INFINITY; n_nodes]; n_nets],
+            dist: vec![f64::INFINITY; n_nets * n_nodes],
+            n_nets,
+            n_nodes,
         }
     }
 
     fn ensure_shape(&mut self, n_nets: usize, n_nodes: usize) {
-        let shape_ok = self.dist.len() == n_nets
-            && self.dist.first().map_or(n_nets == 0, |d| d.len() == n_nodes);
-        if !shape_ok {
+        if self.n_nets != n_nets || self.n_nodes != n_nodes {
             *self = Self::new(n_nets, n_nodes);
         } else {
             self.reset();
@@ -62,9 +66,24 @@ impl DistCache {
     }
 
     fn reset(&mut self) {
-        for dist in &mut self.dist {
-            dist.fill(f64::INFINITY);
-        }
+        self.dist.fill(f64::INFINITY);
+    }
+
+    #[inline]
+    fn row(&self, net_idx: usize) -> &[f64] {
+        let start = net_idx * self.n_nodes;
+        &self.dist[start..start + self.n_nodes]
+    }
+
+    #[inline]
+    fn row_mut(&mut self, net_idx: usize) -> &mut [f64] {
+        let start = net_idx * self.n_nodes;
+        &mut self.dist[start..start + self.n_nodes]
+    }
+
+    #[inline]
+    fn get(&self, net_idx: usize, node: usize) -> f64 {
+        self.dist[net_idx * self.n_nodes + node]
     }
 }
 
@@ -446,14 +465,21 @@ fn collect_path_pipes(
     );
 }
 
-/// Unsafe wrapper to allow parallel mutable access to disjoint Vec slices.
-struct DistSlicePtr(*mut Vec<f64>, usize);
+/// Unsafe wrapper for parallel mutable access to disjoint rows of the flat
+/// `DistCache` buffer. Each row is a contiguous slice of length `stride`.
+struct DistSlicePtr {
+    base: *mut f64,
+    stride: usize,
+    n_nets: usize,
+}
 unsafe impl Send for DistSlicePtr {}
 unsafe impl Sync for DistSlicePtr {}
 impl DistSlicePtr {
-    fn get_mut(&self, idx: usize) -> &mut Vec<f64> {
-        assert!(idx < self.1);
-        unsafe { &mut *self.0.add(idx) }
+    fn row_mut(&self, idx: usize) -> &mut [f64] {
+        assert!(idx < self.n_nets);
+        unsafe {
+            std::slice::from_raw_parts_mut(self.base.add(idx * self.stride), self.stride)
+        }
     }
 }
 
@@ -470,7 +496,11 @@ fn solve_all_nets(
     let n_pipes = network.num_pipes();
     let batch_size = cfg.net_parallel_batch_size.max(1);
 
-    let dist_access = DistSlicePtr(dist_cache.dist.as_mut_ptr(), dist_cache.dist.len());
+    let dist_access = DistSlicePtr {
+        base: dist_cache.dist.as_mut_ptr(),
+        stride: dist_cache.n_nodes,
+        n_nets: dist_cache.n_nets,
+    };
     let path_access = paths_out.map(|p| {
         for entry in &mut p.paths {
             entry.clear();
@@ -533,7 +563,7 @@ fn solve_all_nets(
                         accum.stats.total_heap_pops += heap_pops;
                         accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(heap_pops);
 
-                        let dist_out = dist_access.get_mut(net_idx);
+                        let dist_out = dist_access.row_mut(net_idx);
                         dist_out.fill(f64::INFINITY);
                         for &node in &ws.touched {
                             dist_out[node] = ws.phys_dist[node];
@@ -710,7 +740,7 @@ fn evaluate_cell_at(
         if pin.is_driver {
             // Skip -- driver position emerges from sink forces on other nets.
         } else {
-            let d = dist_cache.dist[net_idx][node];
+            let d = dist_cache.get(net_idx, node);
             if !d.is_finite() {
                 return f64::INFINITY;
             }
@@ -1420,7 +1450,7 @@ fn refresh_net_dist_cache(
     }
     ws.clear_sinks(&sinks);
 
-    let dist_out = &mut dist_cache.dist[net_idx];
+    let dist_out = dist_cache.row_mut(net_idx);
     dist_out.fill(f64::INFINITY);
     for &node in &ws.touched {
         dist_out[node] = ws.phys_dist[node];
@@ -1567,7 +1597,7 @@ fn bb_bound(
     for &(ni, wt) in active_nets {
         let m = if level == 0 {
             let node = (cy as usize) * (w as usize) + (cx as usize);
-            dist_cache.dist[ni][node]
+            dist_cache.get(ni, node)
         } else {
             pyramids[ni].at(level, cx, cy) as f64
         };
@@ -2153,7 +2183,7 @@ pub fn run_inner_outer(
                 for pin in &info.pins {
                     if pin.is_driver { continue; }
                     fanout += 1;
-                    let d = dist_cache.dist[net_idx][pin.node];
+                    let d = dist_cache.get(net_idx, pin.node);
                     if !d.is_finite() { ok = false; break; }
                     star += d;
                 }
@@ -2292,7 +2322,7 @@ pub fn run_inner_outer(
                             per_net_counts.push(grid_area);
                             continue;
                         }
-                        let row = &dist_cache.dist[net_idx];
+                        let row = dist_cache.row(net_idx);
                         let c = row.iter().filter(|d| d.is_finite()).count();
                         per_net_counts.push(c);
                     }
@@ -2305,7 +2335,7 @@ pub fn run_inner_outer(
                                 if pin.is_driver {
                                     continue;
                                 }
-                                if !dist_cache.dist[net_idx][node].is_finite() {
+                                if !dist_cache.get(net_idx, node).is_finite() {
                                     all_finite = false;
                                     break;
                                 }
@@ -2573,8 +2603,12 @@ pub fn run_inner_outer(
                 // optimize every cell in topological order (drivers before
                 // sinks).
                 let t_pyr = std::time::Instant::now();
-                let pyramids =
-                    region_min::build_all(&dist_cache.dist, network.width, network.height);
+                let pyramids = region_min::build_all(
+                    &dist_cache.dist,
+                    dist_cache.n_nets,
+                    network.width,
+                    network.height,
+                );
                 let pyr_ms = t_pyr.elapsed().as_millis();
                 if want_perf {
                     let bytes: usize = pyramids.iter().map(|p| p.bytes()).sum();

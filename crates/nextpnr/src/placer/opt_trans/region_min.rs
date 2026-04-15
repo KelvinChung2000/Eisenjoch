@@ -125,15 +125,22 @@ impl RegionMinPyramid {
     }
 }
 
-/// Build pyramids for every net in parallel. Nets with an empty or all-INF
-/// row still produce a valid pyramid (all cells INF).
+/// Build pyramids for every net in parallel. `dist` is a flat strided buffer
+/// of `n_nets * (width * height)` entries, row-major per net. Nets with an
+/// empty or all-INF row still produce a valid pyramid (all cells INF).
 pub(crate) fn build_all(
-    dist_rows: &[Vec<f64>],
+    dist: &[f64],
+    n_nets: usize,
     width: i32,
     height: i32,
 ) -> Vec<RegionMinPyramid> {
-    dist_rows
-        .par_iter()
-        .map(|row| RegionMinPyramid::build(row, width, height))
+    let stride = (width as usize) * (height as usize);
+    assert_eq!(dist.len(), n_nets * stride);
+    (0..n_nets)
+        .into_par_iter()
+        .map(|ni| {
+            let start = ni * stride;
+            RegionMinPyramid::build(&dist[start..start + stride], width, height)
+        })
         .collect()
 }
