@@ -16,8 +16,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
-    find_congested_wires, resolve_source_wire, source_wire_const_value, unroute_net, RoutePlan,
-    SinkRoute,
+    find_congested_wires, is_global_clock_pip, resolve_source_wire, source_wire_const_value,
+    unroute_net, RoutePlan, SinkRoute,
 };
 use super::RouterError;
 
@@ -525,9 +525,15 @@ pub fn astar_route(
                 }
             }
 
-            let pip_delay = ctx.pip(pip).delay().max_delay();
+            let is_global_clock = is_global_clock_pip(ctx, pip);
+            let pip_delay = if is_global_clock {
+                0
+            } else {
+                ctx.pip(pip).delay().max_delay()
+            };
             let penalty = wire_penalty.get(&next_wire).copied().unwrap_or(0);
-            let new_cost = entry.cost + pip_delay + 1;
+            let step_cost = if is_global_clock { 0 } else { 1 };
+            let new_cost = entry.cost + pip_delay + step_cost;
             let new_pen = entry.penalty + penalty;
 
             // Score-based culling: reject if clearly worse than best.

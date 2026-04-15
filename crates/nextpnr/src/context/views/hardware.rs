@@ -106,22 +106,18 @@ impl<'a> Wire<'a> {
     #[inline]
     pub fn bound_net(&self) -> Option<Net<'a>> {
         self.ctx
-            .wire_slot(self.id)
-            .and_then(|slot| slot.map(|(net_idx, _)| Net::new(self.ctx, net_idx)))
+            .wire_binding(self.id)
+            .map(|(net_idx, _)| Net::new(self.ctx, net_idx))
     }
 
     #[inline]
     pub fn strength(&self) -> Option<PlaceStrength> {
-        self.ctx
-            .wire_slot(self.id)
-            .copied()
-            .flatten()
-            .map(|(_, strength)| strength)
+        self.ctx.wire_binding(self.id).map(|(_, strength)| strength)
     }
 
     #[inline]
     pub fn is_available(&self) -> bool {
-        self.ctx.wire_slot(self.id).is_some_and(Option::is_none)
+        self.ctx.wire_binding(self.id).is_none()
     }
 
     #[inline]
@@ -152,24 +148,18 @@ impl<'a> Pip<'a> {
     #[inline]
     pub fn bound_net(&self) -> Option<Net<'a>> {
         self.ctx
-            .pip_slot(self.id)
-            .copied()
-            .flatten()
+            .pip_binding(self.id)
             .map(|(net_idx, _)| Net::new(self.ctx, net_idx))
     }
 
     #[inline]
     pub fn strength(&self) -> Option<PlaceStrength> {
-        self.ctx
-            .pip_slot(self.id)
-            .copied()
-            .flatten()
-            .map(|(_, strength)| strength)
+        self.ctx.pip_binding(self.id).map(|(_, strength)| strength)
     }
 
     #[inline]
     pub fn is_available(&self) -> bool {
-        self.ctx.pip_slot(self.id).is_some_and(Option::is_none)
+        self.ctx.pip_binding(self.id).is_none()
     }
 
     #[inline]

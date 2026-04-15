@@ -37,6 +37,7 @@ pub fn pack_default(ctx: &mut Context) -> Result<(), PackerError> {
     // Phase 0: Pre-passes (architecture-generic)
     passes::pack_constants(ctx)?;
     passes::pack_io(ctx)?;
+    passes::pack_bufg(ctx)?;
 
     // Phase 1: Extract cell metadata
     let mut tagger = CellTagger::new();

@@ -154,6 +154,8 @@ write_json {output_json}
     if result.returncode != 0:
         return None, result.stderr
 
+    _insert_clock_bufgs(output_json)
+
     # Parse cell counts from the JSON
     with open(output_json) as f:
         design = json.load(f)
@@ -175,6 +177,85 @@ write_json {output_json}
     cell_types["_io_count"] = io_count
 
     return cell_types, None
+
+
+def _insert_clock_bufgs(output_json):
+    """Insert BUFG cells on top-level clock inputs for the simplified chipdb flow.
+
+    The local flow maps flops to the synthetic DFF cell before JSON emission,
+    so yosys clkbufmap no longer has clock-pin metadata to work from. Keep the
+    LUT6/DFF abstraction and add BUFG cells on nets that drive DFF.CLK pins.
+    """
+    with open(output_json) as f:
+        design = json.load(f)
+
+    modules = design.get("modules", {})
+    if not modules:
+        return
+    module = next(iter(modules.values()))
+    cells = module.get("cells", {})
+    ports = module.get("ports", {})
+    netnames = module.setdefault("netnames", {})
+
+    used_bits = set()
+    for port in ports.values():
+        used_bits.update(bit for bit in port.get("bits", []) if isinstance(bit, int))
+    for net in netnames.values():
+        used_bits.update(bit for bit in net.get("bits", []) if isinstance(bit, int))
+    for cell in cells.values():
+        for bits in cell.get("connections", {}).values():
+            used_bits.update(bit for bit in bits if isinstance(bit, int))
+    next_bit = max(used_bits, default=0) + 1
+
+    clock_bits = {}
+    for port_name, port in ports.items():
+        if port.get("direction") != "input":
+            continue
+        lower = port_name.lower()
+        if "clk" not in lower and "clock" not in lower:
+            continue
+        bits = [bit for bit in port.get("bits", []) if isinstance(bit, int)]
+        if len(bits) == 1:
+            clock_bits[bits[0]] = port_name
+
+    for old_bit, port_name in sorted(clock_bits.items()):
+        drives_clock = False
+        for cell in cells.values():
+            if cell.get("type") != "DFF":
+                continue
+            clk_bits = cell.get("connections", {}).get("CLK", [])
+            if clk_bits == [old_bit]:
+                drives_clock = True
+                break
+        if not drives_clock:
+            continue
+
+        new_bit = next_bit
+        next_bit += 1
+        bufg_name = f"$bufg${port_name}"
+        bufg_net = f"$bufg${port_name}$O"
+
+        cells[bufg_name] = {
+            "hide_name": 1,
+            "type": "BUFG",
+            "parameters": {},
+            "attributes": {"src": "clkbufmap"},
+            "port_directions": {"I": "input", "O": "output"},
+            "connections": {"I": [old_bit], "O": [new_bit]},
+        }
+        netnames[bufg_net] = {
+            "hide_name": 1,
+            "bits": [new_bit],
+            "attributes": {"src": "clkbufmap"},
+        }
+
+        for cell in cells.values():
+            if cell.get("type") == "DFF" and cell.get("connections", {}).get("CLK") == [old_bit]:
+                cell["connections"]["CLK"] = [new_bit]
+
+    with open(output_json, "w") as f:
+        json.dump(design, f, indent=2)
+        f.write("\n")
 
 
 def run_pnr(benchmark_name, json_path, chipdb_path, placer, router, results):

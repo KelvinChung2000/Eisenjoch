@@ -3,6 +3,34 @@
 use crate::netlist::NetId;
 use rustc_hash::FxHashMap;
 
+/// Sweep strategy for the DCD optimizer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepMode {
+    /// Jacobi: every cell scans the full grid against a frozen dist_cache, then
+    /// all winning moves are applied simultaneously with damping `jacobi_alpha`.
+    JacobiFullscan,
+    /// Sequential: cells processed in topo order, each uses log-depth bisection
+    /// in x then y, commits immediately, and refreshes dist_cache for nets it
+    /// drives so the next cell sees the live field.
+    SequentialBisection,
+    /// Pure parallel bisection: every cell runs the 2D quadtree (with K×K seed)
+    /// against a frozen dist_cache via rayon par_iter; all winning moves are
+    /// applied simultaneously. No in-sweep refresh; rely on the between-sweep
+    /// `refresh_resistance` to update the field.
+    JacobiBisection,
+    /// Best-first branch-and-bound over a per-net region-min pyramid. For each
+    /// cell, the search is guaranteed to return the same argmin that an
+    /// exhaustive fullscan would find under the frozen `dist_cache`, typically
+    /// touching far fewer nodes than fullscan.
+    JacobiBB,
+}
+
+impl Default for SweepMode {
+    fn default() -> Self {
+        Self::JacobiFullscan
+    }
+}
+
 /// Initialization strategy for cell positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitStrategy {
@@ -25,8 +53,6 @@ impl Default for InitStrategy {
 pub struct OptTransPlacerCfg {
     /// Random seed.
     pub seed: u64,
-    /// Maximum outer iterations.
-    pub max_iters: usize,
     /// Number of nets solved together in the per-net path solver.
     pub net_parallel_batch_size: usize,
     /// Weight for timing-critical nets inside the attractive flux objective.
@@ -35,10 +61,6 @@ pub struct OptTransPlacerCfg {
     pub timing_criticality: FxHashMap<NetId, f32>,
     /// IO net demand amplification factor.
     pub io_boost: f64,
-    /// Exponent used to normalize sink demand by fanout.
-    pub fanout_norm_exp: f64,
-    /// Apply sqrt(fanout) scaling to IO demand for large nets.
-    pub fanout_weight_sqrt: bool,
     /// Report every N iterations.
     pub report_interval: usize,
     /// Maximum cells for legalization.
@@ -47,35 +69,65 @@ pub struct OptTransPlacerCfg {
     pub init_strategy: InitStrategy,
     /// Number of Rayon worker threads for per-net solves.
     pub num_threads: usize,
-
     /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
     pub legalization: String,
 
-    // --- Adam/EMA step control ---
-    /// Global gain applied to the Adam learning rate computed from energy progress.
-    pub adam_lr_gain: f64,
-    /// EMA beta for relative energy progress used to adapt Adam's learning rate.
-    pub energy_progress_ema_beta: f64,
+    // --- DCD optimizer ---
+    /// Maximum freeze-and-refresh DCD outer iterations.
+    pub max_outer_iters: usize,
+    /// Trisection depth per coordinate for each cell in each outer iteration.
+    pub dcd_iters_per_cell: usize,
+    /// Use Eikonal (FSM) solver instead of Dijkstra for distance computation.
+    pub use_eikonal: bool,
+    /// Damping factor for Jacobi-style simultaneous position update.
+    /// 1.0 = full jump to individual optimum (overshoots under conflicts),
+    /// 0.0 = no movement. 0.5 is a reasonable starting point.
+    pub jacobi_alpha: f64,
+    /// Which sweep strategy to use inside the DCD outer loop.
+    pub sweep_mode: SweepMode,
+    /// Number of uniform seed samples taken before bisection refines, per axis.
+    /// Purpose: pick the correct basin of a multi-modal cost surface before
+    /// the log-depth search locks in on a local minimum.
+    pub bisect_seed_k: usize,
+    /// Region size (in tiles) for skipping per-move dist_cache refresh in the
+    /// sequential bisection sweep. A move is treated as "in the same region"
+    /// when `(gx/R, gy/R)` is unchanged; in that case the Dijkstra refresh is
+    /// skipped and the cached distances are reused for subsequent cells.
+    /// Set to `1` to always refresh (conservative). Larger values trade some
+    /// staleness inside a sweep for fewer Dijkstra calls.
+    pub bisect_refresh_region: i32,
+
+    // --- Scarcity-scaled pipe cost (always on) ---
+    /// Slope of the linear scarcity penalty applied at pipe creation:
+    ///     factor = 1 + k * max(0, 1 - cap / median_cap(span))
+    ///     base   = sqrt(span) * factor
+    /// At `cap = median_cap(span)` factor=1 (no penalty). At `cap=0`, factor=1+k.
+    /// Penalises narrow (low-cap) pipes relative to their own span bucket, so
+    /// IOB/NULL/CLK boundary wires don't get used as general routing. Default 10.0.
+    pub scarcity_k: f64,
 }
 
 impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            max_iters: 500,
             net_parallel_batch_size: 4,
             timing_weight: 0.0,
             timing_criticality: FxHashMap::default(),
             io_boost: 1.0,
-            fanout_norm_exp: 1.0,
-            fanout_weight_sqrt: false,
             report_interval: 5,
             lap_max_cells: 10000,
             init_strategy: InitStrategy::RandomBel,
             num_threads: 8,
             legalization: "ring".to_string(),
-            adam_lr_gain: 1.0,
-            energy_progress_ema_beta: 0.8,
+            max_outer_iters: 50,
+            dcd_iters_per_cell: 8,
+            use_eikonal: false,
+            jacobi_alpha: 1.0,
+            sweep_mode: SweepMode::JacobiFullscan,
+            bisect_seed_k: 8,
+            bisect_refresh_region: 1,
+            scarcity_k: 10.0,
         }
     }
 }

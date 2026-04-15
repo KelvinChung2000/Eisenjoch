@@ -400,6 +400,9 @@ pub fn continuous_hpwl(
     network: &PipeNetwork,
 ) -> f64 {
     let coord_scale = 1.0;
+    let skip_constants = env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() != Some("1");
+    let skip_clocks = env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
+        || env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1");
     let net_ids: Vec<_> = ctx
         .design
         .iter_alive_nets()
@@ -410,6 +413,17 @@ pub fn continuous_hpwl(
         .par_iter()
         .map(|&net_id| {
             let net = ctx.design.net(net_id);
+            let net_name = ctx.name_of(net.name);
+            let is_const = net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET";
+            if skip_constants && is_const {
+                return 0.0;
+            }
+            if skip_clocks {
+                let lower = net_name.to_ascii_lowercase();
+                if lower.contains("clk") || lower.contains("clock") {
+                    return 0.0;
+                }
+            }
             let Some(dp) = net.driver() else {
                 return 0.0;
             };
@@ -465,6 +479,9 @@ pub fn continuous_line_estimate(
 ) -> f64 {
     let coord_scale = 1.0;
     let width = ctx.chipdb().width();
+    let skip_constants = env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() != Some("1");
+    let skip_clocks = env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
+        || env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1");
     let net_ids: Vec<_> = ctx
         .design
         .iter_alive_nets()
@@ -475,6 +492,17 @@ pub fn continuous_line_estimate(
         .par_iter()
         .map(|&net_id| {
             let net = ctx.design.net(net_id);
+            let net_name = ctx.name_of(net.name);
+            let is_const = net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET";
+            if skip_constants && is_const {
+                return 0.0;
+            }
+            if skip_clocks {
+                let lower = net_name.to_ascii_lowercase();
+                if lower.contains("clk") || lower.contains("clock") {
+                    return 0.0;
+                }
+            }
             let Some(dp) = net.driver() else {
                 return 0.0;
             };

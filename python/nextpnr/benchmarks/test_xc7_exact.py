@@ -1,46 +1,82 @@
-from collections import Counter
-
-from nextpnr.benchmarks.gen_xc7_exact import (
-    INTERIOR_ROWS,
-    TARGET_BRAM,
-    TARGET_DSP,
-    TARGET_FF,
-    TARGET_LUT,
-    BRAM_FULL_COLS,
-    BRAM_PARTIAL_ROWS,
-    DSP_FULL_COLS,
-    DSP_PARTIAL_ROWS,
-    build_column_plan,
-    capacity_summary,
-    column_active_rows,
-    make_layout,
-)
+from nextpnr.benchmarks import gen_xc7
 
 
-def test_column_plan_contains_expected_band_counts():
-    plan = build_column_plan()
-    counts = Counter(plan)
-    assert counts["CLB_L"] == 125
-    assert counts["CLB_R"] == 125
-    assert counts["BRAM"] == BRAM_FULL_COLS + 1
-    assert counts["DSP"] == DSP_FULL_COLS + 1
+def test_generate_standard_uses_composite_tilegrid(monkeypatch):
+    call = {}
+
+    monkeypatch.setattr(gen_xc7, "load_tilegrid", lambda tilegrid_path: {"T": {}})
+    monkeypatch.setattr(gen_xc7, "load_tileconn", lambda tileconn_path: [{"tile_types": ["A", "B"], "wire_pairs": []}])
+
+    class Solution:
+        pass
+
+    def fake_build(tilegrid, tileconn, xray, targets):
+        call["build"] = (tilegrid, tileconn, xray, targets)
+        return {"S": {"grid_x": 0, "grid_y": 0, "type": "CLB"}}, [], {"CLB": object()}, Solution(), ["CLB"]
+
+    def fake_builder(ch, xray, spec, tileconn):
+        return {"wire_set": {"W"}, "bel_counts": {"LUT6": 8}, "bel_types": {"LUT6"}}
+
+    def fake_generate_xc7_hybrid(*args, **kwargs):
+        call["args"] = args
+        call["kwargs"] = kwargs
+
+    monkeypatch.setattr(gen_xc7, "build_standard_scale_tilegrid", fake_build)
+    monkeypatch.setattr(gen_xc7, "build_composite_tile_type", fake_builder)
+    monkeypatch.setattr(gen_xc7, "generate_xc7_hybrid", fake_generate_xc7_hybrid)
+
+    gen_xc7.generate_standard(
+        "out.bba",
+        "/xray",
+        "/tilegrid.json",
+        "/tileconn.json",
+    )
+
+    assert call["args"] == (
+        "out.bba",
+        "/xray",
+        {"S": {"grid_x": 0, "grid_y": 0, "type": "CLB"}},
+        [{"tile_types": ["A", "B"], "wire_pairs": []}],
+    )
+    assert call["kwargs"]["chip_name"] == "xc7_standard"
+    assert call["kwargs"]["device_name"] == "XC7_STANDARD"
+    assert call["kwargs"]["include_bufg"] is True
+    assert "CLB" in call["kwargs"]["synthetic_tile_builders"]
 
 
-def test_partial_columns_have_expected_active_rows():
-    plan = build_column_plan()
-    active = column_active_rows(plan)
-    bram_active = [rows for token, rows in zip(plan, active) if token == "BRAM"]
-    dsp_active = [rows for token, rows in zip(plan, active) if token == "DSP"]
-    assert bram_active[:-1] == [INTERIOR_ROWS] * BRAM_FULL_COLS
-    assert bram_active[-1] == BRAM_PARTIAL_ROWS
-    assert dsp_active[:-1] == [INTERIOR_ROWS] * DSP_FULL_COLS
-    assert dsp_active[-1] == DSP_PARTIAL_ROWS
+def test_generate_large_uses_composite_tilegrid(monkeypatch):
+    call = {}
 
+    monkeypatch.setattr(gen_xc7, "load_tilegrid", lambda tilegrid_path: {"T": {}})
+    monkeypatch.setattr(gen_xc7, "load_tileconn", lambda tileconn_path: [{"tile_types": ["A", "B"], "wire_pairs": []}])
 
-def test_layout_matches_exact_target_capacity():
-    info = make_layout()
-    counts = capacity_summary(info)
-    assert counts["LUT6"] == TARGET_LUT
-    assert counts["DFF"] == TARGET_FF
-    assert counts["RAMB36E1"] == TARGET_BRAM
-    assert counts["DSP48E1"] == TARGET_DSP
+    class Solution:
+        pass
+
+    def fake_build(tilegrid, tileconn, xray, targets):
+        call["build"] = (tilegrid, tileconn, xray, targets)
+        return {"Q": {"grid_x": 0, "grid_y": 0, "type": "CLB"}}, [], {"CLB": object()}, Solution(), ["CLB"]
+
+    def fake_builder(ch, xray, spec, tileconn):
+        return {"wire_set": {"W"}, "bel_counts": {"LUT6": 8}, "bel_types": {"LUT6"}}
+
+    def fake_generate_xc7_hybrid(*args, **kwargs):
+        call["args"] = args
+        call["kwargs"] = kwargs
+
+    monkeypatch.setattr(gen_xc7, "build_paper_scale_tilegrid", fake_build)
+    monkeypatch.setattr(gen_xc7, "build_composite_tile_type", fake_builder)
+    monkeypatch.setattr(gen_xc7, "generate_xc7_hybrid", fake_generate_xc7_hybrid)
+
+    gen_xc7.generate_large("large.bba", "/xray", "/tilegrid.json", "/tileconn.json")
+
+    assert call["args"] == (
+        "large.bba",
+        "/xray",
+        {"Q": {"grid_x": 0, "grid_y": 0, "type": "CLB"}},
+        [{"tile_types": ["A", "B"], "wire_pairs": []}],
+    )
+    assert call["kwargs"]["chip_name"] == "xc7_large"
+    assert call["kwargs"]["device_name"] == "XC7_LARGE"
+    assert call["kwargs"]["include_bufg"] is True
+    assert "CLB" in call["kwargs"]["synthetic_tile_builders"]

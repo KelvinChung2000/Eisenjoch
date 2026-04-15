@@ -23,8 +23,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
-    resolve_source_wire, source_wire_const_value, unroute_net, NegotiationCfg, NegotiationState,
-    RoutePlan, SinkRoute,
+    is_global_clock_pip, resolve_source_wire, source_wire_const_value, unroute_net,
+    NegotiationCfg, NegotiationState, RoutePlan, SinkRoute,
 };
 use super::RouterError;
 
@@ -191,8 +191,17 @@ pub fn astar_route_r2(
                 continue;
             }
 
-            let pip_delay = ctx.pip(pip).delay().max_delay() as f64;
-            let negotiation_cost = state.wire_cost(next_wire, net_idx);
+            let is_global_clock = is_global_clock_pip(ctx, pip);
+            let pip_delay = if is_global_clock {
+                0.0
+            } else {
+                ctx.pip(pip).delay().max_delay() as f64
+            };
+            let negotiation_cost = if is_global_clock {
+                state.wire_cost(next_wire, net_idx) * 0.01
+            } else {
+                state.wire_cost(next_wire, net_idx)
+            };
             let new_cost = entry.cost + pip_delay + negotiation_cost;
 
             if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {

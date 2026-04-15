@@ -113,6 +113,28 @@ pub fn total_line_estimate(ctx: &Context) -> f64 {
         .sum()
 }
 
+/// Total congestion cost: Σ_edge (demand / capacity)² across all tile edges.
+///
+/// This measures cross-net wire overlap weighted by capacity. Unlike
+/// `total_line_estimate` (which counts edges per-net independently),
+/// this captures routing resource contention. A value of 0 means no
+/// overlap; higher values indicate more nets competing for the same edges.
+pub fn total_congestion_cost(ctx: &Context) -> f64 {
+    let report = super::estimate_congestion(ctx, 0.0);
+    let mut cost = 0.0f64;
+    for row_h in &report.h_congestion {
+        for &r in row_h {
+            cost += r * r;
+        }
+    }
+    for row_v in &report.v_congestion {
+        for &r in row_v {
+            cost += r * r;
+        }
+    }
+    cost
+}
+
 /// Total routed wirelength (wire count across all nets). Only meaningful after routing.
 pub fn total_routed_wirelength(ctx: &Context) -> usize {
     ctx.design

@@ -224,9 +224,7 @@ impl PyContext {
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
     ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    ///     adam_lr_gain: Global gain for opt_trans Adam learning rate. Default 1.0.
-    ///     energy_progress_ema_beta: EMA beta for opt_trans energy-progress adaptation. Default 0.8.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="random_bel", num_threads=8, adam_lr_gain=1.0, energy_progress_ema_beta=0.8, legalization="ring"))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="random_bel", num_threads=8, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -237,8 +235,6 @@ impl PyContext {
         timing_weight: f64,
         init_strategy: &str,
         num_threads: usize,
-        adam_lr_gain: f64,
-        energy_progress_ema_beta: f64,
         legalization: &str,
     ) -> PyResult<()> {
         match placer {
@@ -264,8 +260,6 @@ impl PyContext {
                 cfg.io_boost = io_boost;
                 cfg.timing_weight = timing_weight;
                 cfg.num_threads = num_threads.max(1);
-                cfg.adam_lr_gain = adam_lr_gain.max(0.0);
-                cfg.energy_progress_ema_beta = energy_progress_ema_beta.clamp(0.0, 0.999);
                 cfg.init_strategy = match init_strategy {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
@@ -288,7 +282,7 @@ impl PyContext {
                         .collect();
                 }
                 if let Some(iters) = max_iters {
-                    cfg.max_iters = iters;
+                    cfg.max_outer_iters = iters;
                 }
                 PlacerOptTrans
                     .place(&mut self.ctx, &cfg)
@@ -516,6 +510,11 @@ impl PyContext {
     /// Total Bresenham line estimate wirelength (tighter than HPWL).
     fn total_line_estimate(&self) -> f64 {
         ::nextpnr::metrics::total_line_estimate(&self.ctx)
+    }
+
+    /// Total congestion cost: Σ (demand/capacity)² across all tile edges.
+    fn total_congestion_cost(&self) -> f64 {
+        ::nextpnr::metrics::total_congestion_cost(&self.ctx)
     }
 
     /// Total routed wirelength (wire count). Only meaningful after routing.

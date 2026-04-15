@@ -25,7 +25,8 @@ import os
 import subprocess
 import sys
 import time
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from os import path
 
 CPP_NEXTPNR = "/home/kelvin/nextpnr"
@@ -45,6 +46,7 @@ N_CLK = 2
 
 BRAM_TILE_TYPES = {"BRAM_L", "BRAM_R"}
 DSP_TILE_TYPES = {"DSP_L", "DSP_R"}
+BUFG_SITE_TYPES = {"BUFGCTRL"}
 BRAM_SITE_TYPES = {
     "RAMB18E1",
     "FIFO18E1",
@@ -53,6 +55,81 @@ BRAM_SITE_TYPES = {
     "RAMBFIFO36E1",
 }
 DSP_SITE_TYPES = {"DSP48E1"}
+CLOCKING_SITE_TYPES = {
+    "BUFHCE",
+    "BUFIO",
+    "BUFR",
+    "BUFMRCE",
+    "MMCME2_ADV",
+    "PLLE2_ADV",
+    "IDELAYCTRL",
+}
+SERDES_SITE_TYPES = {
+    "IDELAYE2",
+    "ILOGICE3",
+    "OLOGICE3",
+}
+CONFIG_SITE_TYPES = {
+    "BSCAN",
+    "CAPTURE",
+    "DCIRESET",
+    "FRAME_ECC",
+    "ICAP",
+    "STARTUP",
+    "USR_ACCESS",
+    "XADC",
+}
+IMPORTANT_SITE_TYPES = (
+    BRAM_SITE_TYPES
+    | DSP_SITE_TYPES
+    | CLOCKING_SITE_TYPES
+    | SERDES_SITE_TYPES
+    | CONFIG_SITE_TYPES
+)
+
+VECTOR_PIN_PREFIXES = (
+    "ADDRARDADDR",
+    "ADDRBWRADDR",
+    "ADDRATIEHIGH",
+    "ADDRBTIEHIGH",
+    "ALUMODE",
+    "A",
+    "ACIN",
+    "ACOUT",
+    "B",
+    "BCIN",
+    "BCOUT",
+    "C",
+    "CARRYOUT",
+    "CASCADEINA",
+    "CASCADEINB",
+    "CASCADEOUTA",
+    "CASCADEOUTB",
+    "DIADI",
+    "DIBDI",
+    "DIPADIP",
+    "DIPBDIP",
+    "DOADO",
+    "DOBDO",
+    "DOPADOP",
+    "DOPBDOP",
+    "DI",
+    "DO",
+    "DADDR",
+    "INMODE",
+    "OPMODE",
+    "P",
+    "PATTERN",
+    "PCIN",
+    "PCOUT",
+    "RDADDR",
+    "RDCOUNT",
+    "TESTIN",
+    "WEA",
+    "WEBWE",
+    "WRADDR",
+    "WRCOUNT",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +144,13 @@ def _input_hash(script_path, xray, tilegrid_path, tileconn_path, size):
             h.update(f.read())
     h.update((size or "full").encode())
     return h.hexdigest()
+
+
+def _load_json_if_path(value):
+    if isinstance(value, (str, os.PathLike)):
+        with open(value) as f:
+            return json.load(f)
+    return value
 
 
 def _is_cached(output_bin, expected_hash):
@@ -119,8 +203,22 @@ def _pip_timing_class(src_wire, dst_wire):
     return "MUX"
 
 
-def add_slice_bels(tt, site_data, z_offset):
-    """Replace one SLICEL/SLICEM site with 4× LUT6 + 4× DFF + 4× DLATCH BELs.
+def _wire_type_from_xray_name(wname):
+    """Assign coarse nextpnr wire classes while preserving prjxray wire names."""
+    upper = wname.upper()
+    if "BUFG" in upper:
+        return "BUFG"
+    if "GCLK" in upper:
+        return "GCLK"
+    if "HCLK" in upper:
+        return "HCLK"
+    if "CLK" in upper and "LOGIC" not in upper:
+        return "CLK"
+    return "ROUTING"
+
+
+def add_slice_bels(tt, site_data, z_offset, dff_copies=1, include_latches=True):
+    """Replace one SLICEL/SLICEM site with synthetic LUT6/DFF BELs.
 
     Maps BEL pins directly to real site pin wires from prjxray:
     - LUT6 I[0..5] → A1..A6 (or B1..B6, C1..C6, D1..D6)
@@ -134,7 +232,7 @@ def add_slice_bels(tt, site_data, z_offset):
     prefix = a1_wire[: a1_wire.rfind("A1")]
 
     for i, letter in enumerate("ABCD"):
-        z = z_offset + i * 3
+        z = z_offset + i * (1 + dff_copies + int(include_latches))
 
         # LUT6: 6 inputs, 1 output
         lut = tt.create_bel(f"{prefix}{letter}_LUT", "LUT6", z=z)
@@ -143,17 +241,20 @@ def add_slice_bels(tt, site_data, z_offset):
             tt.add_bel_pin(lut, f"I[{j}]", pins[pin_name]["wire"], PinType.INPUT)
         tt.add_bel_pin(lut, "F", pins[letter]["wire"], PinType.OUTPUT)
 
-        # DFF: data from bypass (AX/BX/CX/DX), clock, output (AQ/BQ/CQ/DQ)
-        ff = tt.create_bel(f"{prefix}{letter}_FF", "DFF", z=z + 1)
-        tt.add_bel_pin(ff, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
-        tt.add_bel_pin(ff, "CLK", pins["CLK"]["wire"], PinType.INPUT)
-        tt.add_bel_pin(ff, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
+        # DFF: data from bypass (AX/BX/CX/DX), clock, output (AQ/BQ/CQ/DQ).
+        for copy_idx in range(dff_copies):
+            suffix = "_FF" if dff_copies == 1 else f"_FF{copy_idx}"
+            ff = tt.create_bel(f"{prefix}{letter}{suffix}", "DFF", z=z + 1 + copy_idx)
+            tt.add_bel_pin(ff, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
+            tt.add_bel_pin(ff, "CLK", pins["CLK"]["wire"], PinType.INPUT)
+            tt.add_bel_pin(ff, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
 
-        # DLATCH: same pins as DFF
-        latch = tt.create_bel(f"{prefix}{letter}_LATCH", "DLATCH", z=z + 2)
-        tt.add_bel_pin(latch, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
-        tt.add_bel_pin(latch, "G", pins["CLK"]["wire"], PinType.INPUT)
-        tt.add_bel_pin(latch, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
+        if include_latches:
+            # DLATCH: same pins as DFF
+            latch = tt.create_bel(f"{prefix}{letter}_LATCH", "DLATCH", z=z + 1 + dff_copies)
+            tt.add_bel_pin(latch, "D", pins[f"{letter}X"]["wire"], PinType.INPUT)
+            tt.add_bel_pin(latch, "G", pins["CLK"]["wire"], PinType.INPUT)
+            tt.add_bel_pin(latch, "Q", pins[f"{letter}Q"]["wire"], PinType.OUTPUT)
 
         # LUT output → FF data bypass (so LUT can feed FF directly)
         tt.create_pip(pins[letter]["wire"], pins[f"{letter}X"]["wire"])
@@ -179,6 +280,20 @@ def _infer_pin_dir(site_type, pin_name):
     """
     pin = pin_name.upper()
     st = site_type.upper()
+
+    if st in {"BUFHCE", "BUFIO", "BUFR", "BUFMRCE"}:
+        return PinType.OUTPUT if pin == "O" else PinType.INPUT
+
+    if st in {"MMCME2_ADV", "PLLE2_ADV"}:
+        clocking_out_prefixes = ("CLKFBOUT", "CLKOUT", "DO", "DRDY", "LOCKED", "PSDONE")
+        return PinType.OUTPUT if pin.startswith(clocking_out_prefixes) else PinType.INPUT
+
+    if st == "IDELAYCTRL":
+        return PinType.OUTPUT if pin == "RDY" else PinType.INPUT
+
+    if st in {"IDELAYE2", "ILOGICE3", "OLOGICE3"}:
+        serdes_out_prefixes = ("CNTVALUEOUT", "DATAOUT", "DDLY", "OFB", "OQ", "SHIFTOUT")
+        return PinType.OUTPUT if pin.startswith(serdes_out_prefixes) else PinType.INPUT
 
     if st.startswith("DSP48"):
         dsp_out_prefixes = (
@@ -217,24 +332,90 @@ def _site_bel_type(site_type):
     return site_type
 
 
-def add_site_bel(tt, site_data, z):
+def _site_bel_types(site_type):
+    """Return BEL/cell type aliases for a prjxray site.
+
+    The prjxray Artix-7 BRAM tile-type JSON uses RAMBFIFO36E1 for the 36K site
+    and splits 18K site views into RAMB18E1/FIFO18E1. Yosys and user netlists
+    commonly refer to RAMB36E1, FIFO36E1, RAMB18E1, or FIFO18E1 directly, so
+    expose those aliases while keeping the tile wires from prjxray.
+    """
+    if site_type == "RAMBFIFO36E1":
+        return ("RAMBFIFO36E1", "RAMB36E1", "FIFO36E1")
+    if site_type in {"RAMB18E1", "FIFO18E1"}:
+        return ("RAMB18E1", "FIFO18E1")
+    return (_site_bel_type(site_type),)
+
+
+def _logical_pin_names(pin_name):
+    """Return raw and Yosys-style bracketed names for vector site pins."""
+    names = [pin_name]
+    match = re.fullmatch(r"([A-Z_]+?)([LU]?)([0-9]+)", pin_name.upper())
+    if not match:
+        return names
+
+    base, half, index = match.groups()
+    if base not in VECTOR_PIN_PREFIXES:
+        return names
+
+    bracketed = f"{base}[{index}]"
+    if bracketed not in names:
+        names.append(bracketed)
+    if half:
+        half_name = f"{base}{half}[{index}]"
+        if half_name not in names:
+            names.append(half_name)
+    return names
+
+
+def add_site_bel(tt, site_data, z, bel_type=None, name_suffix=None):
     """Expose one prjxray site as a placeable BEL using its tile wires.
 
     Note: BRAM_L/R tiles can contain overlapping 18K and 36K site views.
-    The hybrid chipdb exposes those site-level BELs directly, but it does not
-    yet model the exclusivity relation between paired RAMB18E1 sites and the
-    enclosing RAMB36E1 site.
+    The hybrid chipdb exposes site-level primitive aliases directly, but it
+    does not yet model the exclusivity relation between overlapping aliases.
     """
     site_type = site_data["type"]
     pins = site_data.get("site_pins", {})
-    bel = tt.create_bel(site_data["name"], _site_bel_type(site_type), z=z)
+    bel_type = bel_type or _site_bel_type(site_type)
+    bel_name = site_data["name"]
+    if name_suffix:
+        bel_name = f"{bel_name}_{name_suffix}"
+    bel = tt.create_bel(bel_name, bel_type, z=z)
 
+    seen_pins = set()
     for pin_name, pin_data in sorted(pins.items()):
         if pin_data is None:
             continue
         wire = pin_data["wire"]
-        tt.add_bel_pin(bel, pin_name, wire, _infer_pin_dir(site_type, pin_name))
+        direction = _infer_pin_dir(site_type, pin_name)
+        for logical_name in _logical_pin_names(pin_name):
+            if logical_name in seen_pins:
+                continue
+            seen_pins.add(logical_name)
+            tt.add_bel_pin(bel, logical_name, wire, direction)
 
+    return bel
+
+
+def add_bufg_bel(tt, site_data, z):
+    """Expose one real BUFGCTRL site as a simplified BUFG BEL.
+
+    This is one of the intentional simplifications of the hybrid/exact chipdb:
+    the tile, wires, and PIPs remain prjxray-derived, but the user-facing BEL
+    type matches the BUFG primitive emitted by Yosys.
+    """
+    pins = site_data.get("site_pins", {})
+    in_pin = "I" if "I" in pins else "I0" if "I0" in pins else None
+    out_pin = "O" if "O" in pins else None
+    if in_pin is None or out_pin is None:
+        raise RuntimeError(
+            f"BUFGCTRL site {site_data.get('name')} is missing an I/I0 or O pin"
+        )
+
+    bel = tt.create_bel(site_data["name"], "BUFG", z=z)
+    tt.add_bel_pin(bel, "I", pins[in_pin]["wire"], PinType.INPUT)
+    tt.add_bel_pin(bel, "O", pins[out_pin]["wire"], PinType.OUTPUT)
     return bel
 
 
@@ -250,7 +431,7 @@ def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
     # 1. Copy all wires from tile_type JSON
     if data:
         for wname in data.get("wires", {}):
-            tt.create_wire(wname, "ROUTING")
+            tt.create_wire(wname, _wire_type_from_xray_name(wname))
             created.add(wname)
 
     # 2. Add tileconn wires not already present
@@ -278,7 +459,7 @@ def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
 
 def create_io_tile(chip, side="L"):
     """IO tile with IOB BELs and bridge wires to INT routing."""
-    suffix = "IO_L" if side == "L" else "IO_R"
+    suffix = "IO_L" if side == "L" else "IO_R" if side == "R" else "IOB"
     tt = chip.create_tile_type(suffix)
 
     for i in range(N_IO):
@@ -333,12 +514,26 @@ def create_null_tile(chip):
 # Core generation
 # ---------------------------------------------------------------------------
 
-def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=None):
+def generate_xc7_hybrid(
+    output_bba,
+    xray,
+    tilegrid_path,
+    tileconn_path,
+    size=None,
+    chip_name="xc7_hybrid",
+    device_name="XC7A50T",
+    include_bufg=False,
+    synthetic_tile_builders=None,
+    synthetic_tileconn=None,
+    direct_tileconn_types=None,
+):
     """Generate the hybrid chipdb BBA file."""
-    with open(tilegrid_path) as f:
-        tilegrid = json.load(f)
-    with open(tileconn_path) as f:
-        tileconn = json.load(f)
+    tilegrid = _load_json_if_path(tilegrid_path)
+    tileconn = _load_json_if_path(tileconn_path)
+    if synthetic_tileconn:
+        tileconn = list(tileconn) + list(synthetic_tileconn)
+    synthetic_tile_builders = synthetic_tile_builders or {}
+    direct_tileconn_types = set(direct_tileconn_types or ())
 
     if size:
         parts = size.lower().split("x")
@@ -360,10 +555,10 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
         xc7_grid[(x, y)] = tdata["type"]
 
     int_types = {"INT_L", "INT_R"}
-    io_types = {"LIOB33", "RIOB33", "LIOB33_SING", "RIOB33_SING"}
+    io_types = {"LIOB33", "RIOB33", "LIOB33_SING", "RIOB33_SING", "IOB"}
     left_io = {"LIOB33", "LIOB33_SING"}
     right_io = {"RIOB33", "RIOB33_SING"}
-    clb_types = {"CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R"}
+    clb_types = {"CLBLL_L", "CLBLL_R", "CLBLM_L", "CLBLM_R", "CLB"}
 
     # ------------------------------------------------------------------
     # Derive wire sets from tileconn (for all tile types)
@@ -378,21 +573,33 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # ------------------------------------------------------------------
     # Create tile types
     # ------------------------------------------------------------------
-    ch = Chip("xc7_hybrid", "XC7A50T", X, Y)
+    ch = Chip(chip_name, device_name, X, Y)
     ch.strs.read_constids(path.join(FIXTURES_DIR, "constids.inc"))
     ch.read_gfxids(path.join(FIXTURES_DIR, "gfxids.inc"))
 
     # IO tiles (synthetic, with IOB BELs + bridge wires)
     create_io_tile(ch, side="L")
     create_io_tile(ch, side="R")
+    create_io_tile(ch, side="B")
     create_null_tile(ch)
 
-    # All XC7 tile types present in the tilegrid
-    all_xc7_types = sorted(set(xc7_grid.values()) - {"NULL"} - io_types)
+    # All prjxray tile types present in the tilegrid. Synthetic composite types
+    # are created through callbacks so the type data stays deduplicated.
+    synthetic_types = set(synthetic_tile_builders)
+    all_xc7_types = sorted(set(xc7_grid.values()) - {"NULL"} - io_types - synthetic_types)
 
     # Track which tile types we've created and their wire sets
     tile_wire_sets = {}  # xc7_type -> set of wire names
-    bel_capacity = {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
+    bels_per_type = {}
+    bel_capacity = Counter()
+    bel_types_created = set()
+
+    for synthetic_type, builder in sorted(synthetic_tile_builders.items()):
+        info = builder(ch)
+        tile_wire_sets[synthetic_type] = set(info.get("wire_set", set()))
+        bels_per_type[synthetic_type] = Counter(info.get("bel_counts", Counter()))
+        bel_capacity.update(bels_per_type[synthetic_type])
+        bel_types_created.update(info.get("bel_types", set()))
 
     for xc7_type in all_xc7_types:
         tc_wires = tc_wire_sets.get(xc7_type, set())
@@ -406,26 +613,28 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     add_slice_bels(tt, site, z_offset=idx * 12)
                     bel_capacity["LUT6"] += 4
                     bel_capacity["DFF"] += 4
+                    bel_types_created.update(("LUT6", "DFF", "DLATCH"))
 
-        if xc7_type in BRAM_TILE_TYPES and data:
+        if data:
             z = 0
             for site in data.get("sites", []):
                 st = site.get("type")
-                if st in BRAM_SITE_TYPES:
-                    add_site_bel(tt, site, z)
-                    z += 1
-                    if st in bel_capacity:
-                        bel_capacity[st] += 1
+                if st in IMPORTANT_SITE_TYPES:
+                    for bel_type in _site_bel_types(st):
+                        suffix = bel_type if bel_type != st else st
+                        add_site_bel(tt, site, z, bel_type=bel_type, name_suffix=suffix)
+                        z += 1
+                        bel_capacity[bel_type] += 1
+                        bel_types_created.add(bel_type)
 
-        if xc7_type in DSP_TILE_TYPES and data:
+        if include_bufg and data:
             z = 0
             for site in data.get("sites", []):
-                st = site.get("type")
-                if st in DSP_SITE_TYPES:
-                    add_site_bel(tt, site, z)
+                if site.get("type") in BUFG_SITE_TYPES:
+                    add_bufg_bel(tt, site, z)
                     z += 1
-                    if st in bel_capacity:
-                        bel_capacity[st] += 1
+                    bel_capacity["BUFG"] += 1
+                    bel_types_created.add("BUFG")
 
         # INT tiles: add IO bridge wires + PIPs for IO connectivity
         if xc7_type in int_types:
@@ -443,8 +652,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                     tt.create_pip(lo_wire, f"IO_BRIDGE_IN{i}")
                     tt.create_pip(lo_wire, f"IO_BRIDGE_T{i}")
 
-    bels_per_type = {xc7_type: {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
-                     for xc7_type in all_xc7_types}
+    bels_per_type.update({xc7_type: Counter() for xc7_type in all_xc7_types})
     for xc7_type in all_xc7_types:
         data = load_tile_type_json(xray, xc7_type)
         if not data:
@@ -454,13 +662,15 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
             if st in ("SLICEL", "SLICEM"):
                 bels_per_type[xc7_type]["LUT6"] += 4
                 bels_per_type[xc7_type]["DFF"] += 4
-            elif st in DSP_SITE_TYPES:
-                bels_per_type[xc7_type]["DSP48E1"] += 1
-            elif st == "RAMB18E1":
-                bels_per_type[xc7_type]["RAMB18E1"] += 1
-            elif st == "RAMB36E1":
-                bels_per_type[xc7_type]["RAMB36E1"] += 1
-    print(f"Created {len(all_xc7_types)} tile types from prjxray")
+            elif st in IMPORTANT_SITE_TYPES:
+                for bel_type in _site_bel_types(st):
+                    bels_per_type[xc7_type][bel_type] += 1
+            elif include_bufg and st in BUFG_SITE_TYPES:
+                bels_per_type[xc7_type]["BUFG"] += 1
+    print(
+        f"Created {len(all_xc7_types)} tile types from prjxray"
+        f" and {len(synthetic_types)} synthetic tile types"
+    )
 
     # ------------------------------------------------------------------
     # Tile assignment
@@ -469,7 +679,10 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     for y in range(Y):
         for x in range(X):
             xc7_type = xc7_grid.get((x, y), "NULL")
-            if xc7_type in left_io:
+            if xc7_type == "IOB":
+                ch.set_tile_type(x, y, "IOB")
+                n_io += 1
+            elif xc7_type in left_io:
                 ch.set_tile_type(x, y, "IO_L")
                 n_io += 1
             elif xc7_type in right_io:
@@ -488,7 +701,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 n_null += 1
 
     # Count total BELs across all tile instances
-    total_caps = {"LUT6": 0, "DFF": 0, "DSP48E1": 0, "RAMB18E1": 0, "RAMB36E1": 0}
+    total_caps = Counter()
     for y in range(Y):
         for x in range(X):
             xc7_type = xc7_grid.get((x, y), "NULL")
@@ -496,14 +709,30 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 for bel_type, count in bels_per_type[xc7_type].items():
                     total_caps[bel_type] += count
     print(f"Tile assignment: {n_int} INT, {n_clb} CLB, {n_io} IO, {n_routing} routing, {n_null} NULL")
-    print(
-        "Capacity: "
-        f"~{total_caps['LUT6']} LUT6s, "
-        f"~{total_caps['DFF']} DFFs, "
-        f"~{total_caps['DSP48E1']} DSP48E1s, "
-        f"~{total_caps['RAMB18E1']} RAMB18E1s, "
-        f"~{total_caps['RAMB36E1']} RAMB36E1s"
-    )
+    capacity_parts = [
+        f"~{total_caps['LUT6']} LUT6s",
+        f"~{total_caps['DFF']} DFFs",
+        f"~{total_caps['DSP48E1']} DSP48E1s",
+        f"~{total_caps['RAMB18E1']} RAMB18E1s",
+        f"~{total_caps['RAMB36E1']} RAMB36E1s",
+        f"~{total_caps['FIFO18E1']} FIFO18E1s",
+        f"~{total_caps['FIFO36E1']} FIFO36E1s",
+    ]
+    if include_bufg:
+        capacity_parts.append(f"~{total_caps['BUFG']} BUFGs")
+    for bel_type in sorted(total_caps):
+        if bel_type not in {
+            "LUT6",
+            "DFF",
+            "DSP48E1",
+            "RAMB18E1",
+            "RAMB36E1",
+            "FIFO18E1",
+            "FIFO36E1",
+            "BUFG",
+        }:
+            capacity_parts.append(f"~{total_caps[bel_type]} {bel_type}s")
+    print("Capacity: " + ", ".join(capacity_parts))
 
     # ------------------------------------------------------------------
     # Inter-tile routing nodes from tileconn
@@ -532,10 +761,18 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
         else:
             wire_sets[ct] = tc_wire_sets.get(ct, set())
 
-    # Only INT tiles are node endpoints (modeled types)
-    # INT and CLB tiles are node endpoints — CLB tiles have BELs whose
-    # pin wires need tileconn nodes to reach INT routing.
-    modeled_types = int_types | clb_types | BRAM_TILE_TYPES | DSP_TILE_TYPES
+    # INT and placed-resource tiles are node endpoints in the base hybrid mode.
+    # BUFG-enabled prjxray-backed variants include all tile types as endpoints so
+    # routing-only and clocking tile types stay close to the tileconn database.
+    if include_bufg:
+        wire_sets = {
+            xc7_type: set(wires)
+            for xc7_type, wires in tile_wire_sets.items()
+        }
+        modeled_types = set(tile_wire_sets)
+    else:
+        modeled_types = (int_types | clb_types | BRAM_TILE_TYPES | DSP_TILE_TYPES) & set(tile_wire_sets)
+    modeled_types -= direct_tileconn_types
 
     # Build tileconn adjacency
     tc_adj = defaultdict(list)
@@ -595,6 +832,8 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                             nx, ny = cx + ddx, cy + ddy
                             nkey = (nx, ny, nwire)
                             if nkey in visited:
+                                continue
+                            if not (0 <= nx < X and 0 <= ny < Y):
                                 continue
                             if xc7_grid.get((nx, ny)) != ntype:
                                 continue
@@ -668,6 +907,87 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
 
     print(f"Created {node_count} inter-tile routing nodes")
 
+    if direct_tileconn_types:
+        print("Creating synthetic inter-tile routing components...")
+        direct_parent = {}
+        direct_rank = {}
+
+        def direct_find(key):
+            while direct_parent[key] != key:
+                direct_parent[key] = direct_parent[direct_parent[key]]
+                key = direct_parent[key]
+            return key
+
+        def direct_add(key):
+            if key not in direct_parent:
+                direct_parent[key] = key
+                direct_rank[key] = 0
+
+        def direct_union(a, b):
+            direct_add(a)
+            direct_add(b)
+            ra, rb = direct_find(a), direct_find(b)
+            if ra == rb:
+                return False
+            if direct_rank[ra] < direct_rank[rb]:
+                ra, rb = rb, ra
+            direct_parent[rb] = ra
+            if direct_rank[ra] == direct_rank[rb]:
+                direct_rank[ra] += 1
+            return True
+
+        direct_pair_count = 0
+        direct_union_count = 0
+        direct_overlap_count = 0
+        for conn in tileconn:
+            a_type = conn["tile_types"][0]
+            b_type = conn["tile_types"][1]
+            if a_type not in direct_tileconn_types or b_type not in direct_tileconn_types:
+                continue
+            dx = conn.get("grid_deltas", [0, 0])[0]
+            dy = conn.get("grid_deltas", [0, 0])[1]
+            a_wires = tile_wire_sets.get(a_type, set())
+            b_wires = tile_wire_sets.get(b_type, set())
+            for ax, ay in tiles_by_xc7_type.get(a_type, []):
+                bx, by = ax + dx, ay + dy
+                if not (0 <= bx < X and 0 <= by < Y):
+                    continue
+                if xc7_grid.get((bx, by)) != b_type:
+                    continue
+                for aw, bw in conn["wire_pairs"]:
+                    if aw not in a_wires or bw not in b_wires:
+                        continue
+                    a_key = (ax, ay, aw)
+                    b_key = (bx, by, bw)
+                    if a_key in wires_in_nodes or b_key in wires_in_nodes:
+                        direct_overlap_count += 1
+                        continue
+                    direct_pair_count += 1
+                    if direct_union(a_key, b_key):
+                        direct_union_count += 1
+
+        direct_groups = defaultdict(list)
+        for key in direct_parent:
+            direct_groups[direct_find(key)].append(key)
+
+        direct_node_count = 0
+        direct_wire_count = 0
+        for members in direct_groups.values():
+            if len(members) < 2:
+                continue
+            ch.add_node([NodeWire(x, y, w) for x, y, w in members])
+            for m in members:
+                wires_in_nodes.add(m)
+            direct_wire_count += len(members)
+            direct_node_count += 1
+        print(
+            "Created "
+            f"{direct_node_count} synthetic inter-tile routing nodes "
+            f"from {direct_pair_count} tileconn pairs "
+            f"({direct_wire_count} wires, {direct_union_count} unions, "
+            f"{direct_overlap_count} pre-owned pairs skipped)"
+        )
+
     # ------------------------------------------------------------------
     # IO-to-INT bridge nodes
     # ------------------------------------------------------------------
@@ -688,6 +1008,9 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
         for ix, iy in tiles_by_xc7_type.get(itype, []):
             if ix in clb_adjacent_int_cols:
                 int_positions.setdefault(iy, []).append((ix, iy, itype))
+    if "CLB" in tile_wire_sets:
+        for ix, iy in tiles_by_xc7_type.get("CLB", []):
+            int_positions.setdefault(iy, []).append((ix, iy, "CLB"))
 
     for io_type in sorted(io_types):
         is_left = io_type in left_io
@@ -703,7 +1026,7 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                 for sign in (0, 1, -1):
                     row = io_y + dy * sign if dy > 0 else io_y
                     for ix, iy, itype in int_positions.get(row, []):
-                        if itype == target_int and abs(ix - io_x) < best_dist:
+                        if itype in {target_int, "CLB"} and abs(ix - io_x) < best_dist:
                             best_dist = abs(ix - io_x)
                             best_int = (ix, iy)
                 if best_int is not None:
@@ -729,6 +1052,10 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     # Clock distribution
     # ------------------------------------------------------------------
     clk_int_wires = sorted([w for w in int_l_wires if "CLK" in w and "LOGIC" not in w])
+    if "CLB" in tile_wire_sets:
+        clk_int_wires = sorted(
+            [w for w in tile_wire_sets["CLB"] if "CLK" in w and "LOGIC" not in w]
+        )
     if not clk_int_wires:
         clk_int_wires = sorted([w for w in int_l_wires if "GCLK" in w])
     clk_wire_names = clk_int_wires[:N_CLK] if clk_int_wires else []
@@ -736,7 +1063,9 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
 
     int_l_columns = defaultdict(list)
     for (x, y), ttype in xc7_grid.items():
-        if ttype == "INT_L":
+        if ttype == "INT_L" and 0 <= x < X and 0 <= y < Y:
+            int_l_columns[x].append(y)
+        if ttype == "CLB" and 0 <= x < X and 0 <= y < Y:
             int_l_columns[x].append(y)
     for x in int_l_columns:
         int_l_columns[x].sort()
@@ -778,7 +1107,8 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
     io_tiles = (tiles_by_xc7_type.get("LIOB33", [])
                 + tiles_by_xc7_type.get("RIOB33", [])
                 + tiles_by_xc7_type.get("LIOB33_SING", [])
-                + tiles_by_xc7_type.get("RIOB33_SING", []))
+                + tiles_by_xc7_type.get("RIOB33_SING", [])
+                + tiles_by_xc7_type.get("IOB", []))
     for c in range(min(N_CLK, len(clk_wire_names), N_IO)):
         for io_x, io_y in io_tiles:
             if not (0 <= io_x < X and 0 <= io_y < Y):
@@ -799,6 +1129,45 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
                         clk_node_count += 1
                     break
             break  # Only one IO per clock
+
+    # Large composite fabrics use a simplified CLK_BUFG sidecar tile. Bridge
+    # the first clock lanes explicitly: IO GCLK output -> BUFG.I -> BUFG.O ->
+    # nearest composite clock wire. This keeps the sidecar out of the fabric
+    # while still making BUFG cells routable for the benchmark clocks.
+    bufg_bridge_count = 0
+    if "CLK_BUFG" in tile_wire_sets and clk_wire_names and int_l_col_list:
+        for bufg_x, bufg_y in tiles_by_xc7_type.get("CLK_BUFG", []):
+            for c in range(min(N_CLK, len(clk_wire_names), N_IO)):
+                if not io_tiles:
+                    continue
+                io_x, io_y = min(io_tiles, key=lambda pos: abs(pos[0] - bufg_x) + abs(pos[1] - bufg_y))
+                bufg_i = f"BUFG{c}_I"
+                bufg_o = f"BUFG{c}_O"
+                io_key = (io_x, io_y, f"GCLK{c}_OUT")
+                bi_key = (bufg_x, bufg_y, bufg_i)
+                if io_key not in wires_in_nodes and bi_key not in wires_in_nodes:
+                    ch.add_node([NodeWire(io_x, io_y, f"GCLK{c}_OUT"), NodeWire(bufg_x, bufg_y, bufg_i)])
+                    wires_in_nodes.add(io_key)
+                    wires_in_nodes.add(bi_key)
+                    bufg_bridge_count += 1
+
+                best_clk = None
+                for col_x in sorted(int_l_col_list, key=lambda col: abs(col - bufg_x)):
+                    for row_y in sorted(int_l_columns[col_x], key=lambda row: abs(row - bufg_y)):
+                        clk_key = (col_x, row_y, clk_wire_names[c])
+                        if clk_key not in wires_in_nodes:
+                            best_clk = (col_x, row_y, clk_key)
+                            break
+                    if best_clk is not None:
+                        break
+                bo_key = (bufg_x, bufg_y, bufg_o)
+                if best_clk is not None and bo_key not in wires_in_nodes:
+                    col_x, row_y, clk_key = best_clk
+                    ch.add_node([NodeWire(bufg_x, bufg_y, bufg_o), NodeWire(col_x, row_y, clk_wire_names[c])])
+                    wires_in_nodes.add(bo_key)
+                    wires_in_nodes.add(clk_key)
+                    bufg_bridge_count += 1
+        print(f"Created {bufg_bridge_count} CLK_BUFG bridge nodes")
 
     print(f"Created {clk_node_count} clock routing nodes")
 
@@ -826,6 +1195,11 @@ def generate_xc7_hybrid(output_bba, xray, tilegrid_path, tileconn_path, size=Non
             in_cap=TimingValue(5000),
             out_res=TimingValue(1000),
         )
+
+    for bel_type in sorted(bel_types_created):
+        cell_timing = ch.timing.add_cell_variant(speed, bel_type)
+        if bel_type in {"BUFG", "BUFHCE", "BUFIO", "BUFR", "BUFMRCE"}:
+            cell_timing.add_comb_arc("I", "O", TimingValue(100))
 
     ch.strs.known_id_count = 0
     ch.write_bba(output_bba)

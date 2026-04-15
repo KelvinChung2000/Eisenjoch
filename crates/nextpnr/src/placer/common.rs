@@ -3,8 +3,59 @@
 use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::CellId;
+use crate::netlist::{CellId, NetId};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Policy for whether GND/VCC/clock nets should contribute to placement cost.
+///
+/// - Constants (GND, VCC) are skipped by default because they don't route through
+///   general fabric: every slice has local switch-matrix tieoffs, so including
+///   them creates phantom anchors.
+/// - Clocks are included by default because they still occupy topology
+///   (dedicated clock tree), though the modeling is imperfect.
+///
+/// Env flags (shared across placers):
+/// - `NPNR_INCLUDE_CONSTANTS=1`  → opt back in to GND/VCC in cost (debug / compat)
+/// - `NPNR_EXCLUDE_CLOCKS=1`     → drop clock-like nets from cost
+/// - `NPNR_OT_INCLUDE_CONSTANTS` and `NPNR_OT_EXCLUDE_GLOBALS` kept as legacy
+///    aliases to avoid breaking old invocations.
+#[derive(Clone, Copy, Debug)]
+pub struct NetFilter {
+    pub skip_constants: bool,
+    pub skip_clocks: bool,
+}
+
+impl NetFilter {
+    pub fn from_env() -> Self {
+        let include_const = std::env::var("NPNR_INCLUDE_CONSTANTS").ok().as_deref() == Some("1")
+            || std::env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() == Some("1");
+        let skip_clocks = std::env::var("NPNR_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
+            || std::env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
+            || std::env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1");
+        Self {
+            skip_constants: !include_const,
+            skip_clocks,
+        }
+    }
+
+    /// Returns true if this net should be excluded from the placement cost
+    /// and from HPWL reported for acceptance decisions.
+    pub fn should_skip(&self, ctx: &Context, net_id: NetId) -> bool {
+        let net_name = ctx.name_of(ctx.design.net(net_id).name);
+        if self.skip_constants
+            && (net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET")
+        {
+            return true;
+        }
+        if self.skip_clocks {
+            let lower = net_name.to_ascii_lowercase();
+            if lower.contains("clk") || lower.contains("clock") {
+                return true;
+            }
+        }
+        false
+    }
+}
 
 #[inline]
 fn scatter_bilinear_tile(
@@ -924,5 +975,138 @@ impl TypeAwarePlacement {
     /// are formally overfull.
     pub fn overflow_energy_from_map(field: &FxHashMap<(i32, i32), f64>) -> f64 {
         field.values().map(|&u| u * u).sum()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cell-validity mask: O(1) "is cell `ci` allowed at `(gx, gy)`?" lookup
+// ---------------------------------------------------------------------------
+
+/// Bit-packed per-cell validity overlay on top of `TypeAwarePlacement`.
+///
+/// Every placer needs to check whether a given cell can legally land at a
+/// specific grid position before evaluating its cost. This struct answers that
+/// in O(1). It is a static pre-computation derived from `TypeAwarePlacement`:
+/// `is_valid(ci, gx, gy)` is true iff `(gx, gy)` is a valid position for the
+/// bucket of cell `cell_ids[ci]`.
+///
+/// Memory cost: `n_cells * width * height` bits, e.g. ~4 MB for 300 cells on a
+/// 350×350 grid.
+pub struct CellValidityMask {
+    width: i32,
+    height: i32,
+    n_cells: usize,
+    // bits[idx] bit `b`: (cell_idx * W*H + gy*W + gx) where idx = bit >> 6,
+    // b = bit & 63.
+    bits: Vec<u64>,
+}
+
+impl CellValidityMask {
+    /// Build from an already-constructed `TypeAwarePlacement`. For each cell i,
+    /// resolve its bucket, then mark every (gx, gy) in
+    /// `valid_xs[bucket] × valid_ys[bucket][gx]` as allowed.
+    ///
+    /// `cell_ids[i]` must correspond to the cell referred to by index `i` in
+    /// the placer's cell arrays (e.g. `idx_to_cell`). Fixed cells should still
+    /// appear in `cell_ids`; the mask will simply encode their single allowed
+    /// position via `TypeAwarePlacement` (or mark nothing if they are not in
+    /// the type-aware tables — they are never queried).
+    pub fn build(
+        ctx: &Context,
+        cell_ids: &[CellId],
+        type_aware: &TypeAwarePlacement,
+        width: i32,
+        height: i32,
+    ) -> Self {
+        let n_cells = cell_ids.len();
+        let bits_per_cell = (width as usize) * (height as usize);
+        let total_bits = n_cells * bits_per_cell;
+        let n_words = (total_bits + 63) / 64;
+        let mut bits = vec![0u64; n_words];
+        let stride = bits_per_cell;
+
+        let mut n_unmapped = 0usize;
+        let mut per_cell_counts = Vec::with_capacity(n_cells);
+        for (ci, &cell_id) in cell_ids.iter().enumerate() {
+            let bucket = ctx.resolve_bucket(ctx.design.cell(cell_id).cell_type);
+            let xs = match type_aware.valid_xs.get(&bucket) {
+                Some(xs) if !xs.is_empty() => xs,
+                _ => {
+                    n_unmapped += 1;
+                    per_cell_counts.push(0usize);
+                    continue; // no valid positions (e.g. fixed/non-placeable); leave all bits 0
+                }
+            };
+            let ys_map = match type_aware.valid_ys.get(&bucket) {
+                Some(m) => m,
+                None => continue,
+            };
+
+            let base = (ci * stride) as u64;
+            let mut set_count = 0usize;
+            for &xf in xs {
+                let gx = xf.round() as i32;
+                if gx < 0 || gx >= width {
+                    continue;
+                }
+                let Some(ys) = ys_map.get(&gx) else { continue };
+                for &yf in ys {
+                    let gy = yf.round() as i32;
+                    if gy < 0 || gy >= height {
+                        continue;
+                    }
+                    let bit = base + (gy as u64) * (width as u64) + (gx as u64);
+                    let word = (bit >> 6) as usize;
+                    let shift = (bit & 63) as u32;
+                    bits[word] |= 1u64 << shift;
+                    set_count += 1;
+                }
+            }
+            per_cell_counts.push(set_count);
+        }
+
+        let min_set = per_cell_counts.iter().copied().min().unwrap_or(0);
+        let max_set = per_cell_counts.iter().copied().max().unwrap_or(0);
+        let avg_set: f64 = per_cell_counts.iter().copied().sum::<usize>() as f64 / n_cells.max(1) as f64;
+        eprintln!(
+            "CellValidityMask: {} cells, {}x{} grid, per-cell valid positions: min={} avg={:.1} max={}, unmapped cells={}",
+            n_cells, width, height, min_set, avg_set, max_set, n_unmapped,
+        );
+
+        Self {
+            width,
+            height,
+            n_cells,
+            bits,
+        }
+    }
+
+    /// O(1) check. Returns false for out-of-bounds or invalid-for-cell positions.
+    #[inline(always)]
+    pub fn is_valid(&self, cell_idx: usize, gx: i32, gy: i32) -> bool {
+        if cell_idx >= self.n_cells {
+            return false;
+        }
+        if gx < 0 || gy < 0 || gx >= self.width || gy >= self.height {
+            return false;
+        }
+        let stride = (self.width as u64) * (self.height as u64);
+        let bit = (cell_idx as u64) * stride
+            + (gy as u64) * (self.width as u64)
+            + (gx as u64);
+        let word = self.bits[(bit >> 6) as usize];
+        ((word >> (bit & 63)) & 1) == 1
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn n_cells(&self) -> usize {
+        self.n_cells
     }
 }

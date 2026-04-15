@@ -40,17 +40,20 @@ impl PartialOrd for HeapEntry {
 // ---------------------------------------------------------------------------
 
 pub struct PathSolverWorkspace {
-    /// Per-node solve output. Initialised to INFINITY; only nodes actually
-    /// reached by Dijkstra are overwritten. Reset is sparse via `touched`.
+    /// Per-node routing cost. Used as Dijkstra priority.
+    /// Initialised to INFINITY; only reached nodes are overwritten.
     pub dist: Vec<f64>,
-    prev_pipe: Vec<usize>,
+    /// Per-node physical distance (sum of pipe spans along shortest-cost path).
+    /// Tracks how far in tile units the path actually travels.
+    pub phys_dist: Vec<f64>,
+    pub(crate) prev_pipe: Vec<usize>,
 
     /// Nodes whose dist/prev were written during the current solve.
     /// Used for O(touched) reset instead of O(V) memset.
-    touched: Vec<usize>,
+    pub(crate) touched: Vec<usize>,
 
     /// Dense boolean: is this node a sink for the current net?
-    is_sink: Vec<bool>,
+    pub(crate) is_sink: Vec<bool>,
 
     /// Per-net edge dedup stamp (same pattern as before).
     pipe_stamp: Vec<u32>,
@@ -61,9 +64,10 @@ pub struct PathSolverWorkspace {
 }
 
 impl PathSolverWorkspace {
-    fn new(n_nodes: usize, n_pipes: usize) -> Self {
+    pub(crate) fn new(n_nodes: usize, n_pipes: usize) -> Self {
         Self {
             dist: vec![f64::INFINITY; n_nodes],
+            phys_dist: vec![f64::INFINITY; n_nodes],
             prev_pipe: vec![usize::MAX; n_nodes],
             touched: Vec::with_capacity(1024),
             is_sink: vec![false; n_nodes],
@@ -74,9 +78,10 @@ impl PathSolverWorkspace {
     }
 
     /// Sparse reset: only clears nodes written in the previous solve.
-    fn begin_net(&mut self) {
+    pub(crate) fn begin_net(&mut self) {
         for &node in &self.touched {
             self.dist[node] = f64::INFINITY;
+            self.phys_dist[node] = f64::INFINITY;
             self.prev_pipe[node] = usize::MAX;
         }
         self.touched.clear();
@@ -89,13 +94,13 @@ impl PathSolverWorkspace {
         }
     }
 
-    fn mark_sinks(&mut self, sink_nodes: &[usize]) {
+    pub(crate) fn mark_sinks(&mut self, sink_nodes: &[usize]) {
         for &node in sink_nodes {
             self.is_sink[node] = true;
         }
     }
 
-    fn clear_sinks(&mut self, sink_nodes: &[usize]) {
+    pub(crate) fn clear_sinks(&mut self, sink_nodes: &[usize]) {
         for &node in sink_nodes {
             self.is_sink[node] = false;
         }
@@ -405,16 +410,45 @@ fn evaluate_net_path(
             continue;
         };
 
+        let _path_cong = mark_sink_paths(pin, source_node, network, ws, &mut local.edge_usage);
         local.attraction_energy += timing_scale * cost;
-        mark_sink_paths(pin, source_node, network, ws, &mut local.edge_usage);
 
         if include_gradient {
-            accumulate_sink_gradient(pin, &ws.dist, timing_scale, &mut local.grad);
+            // Build per-node congestion potential for this sink's bilinear nodes
+            // by walking each node's path and collecting congestion cost.
+            let mut node_cong = [0.0f64; 4];
+            for j in 0..4 {
+                if pin.weights[j] == 0.0 {
+                    continue;
+                }
+                let node = pin.nodes[j];
+                if !ws.dist[node].is_finite() {
+                    continue;
+                }
+                // Walk path from this node to source, sum (usage/cap)²
+                let mut n = node;
+                let mut steps = 0usize;
+                let max_steps = ws.prev_pipe.len();
+                while n != source_node && steps < max_steps {
+                    let pipe_idx = ws.prev_pipe[n];
+                    if pipe_idx == usize::MAX {
+                        break;
+                    }
+                    let pipe = &network.pipes[pipe_idx];
+                    if pipe.capacity > 0.0 {
+                        let ratio = pipe.net_count as f64 / pipe.capacity;
+                        node_cong[j] += ratio * ratio;
+                    }
+                    n = if pipe.from == n { pipe.to } else { pipe.from };
+                    steps += 1;
+                }
+            }
+            accumulate_sink_gradient_with_cong(pin, &ws.dist, &node_cong, timing_scale, &mut local.grad);
         }
     }
 }
 
-fn nearest_source_node(pin: &NetPinData) -> Option<usize> {
+pub(crate) fn nearest_source_node(pin: &NetPinData) -> Option<usize> {
     let mut best_weight = f64::NEG_INFINITY;
     let mut best_node = None;
     for j in 0..4 {
@@ -430,20 +464,9 @@ fn nearest_source_node(pin: &NetPinData) -> Option<usize> {
     best_node
 }
 
-fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f64 {
-    let base_io_factor = if info.has_fixed_pin {
-        cfg.io_boost
-    } else {
-        1.0
-    };
-    let fanout = (info.pins.len() - 1) as f64;
-    let fanout_scale = if cfg.fanout_weight_sqrt {
-        fanout.sqrt().max(1.0)
-    } else {
-        1.0
-    };
-    let fanout_norm = fanout.powf(cfg.fanout_norm_exp.clamp(0.0, 1.0)).max(1.0);
-    base_io_factor * fanout_scale / fanout_norm * demand::net_timing_weight(info, cfg)
+pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f64 {
+    let io_factor = if info.has_fixed_pin { cfg.io_boost } else { 1.0 };
+    io_factor * demand::net_timing_weight(info, cfg)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,13 +479,14 @@ fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f64 {
 // ---------------------------------------------------------------------------
 
 #[inline(never)]
-fn dijkstra_early_terminate(
+pub(crate) fn dijkstra_early_terminate(
     network: &PipeNetwork,
     source_node: usize,
     n_sinks: usize,
     ws: &mut PathSolverWorkspace,
 ) -> usize {
     let dist = &mut ws.dist;
+    let phys_dist = &mut ws.phys_dist;
     let prev_pipe = &mut ws.prev_pipe;
     let is_sink = &ws.is_sink;
     let heap = &mut ws.heap;
@@ -470,6 +494,7 @@ fn dijkstra_early_terminate(
 
     // Seed source — record the touch.
     dist[source_node] = 0.0;
+    phys_dist[source_node] = 0.0;
     touched.push(source_node);
     heap.push(HeapEntry {
         dist: 0.0,
@@ -520,6 +545,14 @@ fn dijkstra_early_terminate(
                     touched.push(next);
                 }
                 dist[next] = candidate;
+                // Track physical distance: sum of spans along the path.
+                let span = match pipe.pipe_type {
+                    super::network::PipeType::InterTile(_) => 1.0,
+                    super::network::PipeType::LongRange { dx, dy } => {
+                        (dx.abs() + dy.abs()) as f64
+                    }
+                };
+                phys_dist[next] = phys_dist[node] + span;
                 prev_pipe[next] = pipe_idx;
                 heap.push(HeapEntry {
                     dist: candidate,
@@ -552,7 +585,15 @@ fn sink_cost(pin: &NetPinData, dist: &[f64]) -> Option<f64> {
     Some(cost)
 }
 
-fn accumulate_sink_gradient(pin: &NetPinData, dist: &[f64], timing_scale: f64, grad: &mut [f64]) {
+/// Accumulate gradient from the unified potential V[j] = dist[j] + node_cong[j].
+/// node_cong[j] is the path congestion cost Σ(usage/cap)² from node j to source.
+fn accumulate_sink_gradient_with_cong(
+    pin: &NetPinData,
+    dist: &[f64],
+    node_cong: &[f64; 4],
+    timing_scale: f64,
+    grad: &mut [f64],
+) {
     let Some(ci) = pin.cell_idx else {
         return;
     };
@@ -572,21 +613,25 @@ fn accumulate_sink_gradient(pin: &NetPinData, dist: &[f64], timing_scale: f64, g
         if !d.is_finite() {
             return;
         }
-        grad_x += pin.dw_dx[j] * d;
-        grad_y += pin.dw_dy[j] * d;
+        let v = d + node_cong[j];
+        grad_x += pin.dw_dx[j] * v;
+        grad_y += pin.dw_dy[j] * v;
     }
 
     grad[ci] += timing_scale * grad_x;
     grad[n + ci] += timing_scale * grad_y;
 }
 
+/// Mark paths from sink bilinear nodes to source, accumulate edge usage,
+/// and return the weighted path congestion cost for this sink pin.
 fn mark_sink_paths(
     pin: &NetPinData,
     source_node: usize,
     network: &PipeNetwork,
     ws: &mut PathSolverWorkspace,
     edge_usage: &mut [f64],
-) {
+) -> f64 {
+    let mut weighted_cong = 0.0f64;
     for j in 0..4 {
         if pin.weights[j] == 0.0 {
             continue;
@@ -595,17 +640,22 @@ fn mark_sink_paths(
         if !ws.dist[node].is_finite() {
             continue;
         }
-        mark_path_to_source(node, source_node, network, ws, edge_usage);
+        let path_cong = mark_path_to_source(node, source_node, network, ws, edge_usage);
+        weighted_cong += pin.weights[j] * path_cong;
     }
+    weighted_cong
 }
 
+/// Walk the shortest path from `node` to `source_node`, marking edge usage
+/// and returning the path congestion cost `Σ (usage/capacity)²`.
 fn mark_path_to_source(
     mut node: usize,
     source_node: usize,
     network: &PipeNetwork,
     ws: &mut PathSolverWorkspace,
     edge_usage: &mut [f64],
-) {
+) -> f64 {
+    let mut path_cong = 0.0f64;
     let mut steps = 0usize;
     let max_steps = ws.prev_pipe.len();
     while node != source_node && steps < max_steps {
@@ -613,11 +663,16 @@ fn mark_path_to_source(
         if pipe_idx == usize::MAX {
             break;
         }
+        let pipe = &network.pipes[pipe_idx];
+        // Accumulate congestion ratio squared for this pipe.
+        if pipe.capacity > 0.0 {
+            let ratio = pipe.net_count as f64 / pipe.capacity;
+            path_cong += ratio * ratio;
+        }
         if ws.pipe_stamp[pipe_idx] != ws.stamp_epoch {
             ws.pipe_stamp[pipe_idx] = ws.stamp_epoch;
             edge_usage[pipe_idx] += 1.0;
         }
-        let pipe = &network.pipes[pipe_idx];
         node = if pipe.from == node {
             pipe.to
         } else if pipe.to == node {
@@ -627,4 +682,5 @@ fn mark_path_to_source(
         };
         steps += 1;
     }
+    path_cong
 }

@@ -39,7 +39,7 @@ module \$lut (A, Y);
     endgenerate
 endmodule
 
-// Map clock-less $_FF_ (data register) to always-transparent DLATCH.
+// Map clock-less $_FF_ (data register) to DFF for the simplified benchmark arch.
 module \$_FF_ (input D, output Q);
-    DLATCH _TECHMAP_REPLACE_ (.D(D), .G(1'b1), .Q(Q));
+    DFF _TECHMAP_REPLACE_ (.D(D), .CLK(1'b1), .Q(Q));
 endmodule

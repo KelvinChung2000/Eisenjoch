@@ -20,38 +20,22 @@ impl Context {
         self.bel_to_cell.get_mut(tile, index)
     }
 
+    /// Return the current binding of a wire, or `None` if unbound or the id is
+    /// out of range. Sparse lookup: `O(1)` against the hash map.
     #[inline]
-    pub(crate) fn wire_slot(&self, wire: WireId) -> Option<&Option<(NetId, PlaceStrength)>> {
-        let tile = usize::try_from(wire.tile()).ok()?;
-        let index = usize::try_from(wire.index()).ok()?;
-        self.wire_to_net.get(tile, index)
+    pub(crate) fn wire_binding(&self, wire: WireId) -> Option<(NetId, PlaceStrength)> {
+        let tile = u32::try_from(wire.tile()).ok()?;
+        let index = u32::try_from(wire.index()).ok()?;
+        self.wire_to_net.get(&(tile, index)).copied()
     }
 
+    /// Return the current binding of a pip, or `None` if unbound or out of
+    /// range.
     #[inline]
-    pub(crate) fn wire_slot_mut(
-        &mut self,
-        wire: WireId,
-    ) -> Option<&mut Option<(NetId, PlaceStrength)>> {
-        let tile = usize::try_from(wire.tile()).ok()?;
-        let index = usize::try_from(wire.index()).ok()?;
-        self.wire_to_net.get_mut(tile, index)
-    }
-
-    #[inline]
-    pub(crate) fn pip_slot(&self, pip: PipId) -> Option<&Option<(NetId, PlaceStrength)>> {
-        let tile = usize::try_from(pip.tile()).ok()?;
-        let index = usize::try_from(pip.index()).ok()?;
-        self.pip_to_net.get(tile, index)
-    }
-
-    #[inline]
-    pub(crate) fn pip_slot_mut(
-        &mut self,
-        pip: PipId,
-    ) -> Option<&mut Option<(NetId, PlaceStrength)>> {
-        let tile = usize::try_from(pip.tile()).ok()?;
-        let index = usize::try_from(pip.index()).ok()?;
-        self.pip_to_net.get_mut(tile, index)
+    pub(crate) fn pip_binding(&self, pip: PipId) -> Option<(NetId, PlaceStrength)> {
+        let tile = u32::try_from(pip.tile()).ok()?;
+        let index = u32::try_from(pip.index()).ok()?;
+        self.pip_to_net.get(&(tile, index)).copied()
     }
 
     /// Bind a cell to a BEL.
@@ -102,17 +86,17 @@ impl Context {
     ) {
         let wire = wire.into();
         let net_idx = net_idx.into();
-        if let Some(slot) = self.wire_slot_mut(wire) {
-            *slot = Some((net_idx, strength));
-        }
+        let Ok(tile) = u32::try_from(wire.tile()) else { return };
+        let Ok(index) = u32::try_from(wire.index()) else { return };
+        self.wire_to_net.insert((tile, index), (net_idx, strength));
     }
 
-    /// Unbind a wire.
+    /// Unbind a wire. O(1) hash-map removal; no-op if not bound.
     pub fn unbind_wire(&mut self, wire: impl Into<WireId>) {
         let wire = wire.into();
-        if let Some(slot) = self.wire_slot_mut(wire) {
-            *slot = None;
-        }
+        let Ok(tile) = u32::try_from(wire.tile()) else { return };
+        let Ok(index) = u32::try_from(wire.index()) else { return };
+        self.wire_to_net.remove(&(tile, index));
     }
 
     /// Bind a PIP to a net.
@@ -124,16 +108,16 @@ impl Context {
     ) {
         let pip = pip.into();
         let net_idx = net_idx.into();
-        if let Some(slot) = self.pip_slot_mut(pip) {
-            *slot = Some((net_idx, strength));
-        }
+        let Ok(tile) = u32::try_from(pip.tile()) else { return };
+        let Ok(index) = u32::try_from(pip.index()) else { return };
+        self.pip_to_net.insert((tile, index), (net_idx, strength));
     }
 
-    /// Unbind a PIP.
+    /// Unbind a PIP. O(1) hash-map removal; no-op if not bound.
     pub fn unbind_pip(&mut self, pip: impl Into<PipId>) {
         let pip = pip.into();
-        if let Some(slot) = self.pip_slot_mut(pip) {
-            *slot = None;
-        }
+        let Ok(tile) = u32::try_from(pip.tile()) else { return };
+        let Ok(index) = u32::try_from(pip.index()) else { return };
+        self.pip_to_net.remove(&(tile, index));
     }
 }

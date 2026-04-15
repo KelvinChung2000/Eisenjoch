@@ -14,5 +14,6 @@ pub use congestion::{
 pub use density::{compute_sliding_window_density, placement_density, DensityReport};
 pub use utilization::{utilization_report, ResourceRow, UtilizationReport};
 pub use wirelength::{
-    net_hpwl, net_line_estimate, total_hpwl, total_line_estimate, total_routed_wirelength,
+    net_hpwl, net_line_estimate, total_congestion_cost, total_hpwl, total_line_estimate,
+    total_routed_wirelength,
 };

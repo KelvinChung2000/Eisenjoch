@@ -135,6 +135,32 @@ pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     Ok(())
 }
 
+/// Bind explicit BUFG cells to BUFG BELs.
+///
+/// Yosys keeps BUFG as a real cell when clkbufmap is enabled, so there is no
+/// net rewriting here; the packer only reserves physical BUFG sites.
+pub fn pack_bufg(ctx: &mut Context) -> Result<(), PackerError> {
+    let bufg_type = ctx.id("BUFG");
+    if !ctx.has_bel_type(bufg_type) {
+        return Ok(());
+    }
+
+    let cells_to_bind: Vec<_> = ctx
+        .design
+        .iter_cell_indices()
+        .filter(|&idx| {
+            let cell = ctx.design.cell(idx);
+            cell.alive && cell.cell_type == bufg_type
+        })
+        .collect();
+
+    for idx in cells_to_bind {
+        bind_to_first_available_bel(ctx, idx, bufg_type);
+    }
+
+    Ok(())
+}
+
 /// Pass-through for remaining cells.
 ///
 /// Currently a no-op since remaining cells are already valid and need no

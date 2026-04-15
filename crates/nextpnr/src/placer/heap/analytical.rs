@@ -23,10 +23,16 @@ impl HeapState {
         let mut sys_y = SparseSystemBuilder::new(n);
 
         let weight = self.cfg.beta;
+        let net_filter = crate::placer::common::NetFilter::from_env();
 
         // Process each net.
-        for (_net_idx, net) in ctx.design.iter_alive_nets() {
+        for (net_id, net) in ctx.design.iter_alive_nets() {
             if !net.driver.is_connected() || net.users.is_empty() {
+                continue;
+            }
+            // Skip GND/VCC (and optionally clocks) — they don't route through
+            // general fabric so they shouldn't contribute placement forces.
+            if net_filter.should_skip(ctx, net_id) {
                 continue;
             }
 

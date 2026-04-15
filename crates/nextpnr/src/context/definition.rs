@@ -23,11 +23,17 @@ pub struct Context {
     // -- Placement state --
     /// For each tile, occupancy of BEL slots by cell index.
     pub(super) bel_to_cell: TileSlotMap<Option<CellId>>,
-    // -- Routing state --
-    /// For each tile, occupancy of wire slots by (net index, strength).
-    pub(super) wire_to_net: TileSlotMap<Option<(NetId, PlaceStrength)>>,
-    /// For each tile, occupancy of pip slots by (net index, strength).
-    pub(super) pip_to_net: TileSlotMap<Option<(NetId, PlaceStrength)>>,
+    // -- Routing state (sparse; grows as bindings are added) --
+    /// Wire occupancy keyed by (tile, slot_index). Only bound wires are
+    /// stored, so memory scales with routed bindings rather than chip size.
+    /// A full XC7 chipdb has ~278 M wire slots; a routed design touches a
+    /// tiny fraction, so the sparse representation is dramatically smaller
+    /// than a dense per-slot table.
+    pub(super) wire_to_net: FxHashMap<(u32, u32), (NetId, PlaceStrength)>,
+    /// Pip occupancy keyed by (tile, slot_index). Same rationale as
+    /// `wire_to_net`: placement-only flows keep this empty, routing grows
+    /// it proportionally to the number of bound pips.
+    pub(super) pip_to_net: FxHashMap<(u32, u32), (NetId, PlaceStrength)>,
 
     // -- Caches (populated on demand) --
     /// For each bucket (bel type), the list of all BelIds belonging to it.
@@ -60,27 +66,25 @@ impl Context {
     /// The design starts empty; cells and nets should be loaded by the frontend
     /// before placement and routing.
     pub fn new(chipdb: ChipDb) -> Self {
-        let mut bel_lengths = Vec::new();
-        let mut wire_lengths = Vec::new();
-        let mut pip_lengths = Vec::new();
+        let mut bel_lengths = Vec::with_capacity(chipdb.num_tiles() as usize);
         for tile in 0..chipdb.num_tiles() {
             let tt = chipdb.tile_type(tile);
             bel_lengths.push(tt.bels.get().len());
-            wire_lengths.push(tt.wires.get().len());
-            pip_lengths.push(tt.pips.get().len());
         }
 
         let bel_to_cell = TileSlotMap::with_fill(&bel_lengths, None);
-        let wire_to_net = TileSlotMap::with_fill(&wire_lengths, None);
-        let pip_to_net = TileSlotMap::with_fill(&pip_lengths, None);
+        // wire_to_net / pip_to_net are sparse hash maps: a dense per-slot
+        // table would be ~7 GB on XC7, but real designs only bind a few
+        // thousand of those slots. The sparse maps start empty and grow
+        // one entry at a time as binds arrive.
 
         Self {
             id_pool: IdStringPool::new(),
             chipdb,
             design: Design::new(),
             bel_to_cell,
-            wire_to_net,
-            pip_to_net,
+            wire_to_net: FxHashMap::default(),
+            pip_to_net: FxHashMap::default(),
             bucket_bels: FxHashMap::default(),
             region_bel_cache: FxHashMap::default(),
             cell_type_aliases: FxHashMap::default(),

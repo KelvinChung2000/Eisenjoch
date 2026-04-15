@@ -13,6 +13,8 @@ use crate::read_packed;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
+use super::config::OptTransPlacerCfg;
+
 /// Direction of an inter-tile pipe between two adjacent tiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -104,7 +106,7 @@ impl PipeNetwork {
     /// For scale >= 1.0: one node per tile.
     ///
     /// Cell positions are always in tile coordinates.
-    pub fn from_context(ctx: &Context, scale: f64) -> Self {
+    pub fn from_context(ctx: &Context, scale: f64, cfg: &OptTransPlacerCfg) -> Self {
         let full_w = ctx.chipdb().width();
         let full_h = ctx.chipdb().height();
 
@@ -169,110 +171,100 @@ impl PipeNetwork {
             }
         }
 
-        // Inter-tile pipes on the coarse grid (4-connected).
-        for cy in 0..h {
-            for cx in 0..w {
-                // East neighbor.
-                if cx + 1 < w {
-                    let mut total_wires = 0usize;
-                    let boundary_x = ((cx + 1) as usize * coarsen).min(full_w as usize) as i32 - 1;
-                    for fy in
-                        (cy as usize * coarsen)..((cy as usize + 1) * coarsen).min(full_h as usize)
-                    {
-                        total_wires +=
-                            estimate_wire_count(ctx, boundary_x, fy as i32, Direction::East);
-                    }
-                    let g = inter_tile_conductance(total_wires);
-                    let cap = (total_wires as f64).max(1.0);
-                    add_pipe(
-                        &mut pipes,
-                        &mut node_pipes,
-                        idx(cx, cy),
-                        idx(cx + 1, cy),
-                        1.0 / g,
-                        cap,
-                        PipeType::InterTile(Direction::East),
-                    );
-                }
-
-                // South neighbor.
-                if cy + 1 < h {
-                    let mut total_wires = 0usize;
-                    let boundary_y = ((cy + 1) as usize * coarsen).min(full_h as usize) as i32 - 1;
-                    for fx in
-                        (cx as usize * coarsen)..((cx as usize + 1) * coarsen).min(full_w as usize)
-                    {
-                        total_wires +=
-                            estimate_wire_count(ctx, fx as i32, boundary_y, Direction::South);
-                    }
-                    let g = inter_tile_conductance(total_wires);
-                    let cap = (total_wires as f64).max(1.0);
-                    add_pipe(
-                        &mut pipes,
-                        &mut node_pipes,
-                        idx(cx, cy),
-                        idx(cx, cy + 1),
-                        1.0 / g,
-                        cap,
-                        PipeType::InterTile(Direction::South),
-                    );
-                }
-            }
-        }
-
-        // 3. Long-range pipes from chipdb routing node analysis.
-        // Histograms are in raw tile coordinates; we convert to coarse coords here.
+        // Build span histograms first — one source of truth for both span-1
+        // (inter-tile) and span-N (long-range) pipe capacities.
         let span_histograms = build_span_histograms(ctx.chipdb());
-        let pre_long_range = pipes.len();
 
-        // Deduplicate: multiple raw (dx,dy) entries may map to the same coarse cell pair.
-        // Aggregate wire counts for each unique coarse delta.
+        // Unified pipe creation: one aggregation pass per coarse cell sums
+        // `span_histograms` entries across ALL fine tiles inside the cell,
+        // keyed by coarse (cdx, cdy). Each unique delta becomes one directed
+        // outgoing pipe whose `capacity` reflects the real wires of that span
+        // that ORIGINATE in the source coarse cell. A wire of delta (+dx, +dy)
+        // at the source is physically distinct from a wire of delta (-dx, -dy)
+        // at the destination, so both must be emitted to preserve capacity.
+        //
+        //   base_resistance = sqrt(|cdx| + |cdy|)   (r1 = 1; same model for all spans)
+        //   capacity        = summed wire_count
         let coarsen_i = coarsen as i32;
+        let mut n_span1 = 0usize;
+        let mut n_long_range = 0usize;
         for cy in 0..h {
             for cx in 0..w {
-                // Use center tile of the coarse cell as representative.
-                let repr_fx = (cx as usize * coarsen + coarsen / 2).min(full_w as usize - 1) as i32;
-                let repr_fy = (cy as usize * coarsen + coarsen / 2).min(full_h as usize - 1) as i32;
-                let repr_tile = ctx.chipdb().tile_by_xy(repr_fx, repr_fy);
-                let tt_idx = ctx.chipdb().tile_type_index(repr_tile) as usize;
-
-                if let Some(hist) = span_histograms.get(tt_idx) {
-                    // Aggregate raw entries into coarse deltas.
-                    let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
-                    for (&(raw_dx, raw_dy), &wire_count) in hist {
-                        let cdx = raw_dx / coarsen_i;
-                        let cdy = raw_dy / coarsen_i;
-                        let coarse_span = cdx.abs() + cdy.abs();
-                        if coarse_span < 2 {
-                            continue;
+                let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+                let mut fallback_east = 0usize;
+                let mut fallback_south = 0usize;
+                for fy in (cy as usize * coarsen)
+                    ..((cy as usize + 1) * coarsen).min(full_h as usize)
+                {
+                    for fx in (cx as usize * coarsen)
+                        ..((cx as usize + 1) * coarsen).min(full_w as usize)
+                    {
+                        let tile = ctx.chipdb().tile_by_xy(fx as i32, fy as i32);
+                        let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
+                        if let Some(hist) = span_histograms.get(tt_idx) {
+                            for (&(raw_dx, raw_dy), &wire_count) in hist {
+                                let cdx = raw_dx / coarsen_i;
+                                let cdy = raw_dy / coarsen_i;
+                                if cdx == 0 && cdy == 0 {
+                                    continue;
+                                }
+                                *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
+                            }
                         }
-                        *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
-                    }
-
-                    for ((cdx, cdy), wire_count) in coarse_agg {
-                        let nx = cx + cdx;
-                        let ny = cy + cdy;
-                        if nx < 0 || nx >= w || ny < 0 || ny >= h {
-                            continue;
+                        // Span-1 fallback: accumulate only for fine tiles that
+                        // actually have an east/south neighbor (avoids OOB in
+                        // estimate_wire_count).
+                        if (fx as i32) + 1 < full_w {
+                            fallback_east +=
+                                estimate_wire_count(ctx, fx as i32, fy as i32, Direction::East);
                         }
-                        let span = (cdx.abs() + cdy.abs()) as usize;
-                        let g = long_range_conductance(wire_count, span);
-                        let cap = (wire_count as f64).max(1.0);
-                        add_pipe(
-                            &mut pipes,
-                            &mut node_pipes,
-                            idx(cx, cy),
-                            idx(nx, ny),
-                            1.0 / g,
-                            cap,
-                            PipeType::LongRange { dx: cdx, dy: cdy },
-                        );
+                        if (fy as i32) + 1 < full_h {
+                            fallback_south +=
+                                estimate_wire_count(ctx, fx as i32, fy as i32, Direction::South);
+                        }
                     }
+                }
+                if cx + 1 < w && !coarse_agg.contains_key(&(1, 0)) && fallback_east > 0 {
+                    coarse_agg.insert((1, 0), fallback_east.max(1));
+                }
+                if cy + 1 < h && !coarse_agg.contains_key(&(0, 1)) && fallback_south > 0 {
+                    coarse_agg.insert((0, 1), fallback_south.max(1));
+                }
+
+                for ((cdx, cdy), wire_count) in coarse_agg {
+                    let nx = cx + cdx;
+                    let ny = cy + cdy;
+                    if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                        continue;
+                    }
+                    let span = (cdx.abs() + cdy.abs()) as usize;
+                    let base = (span as f64).sqrt();
+                    let cap = (wire_count as f64).max(1.0);
+                    let pipe_type = if span == 1 {
+                        n_span1 += 1;
+                        let dir = if cdx.abs() >= cdy.abs() {
+                            Direction::East
+                        } else {
+                            Direction::South
+                        };
+                        PipeType::InterTile(dir)
+                    } else {
+                        n_long_range += 1;
+                        PipeType::LongRange { dx: cdx, dy: cdy }
+                    };
+                    add_pipe(
+                        &mut pipes,
+                        &mut node_pipes,
+                        idx(cx, cy),
+                        idx(nx, ny),
+                        base,
+                        cap,
+                        pipe_type,
+                    );
                 }
             }
         }
-
-        let n_long_range = pipes.len() - pre_long_range;
+        let _ = n_span1;
         log::debug!(
             "network: {}x{} (coarsen={}) = {} nodes, {} pipes ({} long-range)",
             w,
@@ -282,6 +274,167 @@ impl PipeNetwork {
             pipes.len(),
             n_long_range,
         );
+
+        // Per-span capacity summary: gives a clear read on what wire resources
+        // are actually modeled for each span bucket. Useful to sanity-check
+        // whether the span-1 pipes are being sized from the right histograms.
+        {
+            use rustc_hash::FxHashMap as _Map;
+            let mut by_span: _Map<i32, (usize, f64, f64, f64, f64)> = _Map::default();
+            // (count, sum_cap, min_cap, max_cap, sum_cap_sq)
+            for pipe in &pipes {
+                let span = match pipe.pipe_type {
+                    PipeType::InterTile(_) => 1i32,
+                    PipeType::LongRange { dx, dy } => dx.abs() + dy.abs(),
+                };
+                let e = by_span
+                    .entry(span)
+                    .or_insert((0usize, 0.0, f64::INFINITY, 0.0, 0.0));
+                e.0 += 1;
+                e.1 += pipe.capacity;
+                if pipe.capacity < e.2 { e.2 = pipe.capacity; }
+                if pipe.capacity > e.3 { e.3 = pipe.capacity; }
+                e.4 += pipe.capacity * pipe.capacity;
+            }
+            let mut spans: Vec<i32> = by_span.keys().copied().collect();
+            spans.sort();
+            eprintln!("  Pipe capacity by span:");
+            for s in spans {
+                let (n, sum, mn, mx, _) = by_span[&s];
+                let avg = sum / n as f64;
+                eprintln!(
+                    "    span={:3}: {} pipes, cap min={:.0} avg={:.1} max={:.0}",
+                    s, n, mn, avg, mx,
+                );
+            }
+
+            // Location of thin span-1 wires (cap<=2): tile-type pair histogram.
+            // Answers "where are these bottlenecks on the device?"
+            let mut thin_by_tt: _Map<(String, String), usize> = _Map::default();
+            let mut n_thin = 0usize;
+            let coarsen_i32 = coarsen as i32;
+            for pipe in &pipes {
+                let is_span1 = matches!(pipe.pipe_type, PipeType::InterTile(_));
+                if !is_span1 || pipe.capacity > 2.0 {
+                    continue;
+                }
+                n_thin += 1;
+                let fn_ = &nodes[pipe.from];
+                let tn_ = &nodes[pipe.to];
+                let ffx = fn_.tile_x * coarsen_i32;
+                let ffy = fn_.tile_y * coarsen_i32;
+                let tfx = tn_.tile_x * coarsen_i32;
+                let tfy = tn_.tile_y * coarsen_i32;
+                if ffx < 0 || ffx >= full_w || ffy < 0 || ffy >= full_h {
+                    continue;
+                }
+                if tfx < 0 || tfx >= full_w || tfy < 0 || tfy >= full_h {
+                    continue;
+                }
+                let ft = ctx.chipdb().tile_by_xy(ffx, ffy);
+                let tt = ctx.chipdb().tile_by_xy(tfx, tfy);
+                let fname = ctx.chipdb().tile_type_name(ft).to_string();
+                let tname = ctx.chipdb().tile_type_name(tt).to_string();
+                // Normalize pair (a,b) with a<=b for deduplication.
+                let key = if fname <= tname {
+                    (fname, tname)
+                } else {
+                    (tname, fname)
+                };
+                *thin_by_tt.entry(key).or_insert(0) += 1;
+            }
+            let mut items: Vec<_> = thin_by_tt.into_iter().collect();
+            items.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!(
+                "  Thin span-1 pipes (cap<=2): {} total, by tile-type pair (top 20):",
+                n_thin
+            );
+            for ((a, b), cnt) in items.iter().take(20) {
+                eprintln!("    {} <-> {}: {}", a, b, cnt);
+            }
+        }
+
+        // Unified sqrt pricing: base = r1 × sqrt(span) with r1 = 1. Set at
+        // pipe-creation time for both InterTile (span=1, base=1) and LongRange
+        // (span=N, base=sqrt(N)). Wire count is already baked into `capacity`;
+        // congestion-dependent R_eff rides on top via `ResistanceModel`.
+        eprintln!(
+            "  Pipe cost: sqrt model (r1=1), span-1={:.3}, span-12={:.3}, 2×span-6={:.3}, 12×span-1={:.3}",
+            1.0,
+            12.0_f64.sqrt(),
+            2.0 * 6.0_f64.sqrt(),
+            12.0,
+        );
+
+        // Per-span scarcity scaling: multiply each pipe's base_resistance by
+        // a linear penalty factor derived from per-span median capacity. Narrow
+        // pipes pay extra; pipes at or above their span's median capacity pay
+        // nothing. Keeps the sqrt(span) shortcut bias intact for legitimate
+        // long-range wires while discouraging the placer from routing data
+        // signals through IOB / CLK / NULL boundary pipes (cap 1-6 span-1 wires).
+        {
+            use rustc_hash::FxHashMap as _Map2;
+            let mut caps_by_span: _Map2<i32, Vec<f64>> = _Map2::default();
+            for pipe in &pipes {
+                let span = match pipe.pipe_type {
+                    PipeType::InterTile(_) => 1i32,
+                    PipeType::LongRange { dx, dy } => dx.abs() + dy.abs(),
+                };
+                caps_by_span.entry(span).or_default().push(pipe.capacity);
+            }
+            let mut ref_cap_by_span: _Map2<i32, f64> = _Map2::default();
+            let mut sorted_spans: Vec<i32> = caps_by_span.keys().copied().collect();
+            sorted_spans.sort();
+            for s in &sorted_spans {
+                let v = caps_by_span.get_mut(s).unwrap();
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let mid = v.len() / 2;
+                let median = if v.is_empty() { 1.0 } else { v[mid] };
+                ref_cap_by_span.insert(*s, median.max(1.0));
+            }
+
+            let k = cfg.scarcity_k;
+            let mut n_factor_1 = 0usize;
+            let mut n_factor_1_2 = 0usize;
+            let mut n_factor_2_10 = 0usize;
+            let mut n_factor_gt10 = 0usize;
+            for pipe in &mut pipes {
+                let span = match pipe.pipe_type {
+                    PipeType::InterTile(_) => 1i32,
+                    PipeType::LongRange { dx, dy } => dx.abs() + dy.abs(),
+                };
+                let ref_cap = ref_cap_by_span.get(&span).copied().unwrap_or(1.0);
+                let deficit = (1.0 - pipe.capacity / ref_cap).max(0.0);
+                let factor = 1.0 + k * deficit;
+                pipe.base_resistance *= factor;
+                pipe.eff_conductance = 1.0 / pipe.base_resistance.max(1e-12);
+                if factor <= 1.0 + 1e-9 {
+                    n_factor_1 += 1;
+                } else if factor < 2.0 {
+                    n_factor_1_2 += 1;
+                } else if factor < 10.0 {
+                    n_factor_2_10 += 1;
+                } else {
+                    n_factor_gt10 += 1;
+                }
+            }
+            eprintln!(
+                "  Scarcity scaling: k={:.1}, factor distribution: 1x={} 1-2x={} 2-10x={} >10x={}",
+                k, n_factor_1, n_factor_1_2, n_factor_2_10, n_factor_gt10,
+            );
+            let mut shown = 0;
+            for s in sorted_spans.iter() {
+                if shown >= 10 {
+                    break;
+                }
+                eprintln!(
+                    "    ref_cap(span={}) = {:.1}",
+                    s, ref_cap_by_span[s]
+                );
+                shown += 1;
+            }
+        }
+
         let pipe_lookup = build_pipe_lookup(&pipes);
 
         Self {
@@ -505,16 +658,7 @@ fn build_pipe_lookup(pipes: &[Pipe]) -> FxHashMap<u64, usize> {
         .collect()
 }
 
-/// Inter-tile conductance: log-normalized from wire count.
-fn inter_tile_conductance(wire_count: usize) -> f64 {
-    (1.0 + wire_count as f64).ln().max(0.1)
-}
-
 /// Estimate routing capacity between adjacent tiles in the given direction.
-///
-/// Uses max(wires, pips) as proxy — wires represent pass-through tracks,
-/// PIPs represent switchable connections. The minimum of the two tiles
-/// determines the bottleneck capacity of the connection.
 fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> usize {
     let tile = ctx.chipdb().tile_by_xy(x, y);
     let tt = ctx.chipdb().tile_type(tile);
@@ -530,13 +674,10 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
     let ncap = ntt.wires.len().max(ntt.pips.len());
 
     let min_cap = cap.min(ncap);
+    if min_cap == 0 {
+        return 0;
+    }
     (min_cap / 4).max(1)
-}
-
-/// Long-range pipe conductance: log-normalized, resistance scales with Manhattan span.
-fn long_range_conductance(wire_count: usize, span: usize) -> f64 {
-    let g = (1.0 + wire_count as f64).ln().max(0.1);
-    g / span.max(1) as f64
 }
 
 /// Per tile-type histogram: maps raw (dx, dy) in tile coords -> wire_count for long-range nodes.
@@ -582,11 +723,16 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
                 if dx < 0 || (dx == 0 && dy <= 0) {
                     continue;
                 }
-                // Skip same-tile (span 0) and nearest-neighbor (span 1).
-                if raw_span <= 1 {
+                // Skip same-tile wires (span 0).
+                if raw_span <= 0 {
                     continue;
                 }
-                // Store raw tile coordinates; coarse conversion happens at pipe creation.
+                // `hist[(dx,dy)]` then counts wires that have a tile_wire at
+                // offset (dx,dy) AND at (0,0) — i.e. wires tappable at T and
+                // T+(dx,dy). That is the number of wires that can physically
+                // serve a pipe of delta (dx,dy), whether the wire is a span-1
+                // connecting exactly those two tiles or a longer wire that
+                // can be tapped via intermediate pips. Keep this aggregation.
                 *histograms[tt_idx]
                     .entry((dx as i32, dy as i32))
                     .or_insert(0) += 1;
@@ -615,19 +761,3 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     histograms
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn inter_conductance_positive() {
-        let g = inter_tile_conductance(100);
-        assert!(g > 0.0);
-    }
-
-    #[test]
-    fn inter_conductance_zero_wires() {
-        let g = inter_tile_conductance(0);
-        assert!(g >= 0.1);
-    }
-}

@@ -170,6 +170,34 @@ pub fn source_wire_const_value(ctx: &Context, source_wire: WireId) -> i32 {
     ctx.chipdb().wire_info(source_wire).const_value
 }
 
+/// Return true for global-clock wires in XC7-style chipdbs.
+pub fn is_global_clock_wire(ctx: &Context, wire: WireId) -> bool {
+    let wire_type = ctx.chipdb().wire_type(wire);
+    matches!(
+        wire_type,
+        "GCLK_SPINE"
+            | "CLK_IN"
+            | "GCLK"
+            | "GLOBAL"
+            | "BUFGROUT"
+            | "NODE_GLOBAL_BUFG"
+            | "NODE_GLOBAL_VROUTE"
+            | "NODE_GLOBAL_HROUTE"
+            | "NODE_GLOBAL_HDISTR"
+            | "NODE_GLOBAL_VDISTR"
+            | "NODE_GLOBAL_LEAF"
+    ) || wire_type.contains("GCLK")
+        || wire_type.contains("HCLK")
+        || wire_type.contains("BUFG")
+}
+
+/// Return true when a PIP touches a global-clock wire.
+pub fn is_global_clock_pip(ctx: &Context, pip: PipId) -> bool {
+    let chipdb = ctx.chipdb();
+    is_global_clock_wire(ctx, chipdb.pip_src_wire(pip))
+        || is_global_clock_wire(ctx, chipdb.pip_dst_wire(pip))
+}
+
 /// Find all wires that are used by more than one net (congested).
 pub fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
     let mut wire_usage: FxHashMap<WireId, u32> = FxHashMap::default();

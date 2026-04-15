@@ -6,13 +6,18 @@
 
 mod algorithm;
 pub mod config;
+pub mod congestion;
+mod coord_descent;
 mod demand;
+pub(crate) mod diag;
+pub(crate) mod eikonal;
 pub(crate) mod network;
 pub mod path_solver;
+pub(crate) mod region_min;
 mod resistance;
 
 pub use algorithm::place_opt_trans;
-pub use config::OptTransPlacerCfg;
+pub use config::{OptTransPlacerCfg, SweepMode};
 
 use rustc_hash::FxHashSet;
 

@@ -275,6 +275,12 @@ impl ChipDb {
         self.constid_str(name_id).unwrap_or("<unknown>")
     }
 
+    pub fn wire_type(&self, wire: WireId) -> &str {
+        let info = self.wire_info(wire);
+        let wire_type_id: i32 = unsafe { read_packed!(*info, wire_type) };
+        self.constid_str(wire_type_id).unwrap_or("<unknown>")
+    }
+
     pub fn tile_name(&self, tile: i32) -> String {
         let inst = self.tile_inst(tile);
         let prefix = unsafe { read_packed!(*inst, name_prefix) };

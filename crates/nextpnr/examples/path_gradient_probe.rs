@@ -140,7 +140,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let setup = PlacerPipeline::prepare(&mut ctx, 42)?;
 
     let level0_scale = 2.0;
-    let network = PipeNetwork::from_context(&ctx, level0_scale);
+    let default_cfg = nextpnr::placer::opt_trans::OptTransPlacerCfg::default();
+    let network = PipeNetwork::from_context(&ctx, level0_scale, &default_cfg);
 
     let coarse_x: Vec<f64> = setup
         .cell_x

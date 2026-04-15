@@ -30,6 +30,13 @@ impl AdamOptimizer {
         self.lr = lr;
     }
 
+    /// Reset momentum and variance accumulators (warm restart).
+    pub fn reset(&mut self) {
+        self.m.fill(0.0);
+        self.v.fill(0.0);
+        self.t = 0;
+    }
+
     /// Compute one Adam update from gradient and write step into `out`.
     pub fn step(&mut self, grad: &[f64], out: &mut [f64]) {
         debug_assert_eq!(grad.len(), self.m.len());

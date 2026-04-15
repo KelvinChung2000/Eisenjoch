@@ -17,7 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, resolve_source_wire,
-    source_wire_const_value, unroute_net, RoutePlan, SinkRoute,
+    is_global_clock_pip, source_wire_const_value, unroute_net, RoutePlan, SinkRoute,
 };
 use super::maze::astar_route;
 use super::RouterError;
@@ -710,10 +710,20 @@ fn segment_astar(
                 }
             }
 
-            let pip_delay = ctx.pip(pip).delay().max_delay().max(1);
+            let is_global_clock = is_global_clock_pip(ctx, pip);
+            let pip_delay = if is_global_clock {
+                0
+            } else {
+                ctx.pip(pip).delay().max_delay().max(1)
+            };
             // Congestion cost: penalize PIPs landing on congested tiles.
-            let cong_cost = (cong_weight * cong.congestion_at(next_wire.tile())) as i32;
-            let new_cost = entry.cost + pip_delay + cong_cost + 1;
+            let cong_cost = if is_global_clock {
+                0
+            } else {
+                (cong_weight * cong.congestion_at(next_wire.tile())) as i32
+            };
+            let step_cost = if is_global_clock { 0 } else { 1 };
+            let new_cost = entry.cost + pip_delay + cong_cost + step_cost;
 
             if let Some(&(pc, _, _)) = visited.get(&next_wire) {
                 if new_cost >= pc {
@@ -870,8 +880,14 @@ fn local_route(
         for &pip_idx in wire_info.pips_downhill.get() {
             let pip = PipId::new(entry.wire.tile(), pip_idx);
             let next_wire = chipdb.pip_dst_wire(pip);
-            let pip_delay = ctx.pip(pip).delay().max_delay().max(1);
-            let new_cost = entry.cost + pip_delay + 1;
+            let is_global_clock = is_global_clock_pip(ctx, pip);
+            let pip_delay = if is_global_clock {
+                0
+            } else {
+                ctx.pip(pip).delay().max_delay().max(1)
+            };
+            let step_cost = if is_global_clock { 0 } else { 1 };
+            let new_cost = entry.cost + pip_delay + step_cost;
             if let Some(&(pc, _, _)) = visited.get(&next_wire) {
                 if new_cost >= pc {
                     continue;
@@ -1140,11 +1156,21 @@ fn negotiation_astar(
             let pip = PipId::new(entry.wire.tile(), pip_idx);
             let next_wire = chipdb.pip_dst_wire(pip);
 
-            let pip_delay = ctx.pip(pip).delay().max_delay().max(1);
+            let is_global_clock = is_global_clock_pip(ctx, pip);
+            let pip_delay = if is_global_clock {
+                0
+            } else {
+                ctx.pip(pip).delay().max_delay().max(1)
+            };
             // Negotiation penalty: usage * present_cost.
             let usage = wire_usage.get(&next_wire).copied().unwrap_or(0);
-            let neg_cost = (usage as f32 * present_cost) as i32;
-            let new_cost = entry.cost + pip_delay + neg_cost + 1;
+            let neg_cost = if is_global_clock {
+                0
+            } else {
+                (usage as f32 * present_cost) as i32
+            };
+            let step_cost = if is_global_clock { 0 } else { 1 };
+            let new_cost = entry.cost + pip_delay + neg_cost + step_cost;
 
             if best_score < i32::MAX && new_cost > best_score + 50 {
                 continue;
