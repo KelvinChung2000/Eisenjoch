@@ -94,11 +94,16 @@ mod tests {
             .iter()
             .map(|p| 1.0 / p.eff_conductance.max(1e-12))
             .collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
+            .collect();
         PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_costs_int,
             pipe_lookup: FxHashMap::default(),
             width: 2,
             height: 2,

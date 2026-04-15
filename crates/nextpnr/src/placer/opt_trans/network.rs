@@ -66,6 +66,11 @@ pub struct Pipe {
 }
 
 /// The pipe network over the FPGA tile grid.
+/// Integer-quantization scale factor for pipe costs (`int_cost = round(f64_cost * DIST_SCALE)`).
+/// Chosen so 2-digit precision survives the quantization (BPR steps on r_eff
+/// of 0.01 are distinguishable) and typical paths fit comfortably in u32.
+pub const DIST_SCALE: f64 = 100.0;
+
 pub struct PipeNetwork {
     pub nodes: Vec<Node>,
     pub pipes: Vec<Pipe>,
@@ -74,6 +79,10 @@ pub struct PipeNetwork {
     /// `eff_conductance` in `update_effective_conductance`. Hot Dijkstra loop
     /// reads this directly instead of recomputing `1.0 / g` per edge visit.
     pub pipe_costs: Vec<f64>,
+    /// u32-quantized copy of `pipe_costs` used by the bucket-Dial Dijkstra.
+    /// `int = max(1, (pipe_costs * DIST_SCALE).round() as u32)`; the `max(1)`
+    /// guarantees strictly-positive integer weights (required for Dial).
+    pub pipe_costs_int: Vec<u32>,
     pub pipe_lookup: FxHashMap<u64, usize>,
     /// Tile grid dimensions.
     pub width: i32,
@@ -473,12 +482,17 @@ impl PipeNetwork {
             .iter()
             .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
             .collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * DIST_SCALE).round() as u32).max(1))
+            .collect();
 
         Self {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_costs_int,
             pipe_lookup,
             width: w,
             height: h,
@@ -642,12 +656,17 @@ impl PipeNetwork {
             .iter()
             .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
             .collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * DIST_SCALE).round() as u32).max(1))
+            .collect();
 
         Self {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_costs_int,
             pipe_lookup,
             width: grid_w,
             height: grid_h,

@@ -471,7 +471,7 @@ fn solve_all_nets(
 
                         let dist_out = dist_access.row_mut(net_idx);
                         dist_out.fill(f64::INFINITY);
-                        for &node in &ws.touched {
+                        for &node in &ws.settle_order {
                             dist_out[node] = ws.dist[node];
                         }
                         accum.energy += net_path_weight(info, cfg) * result.energy;
@@ -981,17 +981,26 @@ fn update_effective_conductance(
     solve_pool: &rayon::ThreadPool,
     resistance_model: &ResistanceModel,
 ) {
+    use super::network::DIST_SCALE;
     solve_pool.install(|| {
         let pipes = &mut network.pipes;
         let pipe_costs = &mut network.pipe_costs;
+        let pipe_costs_int = &mut network.pipe_costs_int;
         pipes
             .par_iter_mut()
             .zip(pipe_costs.par_iter_mut())
-            .for_each(|(pipe, cost)| {
+            .zip(pipe_costs_int.par_iter_mut())
+            .for_each(|((pipe, cost), cost_int)| {
                 let r_eff = resistance_model.effective_resistance(pipe);
                 let r = r_eff.max(1e-12);
                 pipe.eff_conductance = 1.0 / r;
                 *cost = r;
+                let scaled = (r * DIST_SCALE).round();
+                *cost_int = if scaled >= u32::MAX as f64 {
+                    u32::MAX - 1
+                } else {
+                    (scaled as u32).max(1)
+                };
             });
     });
 }
@@ -2048,7 +2057,7 @@ fn refresh_net_dist_cache(
 
     let dist_out = dist_cache.row_mut(net_idx);
     dist_out.fill(f64::INFINITY);
-    for &node in &ws.touched {
+    for &node in &ws.settle_order {
         dist_out[node] = ws.dist[node];
     }
 }

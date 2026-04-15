@@ -47,9 +47,14 @@ impl PartialOrd for HeapEntry {
 // ---------------------------------------------------------------------------
 
 pub struct PathSolverWorkspace {
-    /// Per-node routing cost. Used as Dijkstra priority.
-    /// Initialised to INFINITY; only reached nodes are overwritten.
+    /// Per-node f64 routing cost, populated from `dist_int` after Dijkstra
+    /// completes so the Dial forward/backward passes and downstream consumers
+    /// see real-valued labels.
     pub dist: Vec<f64>,
+    /// Per-node u32-quantized routing cost used directly by the bucket-Dial
+    /// Dijkstra. `u32::MAX` means unreached; every settled node is written
+    /// with its min-cost label.
+    pub(crate) dist_int: Vec<u32>,
     /// Dial forward weight at each reached node.
     path_weight: Vec<f64>,
     /// Dial backward demand loaded through each reached node.
@@ -60,12 +65,10 @@ pub struct PathSolverWorkspace {
     edge_load: Vec<f64>,
     edge_touched: Vec<usize>,
 
-    /// Nodes whose dist was written during the current solve.
-    /// Used for O(touched) reset instead of O(V) memset.
-    pub(crate) touched: Vec<usize>,
-
     /// Dijkstra settle order (nodes pushed as they are popped with a fresh
-    /// min). Already in dist order — replaces a post-hoc sort of `touched`.
+    /// min). Already in dist order. Also doubles as the reset list for
+    /// `dist` / `dist_int` / `path_weight` / `node_load` since every relaxed
+    /// node eventually settles.
     pub(crate) settle_order: Vec<usize>,
 
     /// Per-node bitmap: true if the node is inside the current corridor.
@@ -74,7 +77,20 @@ pub struct PathSolverWorkspace {
     /// Nodes whose in_corridor bit was set this net (sparse reset).
     corridor_marked: Vec<usize>,
 
-    /// Priority queue — reused, never reallocated.
+    /// Pool of CorridorSink entries reused across nets.
+    /// `build_corridor` clears and refills this.
+    pub(crate) corridor_sinks: Vec<CorridorSink>,
+
+    /// Flat bucket array for Dial's O(V+E+D_max) Dijkstra. `buckets[d]`
+    /// holds every node whose tentative dist == d. Grown on demand.
+    /// After each Dijkstra all buckets are empty (reset is implicit).
+    pub(crate) buckets: Vec<Vec<u32>>,
+    /// Max bucket index touched in the current net; used to bound the reset
+    /// scan if we ever break out of Dijkstra early.
+    pub(crate) max_bucket: u32,
+
+    /// Binary heap for the public `dijkstra_single_source` fallback path;
+    /// never used by the hot `dijkstra_all_labels` (which uses buckets).
     pub heap: BinaryHeap<HeapEntry>,
 }
 
@@ -82,22 +98,27 @@ impl PathSolverWorkspace {
     pub(crate) fn new(n_nodes: usize, n_pipes: usize) -> Self {
         Self {
             dist: vec![f64::INFINITY; n_nodes],
+            dist_int: vec![u32::MAX; n_nodes],
             path_weight: vec![0.0; n_nodes],
             node_load: vec![0.0; n_nodes],
             edge_load: vec![0.0; n_pipes],
             edge_touched: Vec::with_capacity(1024),
-            touched: Vec::with_capacity(1024),
             settle_order: Vec::with_capacity(1024),
             in_corridor: vec![false; n_nodes],
             corridor_marked: Vec::with_capacity(1024),
+            corridor_sinks: Vec::with_capacity(16),
+            buckets: Vec::new(),
+            max_bucket: 0,
             heap: BinaryHeap::with_capacity(4096),
         }
     }
 
-    /// Sparse reset: only clears nodes written in the previous solve.
+    /// Sparse reset: clears state written in the previous solve.
+    /// `settle_order` is the authoritative list of updated nodes.
     pub(crate) fn begin_net(&mut self) {
-        for &node in &self.touched {
+        for &node in &self.settle_order {
             self.dist[node] = f64::INFINITY;
+            self.dist_int[node] = u32::MAX;
             self.path_weight[node] = 0.0;
             self.node_load[node] = 0.0;
         }
@@ -107,25 +128,41 @@ impl PathSolverWorkspace {
         for &node in &self.corridor_marked {
             self.in_corridor[node] = false;
         }
-        self.touched.clear();
+        // Buckets are drained by the dial loop; nothing to clear unless we
+        // broke early. Trim back to something reasonable to cap memory.
+        let keep = (self.max_bucket as usize).saturating_add(1).min(self.buckets.len());
+        for bucket in &mut self.buckets[..keep] {
+            bucket.clear();
+        }
+        self.max_bucket = 0;
         self.settle_order.clear();
         self.edge_touched.clear();
         self.corridor_marked.clear();
+        self.corridor_sinks.clear();
         self.heap.clear();
     }
 
     /// Populate `in_corridor` for every node in the bbox that passes the
     /// Steiner check. Called once per net; hot loops read the bitmap.
     fn mark_corridor(&mut self, network: &PipeNetwork, corridor: &Corridor) {
+        let sinks = &self.corridor_sinks[..];
+        let width = network.width;
+        let height = network.height;
+        let bitmap_len = self.in_corridor.len();
         for ty in corridor.min_y..=corridor.max_y {
+            if ty < 0 || ty >= height {
+                continue;
+            }
             for tx in corridor.min_x..=corridor.max_x {
-                let idx = network.node_index(tx, ty);
-                if idx >= self.in_corridor.len() {
+                if tx < 0 || tx >= width {
                     continue;
                 }
-                if corridor.contains_xy(tx, ty) {
-                    self.in_corridor[idx] = true;
-                    self.corridor_marked.push(idx);
+                if corridor.contains_xy(tx, ty, sinks) {
+                    let idx = (ty * width + tx) as usize;
+                    if idx < bitmap_len {
+                        self.in_corridor[idx] = true;
+                        self.corridor_marked.push(idx);
+                    }
                 }
             }
         }
@@ -190,78 +227,83 @@ struct Corridor {
     max_x: i32,
     min_y: i32,
     max_y: i32,
-    sinks: Vec<CorridorSink>,
 }
 
-#[derive(Debug)]
-struct CorridorSink {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CorridorSink {
     x: i32,
     y: i32,
     direct: i32,
 }
 
-impl Corridor {
-    fn from_demands(
-        network: &PipeNetwork,
-        source_node: usize,
-        sink_demands: &[(usize, f64)],
-    ) -> Option<Self> {
-        let source = network.nodes.get(source_node)?;
-        let mut min_x = source.tile_x;
-        let mut max_x = source.tile_x;
-        let mut min_y = source.tile_y;
-        let mut max_y = source.tile_y;
-        let mut sinks = Vec::new();
-        let mut max_direct = 0i32;
+/// Build a corridor from a source + sink list, writing sinks into the
+/// caller-owned scratch vec (pooled on `PathSolverWorkspace` in hot paths).
+fn build_corridor(
+    network: &PipeNetwork,
+    source_node: usize,
+    sink_demands: &[(usize, f64)],
+    sinks_out: &mut Vec<CorridorSink>,
+) -> Option<Corridor> {
+    let source = network.nodes.get(source_node)?;
+    let mut min_x = source.tile_x;
+    let mut max_x = source.tile_x;
+    let mut min_y = source.tile_y;
+    let mut max_y = source.tile_y;
+    let mut max_direct = 0i32;
 
-        for &(node, demand) in sink_demands {
-            if demand == 0.0 {
-                continue;
-            }
-            let sink = network.nodes.get(node)?;
-            min_x = min_x.min(sink.tile_x);
-            max_x = max_x.max(sink.tile_x);
-            min_y = min_y.min(sink.tile_y);
-            max_y = max_y.max(sink.tile_y);
-            let direct =
-                manhattan_xy(source.tile_x, source.tile_y, sink.tile_x, sink.tile_y).max(1);
-            max_direct = max_direct.max(direct);
-            sinks.push(CorridorSink {
-                x: sink.tile_x,
-                y: sink.tile_y,
-                direct,
-            });
+    sinks_out.clear();
+    for &(node, demand) in sink_demands {
+        if demand == 0.0 {
+            continue;
         }
-
-        if sinks.is_empty() {
-            return None;
-        }
-
-        let rel_halo = (max_direct * CORRIDOR_REL_HALO_NUM + CORRIDOR_REL_HALO_DEN - 1)
-            / CORRIDOR_REL_HALO_DEN;
-        let halo = CORRIDOR_MIN_HALO.max(rel_halo);
-        Some(Self {
-            source_x: source.tile_x,
-            source_y: source.tile_y,
-            halo,
-            min_x: (min_x - halo).max(0),
-            max_x: (max_x + halo).min(network.width - 1),
-            min_y: (min_y - halo).max(0),
-            max_y: (max_y + halo).min(network.height - 1),
-            sinks,
-        })
+        let sink = network.nodes.get(node)?;
+        min_x = min_x.min(sink.tile_x);
+        max_x = max_x.max(sink.tile_x);
+        min_y = min_y.min(sink.tile_y);
+        max_y = max_y.max(sink.tile_y);
+        let direct =
+            manhattan_xy(source.tile_x, source.tile_y, sink.tile_x, sink.tile_y).max(1);
+        max_direct = max_direct.max(direct);
+        sinks_out.push(CorridorSink {
+            x: sink.tile_x,
+            y: sink.tile_y,
+            direct,
+        });
     }
 
+    if sinks_out.is_empty() {
+        return None;
+    }
+
+    let rel_halo = (max_direct * CORRIDOR_REL_HALO_NUM + CORRIDOR_REL_HALO_DEN - 1)
+        / CORRIDOR_REL_HALO_DEN;
+    let halo = CORRIDOR_MIN_HALO.max(rel_halo);
+    Some(Corridor {
+        source_x: source.tile_x,
+        source_y: source.tile_y,
+        halo,
+        min_x: (min_x - halo).max(0),
+        max_x: (max_x + halo).min(network.width - 1),
+        min_y: (min_y - halo).max(0),
+        max_y: (max_y + halo).min(network.height - 1),
+    })
+}
+
+impl Corridor {
     #[inline]
-    fn contains_xy(&self, tx: i32, ty: i32) -> bool {
+    fn contains_xy(&self, tx: i32, ty: i32, sinks: &[CorridorSink]) -> bool {
         if tx < self.min_x || tx > self.max_x || ty < self.min_y || ty > self.max_y {
             return false;
         }
-        self.sinks.iter().any(|sink| {
-            let via = manhattan_xy(self.source_x, self.source_y, tx, ty)
-                + manhattan_xy(tx, ty, sink.x, sink.y);
-            (via as f64) <= CORRIDOR_STRETCH * (sink.direct as f64) + (self.halo as f64)
-        })
+        let via_src = manhattan_xy(self.source_x, self.source_y, tx, ty);
+        let bound = self.halo as f64;
+        for sink in sinks {
+            let via = via_src + manhattan_xy(tx, ty, sink.x, sink.y);
+            if (via as f64) <= CORRIDOR_STRETCH * (sink.direct as f64) + bound {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -588,66 +630,97 @@ pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f
 }
 
 #[inline(never)]
+/// Bucket-Dial Dijkstra over quantized u32 pipe costs.
+///
+/// Each bucket `buckets[d]` holds nodes whose tentative quantized distance
+/// equals `d`. We advance `cur` monotonically and pop one node at a time
+/// from the non-empty bucket under `cur`; when empty we step `cur += 1`.
+/// Every relaxed neighbour is pushed to `buckets[cur + cost]`, never below
+/// `cur`, so buckets empty out naturally as the frontier advances.
+///
+/// After settling, we translate `dist_int` to the float `dist` array for
+/// downstream consumers (Dial forward/backward and the per-net dist cache).
 fn dijkstra_all_labels(
     network: &PipeNetwork,
     source_node: usize,
     ws: &mut PathSolverWorkspace,
     use_corridor: bool,
 ) -> usize {
-    let dist = &mut ws.dist;
-    let heap = &mut ws.heap;
-    let touched = &mut ws.touched;
+    let dist_int = &mut ws.dist_int;
     let settle_order = &mut ws.settle_order;
     let in_corridor = &ws.in_corridor;
     let pipes = &network.pipes;
-    let pipe_costs = &network.pipe_costs;
+    let pipe_costs_int = &network.pipe_costs_int;
     let node_pipes = &network.node_pipes;
+    let buckets = &mut ws.buckets;
 
-    dist[source_node] = 0.0;
-    touched.push(source_node);
-    heap.push(HeapEntry {
-        dist: 0.0,
-        node: source_node,
-    });
+    dist_int[source_node] = 0;
+    if buckets.is_empty() {
+        buckets.push(Vec::new());
+    }
+    buckets[0].push(source_node as u32);
 
-    let mut heap_pops = 0usize;
-    while let Some(HeapEntry {
-        dist: cur_dist,
-        node,
-    }) = heap.pop()
-    {
-        heap_pops += 1;
-        if cur_dist > dist[node] {
+    let mut pops = 0usize;
+    let mut cur: u32 = 0;
+    let mut max_bucket: u32 = 0;
+
+    loop {
+        if (cur as usize) >= buckets.len() {
+            break;
+        }
+        let node_u32 = match buckets[cur as usize].pop() {
+            Some(n) => n,
+            None => {
+                cur += 1;
+                continue;
+            }
+        };
+        let node = node_u32 as usize;
+        // Stale entry: a later push shortened this node's dist; the fresh
+        // copy lives in a smaller bucket that we've already processed, and
+        // `dist_int[node] < cur` so we must skip.
+        if dist_int[node] < cur {
             continue;
         }
+        pops += 1;
         settle_order.push(node);
 
         for &pipe_idx in &node_pipes[node] {
             let pipe = &pipes[pipe_idx];
-            // XOR trick: since this pipe is in `node_pipes[node]`, either
-            // pipe.from == node or pipe.to == node. The other endpoint is
-            // (pipe.from ^ pipe.to ^ node).
+            // XOR trick: this pipe has `node` as one endpoint; the other is
+            // `pipe.from ^ pipe.to ^ node`.
             let next = pipe.from ^ pipe.to ^ node;
             if use_corridor && !in_corridor[next] {
                 continue;
             }
-
-            let cost = pipe_costs[pipe_idx];
-            let candidate = cur_dist + cost;
-            if candidate < dist[next] {
-                if dist[next] == f64::INFINITY {
-                    touched.push(next);
+            let cost = pipe_costs_int[pipe_idx];
+            let candidate = cur.saturating_add(cost);
+            if candidate < dist_int[next] {
+                dist_int[next] = candidate;
+                let idx = candidate as usize;
+                if idx >= buckets.len() {
+                    buckets.resize(idx + 1, Vec::new());
                 }
-                dist[next] = candidate;
-                heap.push(HeapEntry {
-                    dist: candidate,
-                    node: next,
-                });
+                buckets[idx].push(next as u32);
+                if candidate > max_bucket {
+                    max_bucket = candidate;
+                }
             }
         }
     }
 
-    heap_pops
+    ws.max_bucket = max_bucket;
+
+    // Materialise f64 labels from quantized dist for downstream consumers.
+    // Only settled nodes need conversion; every other node keeps
+    // `dist == INFINITY` from the previous `begin_net`.
+    use super::network::DIST_SCALE;
+    let inv_scale = 1.0 / DIST_SCALE;
+    for &node in settle_order.iter() {
+        ws.dist[node] = dist_int[node] as f64 * inv_scale;
+    }
+
+    pops
 }
 
 #[inline]
@@ -663,7 +736,9 @@ pub(crate) fn dial_logit_load(
     ws: &mut PathSolverWorkspace,
     mut edge_usage: Option<&mut [f64]>,
 ) -> DialLogitResult {
-    if let Some(corridor) = Corridor::from_demands(network, source_node, sink_demands) {
+    if let Some(corridor) =
+        build_corridor(network, source_node, sink_demands, &mut ws.corridor_sinks)
+    {
         ws.mark_corridor(network, &corridor);
         let result = dial_logit_load_inner(
             network,
@@ -714,20 +789,23 @@ fn dial_logit_load_inner(
             continue;
         }
         let label = ws.dist[node];
+        let in_corridor = &ws.in_corridor;
+        let dist = &ws.dist;
+        let path_weight = &mut ws.path_weight;
         for &pipe_idx in &node_pipes[node] {
             let pipe = &pipes[pipe_idx];
             let next = pipe.from ^ pipe.to ^ node;
-            if use_corridor && !ws.in_corridor[next] {
+            if use_corridor && !in_corridor[next] {
                 continue;
             }
-            let next_label = ws.dist[next];
+            let next_label = dist[next];
             if !next_label.is_finite() || next_label <= label + REASONABLE_EPS {
                 continue;
             }
             let cost = pipe_costs[pipe_idx];
             let likelihood = link_likelihood(label, next_label, cost);
             if likelihood > 0.0 && likelihood.is_finite() {
-                ws.path_weight[next] += node_weight * likelihood;
+                path_weight[next] += node_weight * likelihood;
             }
         }
     }
@@ -884,11 +962,16 @@ mod tests {
             .iter()
             .map(|p| 1.0 / p.eff_conductance.max(1e-12))
             .collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
+            .collect();
         PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_costs_int,
             pipe_lookup: FxHashMap::default(),
             width: n_nodes as i32,
             height: 1,
@@ -937,11 +1020,16 @@ mod tests {
             .iter()
             .map(|p| 1.0 / p.eff_conductance.max(1e-12))
             .collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
+            .collect();
         PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_costs_int,
             pipe_lookup: FxHashMap::default(),
             width,
             height,
