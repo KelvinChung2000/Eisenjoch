@@ -11,22 +11,18 @@ use crate::placer::pipeline::PlacerPipeline;
 use crate::placer::report;
 use crate::placer::PlacerError;
 use rayon::{prelude::*, ThreadPoolBuilder};
-use rustc_hash::FxHashMap;
 
-use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 
 use super::config::OptTransPlacerCfg;
 use super::demand;
 use super::network::PipeNetwork;
 use super::resistance::ResistanceModel;
-use std::env;
 
 /// Main Beckmann OT placement using inner/outer coordinate descent.
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     let mut cfg = cfg.clone();
-    cfg.use_eikonal = env::var("NPNR_OT_USE_EIKONAL").ok().as_deref() == Some("1")
-        || cfg.use_eikonal;
+    cfg.apply_env_overrides();
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
     crate::solver::set_solver_threads(cfg.num_threads);
 

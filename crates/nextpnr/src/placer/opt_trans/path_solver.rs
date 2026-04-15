@@ -646,33 +646,33 @@ fn mark_sink_paths(
     weighted_cong
 }
 
-/// Walk the shortest path from `node` to `source_node`, marking edge usage
-/// and returning the path congestion cost `Σ (usage/capacity)²`.
-fn mark_path_to_source(
+/// Walks back from `node` to `source_node` following `prev_pipe`. For each
+/// pipe visited, invokes `on_pipe(pipe_idx, pipe, is_new)` where `is_new`
+/// means the pipe was not seen before in the current `epoch` (the stamp is
+/// bumped on first visit). Shared helper used by all path back-walks.
+#[inline]
+pub(super) fn walk_path_back<F: FnMut(usize, &Pipe, bool)>(
     mut node: usize,
     source_node: usize,
     network: &PipeNetwork,
-    ws: &mut PathSolverWorkspace,
-    edge_usage: &mut [f64],
-) -> f64 {
-    let mut path_cong = 0.0f64;
+    prev_pipe: &[usize],
+    stamp: &mut [u32],
+    epoch: u32,
+    mut on_pipe: F,
+) {
+    let max_steps = prev_pipe.len();
     let mut steps = 0usize;
-    let max_steps = ws.prev_pipe.len();
     while node != source_node && steps < max_steps {
-        let pipe_idx = ws.prev_pipe[node];
+        let pipe_idx = prev_pipe[node];
         if pipe_idx == usize::MAX {
             break;
         }
         let pipe = &network.pipes[pipe_idx];
-        // Accumulate congestion ratio squared for this pipe.
-        if pipe.capacity > 0.0 {
-            let ratio = pipe.net_count as f64 / pipe.capacity;
-            path_cong += ratio * ratio;
+        let is_new = stamp[pipe_idx] != epoch;
+        if is_new {
+            stamp[pipe_idx] = epoch;
         }
-        if ws.pipe_stamp[pipe_idx] != ws.stamp_epoch {
-            ws.pipe_stamp[pipe_idx] = ws.stamp_epoch;
-            edge_usage[pipe_idx] += 1.0;
-        }
+        on_pipe(pipe_idx, pipe, is_new);
         node = if pipe.from == node {
             pipe.to
         } else if pipe.to == node {
@@ -682,5 +682,33 @@ fn mark_path_to_source(
         };
         steps += 1;
     }
+}
+
+fn mark_path_to_source(
+    node: usize,
+    source_node: usize,
+    network: &PipeNetwork,
+    ws: &mut PathSolverWorkspace,
+    edge_usage: &mut [f64],
+) -> f64 {
+    let mut path_cong = 0.0f64;
+    let epoch = ws.stamp_epoch;
+    walk_path_back(
+        node,
+        source_node,
+        network,
+        &ws.prev_pipe,
+        &mut ws.pipe_stamp,
+        epoch,
+        |pipe_idx, pipe, is_new| {
+            if pipe.capacity > 0.0 {
+                let ratio = pipe.net_count as f64 / pipe.capacity;
+                path_cong += ratio * ratio;
+            }
+            if is_new {
+                edge_usage[pipe_idx] += 1.0;
+            }
+        },
+    );
     path_cong
 }

@@ -269,19 +269,10 @@ fn collect_net_infos_simple(
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
 ) -> Vec<NetInfo> {
-    // Skip GND/VCC by default: they don't route through fabric (sourced from
-    // local switch-matrix tieoffs) so including them pulls every logic-0/1
-    // consumer toward a single fake anchor and inflates pipe resistance for
-    // traffic that will never actually route. Clocks are separately toggleable
-    // because they do occupy real topology (clock tree), though not general
-    // routing — conservative default is to keep them in the cost.
-    let skip_constants = std::env::var("NPNR_OT_INCLUDE_CONSTANTS")
-        .ok()
-        .as_deref()
-        != Some("1");
-    let skip_clocks = std::env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
-        || std::env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1");
+    let skip_constants = cfg.skip_constants;
+    let skip_clocks = cfg.skip_clocks || cfg.exclude_globals;
 
     let mut nets: Vec<_> = net_ids
         .par_iter()
@@ -408,64 +399,51 @@ fn net_cost(info: &NetInfo, dist: &[f64], cfg: &OptTransPlacerCfg) -> f64 {
 }
 
 fn mark_path_edge_usage(
-    mut node: usize,
+    node: usize,
     source_node: usize,
     network: &PipeNetwork,
     ws: &PathSolverWorkspace,
     pipe_stamp: &mut PipeStamp,
     edge_usage: &mut [f64],
 ) {
-    let mut steps = 0usize;
-    let max_steps = network.num_nodes();
-    while node != source_node && steps < max_steps {
-        let pipe_idx = ws.prev_pipe[node];
-        if pipe_idx == usize::MAX {
-            break;
-        }
-        if pipe_stamp.stamp[pipe_idx] != pipe_stamp.epoch {
-            pipe_stamp.stamp[pipe_idx] = pipe_stamp.epoch;
-            edge_usage[pipe_idx] += 1.0;
-        }
-        let pipe = &network.pipes[pipe_idx];
-        node = if pipe.from == node {
-            pipe.to
-        } else {
-            pipe.from
-        };
-        steps += 1;
-    }
+    let epoch = pipe_stamp.epoch;
+    path_solver::walk_path_back(
+        node,
+        source_node,
+        network,
+        &ws.prev_pipe,
+        &mut pipe_stamp.stamp,
+        epoch,
+        |pipe_idx, _pipe, is_new| {
+            if is_new {
+                edge_usage[pipe_idx] += 1.0;
+            }
+        },
+    );
 }
 
-/// Walk back from one sink via `prev_pipe`, recording each pipe (deduped via
-/// `pipe_stamp`) into `path_pipes`. Used to capture the routed tree for later
-/// incremental net_count updates.
 fn collect_path_pipes(
-    mut node: usize,
+    node: usize,
     source_node: usize,
     network: &PipeNetwork,
     ws: &PathSolverWorkspace,
     pipe_stamp: &mut PipeStamp,
     path_pipes: &mut Vec<u32>,
 ) {
-    let mut steps = 0usize;
-    let max_steps = network.num_nodes();
-    while node != source_node && steps < max_steps {
-        let pipe_idx = ws.prev_pipe[node];
-        if pipe_idx == usize::MAX {
-            break;
-        }
-        if pipe_stamp.stamp[pipe_idx] != pipe_stamp.epoch {
-            pipe_stamp.stamp[pipe_idx] = pipe_stamp.epoch;
-            path_pipes.push(pipe_idx as u32);
-        }
-        let pipe = &network.pipes[pipe_idx];
-        node = if pipe.from == node {
-            pipe.to
-        } else {
-            pipe.from
-        };
-        steps += 1;
-    }
+    let epoch = pipe_stamp.epoch;
+    path_solver::walk_path_back(
+        node,
+        source_node,
+        network,
+        &ws.prev_pipe,
+        &mut pipe_stamp.stamp,
+        epoch,
+        |pipe_idx, _pipe, is_new| {
+            if is_new {
+                path_pipes.push(pipe_idx as u32);
+            }
+        },
+    );
 }
 
 /// Unsafe wrapper to allow parallel mutable access to disjoint Vec slices.
@@ -675,11 +653,7 @@ fn refresh_resistance(
     dist_cache: &mut DistCache,
     paths: &mut NetPaths,
 ) -> (f64, PathStats) {
-    let blend_alpha = std::env::var("NPNR_OT_BLEND_ALPHA")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .map(|v| v.clamp(0.0, 1.0))
-        .unwrap_or(0.5);
+    let blend_alpha = cfg.blend_alpha;
 
     if paths.is_empty_for_all() {
         // Bootstrap: first refresh has no stored paths. Run one solve under
@@ -1541,20 +1515,89 @@ fn place_dcd_sweep_jacobi_bisection(
 /// minimum; we continue popping in case later leaves have smaller cost.
 /// When the heap top's `bound ≥ best_cost`, no remaining region can
 /// improve — safe to terminate.
+/// Min-heap entry for the branch-and-bound pyramid search. Ordered by `bound`
+/// ascending; ties by `level` descending so coarser regions expand first
+/// (wider exploration).
+#[derive(Copy, Clone)]
+struct BbNode { bound: f64, level: i32, cx: i32, cy: i32 }
+impl PartialEq for BbNode {
+    fn eq(&self, o: &Self) -> bool { self.bound == o.bound && self.level == o.level }
+}
+impl Eq for BbNode {}
+impl Ord for BbNode {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        let a = o.bound.partial_cmp(&self.bound).unwrap_or(std::cmp::Ordering::Equal);
+        if a != std::cmp::Ordering::Equal { return a; }
+        o.level.cmp(&self.level)
+    }
+}
+impl PartialOrd for BbNode {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) }
+}
+
+fn bb_active_nets(
+    cell_nets: &[(usize, usize)],
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+) -> Vec<(usize, f64)> {
+    let mut v = Vec::with_capacity(cell_nets.len());
+    for &(net_idx, pin_idx) in cell_nets {
+        let info = &net_infos[net_idx];
+        if !info.pins[pin_idx].is_driver {
+            v.push((net_idx, net_path_weight(info, cfg)));
+        }
+    }
+    v
+}
+
+/// Compute the admissible lower bound at pyramid cell `(level, cx, cy)`.
+/// `level == 0` reads `dist_cache` directly (true cost); `level >= 1` reads
+/// the per-net region-min pyramid.
+#[inline]
+fn bb_bound(
+    active_nets: &[(usize, f64)],
+    dist_cache: &DistCache,
+    pyramids: &[RegionMinPyramid],
+    w: i32,
+    level: i32,
+    cx: i32,
+    cy: i32,
+) -> f64 {
+    let mut b = 0.0;
+    for &(ni, wt) in active_nets {
+        let m = if level == 0 {
+            let node = (cy as usize) * (w as usize) + (cx as usize);
+            dist_cache.dist[ni][node]
+        } else {
+            pyramids[ni].at(level, cx, cy) as f64
+        };
+        if !m.is_finite() { return f64::INFINITY; }
+        b += wt * m;
+    }
+    b
+}
+
+#[inline]
+fn bb_child_dims(pyramids: &[RegionMinPyramid], w: i32, h: i32, child_level: i32) -> (i32, i32) {
+    if child_level == 0 {
+        (w, h)
+    } else {
+        let lvl = &pyramids[0].levels[(child_level - 1) as usize];
+        (lvl.w, lvl.h)
+    }
+}
+
 fn bb_2d(
-    cell_idx: usize,
     cell_nets: &[(usize, usize)],
     net_infos: &[NetInfo],
     dist_cache: &DistCache,
     pyramids: &[RegionMinPyramid],
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
     start_x: i32,
     start_y: i32,
     start_cost: f64,
 ) -> (i32, i32, f64, usize) {
-    use std::cmp::Ordering;
     use std::collections::BinaryHeap;
 
     let w = network.width;
@@ -1563,91 +1606,34 @@ fn bb_2d(
         return (start_x, start_y, start_cost, 0);
     }
 
-    // Min-heap entry. Ordered by `bound` ascending; ties by level descending
-    // so coarser regions expand first (expands the frontier faster).
-    #[derive(Copy, Clone)]
-    struct Node { bound: f64, level: i32, cx: i32, cy: i32 }
-    impl PartialEq for Node {
-        fn eq(&self, o: &Self) -> bool {
-            self.bound == o.bound && self.level == o.level
-        }
-    }
-    impl Eq for Node {}
-    impl Ord for Node {
-        fn cmp(&self, o: &Self) -> Ordering {
-            // BinaryHeap is a max-heap; invert bound so smaller pops first.
-            let a = o.bound.partial_cmp(&self.bound).unwrap_or(Ordering::Equal);
-            if a != Ordering::Equal { return a; }
-            // Prefer coarser (higher level) on ties — wider exploration.
-            o.level.cmp(&self.level)
-        }
-    }
-    impl PartialOrd for Node {
-        fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
-    }
-
-    // Precompute per-net weights and collect only non-driver nets (drivers
-    // skip cost contribution; see `evaluate_cell_at`).
-    let mut active_nets: Vec<(usize, f64)> = Vec::with_capacity(cell_nets.len());
-    for &(net_idx, pin_idx) in cell_nets {
-        let info = &net_infos[net_idx];
-        if !info.pins[pin_idx].is_driver {
-            let wt = net_path_weight(info, cfg);
-            active_nets.push((net_idx, wt));
-        }
-    }
-
-    // Compute the bound for the pyramid cell (level, cx, cy). `level ≥ 1`
-    // reads from the pyramid; `level == 0` reads dist_cache directly.
-    let bound_of = |level: i32, cx: i32, cy: i32| -> f64 {
-        let mut b = 0.0;
-        for &(ni, wt) in &active_nets {
-            let m = if level == 0 {
-                let node = (cy as usize) * (w as usize) + (cx as usize);
-                dist_cache.dist[ni][node]
-            } else {
-                pyramids[ni].at(level, cx, cy) as f64
-            };
-            if !m.is_finite() { return f64::INFINITY; }
-            b += wt * m;
-        }
-        b
-    };
-
-    // Max level = pyramids' max_level (single top cell covers the whole grid
-    // as long as pyramid was built over the network grid).
-    let max_level = if let Some(p) = pyramids.first() { p.max_level() } else { 0 };
+    let active_nets = bb_active_nets(cell_nets, net_infos, cfg);
+    let max_level = pyramids.first().map(|p| p.max_level()).unwrap_or(0);
 
     let mut best_x = start_x;
     let mut best_y = start_y;
     let mut best_cost = start_cost;
     let mut n_evals = 0usize;
+    let mut pq: BinaryHeap<BbNode> = BinaryHeap::new();
 
-    let mut pq: BinaryHeap<Node> = BinaryHeap::new();
-    // Seed the PQ with the top-level cell covering the whole grid. If
-    // `max_level == 0` (degenerate tiny grid), push every node as a leaf.
     if max_level >= 1 {
-        let b = bound_of(max_level, 0, 0);
+        let b = bb_bound(&active_nets, dist_cache, pyramids, w, max_level, 0, 0);
         if b.is_finite() && b < best_cost {
-            pq.push(Node { bound: b, level: max_level, cx: 0, cy: 0 });
+            pq.push(BbNode { bound: b, level: max_level, cx: 0, cy: 0 });
         }
     } else {
         for gy in 0..h {
             for gx in 0..w {
-                let c = bound_of(0, gx, gy);
+                let c = bb_bound(&active_nets, dist_cache, pyramids, w, 0, gx, gy);
                 if c.is_finite() && c < best_cost {
-                    pq.push(Node { bound: c, level: 0, cx: gx, cy: gy });
+                    pq.push(BbNode { bound: c, level: 0, cx: gx, cy: gy });
                 }
             }
         }
     }
 
     while let Some(node) = pq.pop() {
-        if node.bound >= best_cost {
-            break; // all remaining are ≥ best.
-        }
+        if node.bound >= best_cost { break; }
         if node.level == 0 {
-            // Leaf. Evaluate true cost; `bound_of(0, ·)` IS the true cost.
             n_evals += 1;
             if node.bound < best_cost {
                 best_cost = node.bound;
@@ -1656,20 +1642,15 @@ fn bb_2d(
             }
             continue;
         }
-
-        // Expand into 4 children at level-1. Pyramid level-1 cell (ccx, ccy)
-        // covers real rectangle [2·ccx·stride, …] — but we don't need that
-        // because `at(level-1, ccx, ccy)` already returns the right bound.
         let child_level = node.level - 1;
-        let child_w = if child_level == 0 { w } else { pyramids[0].levels[(child_level - 1) as usize].w };
-        let child_h = if child_level == 0 { h } else { pyramids[0].levels[(child_level - 1) as usize].h };
+        let (child_w, child_h) = bb_child_dims(pyramids, w, h, child_level);
         for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
             let ccx = 2 * node.cx + dx;
             let ccy = 2 * node.cy + dy;
             if ccx >= child_w || ccy >= child_h { continue; }
-            let b = bound_of(child_level, ccx, ccy);
+            let b = bb_bound(&active_nets, dist_cache, pyramids, w, child_level, ccx, ccy);
             if b.is_finite() && b < best_cost {
-                pq.push(Node { bound: b, level: child_level, cx: ccx, cy: ccy });
+                pq.push(BbNode { bound: b, level: child_level, cx: ccx, cy: ccy });
             }
         }
     }
@@ -1678,22 +1659,17 @@ fn bb_2d(
 }
 
 /// Variant of `bb_2d` that returns ALL positions tied at the minimum cost.
-/// Used by the tally-aware sequential sweep to tie-break among cost-equivalent
-/// candidates.
 fn bb_2d_multi(
-    cell_idx: usize,
     cell_nets: &[(usize, usize)],
     net_infos: &[NetInfo],
     dist_cache: &DistCache,
     pyramids: &[RegionMinPyramid],
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
     start_x: i32,
     start_y: i32,
     start_cost: f64,
 ) -> (Vec<(i32, i32)>, f64, usize) {
-    use std::cmp::Ordering;
     use std::collections::BinaryHeap;
 
     let w = network.width;
@@ -1702,107 +1678,57 @@ fn bb_2d_multi(
         return (vec![(start_x, start_y)], start_cost, 0);
     }
 
-    #[derive(Copy, Clone)]
-    struct Node { bound: f64, level: i32, cx: i32, cy: i32 }
-    impl PartialEq for Node {
-        fn eq(&self, o: &Self) -> bool { self.bound == o.bound && self.level == o.level }
-    }
-    impl Eq for Node {}
-    impl Ord for Node {
-        fn cmp(&self, o: &Self) -> Ordering {
-            let a = o.bound.partial_cmp(&self.bound).unwrap_or(Ordering::Equal);
-            if a != Ordering::Equal { return a; }
-            o.level.cmp(&self.level)
-        }
-    }
-    impl PartialOrd for Node {
-        fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
-    }
-
-    let mut active_nets: Vec<(usize, f64)> = Vec::with_capacity(cell_nets.len());
-    for &(net_idx, pin_idx) in cell_nets {
-        let info = &net_infos[net_idx];
-        if !info.pins[pin_idx].is_driver {
-            active_nets.push((net_idx, net_path_weight(info, cfg)));
-        }
-    }
-
-    let bound_of = |level: i32, cx: i32, cy: i32| -> f64 {
-        let mut b = 0.0;
-        for &(ni, wt) in &active_nets {
-            let m = if level == 0 {
-                let node = (cy as usize) * (w as usize) + (cx as usize);
-                dist_cache.dist[ni][node]
-            } else {
-                pyramids[ni].at(level, cx, cy) as f64
-            };
-            if !m.is_finite() { return f64::INFINITY; }
-            b += wt * m;
-        }
-        b
-    };
-
-    let max_level = if let Some(p) = pyramids.first() { p.max_level() } else { 0 };
+    let active_nets = bb_active_nets(cell_nets, net_infos, cfg);
+    let max_level = pyramids.first().map(|p| p.max_level()).unwrap_or(0);
     let mut best_cost = start_cost;
     let mut tied: Vec<(i32, i32)> = vec![(start_x, start_y)];
     let mut n_evals = 0usize;
+    let mut pq: BinaryHeap<BbNode> = BinaryHeap::new();
 
-    let mut pq: BinaryHeap<Node> = BinaryHeap::new();
     if max_level >= 1 {
-        let b = bound_of(max_level, 0, 0);
+        let b = bb_bound(&active_nets, dist_cache, pyramids, w, max_level, 0, 0);
         if b.is_finite() && b <= best_cost {
-            pq.push(Node { bound: b, level: max_level, cx: 0, cy: 0 });
+            pq.push(BbNode { bound: b, level: max_level, cx: 0, cy: 0 });
         }
     } else {
         for gy in 0..h {
             for gx in 0..w {
-                let c = bound_of(0, gx, gy);
+                let c = bb_bound(&active_nets, dist_cache, pyramids, w, 0, gx, gy);
                 if c.is_finite() && c <= best_cost {
-                    pq.push(Node { bound: c, level: 0, cx: gx, cy: gy });
+                    pq.push(BbNode { bound: c, level: 0, cx: gx, cy: gy });
                 }
             }
         }
     }
 
-    // Allow bound == best_cost to still expand/pop (to collect all tied leaves).
     while let Some(node) = pq.pop() {
-        if node.bound > best_cost {
-            break;
-        }
+        if node.bound > best_cost { break; }
         if node.level == 0 {
             n_evals += 1;
             if node.bound < best_cost {
                 best_cost = node.bound;
                 tied.clear();
                 tied.push((node.cx, node.cy));
-            } else if node.bound == best_cost {
-                // Avoid duplicates (same pos might be pushed twice if K=0 seed).
-                if !tied.iter().any(|&(x, y)| x == node.cx && y == node.cy) {
-                    tied.push((node.cx, node.cy));
-                }
+            } else if node.bound == best_cost
+                && !tied.iter().any(|&(x, y)| x == node.cx && y == node.cy)
+            {
+                tied.push((node.cx, node.cy));
             }
             continue;
         }
-
         let child_level = node.level - 1;
-        let (child_w, child_h) = if child_level == 0 {
-            (w, h)
-        } else {
-            let lvl = &pyramids[0].levels[(child_level - 1) as usize];
-            (lvl.w, lvl.h)
-        };
+        let (child_w, child_h) = bb_child_dims(pyramids, w, h, child_level);
         for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
             let ccx = 2 * node.cx + dx;
             let ccy = 2 * node.cy + dy;
             if ccx >= child_w || ccy >= child_h { continue; }
-            let b = bound_of(child_level, ccx, ccy);
+            let b = bb_bound(&active_nets, dist_cache, pyramids, w, child_level, ccx, ccy);
             if b.is_finite() && b <= best_cost {
-                pq.push(Node { bound: b, level: child_level, cx: ccx, cy: ccy });
+                pq.push(BbNode { bound: b, level: child_level, cx: ccx, cy: ccy });
             }
         }
     }
 
-    // If start position is strictly worse than best_cost, remove it from ties.
     if start_cost > best_cost {
         tied.retain(|&(x, y)| (x, y) != (start_x, start_y));
     }
@@ -1873,8 +1799,7 @@ fn place_dcd_sweep_jacobi_bb_tally(
                 ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
             );
             let (tied, _best_cost, n_evals) = bb_2d_multi(
-                ci, cell_nets, net_infos, dist_cache, pyramids, network, cfg,
-                validity,
+                cell_nets, net_infos, dist_cache, pyramids, network, cfg,
                 old_gx, old_gy, cur_cost,
             );
             (tied, n_evals)
@@ -2151,7 +2076,7 @@ pub fn run_inner_outer(
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
         let mut net_infos =
-            collect_net_infos_simple(ctx, alive_net_ids, cell_to_idx, cell_x, cell_y, network);
+            collect_net_infos_simple(ctx, alive_net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
         let cell_net_map = CellNetMap::build(&net_infos, n);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
         net_paths.ensure_shape(net_infos.len());
@@ -2677,8 +2602,7 @@ pub fn run_inner_outer(
                         let ogy = network.tile_to_net(cell_y[ci]).round() as i32;
                         let cur = evaluate_cell_at(ci, ogx, ogy, cell_nets, &net_infos, &dist_cache, network, cfg, validity);
                         let (bx, by, bc, _ne) = bb_2d(
-                            ci, cell_nets, &net_infos, &dist_cache, &pyramids, network, cfg,
-                            validity,
+                            cell_nets, &net_infos, &dist_cache, &pyramids, network, cfg,
                             ogx, ogy, cur,
                         );
                         let (fx, fy) = fullscan_find_best_position(

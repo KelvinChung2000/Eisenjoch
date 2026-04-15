@@ -105,6 +105,18 @@ pub struct OptTransPlacerCfg {
     /// Penalises narrow (low-cap) pipes relative to their own span bucket, so
     /// IOB/NULL/CLK boundary wires don't get used as general routing. Default 10.0.
     pub scarcity_k: f64,
+
+    /// EMA blend factor for updating `pipe.net_count` from stored paths between
+    /// outer iterations: `net_count = (1-α) * net_count + α * new_count`.
+    /// Default 0.5.
+    pub blend_alpha: f64,
+    /// If true, constant (GND/VCC) nets are excluded from the solve set.
+    pub skip_constants: bool,
+    /// If true, clock-like nets (name contains "clk"/"clock") are excluded.
+    pub skip_clocks: bool,
+    /// If true, both constants AND clock-like nets are excluded (convenience
+    /// toggle that ORs into both filters above).
+    pub exclude_globals: bool,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -128,6 +140,39 @@ impl Default for OptTransPlacerCfg {
             bisect_seed_k: 8,
             bisect_refresh_region: 1,
             scarcity_k: 10.0,
+            blend_alpha: 0.5,
+            skip_constants: true,
+            skip_clocks: false,
+            exclude_globals: false,
+        }
+    }
+}
+
+impl OptTransPlacerCfg {
+    /// Override config fields from `NPNR_OT_*` env vars. Reads every known
+    /// behavioural flag once, at placer entry, instead of re-reading per
+    /// outer iteration or per cell.
+    pub fn apply_env_overrides(&mut self) {
+        use std::env;
+        if env::var("NPNR_OT_USE_EIKONAL").ok().as_deref() == Some("1") {
+            self.use_eikonal = true;
+        }
+        if let Some(v) = env::var("NPNR_OT_BLEND_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.blend_alpha = v.clamp(0.0, 1.0);
+        }
+        // NPNR_OT_INCLUDE_CONSTANTS=1 disables the default skip_constants.
+        if env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() == Some("1") {
+            self.skip_constants = false;
+        }
+        if env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1") {
+            self.skip_clocks = true;
+        }
+        if env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1") {
+            self.exclude_globals = true;
+            self.skip_clocks = true;
         }
     }
 }
