@@ -1,14 +1,43 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::{LazyLock, OnceLock};
 
 use log::warn;
 use rayon::prelude::*;
 
 use super::config::OptTransPlacerCfg;
 use super::demand::{self, NetPinData, NetSolveInfo};
-use super::network::{Pipe, PipeNetwork};
+use super::network::{Pipe, PipeNetwork, DIST_SCALE};
 
 pub(crate) const LOGIT_THETA: f64 = 0.25;
+
+/// Precomputed `exp(-LOGIT_THETA · slack / DIST_SCALE)` as f32, indexed by
+/// integer slack in `DIST_SCALE` units. `LOGIT_THETA = 0.25` and `DIST_SCALE =
+/// 100.0` are both compile-time constants, so this table is static for the
+/// life of the process.
+///
+/// Size: 8192 × 4 bytes = 32 KB → fits in L1d. Any slack ≥ table length
+/// produces `exp(-20.48) ≈ 1.3e-9`, which is below the downstream f64
+/// arithmetic's noise floor once multiplied by `path_weight` and clamped by
+/// the `likelihood > 0.0 && likelihood.is_finite()` guards, so we short-
+/// circuit to 0.0 (same observable behaviour as the scalar exp).
+const LIKELIHOOD_LUT_SIZE: usize = 8192;
+
+static LIKELIHOOD_LUT: LazyLock<[f32; LIKELIHOOD_LUT_SIZE]> = LazyLock::new(|| {
+    let mut table = [0.0f32; LIKELIHOOD_LUT_SIZE];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let exponent = -LOGIT_THETA * (i as f64) / DIST_SCALE;
+        *slot = exponent.exp() as f32;
+    }
+    table
+});
+
+/// Cached once per process from `NPNR_OT_USE_FSM=1`. When set, `dial_logit_load`
+/// routes through `fsm::fsm_dist_and_forward` instead of the fused Dijkstra.
+fn use_fsm() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("NPNR_OT_USE_FSM").ok().as_deref() == Some("1"))
+}
 const REASONABLE_EPS: f64 = 1e-10;
 const CORRIDOR_STRETCH: f64 = 1.35;
 const CORRIDOR_MIN_HALO: i32 = 12;
@@ -56,14 +85,14 @@ pub struct PathSolverWorkspace {
     /// with its min-cost label.
     pub(crate) dist_int: Vec<u32>,
     /// Dial forward weight at each reached node.
-    path_weight: Vec<f64>,
+    pub(crate) path_weight: Vec<f64>,
     /// Dial backward demand loaded through each reached node.
-    node_load: Vec<f64>,
+    pub(crate) node_load: Vec<f64>,
     /// Per-edge load written by the current tentative solve. This lets a
     /// corridor attempt roll back partial usage before falling back to the
     /// full graph.
-    edge_load: Vec<f64>,
-    edge_touched: Vec<usize>,
+    pub(crate) edge_load: Vec<f64>,
+    pub(crate) edge_touched: Vec<usize>,
 
     /// Dijkstra settle order (nodes pushed as they are popped with a fresh
     /// min). Already in dist order. Also doubles as the reset list for
@@ -75,7 +104,16 @@ pub struct PathSolverWorkspace {
     /// Populated once per net by `mark_corridor`; reset via `corridor_marked`.
     pub(crate) in_corridor: Vec<bool>,
     /// Nodes whose in_corridor bit was set this net (sparse reset).
-    corridor_marked: Vec<usize>,
+    pub(crate) corridor_marked: Vec<usize>,
+    /// Tile-space bbox of the current corridor: `(min_x, min_y, max_x, max_y)`.
+    /// `None` when `mark_corridor` wasn't called (full-graph fallback). FSM
+    /// uses this to restrict its raster sweeps to the corridor rectangle.
+    pub(crate) corridor_bbox: Option<(i32, i32, i32, i32)>,
+    /// Subset of `network.tile_grid.long_pipes` whose endpoints are both in
+    /// the current corridor. Materialised once by `mark_corridor` so FSM's
+    /// per-round long-pipe relax step doesn't re-scan the full chip's long
+    /// pipes (a profile-confirmed bottleneck).
+    pub(crate) corridor_long_pipes: Vec<u32>,
 
     /// Pool of CorridorSink entries reused across nets.
     /// `build_corridor` clears and refills this.
@@ -106,6 +144,8 @@ impl PathSolverWorkspace {
             settle_order: Vec::with_capacity(1024),
             in_corridor: vec![false; n_nodes],
             corridor_marked: Vec::with_capacity(1024),
+            corridor_bbox: None,
+            corridor_long_pipes: Vec::with_capacity(64),
             corridor_sinks: Vec::with_capacity(16),
             buckets: Vec::new(),
             max_bucket: 0,
@@ -138,6 +178,8 @@ impl PathSolverWorkspace {
         self.settle_order.clear();
         self.edge_touched.clear();
         self.corridor_marked.clear();
+        self.corridor_bbox = None;
+        self.corridor_long_pipes.clear();
         self.corridor_sinks.clear();
         self.heap.clear();
     }
@@ -149,6 +191,14 @@ impl PathSolverWorkspace {
         let width = network.width;
         let height = network.height;
         let bitmap_len = self.in_corridor.len();
+        // Stash the bbox so FSM can scope its raster sweeps; the Steiner
+        // inclusion still gates per-tile membership via `in_corridor`.
+        self.corridor_bbox = Some((
+            corridor.min_x.max(0),
+            corridor.min_y.max(0),
+            corridor.max_x.min(width - 1),
+            corridor.max_y.min(height - 1),
+        ));
         for ty in corridor.min_y..=corridor.max_y {
             if ty < 0 || ty >= height {
                 continue;
@@ -164,6 +214,15 @@ impl PathSolverWorkspace {
                         self.corridor_marked.push(idx);
                     }
                 }
+            }
+        }
+        // Materialise the corridor-local long-pipe subset so FSM's
+        // `long_pipe_relax` step iterates O(|in-corridor-longs|) instead of
+        // scanning every long pipe on the chip each round.
+        for &pipe_idx in &network.tile_grid.long_pipes {
+            let pipe = &network.pipes[pipe_idx as usize];
+            if self.in_corridor[pipe.from] && self.in_corridor[pipe.to] {
+                self.corridor_long_pipes.push(pipe_idx);
             }
         }
     }
@@ -660,10 +719,10 @@ fn dijkstra_and_forward(
     let settle_order = &mut ws.settle_order;
     let path_weight = &mut ws.path_weight;
     let in_corridor = &ws.in_corridor;
-    let pipes = &network.pipes;
-    let pipe_costs_int = &network.pipe_costs_int;
-    let pipe_costs = &network.pipe_costs;
-    let node_pipes = &network.node_pipes;
+    let adj = &network.flat_adjacency;
+    let adj_neighbors = adj.neighbors.as_slice();
+    let adj_cost_int = adj.cost_int.as_slice();
+    let adj_offsets = adj.offsets.as_slice();
     let buckets = &mut ws.buckets;
 
     dist_int[source_node] = 0;
@@ -698,35 +757,37 @@ fn dijkstra_and_forward(
         pops += 1;
         settle_order.push(node);
 
-        let node_label = (cur as f64) * inv_scale;
         // Start from whatever `path_weight[node]` already holds.
         // - Source was pre-set to 1.0 above.
         // - Every other settled node was initialised to 0.0 by `begin_net`;
         //   it accumulates from its upstream-settled predecessors below.
         let mut acc_weight = path_weight[node];
 
-        for &pipe_idx in &node_pipes[node] {
-            let pipe = &pipes[pipe_idx];
-            let neighbour = pipe.from ^ pipe.to ^ node;
+        let edge_start = adj_offsets[node] as usize;
+        let edge_end = adj_offsets[node + 1] as usize;
+        for e in edge_start..edge_end {
+            let neighbour = adj_neighbors[e] as usize;
             if use_corridor && !in_corridor[neighbour] {
                 continue;
             }
+            let cost_int = adj_cost_int[e];
 
             let neigh_dist_int = dist_int[neighbour];
             if neigh_dist_int < cur {
                 // Upstream settled predecessor: forward-pass contribution.
+                // Slack is computed in integer units; the likelihood table
+                // folds in both the exp and the f64 conversion so this branch
+                // no longer touches libm.
                 let neigh_weight = path_weight[neighbour];
                 if neigh_weight > 0.0 && neigh_weight.is_finite() {
-                    let neigh_label = (neigh_dist_int as f64) * inv_scale;
-                    let cost_f = pipe_costs[pipe_idx];
-                    let likelihood = link_likelihood(neigh_label, node_label, cost_f);
-                    if likelihood > 0.0 && likelihood.is_finite() {
+                    let likelihood =
+                        link_likelihood_from_ints(neigh_dist_int, cur, cost_int);
+                    if likelihood > 0.0 {
                         acc_weight += neigh_weight * likelihood;
                     }
                 }
             } else {
                 // Not yet settled (or equal dist tie): standard Dijkstra relax.
-                let cost_int = pipe_costs_int[pipe_idx];
                 let candidate = cur.saturating_add(cost_int);
                 if candidate < neigh_dist_int {
                     dist_int[neighbour] = candidate;
@@ -755,10 +816,60 @@ fn dijkstra_and_forward(
     pops
 }
 
+/// Likelihood weighting `exp(-LOGIT_THETA · slack / DIST_SCALE)` where
+/// `slack = dist_from_int + cost_int - dist_to_int`.
+/// Because Dijkstra-optimality guarantees `dist_to_int <= dist_from_int +
+/// cost_int`, the slack is a non-negative u32 and the exponent is <= 0.
+///
+/// Served from `LIKELIHOOD_LUT` (L1-resident 32 KB table). Slack values beyond
+/// the table truncate to zero, matching the underflow behaviour of the scalar
+/// exp within the callers' `> 0.0` guards.
 #[inline]
-fn link_likelihood(label_from: f64, label_to: f64, cost: f64) -> f64 {
-    let exponent = (LOGIT_THETA * (label_to - label_from - cost)).min(0.0);
-    exponent.exp()
+pub(crate) fn link_likelihood_from_ints(
+    dist_from_int: u32,
+    dist_to_int: u32,
+    cost_int: u32,
+) -> f64 {
+    let slack = dist_from_int.saturating_add(cost_int).saturating_sub(dist_to_int);
+    let idx = slack as usize;
+    if idx < LIKELIHOOD_LUT_SIZE {
+        LIKELIHOOD_LUT[idx] as f64
+    } else {
+        0.0
+    }
+}
+
+/// Test-only reference Dijkstra: runs a full single-source shortest-path
+/// computation over the network and returns `dist_int`. Used by `fsm.rs` tests
+/// to validate equivalence with the hot path.
+#[cfg(test)]
+pub(crate) fn dijkstra_single_source_for_test(
+    network: &PipeNetwork,
+    source: usize,
+) -> Vec<u32> {
+    let n = network.num_nodes();
+    let mut dist = vec![u32::MAX; n];
+    dist[source] = 0;
+    let mut heap = BinaryHeap::new();
+    heap.push(HeapEntry { dist: 0.0, node: source });
+    while let Some(HeapEntry { dist: d_f, node }) = heap.pop() {
+        let cur = dist[node];
+        let cur_f = cur as f64;
+        if d_f > cur_f + 0.5 {
+            continue;
+        }
+        for &pipe_idx in &network.node_pipes[node] {
+            let pipe = &network.pipes[pipe_idx];
+            let other = pipe.from ^ pipe.to ^ node;
+            let cost = network.pipe_cost_int(pipe_idx);
+            let cand = cur.saturating_add(cost);
+            if cand < dist[other] {
+                dist[other] = cand;
+                heap.push(HeapEntry { dist: cand as f64, node: other });
+            }
+        }
+    }
+    dist
 }
 
 pub(crate) fn dial_logit_load(
@@ -801,12 +912,21 @@ fn dial_logit_load_inner(
     use_corridor: bool,
 ) -> DialLogitResult {
     // Dijkstra + Dial forward pass are fused: `path_weight` and `dist` are
-    // already populated for every settled node when this returns.
-    let heap_pops = dijkstra_and_forward(network, source_node, ws, use_corridor);
+    // already populated for every settled node when this returns. Under the
+    // `NPNR_OT_USE_FSM=1` gate, substitute the discrete Fast Sweeping solver;
+    // it produces identical `dist_int` labels and matching `path_weight` from
+    // a post-sweep forward pass.
+    let heap_pops = if use_fsm() {
+        super::fsm::fsm_dist_and_forward(network, source_node, ws, use_corridor)
+    } else {
+        dijkstra_and_forward(network, source_node, ws, use_corridor)
+    };
 
-    let pipes = &network.pipes;
-    let pipe_costs = &network.pipe_costs;
-    let node_pipes = &network.node_pipes;
+    let adj = &network.flat_adjacency;
+    let adj_neighbors = adj.neighbors.as_slice();
+    let adj_pipe_idx = adj.pipe_idx.as_slice();
+    let adj_cost_int = adj.cost_int.as_slice();
+    let adj_offsets = adj.offsets.as_slice();
     let n_settled = ws.settle_order.len();
 
     // Canonical per-net energy: `demand * label` summed across sinks.
@@ -830,6 +950,8 @@ fn dial_logit_load_inner(
     }
 
     // Backward pass: distribute loaded demand back along predecessor edges.
+    // Operates in integer-slack domain so the likelihood is a single LUT hit
+    // per edge — no libm exp on this critical path either.
     for i in (0..n_settled).rev() {
         let node = ws.settle_order[i];
         let load = ws.node_load[node];
@@ -837,23 +959,26 @@ fn dial_logit_load_inner(
         if load == 0.0 || node_weight <= 0.0 || !node_weight.is_finite() {
             continue;
         }
-        let node_label = ws.dist[node];
-        if !node_label.is_finite() {
+        let node_dist = ws.dist_int[node];
+        if node_dist == u32::MAX {
             continue;
         }
-        for &pipe_idx in &node_pipes[node] {
-            let pipe = &pipes[pipe_idx];
-            let pred = pipe.from ^ pipe.to ^ node;
+        let edge_start = adj_offsets[node] as usize;
+        let edge_end = adj_offsets[node + 1] as usize;
+        for e in edge_start..edge_end {
+            let pred = adj_neighbors[e] as usize;
             if use_corridor && !ws.in_corridor[pred] {
                 continue;
             }
-            let pred_label = ws.dist[pred];
-            if !pred_label.is_finite() || pred_label >= node_label - REASONABLE_EPS {
+            let pred_dist = ws.dist_int[pred];
+            // Strictly-upstream predecessor only. Unsettled preds carry
+            // `u32::MAX` and fail the `<` test naturally.
+            if pred_dist >= node_dist {
                 continue;
             }
-            let cost = pipe_costs[pipe_idx];
-            let likelihood = link_likelihood(pred_label, node_label, cost);
-            if likelihood <= 0.0 || !likelihood.is_finite() {
+            let cost_int = adj_cost_int[e];
+            let likelihood = link_likelihood_from_ints(pred_dist, node_dist, cost_int);
+            if likelihood <= 0.0 {
                 continue;
             }
             let pred_weight = ws.path_weight[pred];
@@ -864,6 +989,7 @@ fn dial_logit_load_inner(
             let flow = load * share;
             ws.node_load[pred] += flow;
             if let Some(usage) = edge_usage.as_deref_mut() {
+                let pipe_idx = adj_pipe_idx[e] as usize;
                 ws.record_edge_usage(pipe_idx, flow, usage);
             }
         }
@@ -931,7 +1057,7 @@ mod tests {
     use rustc_hash::FxHashMap;
 
     fn test_network(n_nodes: usize, edges: &[(usize, usize, f64)]) -> PipeNetwork {
-        let nodes = (0..n_nodes)
+        let nodes: Vec<Node> = (0..n_nodes)
             .map(|i| Node {
                 tile_x: i as i32,
                 tile_y: 0,
@@ -965,13 +1091,31 @@ mod tests {
             .iter()
             .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
             .collect();
-        PipeNetwork {
+        let tile_grid = crate::placer::opt_trans::network::TileGrid::build(
+            &pipes,
+            &nodes,
+            n_nodes as i32,
+            1,
+        );
+        let flat_adjacency =
+            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
+        let tile_templates = std::sync::Arc::new(Vec::new());
+        let n_pipe_entries = pipes.len();
+        let n_node_entries = nodes.len();
+        let mut net = PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
             pipe_costs_int,
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
+                n_pipe_entries,
+            ),
+            flat_adjacency,
+            tile_templates,
+            tile_grid,
             pipe_lookup: FxHashMap::default(),
+            tile_type_by_node: vec![0; n_node_entries],
             width: n_nodes as i32,
             height: 1,
             x0: 0,
@@ -979,14 +1123,16 @@ mod tests {
             zero_bel_tiles: 0,
             total_bels: n_nodes,
             coarsen: 1,
-        }
+        };
+        net.refresh_flat_edge_costs();
+        net
     }
 
     fn test_network_with_coords(
         coords: &[(i32, i32)],
         edges: &[(usize, usize, f64)],
     ) -> PipeNetwork {
-        let nodes = coords
+        let nodes: Vec<Node> = coords
             .iter()
             .map(|&(tile_x, tile_y)| Node {
                 tile_x,
@@ -1023,13 +1169,27 @@ mod tests {
             .iter()
             .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
             .collect();
-        PipeNetwork {
+        let tile_grid =
+            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, width, height);
+        let flat_adjacency =
+            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
+        let tile_templates = std::sync::Arc::new(Vec::new());
+        let n_pipe_entries = pipes.len();
+        let n_node_entries = nodes.len();
+        let mut net = PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
             pipe_costs_int,
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
+                n_pipe_entries,
+            ),
+            flat_adjacency,
+            tile_templates,
+            tile_grid,
             pipe_lookup: FxHashMap::default(),
+            tile_type_by_node: vec![0; n_node_entries],
             width,
             height,
             x0: 0,
@@ -1037,7 +1197,9 @@ mod tests {
             zero_bel_tiles: 0,
             total_bels: coords.len(),
             coarsen: 1,
-        }
+        };
+        net.refresh_flat_edge_costs();
+        net
     }
 
     #[test]

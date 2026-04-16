@@ -10,12 +10,14 @@ mod coord_descent;
 mod demand;
 pub(crate) mod diag;
 pub(crate) mod network;
+pub mod fsm;
 pub mod path_solver;
 pub(crate) mod region_min;
 mod resistance;
+pub(crate) mod tile_cache;
 
 pub use algorithm::place_opt_trans;
-pub use config::{OptTransPlacerCfg, PathModel, SweepMode};
+pub use config::{GraphModel, OptTransPlacerCfg, PathModel, SweepMode};
 
 use rustc_hash::FxHashSet;
 

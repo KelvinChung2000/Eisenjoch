@@ -23,6 +23,7 @@ from nextpnr.benchmarks.gen_xc7_hybrid import (
     _pip_timing_class,
     _site_bel_types,
     _wire_type_from_xray_name,
+    _xray_bool,
     add_bufg_bel,
     add_slice_bels,
     add_site_bel,
@@ -297,15 +298,32 @@ def build_composite_tile_type(chip, xray, spec, tileconn):
             tt.create_wire(const_name, const_name, const_value=const_value)
             created.add(const_name)
 
+    pip_stats = {"total": 0, "bidi": 0, "pseudo": 0, "pass_tx": 0}
     for member_idx, member in enumerate(spec.members):
         data = load_tile_type_json(xray, member.tile_type)
         for pdata in data.get("pips", {}).values():
             src = pdata["src_wire"]
             dst = pdata["dst_wire"]
-            if (member_idx, src) in wire_rename and (member_idx, dst) in wire_rename:
-                rsrc = wire_rename[(member_idx, src)]
-                rdst = wire_rename[(member_idx, dst)]
-                tt.create_pip(rsrc, rdst, timing_class=_pip_timing_class(src, dst))
+            if (member_idx, src) not in wire_rename or (member_idx, dst) not in wire_rename:
+                continue
+            rsrc = wire_rename[(member_idx, src)]
+            rdst = wire_rename[(member_idx, dst)]
+            is_pseudo = _xray_bool(pdata.get("is_pseudo", 0))
+            is_pass = _xray_bool(pdata.get("is_pass_transistor", 0))
+            is_directional = _xray_bool(pdata.get("is_directional", 1))
+            tc = _pip_timing_class(src, dst, is_pseudo=is_pseudo,
+                                   is_pass_transistor=is_pass)
+            tt.create_pip(rsrc, rdst, timing_class=tc)
+            if not is_directional:
+                tt.create_pip(rdst, rsrc, timing_class=tc)
+            pip_stats["total"] += 1
+            if not is_directional:
+                pip_stats["bidi"] += 1
+            if is_pseudo:
+                pip_stats["pseudo"] += 1
+            if is_pass:
+                pip_stats["pass_tx"] += 1
+            pip_stats.setdefault("by_class", Counter())[tc] += 1
 
     _absorb_internal_tileconn(tt, spec, tileconn, wire_rename)
     bel_counts, bel_types = _add_composite_bels(tt, xray, spec, wire_rename)
@@ -318,6 +336,7 @@ def build_composite_tile_type(chip, xray, spec, tileconn):
         "bel_counts": bel_counts,
         "bel_types": bel_types,
         "wire_rename": wire_rename,
+        "pip_stats": pip_stats,
     }
 
 
@@ -445,7 +464,17 @@ def build_synthetic_tileconn(specs, xray, tileconn):
                 # Internal edges are copied into the composite tile type.
                 if a_spec.name == b_spec.name and out_dx == 0 and out_dy == 0:
                     continue
-                key = (a_spec.name, b_spec.name, out_dx, out_dy)
+                # Normalize the delta from original-grid units into
+                # composite-grid units. In the composite grid each composite
+                # occupies one column; a wire pair can physically connect
+                # only to the immediately adjacent composite (or the same
+                # column for purely vertical deltas). Composite rows map 1:1
+                # to original rows, so dy passes through.
+                comp_dx = 0 if out_dx == 0 else (1 if out_dx > 0 else -1)
+                comp_dy = out_dy
+                if a_spec.name == b_spec.name and comp_dx == 0 and comp_dy == 0:
+                    continue
+                key = (a_spec.name, b_spec.name, comp_dx, comp_dy)
                 for wa, wb in conn["wire_pairs"]:
                     pair = (f"M{a_idx}_{wa}", f"M{b_idx}_{wb}")
                     if pair in seen_pairs[key]:

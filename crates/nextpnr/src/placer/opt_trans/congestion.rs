@@ -98,13 +98,27 @@ mod tests {
             .iter()
             .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
             .collect();
+        let tile_grid =
+            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, 2, 2);
+        let flat_adjacency =
+            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
+        let tile_templates = std::sync::Arc::new(Vec::new());
+        let n_nodes = nodes.len();
+        let n_pipes = pipes.len();
         PipeNetwork {
             nodes,
             pipes,
             node_pipes,
             pipe_costs,
             pipe_costs_int,
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
+                n_pipes,
+            ),
+            flat_adjacency,
+            tile_templates,
+            tile_grid,
             pipe_lookup: FxHashMap::default(),
+            tile_type_by_node: vec![0; n_nodes],
             width: 2,
             height: 2,
             x0: 0,
@@ -140,9 +154,10 @@ mod tests {
 
     #[test]
     fn half_saturated_pipe_gives_expected_bpr_pressure() {
-        // At u/c = 0.5 under BPR(α=0.05, β=4):
-        //   R_eff = base · (1 + 0.05 · 0.5^4) = base · 1.003125
-        //   R_excess = 0.003125 · base
+        // Span-1 pipe with borrow_slack(1) = 1.25 applied to eff_capacity.
+        // u/c_eff = 5 / (10 * 1.25) = 0.4 under BPR(α=0.05, β=4):
+        //   R_eff = base · (1 + 0.05 · 0.4^4)
+        //   R_excess = 0.05 · 0.4^4 · base
         let nodes = vec![
             Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
             Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
@@ -151,7 +166,7 @@ mod tests {
         let network = make_network(nodes, pipes);
         let model = ResistanceModel;
         let pressure = compute_congestion_pressure(&network, &model);
-        let expected = 0.05 * 0.5f64.powi(4);
+        let expected = 0.05 * (5.0f64 / 12.5).powi(4);
         assert!((pressure[0] - expected).abs() < 1e-9, "got {}", pressure[0]);
         assert!((pressure[1] - expected).abs() < 1e-9, "got {}", pressure[1]);
     }
@@ -159,9 +174,8 @@ mod tests {
     #[test]
     fn node_with_multiple_pipes_averages_bpr() {
         // Node 1 sits between an empty pipe (excess=0) and a half-saturated
-        // pipe (excess = 0.05 · 0.5^4 = 0.003125). Mean = 0.0015625.
-        // Node 2 only touches the half-saturated pipe, so it carries the full
-        // per-pipe excess.
+        // span-1 pipe (excess = 0.05 · (5/12.5)^4). Mean = half of that.
+        // Node 2 only touches the half-saturated pipe.
         let nodes = vec![
             Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
             Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
@@ -174,7 +188,7 @@ mod tests {
         let network = make_network(nodes, pipes);
         let model = ResistanceModel;
         let pressure = compute_congestion_pressure(&network, &model);
-        let per_pipe_excess = 0.05 * 0.5f64.powi(4);
+        let per_pipe_excess = 0.05 * (5.0f64 / 12.5).powi(4);
         assert!(pressure[0].abs() < 1e-12);
         assert!((pressure[1] - per_pipe_excess / 2.0).abs() < 1e-9, "got {}", pressure[1]);
         assert!((pressure[2] - per_pipe_excess).abs() < 1e-9, "got {}", pressure[2]);

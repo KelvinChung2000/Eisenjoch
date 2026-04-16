@@ -51,6 +51,12 @@ mod phase0_opt_trans {
         pub use nextpnr::placer::opt_trans::config::*;
     }
 
+    #[path = "/home/kelvin/side-project/eisenjoch/crates/nextpnr/src/placer/opt_trans/resistance.rs"]
+    pub mod resistance;
+
+    #[path = "/home/kelvin/side-project/eisenjoch/crates/nextpnr/src/placer/opt_trans/tile_cache.rs"]
+    pub mod tile_cache;
+
     #[path = "/home/kelvin/side-project/eisenjoch/crates/nextpnr/src/placer/opt_trans/network.rs"]
     pub mod network;
 

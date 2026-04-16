@@ -16,7 +16,7 @@ use crate::netlist::{CellId, NetId};
 use crate::placer::common;
 use crate::placer::common::{CellValidityMask, TypeAwarePlacement};
 
-use super::config::{OptTransPlacerCfg, PathModel};
+use super::config::{GraphModel, OptTransPlacerCfg, PathModel};
 use super::demand;
 use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat};
 use super::network::PipeNetwork;
@@ -766,12 +766,11 @@ fn template_path_cost(network: &PipeNetwork, path: &[usize]) -> f64 {
     }
     let mut cost = 0.0;
     for &pipe_idx in path {
-        let pipe = &network.pipes[pipe_idx];
-        let g = pipe.eff_conductance;
-        if !g.is_finite() || g <= 0.0 {
+        let pipe_cost = network.pipe_cost(pipe_idx);
+        if !pipe_cost.is_finite() || pipe_cost <= 0.0 {
             return f64::INFINITY;
         }
-        cost += 1.0 / g;
+        cost += pipe_cost;
     }
     cost
 }
@@ -993,8 +992,36 @@ fn update_effective_conductance(
     network: &mut PipeNetwork,
     solve_pool: &rayon::ThreadPool,
     resistance_model: &ResistanceModel,
+    graph_model: GraphModel,
 ) {
     use super::network::DIST_SCALE;
+    if matches!(graph_model, GraphModel::TwoLevelSpan | GraphModel::TwoLevelPip) {
+        if graph_model == GraphModel::TwoLevelPip {
+            let stats = super::tile_cache::rebuild_span_cost_table_pip(
+                network,
+                resistance_model,
+            );
+            let avg_us = if stats.dijkstra_calls > 0 {
+                stats.dijkstra_total_us as f64 / stats.dijkstra_calls as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "    SwitchMatrix: type_usage_pairs={} lookups={} hits={} dijkstra_calls={} avg_us={:.1} total_ms={:.1}",
+                stats.unique_type_usage_pairs,
+                stats.switch_lookups,
+                stats.switch_cache_hits,
+                stats.dijkstra_calls,
+                avg_us,
+                stats.dijkstra_total_us as f64 / 1000.0,
+            );
+        } else {
+            super::tile_cache::rebuild_span_cost_table(network, resistance_model);
+        }
+        network.refresh_flat_edge_costs();
+        return;
+    }
+    network.span_cost_table.reset_disabled(network.pipes.len());
     solve_pool.install(|| {
         let pipes = &mut network.pipes;
         let pipe_costs = &mut network.pipe_costs;
@@ -1016,6 +1043,7 @@ fn update_effective_conductance(
                 };
             });
     });
+    network.refresh_flat_edge_costs();
 }
 
 fn update_net_count_from_usage(
@@ -2710,8 +2738,8 @@ pub fn run_inner_outer(
     }
 
     eprintln!(
-        "DCD placer: {} cells, {} nodes, outer_iters={}, dcd_iters_per_cell={}",
-        n, n_nodes, max_iter, cfg.dcd_iters_per_cell,
+        "DCD placer: {} cells, {} nodes, outer_iters={}, dcd_iters_per_cell={}, graph_model={:?}",
+        n, n_nodes, max_iter, cfg.dcd_iters_per_cell, cfg.graph_model,
     );
     if cfg.softmin_enabled {
         eprintln!(
@@ -2808,7 +2836,7 @@ pub fn run_inner_outer(
             .unwrap_or(0);
 
         let t_refresh = std::time::Instant::now();
-        update_effective_conductance(network, solve_pool, resistance_model);
+        update_effective_conductance(network, solve_pool, resistance_model, cfg.graph_model);
         let pre_solve = solve_distance_cache(
             network,
             &net_infos,
@@ -3649,16 +3677,12 @@ pub fn run_inner_outer(
         let mut sum_eff = 0.0f64;
         let mut n_sat = 0usize;
         let mut max_util = 0.0f64;
-        for pipe in &network.pipes {
+        for (pipe_idx, pipe) in network.pipes.iter().enumerate() {
             let nc = pipe.net_count;
             if nc <= 0.0 {
                 continue;
             }
-            let r_eff = if pipe.eff_conductance > 0.0 {
-                1.0 / pipe.eff_conductance
-            } else {
-                pipe.base_resistance
-            };
+            let r_eff = network.pipe_cost(pipe_idx);
             sum_base += pipe.base_resistance * nc;
             sum_eff += r_eff * nc;
             if pipe.capacity > 0.0 {
@@ -3683,15 +3707,11 @@ pub fn run_inner_outer(
         let mut r_med = 0usize; // 2x..10x
         let mut r_hi = 0usize; // 10x..100x
         let mut r_sat = 0usize; // >=100x (near / at eps clamp)
-        for pipe in &network.pipes {
+        for (pipe_idx, pipe) in network.pipes.iter().enumerate() {
             if pipe.net_count == 0.0 || pipe.base_resistance <= 0.0 {
                 continue;
             }
-            let r_eff = if pipe.eff_conductance > 0.0 {
-                1.0 / pipe.eff_conductance
-            } else {
-                pipe.base_resistance
-            };
+            let r_eff = network.pipe_cost(pipe_idx);
             let ratio = r_eff / pipe.base_resistance;
             if ratio < 2.0 {
                 r_lo += 1;
@@ -3708,6 +3728,18 @@ pub fn run_inner_outer(
             sum_base, sum_eff, sum_eff - sum_base, cong_share * 100.0, n_sat, max_util,
             r_lo, r_med, r_hi, r_sat,
         );
+        if network.span_cost_table.enabled {
+            let s = &network.span_cost_table.stats;
+            let hit_rate = if s.lookups > 0 {
+                100.0 * s.hits as f64 / s.lookups as f64
+            } else {
+                0.0
+            };
+            eprintln!(
+                "    SpanCache: epoch={} entries={} lookups={} hits={} misses={} hit_rate={:.1}%",
+                s.epoch, s.entries, s.lookups, s.hits, s.misses, hit_rate,
+            );
+        }
 
         // Random pair-swap probe: tests whether the current placement is a
         // coordinate-descent local minimum (exact single-cell argmin) but NOT

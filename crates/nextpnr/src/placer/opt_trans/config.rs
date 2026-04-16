@@ -45,6 +45,24 @@ impl Default for PathModel {
     }
 }
 
+/// Graph/cost representation used by the path solvers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphModel {
+    /// Current flat per-pipe cost arrays.
+    FlatPipe,
+    /// Cache costs by source tile type, span delta, usage, and capacity/base
+    /// buckets, while retaining the existing pipe graph and usage accounting.
+    TwoLevelSpan,
+    /// Reserved for a future chipdb PIP-level tile transit model.
+    TwoLevelPip,
+}
+
+impl Default for GraphModel {
+    fn default() -> Self {
+        Self::FlatPipe
+    }
+}
+
 /// Initialization strategy for cell positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InitStrategy {
@@ -99,6 +117,8 @@ pub struct OptTransPlacerCfg {
     pub sweep_mode: SweepMode,
     /// Which path model to use for per-net cost and usage refresh.
     pub path_model: PathModel,
+    /// Which graph/cost representation to use for path solves.
+    pub graph_model: GraphModel,
     /// Number of uniform seed samples taken before bisection refines, per axis.
     /// Purpose: pick the correct basin of a multi-modal cost surface before
     /// the log-depth search locks in on a local minimum.
@@ -166,6 +186,7 @@ impl Default for OptTransPlacerCfg {
             jacobi_alpha: 1.0,
             sweep_mode: SweepMode::JacobiFullscan,
             path_model: PathModel::DialLogit,
+            graph_model: GraphModel::FlatPipe,
             bisect_seed_k: 8,
             bisect_refresh_region: 1,
             scarcity_k: 10.0,
@@ -205,6 +226,23 @@ impl OptTransPlacerCfg {
         }
         if env::var("NPNR_OT_BRESENHAM_LOGIT").ok().as_deref() == Some("1") {
             self.path_model = PathModel::BresenhamLogit;
+        }
+        if let Some(v) = env::var("NPNR_OT_GRAPH_MODEL").ok() {
+            self.graph_model = match v.as_str() {
+                "flat" | "FlatPipe" | "FLAT" => GraphModel::FlatPipe,
+                "span" | "twolevel_span" | "TwoLevelSpan" | "TWOLEVEL_SPAN" => {
+                    GraphModel::TwoLevelSpan
+                }
+                "pip" | "twolevel_pip" | "TwoLevelPip" | "TWOLEVEL_PIP" => GraphModel::TwoLevelPip,
+                _ => self.graph_model,
+            };
+        }
+        if let Some(v) = env::var("NPNR_OT_TWOLEVEL").ok() {
+            self.graph_model = match v.as_str() {
+                "0" | "false" | "FALSE" => GraphModel::FlatPipe,
+                "1" | "true" | "TRUE" => GraphModel::TwoLevelSpan,
+                _ => self.graph_model,
+            };
         }
         if let Some(v) = env::var("NPNR_OT_SOFTMIN").ok() {
             self.softmin_enabled = matches!(v.as_str(), "1" | "true" | "TRUE");

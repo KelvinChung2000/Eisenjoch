@@ -179,8 +179,59 @@ def load_tile_type_json(xray_root, name):
         return json.load(f)
 
 
-def _pip_timing_class(src_wire, dst_wire):
-    """Classify a PIP's timing based on src/dst wire names.
+def _xray_bool(value):
+    """Parse a prjxray JSON boolean field.
+
+    prjxray is inconsistent: is_directional/is_pseudo/can_invert are stored as
+    strings ("0"/"1") while is_pass_transistor is stored as an int (0/1).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip() not in ("", "0", "false", "False")
+    return False
+
+
+# prjxray wire-name → span-in-tiles table for 7-series INT tiles.
+# The digit immediately following the directional prefix is the span length;
+# LH is 12-tile long horizontal, LV / LVB are 18-tile long vertical.
+_SHORT_SPAN_PREFIXES = (
+    "EE", "WW", "NN", "SS", "NE", "NW", "SE", "SW",
+    "EL", "ER", "NL", "NR", "SL", "SR", "WL", "WR",
+)
+
+
+def _span_length_from_wire(wname):
+    """Return the span distance in tiles for a prjxray routing wire name.
+
+    Returns None if the wire is not a directional/long span wire.
+    """
+    if wname.startswith("LVB"):
+        return 18
+    if wname.startswith("LV"):
+        return 18
+    if wname.startswith("LH"):
+        return 12
+    for p in _SHORT_SPAN_PREFIXES:
+        if wname.startswith(p):
+            rest = wname[len(p):]
+            if rest and rest[0].isdigit():
+                n = 0
+                i = 0
+                while i < len(rest) and rest[i].isdigit():
+                    n = n * 10 + int(rest[i])
+                    i += 1
+                # 7-series has 1/2/4/6-tile short spans.
+                if n in (1, 2, 4, 6):
+                    return n
+            return None
+    return None
+
+
+def _pip_timing_class(src_wire, dst_wire, is_pseudo=False, is_pass_transistor=False):
+    """Classify a PIP's timing based on src/dst wire names and prjxray flags.
 
     The goal is to make deeply nested switch matrix paths expensive so the
     A* router avoids exploring them unless necessary. Inter-tile span wires
@@ -188,15 +239,25 @@ def _pip_timing_class(src_wire, dst_wire):
     (they explore the switch matrix without getting closer to the target).
 
     Cost hierarchy (low → high):
-    - SPAN: inter-tile routing wires (EE, WW, NN, SS, BEG/END) — advance position
+    - SPAN<n>: inter-tile routing wires carrying a signal n tiles (n ∈ {1,2,4,6,12,18})
+      — delay scales linearly with tile distance so the router prefers the
+      longest span that still lands near the target.
+    - PSEUDO: prjxray pseudo-PIP (site route-through, default-on, etc.)
     - DELIVER: final delivery to BEL pins (IMUX, LOGIC_OUTS, BYP, CLK)
     - MUX: internal switch matrix (BOUNCE, FAN, GFAN) — deep mux nesting
+    - PASS: prjxray pass-transistor PIP (hard-IP-internal, stacked resistance)
     """
-    # Check destination wire for classification
+    if is_pass_transistor:
+        return "PASS"
+    if is_pseudo:
+        return "PSEUDO"
+    # Check destination wire for classification. Span length is encoded in the
+    # wire name itself (prjxray convention) — use the real geometry instead of
+    # a single flat SPAN bucket.
     d = dst_wire
-    if any(d.startswith(p) for p in ("EE", "WW", "NN", "SS", "NE", "NW", "SE", "SW",
-                                      "EL", "ER", "NL", "NR", "SL", "SR", "WL", "WR")):
-        return "SPAN"
+    span = _span_length_from_wire(d)
+    if span is not None:
+        return f"SPAN{span}"
     if "IMUX" in d or "LOGIC_OUTS" in d or "BYP" in d or "CLK" in d:
         return "DELIVER"
     # Internal mux wires: BOUNCE, FAN, GFAN, CTRL, etc.
@@ -419,7 +480,7 @@ def add_bufg_bel(tt, site_data, z):
     return bel
 
 
-def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
+def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires, stats=None):
     """Create a tile type by copying wires/PIPs from prjxray + tileconn wires.
 
     Returns (tile_type, xray_data_or_None).
@@ -441,12 +502,33 @@ def create_tile_from_xray(chip, xray_root, xc7_type, tc_wires):
             created.add(wname)
 
     # 3. Copy all PIPs from tile_type JSON with wire-type costs.
+    #    Honour prjxray is_directional (emit reverse edge for bidi PIPs),
+    #    is_pseudo (route-through / default-on), and is_pass_transistor
+    #    (hard-IP-internal) flags via distinct timing classes.
     if data:
         for pdata in data.get("pips", {}).values():
             src, dst = pdata["src_wire"], pdata["dst_wire"]
-            if src in created and dst in created:
-                tc = _pip_timing_class(src, dst)
-                tt.create_pip(src, dst, timing_class=tc)
+            if src not in created or dst not in created:
+                continue
+            is_pseudo = _xray_bool(pdata.get("is_pseudo", 0))
+            is_pass = _xray_bool(pdata.get("is_pass_transistor", 0))
+            # prjxray default: PIPs are directional unless explicitly flagged.
+            is_directional = _xray_bool(pdata.get("is_directional", 1))
+            tc = _pip_timing_class(src, dst, is_pseudo=is_pseudo,
+                                   is_pass_transistor=is_pass)
+            tt.create_pip(src, dst, timing_class=tc)
+            if not is_directional:
+                tt.create_pip(dst, src, timing_class=tc)
+            if stats is not None:
+                stats["total"] += 1
+                if not is_directional:
+                    stats["bidi"] += 1
+                if is_pseudo:
+                    stats["pseudo"] += 1
+                if is_pass:
+                    stats["pass_tx"] += 1
+                classes = stats.setdefault("by_class", Counter())
+                classes[tc] += 1
 
     # 4. GND/VCC
     if "GND" not in created:
@@ -594,16 +676,27 @@ def generate_xc7_hybrid(
     bel_capacity = Counter()
     bel_types_created = set()
 
+    pip_stats = {"total": 0, "bidi": 0, "pseudo": 0, "pass_tx": 0,
+                 "by_class": Counter()}
     for synthetic_type, builder in sorted(synthetic_tile_builders.items()):
         info = builder(ch)
         tile_wire_sets[synthetic_type] = set(info.get("wire_set", set()))
         bels_per_type[synthetic_type] = Counter(info.get("bel_counts", Counter()))
         bel_capacity.update(bels_per_type[synthetic_type])
         bel_types_created.update(info.get("bel_types", set()))
+        sub = info.get("pip_stats")
+        if sub:
+            for key in ("total", "bidi", "pseudo", "pass_tx"):
+                pip_stats[key] += sub.get(key, 0)
+            sub_classes = sub.get("by_class")
+            if sub_classes:
+                pip_stats["by_class"].update(sub_classes)
 
     for xc7_type in all_xc7_types:
         tc_wires = tc_wire_sets.get(xc7_type, set())
-        tt, data, created_wires = create_tile_from_xray(ch, xray, xc7_type, tc_wires)
+        tt, data, created_wires = create_tile_from_xray(
+            ch, xray, xc7_type, tc_wires, stats=pip_stats,
+        )
         tile_wire_sets[xc7_type] = created_wires
 
         # CLB tiles: add LUT6/DFF/DLATCH BELs replacing SLICEL/SLICEM sites
@@ -906,6 +999,18 @@ def generate_xc7_hybrid(
         node_count += 1
 
     print(f"Created {node_count} inter-tile routing nodes")
+    print(
+        f"prjxray PIPs: total={pip_stats['total']} "
+        f"bidi_reversed={pip_stats['bidi']} "
+        f"pseudo={pip_stats['pseudo']} "
+        f"pass_tx={pip_stats['pass_tx']}"
+    )
+    classes = pip_stats.get("by_class")
+    if classes:
+        breakdown = ", ".join(
+            f"{name}={count}" for name, count in sorted(classes.items())
+        )
+        print(f"prjxray PIP timing classes: {breakdown}")
 
     if direct_tileconn_types:
         print("Creating synthetic inter-tile routing components...")
@@ -1181,12 +1286,27 @@ def generate_xc7_hybrid(
     # - DELIVER (IMUX, LOGIC_OUTS, BYP): moderate → needed at endpoints
     # - MUX (BOUNCE, FAN, internal): expensive → discourages deep switch exploration
     # DELAY_SCALE=10 is admissible: span-1 PIP costs 10 and covers 1 tile.
+    # SPAN<n>: one routing class per real prjxray span length (1/2/4/6/12/18
+    # tiles). Delay scales linearly with tile distance so a single long-span
+    # PIP beats a chain of short-span PIPs when both reach the target, but
+    # the A* heuristic (10 per tile of Manhattan) stays admissible.
+    span_classes = [(f"SPAN{n}", 10 * n) for n in (1, 2, 4, 6, 12, 18)]
+    # Keep bare SPAN registered for any caller that still emits it.
+    span_classes.append(("SPAN", 10))
     for name, delay in [
-        ("SPAN", 10),
+        *span_classes,
         ("DELIVER", 50),
         ("MUX", 150),
         ("SWINPUT", 50),
         ("TILE_ROUTING", 10),
+        # PSEUDO: prjxray pseudo-PIP (site route-through, default-on). Real
+        # delay is typically ~0.1 ns; kept cheap so BEL-pin delivery via a
+        # route-through is not penalised.
+        ("PSEUDO", 30),
+        # PASS: prjxray pass-transistor PIP, mostly hard-IP-internal (BRAM,
+        # DSP, PCIE). Stacking several is expensive and shorts aren't ideal
+        # for routing outside the hard block; priced above MUX to discourage.
+        ("PASS", 200),
     ]:
         tmg.set_pip_class(
             grade=speed,

@@ -46,6 +46,17 @@ def load_tile_type_data(xray_root, tile_type_name):
         return json.load(f)
 
 
+def _xray_bool(value):
+    """Parse a prjxray JSON boolean field (strings "0"/"1" or ints 0/1)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip() not in ("", "0", "false", "False")
+    return False
+
+
 def create_routing_tile(
     chip, tt_name, xray_data, add_logic_bels=False, add_io_bels=False
 ):
@@ -66,12 +77,26 @@ def create_routing_tile(
         else:
             tt.create_wire(wname, wire_type)
 
-    # Create all PIPs with timing
+    # Create all PIPs with timing. Honour prjxray is_directional (bidi PIPs
+    # get a reverse edge), is_pseudo, and is_pass_transistor by routing each
+    # class of PIP to a distinct timing bucket.
     for pip_name, pdata in pips.items():
         src = pdata["src_wire"]
         dst = pdata["dst_wire"]
-        if src in wires and dst in wires:
-            tt.create_pip(src, dst, timing_class="TILE_ROUTING")
+        if src not in wires or dst not in wires:
+            continue
+        is_pseudo = _xray_bool(pdata.get("is_pseudo", 0))
+        is_pass = _xray_bool(pdata.get("is_pass_transistor", 0))
+        is_directional = _xray_bool(pdata.get("is_directional", 1))
+        if is_pass:
+            tc = "PASS"
+        elif is_pseudo:
+            tc = "PSEUDO"
+        else:
+            tc = "TILE_ROUTING"
+        tt.create_pip(src, dst, timing_class=tc)
+        if not is_directional:
+            tt.create_pip(dst, src, timing_class=tc)
 
     if add_logic_bels:
         # In Xilinx CLB tiles, the SLICE site wires follow a pattern:
@@ -366,13 +391,20 @@ def main():
     # Set timing
     speed = "DEFAULT"
     tmg = ch.set_speed_grades([speed])
-    tmg.set_pip_class(
-        grade=speed,
-        name="TILE_ROUTING",
-        delay=TimingValue(100),
-        in_cap=TimingValue(5000),
-        out_res=TimingValue(1000),
-    )
+    for name, delay in [
+        ("TILE_ROUTING", 100),
+        # PSEUDO: site route-through / default-on PIPs from prjxray.
+        ("PSEUDO", 30),
+        # PASS: pass-transistor PIPs (mostly hard-IP-internal BRAM/DSP/PCIE).
+        ("PASS", 200),
+    ]:
+        tmg.set_pip_class(
+            grade=speed,
+            name=name,
+            delay=TimingValue(delay),
+            in_cap=TimingValue(5000),
+            out_res=TimingValue(1000),
+        )
 
     ch.strs.known_id_count = 0
     ch.write_bba(args.output)
