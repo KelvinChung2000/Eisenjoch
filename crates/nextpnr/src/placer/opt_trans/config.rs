@@ -55,6 +55,21 @@ pub enum GraphModel {
     TwoLevelSpan,
     /// Reserved for a future chipdb PIP-level tile transit model.
     TwoLevelPip,
+    /// Shift-invariant displacement table keyed by (col_src, col_dst, dy, dx).
+    /// Uniform (src, sink) pairs served by O(1) lookup into D_ref/W_ref; all
+    /// others fall back to per-net bucket-Dial. No congestion correction.
+    DisplacementPure,
+    /// DisplacementPure + per-hot-pipe sparse correction applied to nets whose
+    /// bounding box touches any pipe with R_eff > 1.2 * base.
+    DisplacementSparse,
+    /// Limit the per-net bucket-Dial search to the (src, sinks) bounding box
+    /// plus a fixed margin, early-terminating when all sinks are reached.
+    /// Leaves the cost model unchanged.
+    CorridorPrune,
+    /// CorridorPrune + use D_ref as a priority upper bound to prune the Dial
+    /// frontier further; the real bucket-Dial still runs and refines within
+    /// the corridor.
+    CorridorWarmstart,
 }
 
 impl Default for GraphModel {
@@ -234,6 +249,18 @@ impl OptTransPlacerCfg {
                     GraphModel::TwoLevelSpan
                 }
                 "pip" | "twolevel_pip" | "TwoLevelPip" | "TWOLEVEL_PIP" => GraphModel::TwoLevelPip,
+                "disp" | "disp_pure" | "DisplacementPure" | "DISP_PURE" => {
+                    GraphModel::DisplacementPure
+                }
+                "disp_sparse" | "DisplacementSparse" | "DISP_SPARSE" => {
+                    GraphModel::DisplacementSparse
+                }
+                "corridor" | "corridor_prune" | "CorridorPrune" | "CORRIDOR" => {
+                    GraphModel::CorridorPrune
+                }
+                "corridor_warm" | "CorridorWarmstart" | "CORRIDOR_WARM" => {
+                    GraphModel::CorridorWarmstart
+                }
                 _ => self.graph_model,
             };
         }

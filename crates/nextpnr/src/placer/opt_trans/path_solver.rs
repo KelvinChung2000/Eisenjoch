@@ -39,10 +39,44 @@ fn use_fsm() -> bool {
     *FLAG.get_or_init(|| std::env::var("NPNR_OT_USE_FSM").ok().as_deref() == Some("1"))
 }
 const REASONABLE_EPS: f64 = 1e-10;
-const CORRIDOR_STRETCH: f64 = 1.35;
-const CORRIDOR_MIN_HALO: i32 = 12;
-const CORRIDOR_REL_HALO_NUM: i32 = 1;
-const CORRIDOR_REL_HALO_DEN: i32 = 4;
+const CORRIDOR_STRETCH_DEFAULT: f64 = 1.35;
+const CORRIDOR_MIN_HALO_DEFAULT: i32 = 12;
+const CORRIDOR_REL_HALO_NUM_DEFAULT: i32 = 1;
+const CORRIDOR_REL_HALO_DEN_DEFAULT: i32 = 4;
+const CORRIDOR_STRETCH_TIGHT: f64 = 1.10;
+const CORRIDOR_MIN_HALO_TIGHT: i32 = 4;
+const CORRIDOR_REL_HALO_NUM_TIGHT: i32 = 1;
+const CORRIDOR_REL_HALO_DEN_TIGHT: i32 = 8;
+
+#[derive(Clone, Copy)]
+struct CorridorParams {
+    stretch: f64,
+    min_halo: i32,
+    rel_num: i32,
+    rel_den: i32,
+}
+
+fn corridor_params() -> CorridorParams {
+    static PARAMS: OnceLock<CorridorParams> = OnceLock::new();
+    *PARAMS.get_or_init(|| {
+        let tight = std::env::var("NPNR_OT_CORRIDOR_TIGHT").ok().as_deref() == Some("1");
+        if tight {
+            CorridorParams {
+                stretch: CORRIDOR_STRETCH_TIGHT,
+                min_halo: CORRIDOR_MIN_HALO_TIGHT,
+                rel_num: CORRIDOR_REL_HALO_NUM_TIGHT,
+                rel_den: CORRIDOR_REL_HALO_DEN_TIGHT,
+            }
+        } else {
+            CorridorParams {
+                stretch: CORRIDOR_STRETCH_DEFAULT,
+                min_halo: CORRIDOR_MIN_HALO_DEFAULT,
+                rel_num: CORRIDOR_REL_HALO_NUM_DEFAULT,
+                rel_den: CORRIDOR_REL_HALO_DEN_DEFAULT,
+            }
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Heap entry for Dijkstra
@@ -282,6 +316,7 @@ struct Corridor {
     source_x: i32,
     source_y: i32,
     halo: i32,
+    stretch: f64,
     min_x: i32,
     max_x: i32,
     min_y: i32,
@@ -334,13 +369,14 @@ fn build_corridor(
         return None;
     }
 
-    let rel_halo = (max_direct * CORRIDOR_REL_HALO_NUM + CORRIDOR_REL_HALO_DEN - 1)
-        / CORRIDOR_REL_HALO_DEN;
-    let halo = CORRIDOR_MIN_HALO.max(rel_halo);
+    let params = corridor_params();
+    let rel_halo = (max_direct * params.rel_num + params.rel_den - 1) / params.rel_den;
+    let halo = params.min_halo.max(rel_halo);
     Some(Corridor {
         source_x: source.tile_x,
         source_y: source.tile_y,
         halo,
+        stretch: params.stretch,
         min_x: (min_x - halo).max(0),
         max_x: (max_x + halo).min(network.width - 1),
         min_y: (min_y - halo).max(0),
@@ -358,7 +394,7 @@ impl Corridor {
         let bound = self.halo as f64;
         for sink in sinks {
             let via = via_src + manhattan_xy(tx, ty, sink.x, sink.y);
-            if (via as f64) <= CORRIDOR_STRETCH * (sink.direct as f64) + bound {
+            if (via as f64) <= self.stretch * (sink.direct as f64) + bound {
                 return true;
             }
         }
@@ -1000,6 +1036,263 @@ fn dial_logit_load_inner(
         energy,
         missing_demand,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Displacement-table fast path (DisplacementPure / DisplacementSparse)
+// ---------------------------------------------------------------------------
+
+/// Dispatch wrapper used by `coord_descent` when a `DisplacementTable` is
+/// available. Uniform (source, sinks) pairs skip Dijkstra entirely and pull
+/// their distances from the precomputed table; all other pairs fall through
+/// to the full `dial_logit_load`. `DisplacementSparse` adds a hot-pipe
+/// pre-check so nets whose Manhattan corridor touches a congested pipe take
+/// the slow path instead.
+pub(crate) fn dial_logit_load_dispatch(
+    network: &PipeNetwork,
+    source_node: usize,
+    sink_demands: &[(usize, f64)],
+    ws: &mut PathSolverWorkspace,
+    mut edge_usage: Option<&mut [f64]>,
+    displacement: Option<&super::displacement::DisplacementTable>,
+    graph_model: super::config::GraphModel,
+) -> DialLogitResult {
+    use super::config::GraphModel;
+    let fast_enabled = matches!(
+        graph_model,
+        GraphModel::DisplacementPure | GraphModel::DisplacementSparse
+    );
+    if fast_enabled {
+        if let Some(disp) = displacement {
+            if disp.is_uniform_pair(network, source_node, sink_demands) {
+                let sparse = graph_model == GraphModel::DisplacementSparse;
+                if let Some(result) = dial_logit_displacement(
+                    network,
+                    source_node,
+                    sink_demands,
+                    ws,
+                    edge_usage.as_deref_mut(),
+                    disp,
+                    sparse,
+                ) {
+                    return result;
+                }
+                if let Some(usage) = edge_usage.as_deref_mut() {
+                    ws.rollback_edge_usage(usage);
+                }
+                ws.begin_net();
+            }
+        }
+    }
+    dial_logit_load(network, source_node, sink_demands, ws, edge_usage)
+}
+
+/// Fast path: populate `ws.dist / dist_int / path_weight / settle_order` for
+/// every node within the displacement radius of `source_node` from the
+/// precomputed D_ref lookup, then compute per-sink energy and splat sink
+/// demand onto a deterministic Manhattan L-path (east-first, then south).
+///
+/// Returns `None` if the fast path bails (non-uniform coarsen, hot-pipe on
+/// a Manhattan segment when `sparse_correction` is set, etc.), at which
+/// point the caller falls through to `dial_logit_load`.
+fn dial_logit_displacement(
+    network: &PipeNetwork,
+    source_node: usize,
+    sink_demands: &[(usize, f64)],
+    ws: &mut PathSolverWorkspace,
+    mut edge_usage: Option<&mut [f64]>,
+    disp: &super::displacement::DisplacementTable,
+    sparse_correction: bool,
+) -> Option<DialLogitResult> {
+    let width = network.width;
+    let height = network.height;
+    let n_nodes = network.nodes.len();
+    if (width as usize).checked_mul(height as usize) != Some(n_nodes) {
+        return None;
+    }
+    let src_node = network.nodes.get(source_node)?;
+    let src_x = src_node.tile_x;
+    let src_y = src_node.tile_y;
+
+    if sparse_correction
+        && any_hot_pipe_on_l_paths(network, src_x, src_y, source_node, sink_demands)
+    {
+        return None;
+    }
+
+    let r = disp.radius;
+    let inv_scale = 1.0 / DIST_SCALE;
+    for dy in -r..=r {
+        let ny = src_y + dy;
+        if ny < 0 || ny >= height {
+            continue;
+        }
+        for dx in -r..=r {
+            let nx = src_x + dx;
+            if nx < 0 || nx >= width {
+                continue;
+            }
+            let Some(d_int) = disp.lookup(dx, dy) else {
+                continue;
+            };
+            let node_idx = (ny * width + nx) as usize;
+            if node_idx >= n_nodes {
+                continue;
+            }
+            if ws.dist_int[node_idx] != u32::MAX {
+                continue;
+            }
+            ws.dist_int[node_idx] = d_int;
+            ws.dist[node_idx] = (d_int as f64) * inv_scale;
+            ws.path_weight[node_idx] = 1.0;
+            ws.settle_order.push(node_idx);
+        }
+    }
+
+    let mut energy = 0.0;
+    let mut missing_demand = 0.0;
+    for &(node, demand) in sink_demands {
+        if demand == 0.0 {
+            continue;
+        }
+        let label = ws.dist[node];
+        if !label.is_finite() {
+            missing_demand += demand.abs();
+            continue;
+        }
+        energy += demand * label;
+    }
+
+    if let Some(usage) = edge_usage.as_deref_mut() {
+        for &(sink_node, demand) in sink_demands {
+            if demand == 0.0 {
+                continue;
+            }
+            let Some(sink) = network.nodes.get(sink_node) else {
+                continue;
+            };
+            let dx = sink.tile_x - src_x;
+            let dy = sink.tile_y - src_y;
+            splat_l_path(network, src_x, src_y, dx, dy, demand, ws, usage);
+        }
+    }
+
+    Some(DialLogitResult {
+        heap_pops: 0,
+        energy,
+        missing_demand,
+    })
+}
+
+/// Deterministic east-then-south L-path splat from (src_x, src_y) to
+/// (src_x + dx, src_y + dy). Pipes are looked up via `tile_grid.pipe_e /
+/// pipe_s` (O(1)) and `record_edge_usage` tracks them for rollback.
+fn splat_l_path(
+    network: &PipeNetwork,
+    src_x: i32,
+    src_y: i32,
+    dx: i32,
+    dy: i32,
+    demand: f64,
+    ws: &mut PathSolverWorkspace,
+    usage: &mut [f64],
+) {
+    let width = network.width;
+    let tile_grid = &network.tile_grid;
+    let step_x = dx.signum();
+    let step_y = dy.signum();
+
+    let mut cx = src_x;
+    for _ in 0..dx.abs() {
+        let tile_x = if step_x > 0 { cx } else { cx - 1 };
+        if tile_x >= 0 && tile_x < width - 1 {
+            let slot = (src_y * width + tile_x) as usize;
+            if slot < tile_grid.pipe_e.len() {
+                let pipe_idx = tile_grid.pipe_e[slot];
+                if pipe_idx != u32::MAX {
+                    ws.record_edge_usage(pipe_idx as usize, demand, usage);
+                }
+            }
+        }
+        cx += step_x;
+    }
+    let mut cy = src_y;
+    let fx = src_x + dx;
+    for _ in 0..dy.abs() {
+        let tile_y = if step_y > 0 { cy } else { cy - 1 };
+        if tile_y >= 0 && tile_y < network.height - 1 {
+            let slot = (tile_y * width + fx) as usize;
+            if slot < tile_grid.pipe_s.len() {
+                let pipe_idx = tile_grid.pipe_s[slot];
+                if pipe_idx != u32::MAX {
+                    ws.record_edge_usage(pipe_idx as usize, demand, usage);
+                }
+            }
+        }
+        cy += step_y;
+    }
+}
+
+/// Walk the same L-path and return `true` if any pipe along it has
+/// `pipe_costs_int > 1.2 × base_int`. Used by `DisplacementSparse` to bail
+/// to full Dijkstra when the cheap table can't represent the cost.
+fn any_hot_pipe_on_l_paths(
+    network: &PipeNetwork,
+    src_x: i32,
+    src_y: i32,
+    _source_node: usize,
+    sink_demands: &[(usize, f64)],
+) -> bool {
+    let width = network.width;
+    let tile_grid = &network.tile_grid;
+    let pipes = &network.pipes;
+    let cost_int = &network.pipe_costs_int;
+    let hot = |pipe_idx: u32| -> bool {
+        if pipe_idx == u32::MAX {
+            return false;
+        }
+        let idx = pipe_idx as usize;
+        let pipe = &pipes[idx];
+        let base_int = (pipe.base_resistance * DIST_SCALE).max(1.0) as u32;
+        let threshold = base_int.saturating_mul(6) / 5; // 1.2×
+        cost_int.get(idx).copied().unwrap_or(0) > threshold
+    };
+    for &(sink_node, demand) in sink_demands {
+        if demand == 0.0 {
+            continue;
+        }
+        let Some(sink) = network.nodes.get(sink_node) else {
+            continue;
+        };
+        let dx = sink.tile_x - src_x;
+        let dy = sink.tile_y - src_y;
+        let step_x = dx.signum();
+        let step_y = dy.signum();
+        let mut cx = src_x;
+        for _ in 0..dx.abs() {
+            let tx = if step_x > 0 { cx } else { cx - 1 };
+            if tx >= 0 && tx < width - 1 {
+                let slot = (src_y * width + tx) as usize;
+                if slot < tile_grid.pipe_e.len() && hot(tile_grid.pipe_e[slot]) {
+                    return true;
+                }
+            }
+            cx += step_x;
+        }
+        let mut cy = src_y;
+        let fx = src_x + dx;
+        for _ in 0..dy.abs() {
+            let ty = if step_y > 0 { cy } else { cy - 1 };
+            if ty >= 0 && ty < network.height - 1 {
+                let slot = (ty * width + fx) as usize;
+                if slot < tile_grid.pipe_s.len() && hot(tile_grid.pipe_s[slot]) {
+                    return true;
+                }
+            }
+            cy += step_y;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

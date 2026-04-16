@@ -9,6 +9,7 @@ pub mod congestion;
 mod coord_descent;
 mod demand;
 pub(crate) mod diag;
+pub(crate) mod displacement;
 pub(crate) mod network;
 pub mod fsm;
 pub mod path_solver;

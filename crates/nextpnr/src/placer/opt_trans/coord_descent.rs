@@ -384,6 +384,28 @@ fn solve_all_nets(
     collect_usage: bool,
     skip_mask: Option<&[bool]>,
 ) -> SolveAccum {
+    solve_all_nets_with_displacement(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        dist_cache,
+        collect_usage,
+        skip_mask,
+        None,
+    )
+}
+
+fn solve_all_nets_with_displacement(
+    network: &PipeNetwork,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+    dist_cache: &mut DistCache,
+    collect_usage: bool,
+    skip_mask: Option<&[bool]>,
+    displacement: Option<&super::displacement::DisplacementTable>,
+) -> SolveAccum {
     if cfg.path_model == PathModel::BresenhamLogit {
         return solve_all_nets_bresenham_logit(
             network,
@@ -458,20 +480,24 @@ fn solve_all_nets(
 
                         ws.begin_net();
                         let result = if collect_usage {
-                            path_solver::dial_logit_load(
+                            path_solver::dial_logit_load_dispatch(
                                 network,
                                 source,
                                 &sink_demands,
                                 &mut ws,
                                 Some(&mut accum.edge_usage),
+                                displacement,
+                                cfg.graph_model,
                             )
                         } else {
-                            path_solver::dial_logit_load(
+                            path_solver::dial_logit_load_dispatch(
                                 network,
                                 source,
                                 &sink_demands,
                                 &mut ws,
                                 None,
+                                displacement,
+                                cfg.graph_model,
                             )
                         };
 
@@ -988,6 +1014,39 @@ fn append_adjacent_pipe(
     true
 }
 
+/// Dump percentiles of `R_eff / base` across the pipe graph for the current
+/// iteration. Gated on `NEXTPNR_DIAG=1` so it only runs during sweeps. Keeps
+/// everything on one line so the CSV harness can parse it with a grep.
+fn report_reff_distribution(network: &PipeNetwork, resistance_model: &ResistanceModel, iter: usize) {
+    if std::env::var("NEXTPNR_DIAG").ok().as_deref() != Some("1") {
+        return;
+    }
+    let pipes = &network.pipes;
+    if pipes.is_empty() {
+        return;
+    }
+    let mut ratios: Vec<f64> = pipes
+        .iter()
+        .map(|p| {
+            let base = p.base_resistance.max(1e-12);
+            resistance_model.effective_resistance(p) / base
+        })
+        .collect();
+    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = ratios.len();
+    let p = |q: f64| ratios[((n as f64 * q) as usize).min(n - 1)];
+    let hot101 = ratios.iter().filter(|r| **r > 1.01).count();
+    let hot12 = ratios.iter().filter(|r| **r > 1.2).count();
+    let hot2 = ratios.iter().filter(|r| **r > 2.0).count();
+    eprintln!(
+        "[diag] iter={iter} pipes={n} p50={:.4} p90={:.4} p99={:.4} max={:.4} hot1.01={hot101} hot1.2={hot12} hot2={hot2}",
+        p(0.50),
+        p(0.90),
+        p(0.99),
+        ratios[n - 1],
+    );
+}
+
 fn update_effective_conductance(
     network: &mut PipeNetwork,
     solve_pool: &rayon::ThreadPool,
@@ -1070,8 +1129,9 @@ fn solve_distance_cache(
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
     skip_mask: Option<&[bool]>,
+    displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    solve_all_nets(
+    solve_all_nets_with_displacement(
         network,
         net_infos,
         cfg,
@@ -1079,6 +1139,7 @@ fn solve_distance_cache(
         dist_cache,
         false,
         skip_mask,
+        displacement,
     )
 }
 
@@ -1088,8 +1149,18 @@ fn solve_usage_and_energy(
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
     dist_cache: &mut DistCache,
+    displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    solve_all_nets(network, net_infos, cfg, solve_pool, dist_cache, true, None)
+    solve_all_nets_with_displacement(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        dist_cache,
+        true,
+        None,
+        displacement,
+    )
 }
 
 fn apply_usage_for_next_iter(
@@ -2837,6 +2908,17 @@ pub fn run_inner_outer(
 
         let t_refresh = std::time::Instant::now();
         update_effective_conductance(network, solve_pool, resistance_model, cfg.graph_model);
+        report_reff_distribution(network, resistance_model, outer);
+        let displacement_table = if matches!(
+            cfg.graph_model,
+            GraphModel::DisplacementPure
+                | GraphModel::DisplacementSparse
+                | GraphModel::CorridorWarmstart
+        ) {
+            super::displacement::DisplacementTable::build(network)
+        } else {
+            None
+        };
         let pre_solve = solve_distance_cache(
             network,
             &net_infos,
@@ -2844,6 +2926,7 @@ pub fn run_inner_outer(
             solve_pool,
             &mut dist_cache,
             skip_mask.as_deref(),
+            displacement_table.as_ref(),
         );
         let pre_refresh_ms = t_refresh.elapsed().as_millis();
 
@@ -3553,8 +3636,14 @@ pub fn run_inner_outer(
             (post_solve.energy, refresh_ms, solve_stats)
         } else {
             dist_cache.ensure_shape(post_net_infos.len(), n_nodes);
-            let post_solve =
-                solve_usage_and_energy(network, &post_net_infos, cfg, solve_pool, &mut dist_cache);
+            let post_solve = solve_usage_and_energy(
+                network,
+                &post_net_infos,
+                cfg,
+                solve_pool,
+                &mut dist_cache,
+                displacement_table.as_ref(),
+            );
             apply_usage_for_next_iter(network, &post_solve.edge_usage, cfg, solve_pool);
             let refresh_ms = pre_refresh_ms + t_post_refresh.elapsed().as_millis();
 
