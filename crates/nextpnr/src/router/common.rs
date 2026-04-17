@@ -62,19 +62,78 @@ pub fn resolve_source_wire(
 }
 
 /// Apply a computed RoutePlan by binding source wire, PIPs, and dest wires.
-pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) {
-    // Bind source wire if not already bound.
-    if ctx.wire(plan.source_wire).is_available() {
-        ctx.bind_wire(plan.source_wire, plan.net, PlaceStrength::Strong);
-        ctx.design
-            .net_edit(plan.net)
-            .add_wire(plan.source_wire, None, PlaceStrength::Strong);
+///
+/// Binds atomically: if any wire (including any of its node-equivalents) is
+/// already claimed by a different net, all bindings applied by this call are
+/// rolled back and `Err(conflicting_wire)` is returned. No partial state is
+/// left behind in the context or in the net's wire map.
+pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) -> Result<(), WireId> {
+    // Track wires we've bound so we can unwind on conflict. Source wire is
+    // first; PIP destinations follow in the order they were bound. PIPs get
+    // their own tracking vec.
+    let mut bound_wires: Vec<WireId> = Vec::new();
+    let mut bound_pips: Vec<PipId> = Vec::new();
+    let mut net_wire_entries: Vec<WireId> = Vec::new();
+
+    // Helper closure: unwind on conflict.
+    // We cannot easily capture &mut ctx in a closure here, so inline the
+    // rollback at each failure site.
+
+    // Bind source wire via node-aware atomic bind.
+    match ctx.try_bind_wire_node(plan.source_wire, plan.net, PlaceStrength::Strong) {
+        Ok(()) => {
+            bound_wires.push(plan.source_wire);
+            ctx.design
+                .net_edit(plan.net)
+                .add_wire(plan.source_wire, None, PlaceStrength::Strong);
+            net_wire_entries.push(plan.source_wire);
+        }
+        Err(conflict) => {
+            return Err(conflict);
+        }
     }
 
-    // Bind each sink route's PIPs.
+    // Bind each sink route's PIPs and destination wires.
     for sink in &plan.sink_routes {
-        bind_route(ctx, plan.net, &sink.pips);
+        for &pip in &sink.pips {
+            let dst_wire = ctx.pip(pip).dst_wire().id();
+
+            // Try to bind the destination wire (and its node-equivalents).
+            if let Err(conflict) = ctx.try_bind_wire_node(dst_wire, plan.net, PlaceStrength::Strong)
+            {
+                // Unwind: release PIPs, wires, and the net's wire map entries.
+                for &p in &bound_pips {
+                    ctx.unbind_pip(p);
+                }
+                // Re-read node equivalents for each previously-bound wire and
+                // unbind every one — mirrors what try_bind_wire_node did.
+                for &w in &bound_wires {
+                    ctx.unbind_wire(w);
+                    let mut equivs: Vec<WireId> = Vec::new();
+                    ctx.chipdb().node_wires_cb(w, |nw| equivs.push(nw));
+                    for nw in equivs {
+                        ctx.unbind_wire(nw);
+                    }
+                }
+                for w in net_wire_entries.iter().rev() {
+                    ctx.design.net_edit(plan.net).remove_wire(*w);
+                }
+                return Err(conflict);
+            }
+
+            // Bind the PIP itself.
+            ctx.bind_pip(pip, plan.net, PlaceStrength::Strong);
+            bound_pips.push(pip);
+            bound_wires.push(dst_wire);
+
+            ctx.design
+                .net_edit(plan.net)
+                .add_wire(dst_wire, Some(pip), PlaceStrength::Strong);
+            net_wire_entries.push(dst_wire);
+        }
     }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +257,495 @@ pub fn is_global_clock_pip(ctx: &Context, pip: PipId) -> bool {
         || is_global_clock_wire(ctx, chipdb.pip_dst_wire(pip))
 }
 
+/// Validate the routed design against the cell netlist.
+///
+/// Parallels `placer::common::validate_all_placed`: walks every alive net that
+/// has a connected driver and at least one user, and verifies that routing
+/// actually connects each sink back to the source. Collects every failure it
+/// finds (up to a small number of examples per category) and returns them as a
+/// single [`RouterError::ValidationFailed`] so the caller sees a complete
+/// diagnostic rather than whichever problem happened to be hit first.
+///
+/// Checks performed:
+/// 1. Driver and user cells are placed.
+/// 2. The driver BEL pin resolves to a wire, and that wire is present in the
+///    net's routing tree.
+/// 3. Every valid user's BEL pin wire is present in the routing tree.
+/// 4. Each sink wire traces back to the source through parent PIPs
+///    (no broken chains, no cycles).
+/// 5. Every wire listed in `net.wires` is bound to this net in the context's
+///    wire table, and likewise for every PIP.
+/// 6. No wire or PIP is claimed by more than one net.
+pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
+    const MAX_EXAMPLES: usize = 10;
+
+    struct Bucket {
+        total: usize,
+        examples: Vec<String>,
+    }
+
+    impl Bucket {
+        fn new() -> Self {
+            Self { total: 0, examples: Vec::new() }
+        }
+
+        fn add(&mut self, msg: impl FnOnce() -> String) {
+            self.total += 1;
+            if self.examples.len() < MAX_EXAMPLES {
+                self.examples.push(msg());
+            }
+        }
+
+        fn append(&self, out: &mut String, label: &str) {
+            if self.total == 0 {
+                return;
+            }
+            out.push_str(&format!("  {} ({} total", label, self.total));
+            if self.total > self.examples.len() {
+                out.push_str(&format!(", showing first {})\n", self.examples.len()));
+            } else {
+                out.push_str(")\n");
+            }
+            for ex in &self.examples {
+                out.push_str("    - ");
+                out.push_str(ex);
+                out.push('\n');
+            }
+        }
+    }
+
+    let mut source_not_in_tree = Bucket::new();
+    let mut unplaced_driver = Bucket::new();
+    let mut unplaced_user = Bucket::new();
+    let mut missing_source_wire = Bucket::new();
+    let mut missing_sink_wire = Bucket::new();
+    let mut sink_not_in_tree = Bucket::new();
+    let mut disconnected_sink = Bucket::new();
+    let mut wire_conflict = Bucket::new();
+    let mut pip_conflict = Bucket::new();
+    let mut wire_binding_mismatch = Bucket::new();
+    let mut pip_binding_mismatch = Bucket::new();
+
+    let mut wire_claims: FxHashMap<WireId, Vec<NetId>> = FxHashMap::default();
+    let mut pip_claims: FxHashMap<PipId, Vec<NetId>> = FxHashMap::default();
+
+    let chipdb = ctx.chipdb();
+
+    for net_idx in ctx.design.iter_net_indices() {
+        let net = ctx.net(net_idx);
+        if !net.is_alive() || !net.has_driver() || net.num_users() == 0 {
+            continue;
+        }
+
+        let net_name = ctx.name_of(net.name_id()).to_owned();
+
+        // Record claims from the wire map and check binding consistency.
+        for (&wire, pm) in net.wires() {
+            wire_claims.entry(wire).or_default().push(net_idx);
+            match ctx.wire_binding(wire) {
+                Some((owner, _)) if owner == net_idx => {}
+                Some((owner, _)) => {
+                    let other = ctx.name_of(ctx.net(owner).name_id()).to_owned();
+                    let wn = chipdb.wire_name(wire).to_owned();
+                    wire_binding_mismatch.add(|| format!(
+                        "net '{}' lists wire {} ({}) but wire is bound to net '{}'",
+                        net_name, wn, wire, other,
+                    ));
+                }
+                None => {
+                    let wn = chipdb.wire_name(wire).to_owned();
+                    wire_binding_mismatch.add(|| format!(
+                        "net '{}' lists wire {} ({}) but wire is unbound",
+                        net_name, wn, wire,
+                    ));
+                }
+            }
+            if let Some(pip) = pm.pip {
+                pip_claims.entry(pip).or_default().push(net_idx);
+                match ctx.pip_binding(pip) {
+                    Some((owner, _)) if owner == net_idx => {}
+                    Some((owner, _)) => {
+                        let other = ctx.name_of(ctx.net(owner).name_id()).to_owned();
+                        pip_binding_mismatch.add(|| format!(
+                            "net '{}' lists pip {} but pip is bound to net '{}'",
+                            net_name, pip, other,
+                        ));
+                    }
+                    None => {
+                        pip_binding_mismatch.add(|| format!(
+                            "net '{}' lists pip {} but pip is unbound",
+                            net_name, pip,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Resolve driver.
+        let driver = net
+            .driver_cell_port()
+            .expect("has_driver already checked above");
+        let driver_cell = ctx.cell(driver.cell);
+        let driver_bel = match driver_cell.bel() {
+            Some(b) => b,
+            None => {
+                let cell_name = driver_cell.name().to_owned();
+                let port_name = ctx.name_of(driver.port).to_owned();
+                unplaced_driver.add(|| format!(
+                    "net '{}': driver cell '{}' pin '{}' is not placed",
+                    net_name, cell_name, port_name,
+                ));
+                continue;
+            }
+        };
+        let source_wire = match driver_bel.pin_wire(driver.port) {
+            Some(w) => w.id(),
+            None => {
+                let bel_name = driver_bel.name().to_owned();
+                let port_name = ctx.name_of(driver.port).to_owned();
+                missing_source_wire.add(|| format!(
+                    "net '{}': driver BEL '{}' has no wire for pin '{}'",
+                    net_name, bel_name, port_name,
+                ));
+                continue;
+            }
+        };
+        if !net.wires().contains_key(&source_wire) {
+            let sn = chipdb.wire_name(source_wire).to_owned();
+            let wires_len = net.wires().len();
+            source_not_in_tree.add(|| format!(
+                "net '{}': source wire {} ({}) not present in routing tree (tree has {} wires)",
+                net_name, sn, source_wire, wires_len,
+            ));
+        }
+
+        // Check every user.
+        for user in net.users() {
+            if !user.is_valid() {
+                continue;
+            }
+            let user_cell = ctx.cell(user.cell);
+            let user_bel = match user_cell.bel() {
+                Some(b) => b,
+                None => {
+                    let cell_name = user_cell.name().to_owned();
+                    let port_name = ctx.name_of(user.port).to_owned();
+                    unplaced_user.add(|| format!(
+                        "net '{}': user cell '{}' pin '{}' is not placed",
+                        net_name, cell_name, port_name,
+                    ));
+                    continue;
+                }
+            };
+            let sink_wire = match user_bel.pin_wire(user.port) {
+                Some(w) => w.id(),
+                None => {
+                    let bel_name = user_bel.name().to_owned();
+                    let port_name = ctx.name_of(user.port).to_owned();
+                    missing_sink_wire.add(|| format!(
+                        "net '{}': user BEL '{}' has no wire for pin '{}'",
+                        net_name, bel_name, port_name,
+                    ));
+                    continue;
+                }
+            };
+            if !net.wires().contains_key(&sink_wire) {
+                let sn = chipdb.wire_name(sink_wire).to_owned();
+                let cell_name = user_cell.name().to_owned();
+                let port_name = ctx.name_of(user.port).to_owned();
+                sink_not_in_tree.add(|| format!(
+                    "net '{}': sink wire {} ({}) for cell '{}' pin '{}' not in routing tree",
+                    net_name, sn, sink_wire, cell_name, port_name,
+                ));
+                continue;
+            }
+
+            // Walk parent PIPs back to the source.
+            let mut cur = sink_wire;
+            let max_hops = net.wires().len() + 2;
+            let mut hops = 0usize;
+            let mut reached_source = false;
+            let mut cause = "reached a wire with no parent pip";
+            while hops <= max_hops {
+                if cur == source_wire {
+                    reached_source = true;
+                    break;
+                }
+                let Some(pm) = net.wires().get(&cur) else {
+                    cause = "parent chain left the routing tree";
+                    break;
+                };
+                let Some(parent_pip) = pm.pip else {
+                    cause = "reached a wire with no parent pip before hitting the source";
+                    break;
+                };
+                cur = chipdb.pip_src_wire(parent_pip);
+                hops += 1;
+            }
+            if !reached_source && hops > max_hops {
+                cause = "cycle detected in parent-pip chain";
+            }
+            if !reached_source {
+                let sn = chipdb.wire_name(sink_wire).to_owned();
+                let cell_name = user_cell.name().to_owned();
+                let port_name = ctx.name_of(user.port).to_owned();
+                let cause = cause.to_owned();
+                disconnected_sink.add(|| format!(
+                    "net '{}': sink wire {} ({}) for cell '{}' pin '{}' not connected to source ({})",
+                    net_name, sn, sink_wire, cell_name, port_name, cause,
+                ));
+            }
+        }
+    }
+
+    // Cross-net conflicts from the accumulated claim maps.
+    for (&wire, owners) in &wire_claims {
+        if owners.len() <= 1 {
+            continue;
+        }
+        let wn = chipdb.wire_name(wire).to_owned();
+        let sample: Vec<String> = owners
+            .iter()
+            .take(3)
+            .map(|&n| ctx.name_of(ctx.net(n).name_id()).to_owned())
+            .collect();
+        let more = if owners.len() > sample.len() { ", ..." } else { "" };
+        wire_conflict.add(|| format!(
+            "wire {} ({}) claimed by {} nets: {}{}",
+            wn, wire, owners.len(), sample.join(", "), more,
+        ));
+    }
+    for (&pip, owners) in &pip_claims {
+        if owners.len() <= 1 {
+            continue;
+        }
+        let sample: Vec<String> = owners
+            .iter()
+            .take(3)
+            .map(|&n| ctx.name_of(ctx.net(n).name_id()).to_owned())
+            .collect();
+        let more = if owners.len() > sample.len() { ", ..." } else { "" };
+        pip_conflict.add(|| format!(
+            "pip {} claimed by {} nets: {}{}",
+            pip, owners.len(), sample.join(", "), more,
+        ));
+    }
+
+    let total = source_not_in_tree.total
+        + unplaced_driver.total
+        + unplaced_user.total
+        + missing_source_wire.total
+        + missing_sink_wire.total
+        + sink_not_in_tree.total
+        + disconnected_sink.total
+        + wire_conflict.total
+        + pip_conflict.total
+        + wire_binding_mismatch.total
+        + pip_binding_mismatch.total;
+    if total == 0 {
+        return Ok(());
+    }
+
+    let mut out = format!("Routing validation failed ({} issues):\n", total);
+    unplaced_driver.append(&mut out, "nets with unplaced driver cell");
+    unplaced_user.append(&mut out, "nets with unplaced user cell");
+    missing_source_wire.append(&mut out, "driver BEL pins with no wire");
+    missing_sink_wire.append(&mut out, "user BEL pins with no wire");
+    source_not_in_tree.append(&mut out, "nets whose source wire is not in the routing tree");
+    sink_not_in_tree.append(&mut out, "sink wires missing from the routing tree");
+    disconnected_sink.append(&mut out, "sinks not connected back to the source");
+    wire_conflict.append(&mut out, "wires claimed by more than one net");
+    pip_conflict.append(&mut out, "pips claimed by more than one net");
+    wire_binding_mismatch
+        .append(&mut out, "wires listed in a net but not bound to it in the context");
+    pip_binding_mismatch
+        .append(&mut out, "pips listed in a net but not bound to it in the context");
+
+    Err(super::RouterError::ValidationFailed(out))
+}
+
+/// Diagnose why Router1 fails on a specific net.
+///
+/// For every (driver, sink) pair: runs A* on an empty context with
+/// `wire_penalty` empty and no bounding box, and prints:
+///
+/// 1. Driver / sink wire names, tile coordinates, BEL pin context
+/// 2. `pips_downhill` count on the driver wire and `pips_uphill` on the sink
+///    (sanity check that the chipdb actually gives each endpoint some edges)
+/// 3. A* outcome: path length, visit count, exit reason
+/// 4. When no path is found: exploration bbox, reachable-wire count, and the
+///    closest wire to the sink that A* did visit (by estimate_delay)
+///
+/// Output goes to stderr via `eprintln!`. Returns the number of sinks that
+/// failed so callers can decide whether to continue.
+pub fn diagnose_unroutable_net(
+    ctx: &Context,
+    net_idx: NetId,
+    visit_budget: Option<usize>,
+) -> usize {
+    use super::maze::{astar_route_with_trace, AStarExit};
+
+    let net = ctx.net(net_idx);
+    let net_name = ctx.name_of(net.name_id()).to_owned();
+    eprintln!("=== diagnose_unroutable_net('{}') ===", net_name);
+
+    let Some(driver_pin) = net.driver_cell_port() else {
+        eprintln!("  no driver; aborting");
+        return 0;
+    };
+    let driver_cell = ctx.cell(driver_pin.cell);
+    let Some(driver_bel) = driver_cell.bel() else {
+        eprintln!("  driver cell '{}' unplaced; aborting", driver_cell.name());
+        return 0;
+    };
+    let Some(src_wire_v) = driver_bel.pin_wire(driver_pin.port) else {
+        eprintln!(
+            "  driver BEL '{}' has no wire for pin '{}'; aborting",
+            driver_bel.name(),
+            ctx.name_of(driver_pin.port)
+        );
+        return 0;
+    };
+    let src_wire = src_wire_v.id();
+    let chipdb = ctx.chipdb();
+    let (sx, sy) = chipdb.tile_xy(src_wire.tile());
+    let src_downhill = chipdb.wire_info(src_wire).pips_downhill.get().len();
+    eprintln!(
+        "  driver: cell='{}' port='{}' bel='{}' wire='{}' ({}) at ({},{}); pips_downhill={}",
+        driver_cell.name(),
+        ctx.name_of(driver_pin.port),
+        driver_bel.name(),
+        chipdb.wire_name(src_wire),
+        src_wire,
+        sx,
+        sy,
+        src_downhill,
+    );
+
+    let mut src_set = rustc_hash::FxHashSet::default();
+    src_set.insert(src_wire);
+    let empty_penalty: FxHashMap<WireId, crate::timing::DelayT> = FxHashMap::default();
+
+    let mut failed = 0usize;
+    for (ui, user) in net.users().iter().enumerate() {
+        if !user.is_valid() {
+            continue;
+        }
+        let user_cell = ctx.cell(user.cell);
+        let Some(user_bel) = user_cell.bel() else {
+            eprintln!("  user[{}]: cell '{}' unplaced; skipping", ui, user_cell.name());
+            failed += 1;
+            continue;
+        };
+        let Some(dst_wire_v) = user_bel.pin_wire(user.port) else {
+            eprintln!(
+                "  user[{}]: BEL '{}' pin '{}' has no wire; skipping",
+                ui,
+                user_bel.name(),
+                ctx.name_of(user.port)
+            );
+            failed += 1;
+            continue;
+        };
+        let dst_wire = dst_wire_v.id();
+        let (dx, dy) = chipdb.tile_xy(dst_wire.tile());
+        let manhattan = (dx - sx).abs() + (dy - sy).abs();
+        let dst_uphill = chipdb.wire_info(dst_wire).pips_uphill.get().len();
+        eprintln!(
+            "  user[{}]: cell='{}' port='{}' bel='{}' wire='{}' ({}) at ({},{}); manhattan={}; pips_uphill={}",
+            ui,
+            user_cell.name(),
+            ctx.name_of(user.port),
+            user_bel.name(),
+            chipdb.wire_name(dst_wire),
+            dst_wire,
+            dx,
+            dy,
+            manhattan,
+            dst_uphill,
+        );
+
+        let (path, trace) = astar_route_with_trace(
+            ctx,
+            &src_set,
+            dst_wire,
+            &empty_penalty,
+            None,
+            50,
+            None,
+            visit_budget,
+        );
+        let outcome = match (path.as_ref(), trace.exit) {
+            (Some(p), AStarExit::Reached) => format!(
+                "REACHED ({} pips, cost={}, visits={}/{})",
+                p.len(),
+                trace.best_score,
+                trace.visit_count,
+                trace.max_visits
+            ),
+            (None, AStarExit::HeapDrained) => format!(
+                "UNREACHABLE (heap drained, visited {} wires after {} visits)",
+                trace.visited.len(),
+                trace.visit_count
+            ),
+            (None, AStarExit::VisitLimit) => format!(
+                "VISIT_LIMIT (budget {} hit, visited {} wires)",
+                trace.max_visits,
+                trace.visited.len()
+            ),
+            (_, e) => format!("UNEXPECTED exit={:?}", e),
+        };
+        eprintln!("    A*: {}", outcome);
+
+        if path.is_none() {
+            failed += 1;
+            // Exploration bbox + closest-reached-wire diagnostics.
+            let mut min_x = i32::MAX;
+            let mut max_x = i32::MIN;
+            let mut min_y = i32::MAX;
+            let mut max_y = i32::MIN;
+            let mut closest_dist = i32::MAX;
+            let mut closest_wire: Option<WireId> = None;
+            for &w in trace.visited.keys() {
+                let (wx, wy) = chipdb.tile_xy(w.tile());
+                min_x = min_x.min(wx);
+                max_x = max_x.max(wx);
+                min_y = min_y.min(wy);
+                max_y = max_y.max(wy);
+                let d = (wx - dx).abs() + (wy - dy).abs();
+                if d < closest_dist {
+                    closest_dist = d;
+                    closest_wire = Some(w);
+                }
+            }
+            if trace.visited.is_empty() {
+                eprintln!("    explored: 0 wires (seed already visited set only)");
+            } else {
+                eprintln!(
+                    "    explored bbox: x=[{}..{}] y=[{}..{}] ({} wires)",
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                    trace.visited.len()
+                );
+                if let Some(cw) = closest_wire {
+                    let (cx, cy) = chipdb.tile_xy(cw.tile());
+                    eprintln!(
+                        "    closest reached: '{}' ({}) at ({},{}), manhattan={} from dst",
+                        chipdb.wire_name(cw),
+                        cw,
+                        cx,
+                        cy,
+                        closest_dist,
+                    );
+                }
+            }
+        }
+    }
+    failed
+}
+
 /// Find all wires that are used by more than one net (congested).
 pub fn find_congested_wires(ctx: &Context) -> Vec<WireId> {
     let mut wire_usage: FxHashMap<WireId, u32> = FxHashMap::default();
@@ -317,6 +865,11 @@ impl NegotiationState {
     /// For every wire that is currently used by more than one net, the excess
     /// usage (usage - 1) is added to the wire's history cost.
     pub fn update_history(&mut self) {
+        // Exponentially decay all existing history so that stale congestion
+        // fades out over iterations, then add fresh excess usage.
+        for v in self.wire_history.values_mut() {
+            *v *= 0.9;
+        }
         for (&wire, &usage) in &self.wire_usage {
             if usage > 1 {
                 *self.wire_history.entry(wire).or_default() += (usage - 1) as f64;

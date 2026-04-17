@@ -99,6 +99,44 @@ impl Context {
         self.wire_to_net.remove(&(tile, index));
     }
 
+    /// Bind `wire` and all node-equivalent wires to `net`. Returns `Err` if
+    /// any wire in the node is already bound to a different net. Either all
+    /// bindings succeed or none do — no partial application.
+    ///
+    /// Binding the same net to a wire that already holds that binding is
+    /// treated as idempotent (no error, no change).
+    pub fn try_bind_wire_node(
+        &mut self,
+        wire: WireId,
+        net_idx: NetId,
+        strength: PlaceStrength,
+    ) -> Result<(), WireId> {
+        // Collect wire + all node-equivalent wires.
+        let mut wires: Vec<WireId> = Vec::with_capacity(8);
+        wires.push(wire);
+        self.chipdb().node_wires_cb(wire, |nw| {
+            wires.push(nw);
+        });
+
+        // Phase 1: verify no wire is bound to a different net.
+        for &w in &wires {
+            if let Some((owner, _)) = self.wire_binding(w) {
+                if owner != net_idx {
+                    return Err(w);
+                }
+            }
+        }
+
+        // Phase 2: apply all bindings.
+        for &w in &wires {
+            let Ok(tile) = u32::try_from(w.tile()) else { continue };
+            let Ok(index) = u32::try_from(w.index()) else { continue };
+            self.wire_to_net.insert((tile, index), (net_idx, strength));
+        }
+
+        Ok(())
+    }
+
     /// Bind a PIP to a net.
     pub fn bind_pip(
         &mut self,

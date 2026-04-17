@@ -160,6 +160,11 @@ impl<'a> NetEditor<'a> {
         self
     }
 
+    pub fn remove_wire(&mut self, wire: WireId) -> &mut Self {
+        self.net.wires.remove(&wire);
+        self
+    }
+
     pub fn set_name(&mut self, name: IdString) -> &mut Self {
         self.net.name = name;
         self

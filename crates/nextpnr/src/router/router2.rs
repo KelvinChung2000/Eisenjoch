@@ -323,7 +323,7 @@ fn route_net_r2(
 ) -> Result<(), RouterError> {
     let plan = compute_route_r2(ctx, net_idx, state, bb_margin)?;
     if plan.source_wire.is_valid() {
-        apply_route_plan(ctx, &plan);
+        let _ = apply_route_plan(ctx, &plan);
     }
     Ok(())
 }
@@ -373,7 +373,7 @@ impl super::Router for Router2 {
         for plan in plans {
             let plan = plan?;
             if plan.source_wire.is_valid() {
-                apply_route_plan(ctx, &plan);
+                let _ = apply_route_plan(ctx, &plan);
             }
             state.add_net_usage(&ctx.design, plan.net);
         }
@@ -405,7 +405,7 @@ impl super::Router for Router2 {
             for plan in plans {
                 let plan = plan?;
                 if plan.source_wire.is_valid() {
-                    apply_route_plan(ctx, &plan);
+                    let _ = apply_route_plan(ctx, &plan);
                 }
                 state.add_net_usage(&ctx.design, plan.net);
             }

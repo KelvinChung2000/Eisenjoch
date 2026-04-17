@@ -17,7 +17,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, resolve_source_wire,
-    is_global_clock_pip, source_wire_const_value, unroute_net, RoutePlan, SinkRoute,
+    is_global_clock_pip, source_wire_const_value, unroute_net, validate_all_routed,
+    RoutePlan, SinkRoute,
 };
 use super::maze::astar_route;
 use super::RouterError;
@@ -279,6 +280,7 @@ fn reconstruct_path(arena: &[(PipId, u32)], mut idx: u32) -> Vec<PipId> {
 /// close to the sink for a single PIP traversal.
 fn beam_search_route(
     ctx: &Context,
+    net: NetId,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     corridor: &FxHashSet<i32>,
@@ -385,6 +387,27 @@ fn beam_search_route(
                 }
 
                 let next_wire = chipdb.pip_dst_wire(pip);
+
+                // Wire-binding check: skip PIPs whose destination (or any
+                // node-equivalent) is bound to a different net. Without this,
+                // beam search is blind to actual claims and produces plans
+                // that apply_route_plan rejects via try_bind_wire_node.
+                let mut wire_taken = match ctx.wire_binding(next_wire) {
+                    Some((owner, _)) if owner != net => true,
+                    _ => false,
+                };
+                if !wire_taken {
+                    chipdb.node_wires_cb(next_wire, |nw| {
+                        if let Some((owner, _)) = ctx.wire_binding(nw) {
+                            if owner != net {
+                                wire_taken = true;
+                            }
+                        }
+                    });
+                }
+                if wire_taken {
+                    continue;
+                }
 
                 // Push PIP into the arena and get its index.
                 let new_path_idx = path_arena.len() as u32;
@@ -1021,185 +1044,6 @@ fn segment_route(
 }
 
 // ---------------------------------------------------------------------------
-// Negotiation A*: unconstrained search with wire-sharing penalty
-// ---------------------------------------------------------------------------
-
-/// Unconstrained A* for failed nets. No tile confinement. Penalizes wires
-/// already used by other nets (negotiation cost).
-#[allow(dead_code)]
-fn negotiation_astar(
-    ctx: &Context,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_usage: &FxHashMap<WireId, u32>,
-    present_cost: f32,
-) -> Option<Vec<PipId>> {
-    let chipdb = ctx.chipdb();
-    let (dst_x, dst_y) = chipdb.tile_xy(dst_wire.tile());
-
-    let mut dst_nodes: FxHashSet<WireId> = FxHashSet::default();
-    dst_nodes.insert(dst_wire);
-    chipdb.node_wires_cb(dst_wire, |nw| {
-        dst_nodes.insert(nw);
-    });
-
-    for src in src_wires {
-        if dst_nodes.contains(src) {
-            return Some(Vec::new());
-        }
-    }
-
-    let mut visited: FxHashMap<WireId, (i32, Option<PipId>, WireId)> = FxHashMap::default();
-    let mut heap = BinaryHeap::new();
-
-    let h = |wire: WireId| -> i32 {
-        let mut best = {
-            let (wx, wy) = chipdb.tile_xy(wire.tile());
-            (wx - dst_x).abs() + (wy - dst_y).abs()
-        };
-        chipdb.node_wires_cb(wire, |nw| {
-            let (nx, ny) = chipdb.tile_xy(nw.tile());
-            let d = (nx - dst_x).abs() + (ny - dst_y).abs();
-            if d < best {
-                best = d;
-            }
-        });
-        best
-    };
-
-    for &w in src_wires {
-        visited.insert(w, (0, None, w));
-        heap.push(QueueEntry {
-            wire: w,
-            cost: 0,
-            penalty: 0,
-            estimate: h(w),
-        });
-        chipdb.node_wires_cb(w, |nw| {
-            if !visited.contains_key(&nw) {
-                visited.insert(nw, (0, None, w));
-                heap.push(QueueEntry {
-                    wire: nw,
-                    cost: 0,
-                    penalty: 0,
-                    estimate: h(nw),
-                });
-            }
-        });
-    }
-
-    let mut best_score = i32::MAX;
-    let mut expansions = 0usize;
-    let max_expansions = 100_000usize;
-
-    while let Some(entry) = heap.pop() {
-        expansions += 1;
-        if expansions > max_expansions {
-            break;
-        }
-
-        if let Some(&(pc, _, _)) = visited.get(&entry.wire) {
-            if entry.cost > pc {
-                continue;
-            }
-        }
-
-        // Estimate-based pruning.
-        if best_score < i32::MAX && entry.estimate / 2 > best_score + 50 {
-            continue;
-        }
-
-        // Hit check.
-        if dst_nodes.contains(&entry.wire) {
-            if entry.cost < best_score {
-                best_score = entry.cost;
-            }
-            continue;
-        }
-        let mut hit = false;
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if dst_nodes.contains(&nw) {
-                hit = true;
-            }
-        });
-        if hit {
-            if entry.cost < best_score {
-                best_score = entry.cost;
-                // Insert a visited entry for dst_wire via node hop.
-                if !visited.contains_key(&dst_wire) {
-                    visited.insert(dst_wire, (entry.cost, None, entry.wire));
-                }
-            }
-            continue;
-        }
-
-        // Node expansion.
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if let Some(&(pc, _, _)) = visited.get(&nw) {
-                if entry.cost >= pc {
-                    return;
-                }
-            }
-            visited.insert(nw, (entry.cost, None, entry.wire));
-            let hv = h(nw);
-            heap.push(QueueEntry {
-                wire: nw,
-                cost: entry.cost,
-                penalty: 0,
-                estimate: entry.cost + hv,
-            });
-        });
-
-        // PIP expansion with negotiation cost.
-        let wire_info = chipdb.wire_info(entry.wire);
-        for &pip_idx in wire_info.pips_downhill.get() {
-            let pip = PipId::new(entry.wire.tile(), pip_idx);
-            let next_wire = chipdb.pip_dst_wire(pip);
-
-            let is_global_clock = is_global_clock_pip(ctx, pip);
-            let pip_delay = if is_global_clock {
-                0
-            } else {
-                ctx.pip(pip).delay().max_delay().max(1)
-            };
-            // Negotiation penalty: usage * present_cost.
-            let usage = wire_usage.get(&next_wire).copied().unwrap_or(0);
-            let neg_cost = if is_global_clock {
-                0
-            } else {
-                (usage as f32 * present_cost) as i32
-            };
-            let step_cost = if is_global_clock { 0 } else { 1 };
-            let new_cost = entry.cost + pip_delay + neg_cost + step_cost;
-
-            if best_score < i32::MAX && new_cost > best_score + 50 {
-                continue;
-            }
-
-            if let Some(&(pc, _, _)) = visited.get(&next_wire) {
-                if new_cost >= pc {
-                    continue;
-                }
-            }
-            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-            let hv = h(next_wire);
-            heap.push(QueueEntry {
-                wire: next_wire,
-                cost: new_cost,
-                penalty: 0,
-                estimate: new_cost + hv,
-            });
-        }
-    }
-
-    if best_score < i32::MAX {
-        Some(trace_path(&visited, dst_wire, chipdb))
-    } else {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Net routing
 // ---------------------------------------------------------------------------
 
@@ -1463,6 +1307,7 @@ fn route_net_raster(
         // Beam search through the actual PIP graph.
         match beam_search_route(
             ctx,
+            net,
             &tree_wires,
             sink_wire,
             &corridor,
@@ -1487,8 +1332,11 @@ fn route_net_raster(
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }
             None => {
-                let net_name = ctx.net(net).name_id();
-                return Err(RouterError::NoPath(ctx.name_of(net_name).to_owned()));
+                // Preserve partial progress: keep sinks routed so far, skip
+                // this sink, and let the A* cleanup pass attempt it later.
+                // Returning Err would discard the whole plan and leave the
+                // net empty, which makes rip-up passes destructive.
+                continue;
             }
         }
     }
@@ -1520,8 +1368,6 @@ impl super::Router for RasterRouter {
         cfg: &Self::Config,
         nets: &[NetId],
     ) -> Result<(), RouterError> {
-        use rayon::prelude::*;
-
         let chip_w = ctx.chipdb().width();
         let chip_h = ctx.chipdb().height();
 
@@ -1556,20 +1402,30 @@ impl super::Router for RasterRouter {
                 nets_to_route = nets.to_vec();
                 cong.reset_usage();
             } else {
-                // Subsequent passes: only rip up and reroute congested nets.
+                // Subsequent passes: rip up congested nets AND retry any net
+                // whose routing tree is still empty (iter-0 bind-conflict or
+                // beam-search failure). Empty-tree nets contribute no wire
+                // usage so find_congested_nets can't surface them.
                 let congested = neg_state.find_congested_nets(&ctx.design);
-                if congested.is_empty() {
-                    eprintln!("RasterRouter: no wire congestion at pass {}, done", iter);
-                    return Ok(());
-                }
                 for &net in &congested {
                     neg_state.remove_net_usage(&ctx.design, net);
                     if ctx.net(net).wires().len() > 0 {
                         unroute_net(ctx, net);
                     }
                 }
-                neg_state.update_history();
-                neg_state.present_cost *= neg_state.cfg.present_cost_growth;
+                let mut to_retry = congested;
+                for idx in ctx.design.iter_net_indices() {
+                    let n = ctx.net(idx);
+                    if n.is_alive() && n.has_driver() && n.num_users() > 0 && n.wires().is_empty() {
+                        to_retry.push(idx);
+                    }
+                }
+                to_retry.sort_unstable();
+                to_retry.dedup();
+                if to_retry.is_empty() {
+                    eprintln!("RasterRouter: no wire congestion at pass {}, validating", iter);
+                    return validate_all_routed(ctx);
+                }
                 cong.update_history();
                 cong_weight *= cfg.cong_growth;
                 // Rebuild tile congestion from remaining (non-ripped-up) routes.
@@ -1579,7 +1435,7 @@ impl super::Router for RasterRouter {
                         cong.add_usage(wire.tile(), 1.0);
                     }
                 }
-                nets_to_route = congested;
+                nets_to_route = to_retry;
             }
 
             // Sort nets: high-fanout first.
@@ -1625,14 +1481,18 @@ impl super::Router for RasterRouter {
                 };
                 if let Ok(plan) = result {
                     if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() {
-                        for sr in &plan.sink_routes {
-                            for &pip in &sr.pips {
-                                let tile = ctx.chipdb().pip_dst_wire(pip).tile();
-                                cong.add_usage(tile, 1.0);
+                        match apply_route_plan(ctx, &plan) {
+                            Ok(()) => {
+                                for sr in &plan.sink_routes {
+                                    for &pip in &sr.pips {
+                                        let tile = ctx.chipdb().pip_dst_wire(pip).tile();
+                                        cong.add_usage(tile, 1.0);
+                                    }
+                                }
+                                hf_routed += 1;
                             }
+                            Err(_conflict) => {}
                         }
-                        apply_route_plan(ctx, &plan);
-                        hf_routed += 1;
                     }
                 }
             }
@@ -1645,49 +1505,48 @@ impl super::Router for RasterRouter {
                 );
             }
 
-            let lf_results: Vec<(NetId, bool, Option<RoutePlan>)> = lf_nets
-                .par_iter()
-                .map(|&net| {
-                    let result = if cfg.use_greedy {
-                        route_net_greedy(ctx, net, &cong, cong_weight, cfg)
-                    } else {
-                        route_net_raster(ctx, net, &cong, cong_weight, cfg)
-                    };
-                    match result {
-                        Ok(plan) if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() => {
-                            (net, true, Some(plan))
-                        }
-                        _ => (net, false, None),
-                    }
-                })
-                .collect();
-
+            // Serialize low-fanout planning so each plan sees prior applies.
+            // Parallel planning with par_iter() was racing: workers planned
+            // independently through the same node, and the bind-conflict check
+            // in apply_route_plan rejected >60% of plans. Sequential planning
+            // lets each net observe current bindings via cong/ctx state.
             let mut routed = hf_routed;
             let mut failed = hf_nets.len() - hf_routed;
 
-            for (_net, ok, plan) in lf_results {
-                if ok {
-                    if let Some(plan) = plan {
-                        for sr in &plan.sink_routes {
-                            for &pip in &sr.pips {
-                                let tile = ctx.chipdb().pip_dst_wire(pip).tile();
-                                cong.add_usage(tile, 1.0);
+            for &net in &lf_nets {
+                let result = if cfg.use_greedy {
+                    route_net_greedy(ctx, net, &cong, cong_weight, cfg)
+                } else {
+                    route_net_raster(ctx, net, &cong, cong_weight, cfg)
+                };
+                match result {
+                    Ok(plan) if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() => {
+                        match apply_route_plan(ctx, &plan) {
+                            Ok(()) => {
+                                for sr in &plan.sink_routes {
+                                    for &pip in &sr.pips {
+                                        let tile = ctx.chipdb().pip_dst_wire(pip).tile();
+                                        cong.add_usage(tile, 1.0);
+                                    }
+                                }
+                                routed += 1;
+                            }
+                            Err(_conflict) => {
+                                failed += 1;
                             }
                         }
-                        apply_route_plan(ctx, &plan);
-                        routed += 1;
                     }
-                } else {
-                    failed += 1;
+                    _ => {
+                        failed += 1;
+                    }
                 }
             }
 
             // Update wire-level negotiation state.
             neg_state.update_usage(&ctx.design);
-            if iter == 0 {
-                neg_state.update_history();
-                neg_state.present_cost *= neg_state.cfg.present_cost_growth;
-            }
+            neg_state.update_history();
+            neg_state.present_cost *= neg_state.cfg.present_cost_growth;
+            neg_state.present_cost = neg_state.present_cost.min(8.0);
 
             let congested = cong.num_congested_tiles();
             let wire_congested = neg_state.count_congested_wires();
@@ -1769,12 +1628,14 @@ impl super::Router for RasterRouter {
                             (wx - sx).abs() + (wy - sy).abs()
                         });
 
-                        // Use tighter visit limit for high-fanout nets to bound
-                        // search cost, but still attempt them (no skip).
+                        // Visit limit per sink. xc7_large needs hundreds of
+                        // node hops through ~10k-PIP switch matrices, so a
+                        // few-thousand budget cannot reach anything further
+                        // than ~2 composite columns with the lookahead.
                         let per_sink_limit = if sink_wires.len() > 50 {
-                            Some(5_000)
+                            Some(200_000)
                         } else {
-                            Some(10_000)
+                            Some(500_000)
                         };
 
                         let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
@@ -1821,7 +1682,33 @@ impl super::Router for RasterRouter {
                                     sink_routes.push(SinkRoute { sink_wire, pips });
                                 }
                                 None => {
-                                    // Partial routing: skip this sink, try remaining sinks.
+                                    // Partial routing: bump history for wires in the
+                                    // rasterized corridor tiles so that subsequent
+                                    // iterations route away from this congested region.
+                                    let (sink_tx, sink_ty) = ctx.chipdb().tile_xy(sink_wire.tile());
+                                    let (_path, corridor_tiles) = raster_corridor(
+                                        sx,
+                                        sy,
+                                        sink_tx,
+                                        sink_ty,
+                                        &cong,
+                                        cong_weight,
+                                        cfg.filter_radius,
+                                        chip_w,
+                                        chip_h,
+                                    );
+                                    for &tile_idx in &corridor_tiles {
+                                        let tile = tile_idx as i32;
+                                        let num_wires =
+                                            ctx.chipdb().tile_type(tile).wires.get().len();
+                                        for wi in 0..num_wires {
+                                            let w = WireId::new(tile, wi as i32);
+                                            *neg_state
+                                                .wire_history
+                                                .entry(w)
+                                                .or_insert(0.0) += 0.5;
+                                        }
+                                    }
                                     continue;
                                 }
                             }
@@ -1834,8 +1721,9 @@ impl super::Router for RasterRouter {
                                 source_wire,
                                 sink_routes,
                             };
-                            apply_route_plan(ctx, &plan);
-                            cleanup_routed += 1;
+                            if apply_route_plan(ctx, &plan).is_ok() {
+                                cleanup_routed += 1;
+                            }
                         }
                     }
 
@@ -1848,8 +1736,8 @@ impl super::Router for RasterRouter {
             }
 
             if failed == 0 {
-                eprintln!("RasterRouter: all nets routed at pass {}", iter);
-                return Ok(());
+                eprintln!("RasterRouter: all nets routed at pass {}, validating", iter);
+                return validate_all_routed(ctx);
             }
         }
 

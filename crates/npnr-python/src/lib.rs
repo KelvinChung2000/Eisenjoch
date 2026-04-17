@@ -17,7 +17,7 @@ use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
 use ::nextpnr::router::maze::{Router1, Router1Cfg};
-use ::nextpnr::router::negotiation::{Router2, Router2Cfg};
+use ::nextpnr::router::router2::{Router2, Router2Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::timing::{DelayT, TimingAnalyser};
@@ -222,9 +222,9 @@ impl PyContext {
     ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 1.0.
     ///     io_boost: IO net demand amplification (opt_trans). Default 3.0.
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
-    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "random_bel".
+    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "centroid".
     ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="random_bel", num_threads=8, legalization="ring"))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="centroid", num_threads=8, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -505,6 +505,13 @@ impl PyContext {
 
     fn total_hpwl(&self) -> f64 {
         ::nextpnr::metrics::total_hpwl(&self.ctx)
+    }
+
+    /// Ideal-clustering HPWL lower bound: sum over nets of the bbox of the
+    /// net's locked (IO-fixed) cells only. Strict lower bound under any
+    /// placement of movable cells.
+    fn total_hpwl_locked_only(&self) -> f64 {
+        ::nextpnr::metrics::total_hpwl_locked_only(&self.ctx)
     }
 
     /// Total Bresenham line estimate wirelength (tighter than HPWL).

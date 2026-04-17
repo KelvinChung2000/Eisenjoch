@@ -6,7 +6,7 @@ use nextpnr::metrics::{compute_bbox, BoundingBox};
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
 use nextpnr::router::common::NegotiationCfg;
-use nextpnr::router::negotiation::{astar_route_r2, R2QueueEntry, Router2Cfg, Router2State};
+use nextpnr::router::router2::{astar_route_r2, R2QueueEntry, Router2Cfg, Router2State};
 use rustc_hash::FxHashSet;
 use std::collections::BinaryHeap;
 

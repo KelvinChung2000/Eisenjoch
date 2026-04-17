@@ -148,7 +148,7 @@ impl super::Router for Router1 {
             None,
         )?;
         if plan.source_wire.is_valid() {
-            super::common::apply_route_plan(ctx, &plan);
+            let _ = super::common::apply_route_plan(ctx, &plan);
         }
         Ok(())
     }
@@ -186,7 +186,7 @@ impl super::Router for Router1 {
         for plan in plans {
             let plan = plan?;
             if plan.source_wire.is_valid() {
-                apply_route_plan(ctx, &plan);
+                let _ = apply_route_plan(ctx, &plan);
             }
             add_wire_usage(ctx, &mut state, plan.net);
         }
@@ -244,7 +244,7 @@ impl super::Router for Router1 {
             for plan in plans {
                 let plan = plan?;
                 if plan.source_wire.is_valid() {
-                    apply_route_plan(ctx, &plan);
+                    let _ = apply_route_plan(ctx, &plan);
                 }
                 add_wire_usage(ctx, &mut state, plan.net);
             }
@@ -270,7 +270,7 @@ pub fn route_net(
 ) -> Result<(), RouterError> {
     let plan = compute_route_r1(ctx, net, wire_penalty, 0, 50, None)?;
     if plan.source_wire.is_valid() {
-        apply_route_plan(ctx, &plan);
+        let _ = apply_route_plan(ctx, &plan);
     }
     Ok(())
 }
@@ -388,6 +388,35 @@ pub fn compute_route_r1(
 /// 3. **Adaptive visit limit**: after finding the first path, cap further
 ///    exploration to `2 * visit_count` to prevent unbounded search on
 ///    hard instances.
+/// Why the A* loop stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AStarExit {
+    /// Destination was reached at least once; path is available.
+    Reached,
+    /// Priority queue emptied without reaching destination.
+    HeapDrained,
+    /// `visit_count` exceeded the (possibly adaptive) `max_visits` budget.
+    VisitLimit,
+}
+
+/// Diagnostic snapshot of an A* search. Populated by
+/// [`astar_route_with_trace`] regardless of success or failure.
+pub struct AStarTrace {
+    /// Total nodes popped from the priority queue.
+    pub visit_count: usize,
+    /// Visit budget in effect when the loop exited.
+    pub max_visits: usize,
+    /// Best `cost + penalty` found at `dst_wire`, or `DelayT::MAX` if never reached.
+    pub best_score: DelayT,
+    /// Reason the loop exited.
+    pub exit: AStarExit,
+    /// Full visited map: wire -> (cost, penalty, parent pip, came-from wire).
+    ///
+    /// Useful for post-mortem analysis: tile bbox of exploration, closest
+    /// wire to dst, whether dst was enqueued but visit-budget hit, etc.
+    pub visited: FxHashMap<WireId, (DelayT, DelayT, Option<PipId>, WireId)>,
+}
+
 pub fn astar_route(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
@@ -398,8 +427,45 @@ pub fn astar_route(
     lookahead: Option<&super::lookahead::Lookahead>,
     visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
+    astar_route_with_trace(
+        ctx,
+        src_wires,
+        dst_wire,
+        wire_penalty,
+        bbox,
+        estimate_precision,
+        lookahead,
+        visit_limit,
+    )
+    .0
+}
+
+/// Like [`astar_route`] but always returns an [`AStarTrace`] alongside the
+/// (optional) path. Used by router diagnostics to answer questions like
+/// "how far did A* get before giving up?".
+pub fn astar_route_with_trace(
+    ctx: &Context,
+    src_wires: &FxHashSet<WireId>,
+    dst_wire: WireId,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    bbox: Option<&crate::metrics::BoundingBox>,
+    estimate_precision: DelayT,
+    lookahead: Option<&super::lookahead::Lookahead>,
+    visit_limit: Option<usize>,
+) -> (Option<Vec<PipId>>, AStarTrace) {
     if src_wires.contains(&dst_wire) {
-        return Some(Vec::new());
+        let mut visited = FxHashMap::default();
+        visited.insert(dst_wire, (0, 0, None, dst_wire));
+        return (
+            Some(Vec::new()),
+            AStarTrace {
+                visit_count: 0,
+                max_visits: 0,
+                best_score: 0,
+                exit: AStarExit::Reached,
+                visited,
+            },
+        );
     }
 
     let chipdb = ctx.chipdb();
@@ -439,9 +505,11 @@ pub fn astar_route(
         visited.insert(src, (0, 0, None, src));
     }
 
+    let mut hit_visit_limit = false;
     while let Some(entry) = heap.pop() {
         visit_count += 1;
         if visit_count > max_visits {
+            hit_visit_limit = true;
             break;
         }
 
@@ -568,8 +636,16 @@ pub fn astar_route(
         }
     }
 
+    let exit = if best_score < DelayT::MAX {
+        AStarExit::Reached
+    } else if hit_visit_limit {
+        AStarExit::VisitLimit
+    } else {
+        AStarExit::HeapDrained
+    };
+
     // Extract best path if destination was reached.
-    if best_score < DelayT::MAX {
+    let path = if best_score < DelayT::MAX {
         let mut pips = Vec::new();
         let mut current = dst_wire;
         loop {
@@ -593,7 +669,16 @@ pub fn astar_route(
         Some(pips)
     } else {
         None
-    }
+    };
+
+    let trace = AStarTrace {
+        visit_count,
+        max_visits,
+        best_score,
+        exit,
+        visited,
+    };
+    (path, trace)
 }
 
 // ---------------------------------------------------------------------------
