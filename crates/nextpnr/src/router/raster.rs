@@ -1385,6 +1385,51 @@ impl super::Router for RasterRouter {
         let mut best_routed = 0usize;
         let mut best_wl = 0u64;
 
+        // Pre-reserve BEL-pin wires. Every alive net's driver output wire and
+        // every sink (user) input wire is bound to its owning net before any
+        // routing begins. This prevents one net's route from claiming a
+        // routing node that includes another net's driver output — a common
+        // failure mode on dense designs where sibling bus bits ('vert[2]' vs
+        // 'vert[3]') had adjacent BEL outputs sharing a node. Beam search
+        // already skips PIPs whose dst is owned by a different net, so
+        // reserved pins naturally steer routes around them.
+        let mut pin_wires: Vec<(crate::chipdb::WireId, NetId)> = Vec::new();
+        for &net in nets {
+            let n = ctx.net(net);
+            if !n.is_alive() || !n.has_driver() {
+                continue;
+            }
+            if let Some(driver) = n.driver_cell_port() {
+                if let Some(bel) = ctx.cell(driver.cell).bel() {
+                    if let Some(w) = bel.pin_wire(driver.port) {
+                        pin_wires.push((w.id(), net));
+                    }
+                }
+            }
+            for user in n.users() {
+                if !user.is_valid() {
+                    continue;
+                }
+                if let Some(ubel) = ctx.cell(user.cell).bel() {
+                    if let Some(uw) = ubel.pin_wire(user.port) {
+                        pin_wires.push((uw.id(), net));
+                    }
+                }
+            }
+        }
+        let mut reservations_applied = 0usize;
+        let mut reservation_conflicts = 0usize;
+        for (wire, net) in pin_wires {
+            match ctx.try_bind_wire_node(wire, net, crate::common::PlaceStrength::Strong) {
+                Ok(()) => reservations_applied += 1,
+                Err(_) => reservation_conflicts += 1,
+            }
+        }
+        eprintln!(
+            "RasterRouter: pre-reserved {} BEL-pin wires ({} conflicts)",
+            reservations_applied, reservation_conflicts
+        );
+
         // Wire-level negotiation state (PathFinder-style).
         let neg_cfg = super::common::NegotiationCfg::default();
         let mut neg_state = super::common::NegotiationState::new(neg_cfg);

@@ -23,7 +23,7 @@ impl Context {
     /// Return the current binding of a wire, or `None` if unbound or the id is
     /// out of range. Sparse lookup: `O(1)` against the hash map.
     #[inline]
-    pub(crate) fn wire_binding(&self, wire: WireId) -> Option<(NetId, PlaceStrength)> {
+    pub fn wire_binding(&self, wire: WireId) -> Option<(NetId, PlaceStrength)> {
         let tile = u32::try_from(wire.tile()).ok()?;
         let index = u32::try_from(wire.index()).ok()?;
         self.wire_to_net.get(&(tile, index)).copied()

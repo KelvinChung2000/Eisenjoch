@@ -77,6 +77,14 @@ fn main() {
     let mut miss_hist: BTreeMap<i32, usize> = BTreeMap::new();
     let mut miss_examples: Vec<(String, i32, i32, i32, i32, i32)> = Vec::new(); // name, dx_abs+dy_abs, sx, sy, ux, uy
 
+    // Source-wire conflict diagnostic: for each empty-tree net, check whether
+    // the driver's source wire (or any node-equivalent) is bound to another
+    // net — which would mean apply_route_plan failed to bind the source and
+    // rolled back every plan this net ever produced.
+    let mut src_conflict_empty_tree = 0usize;
+    let mut src_clean_empty_tree = 0usize;
+    let mut src_conflict_examples: Vec<(String, String, String)> = Vec::new();
+
     for net_idx in ctx.design.iter_net_indices() {
         let net = ctx.net(net_idx);
         if !net.is_alive() || !net.has_driver() || net.num_users() == 0 {
@@ -127,6 +135,47 @@ fn main() {
 
         if tree_empty {
             n_empty_tree += 1;
+
+            // Check source-wire availability. If the source wire or any
+            // node-equivalent is bound to another net, apply_route_plan
+            // always fails at the first step → empty tree regardless of
+            // beam search outcome.
+            let mut src_conflict_net: Option<String> = None;
+            let mut src_conflict_wire: Option<String> = None;
+            let my_net_idx = net_idx;
+            if let Some((owner, _)) = ctx.wire_binding(src_wire) {
+                if owner != my_net_idx {
+                    src_conflict_net = Some(ctx.name_of(ctx.net(owner).name_id()).to_owned());
+                    src_conflict_wire = Some(format!("{:?}", src_wire));
+                }
+            }
+            if src_conflict_net.is_none() {
+                let mut equivs: Vec<nextpnr::chipdb::WireId> = Vec::new();
+                ctx.chipdb().node_wires_cb(src_wire, |nw| equivs.push(nw));
+                for nw in equivs {
+                    if let Some((owner, _)) = ctx.wire_binding(nw) {
+                        if owner != my_net_idx {
+                            src_conflict_net =
+                                Some(ctx.name_of(ctx.net(owner).name_id()).to_owned());
+                            src_conflict_wire = Some(format!("{:?}", nw));
+                            break;
+                        }
+                    }
+                }
+            }
+            if let (Some(owner_name), Some(wire_label)) = (src_conflict_net, src_conflict_wire) {
+                src_conflict_empty_tree += 1;
+                if src_conflict_examples.len() < 10 {
+                    src_conflict_examples.push((
+                        ctx.name_of(net.name_id()).to_owned(),
+                        owner_name,
+                        wire_label,
+                    ));
+                }
+            } else {
+                src_clean_empty_tree += 1;
+            }
+
             // Treat each user as a missing sink for the histogram.
             for user in net.users() {
                 if !user.is_valid() {
@@ -185,6 +234,86 @@ fn main() {
     println!("\n=== missing-sink manhattan histogram (bucket=10) ===");
     for (bucket, count) in &miss_hist {
         println!("  [{:3}..{:3}]: {}", bucket, bucket + 9, count);
+    }
+
+    println!(
+        "\n=== empty-tree source-wire diagnostic ===\n  src_conflict={} src_clean={}",
+        src_conflict_empty_tree, src_clean_empty_tree
+    );
+    for (n, owner, wire) in &src_conflict_examples {
+        println!("  {} blocked by net '{}' on wire {}", n, owner, wire);
+    }
+
+    // For first few src-conflict pairs, report driver BEL locations so we
+    // can see whether they're on the same slice (packer collision) or
+    // legitimately different placements sharing a node.
+    println!("\n=== conflict-pair driver BEL details ===");
+    let mut reported = 0usize;
+    for net_idx in ctx.design.iter_net_indices() {
+        if reported >= 8 {
+            break;
+        }
+        let net = ctx.net(net_idx);
+        if !net.is_alive() || !net.has_driver() || net.num_users() == 0 {
+            continue;
+        }
+        if !net.wires().is_empty() {
+            continue;
+        }
+        let driver = match net.driver_cell_port() {
+            Some(d) => d,
+            None => continue,
+        };
+        let driver_cell = ctx.cell(driver.cell);
+        let Some(driver_bel) = driver_cell.bel() else { continue };
+        let Some(src_w) = driver_bel.pin_wire(driver.port) else { continue };
+        let src_wire = src_w.id();
+        let loc = driver_bel.loc();
+        let my_idx = net_idx;
+        let mut owner_info: Option<(String, String)> = None;
+        if let Some((owner, _)) = ctx.wire_binding(src_wire) {
+            if owner != my_idx {
+                let owner_net = ctx.net(owner);
+                let o_driver = owner_net.driver_cell_port().unwrap();
+                let o_bel = ctx.cell(o_driver.cell).bel().unwrap();
+                let o_loc = o_bel.loc();
+                owner_info = Some((
+                    ctx.name_of(owner_net.name_id()).to_owned(),
+                    format!("bel=({},{},z={})", o_loc.x, o_loc.y, o_loc.z),
+                ));
+            }
+        }
+        if owner_info.is_none() {
+            let mut equivs: Vec<nextpnr::chipdb::WireId> = Vec::new();
+            ctx.chipdb().node_wires_cb(src_wire, |nw| equivs.push(nw));
+            for nw in equivs {
+                if let Some((owner, _)) = ctx.wire_binding(nw) {
+                    if owner != my_idx {
+                        let owner_net = ctx.net(owner);
+                        let o_driver = owner_net.driver_cell_port().unwrap();
+                        let o_bel = ctx.cell(o_driver.cell).bel().unwrap();
+                        let o_loc = o_bel.loc();
+                        owner_info = Some((
+                            ctx.name_of(owner_net.name_id()).to_owned(),
+                            format!("bel=({},{},z={})", o_loc.x, o_loc.y, o_loc.z),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((owner_name, owner_bel)) = owner_info {
+            println!(
+                "  {} drv_bel=({},{},z={}) blocked by '{}' {}",
+                ctx.name_of(net.name_id()),
+                loc.x,
+                loc.y,
+                loc.z,
+                owner_name,
+                owner_bel,
+            );
+            reported += 1;
+        }
     }
 
     println!("\n=== example failing nets (up to 30) ===");
