@@ -229,6 +229,42 @@ pub fn source_wire_const_value(ctx: &Context, source_wire: WireId) -> i32 {
     ctx.chipdb().wire_info(source_wire).const_value
 }
 
+/// Find the single uphill PIP from `sink` whose source wire has the matching
+/// `const_value` (typically the tile's tied GND/VCC in the local switch matrix).
+///
+/// Real FPGA switch matrices expose GND/VCC as locally-tied wires, so every
+/// const-net sink can be reached via exactly one PIP from a neighbour wire.
+/// Callers use this to bypass multi-source A* for constant nets entirely:
+/// the path is deterministic, O(|pips_uphill|), and always succeeds when the
+/// chipdb encodes the switch-matrix const wires (verified on xc7_large:
+/// 320/320 const sinks reach a matching const wire in exactly one uphill hop).
+///
+/// Returns `None` only when the sink's switch matrix genuinely has no tied
+/// wire — callers should fall back to generic routing in that case.
+pub fn find_local_const_pip(ctx: &Context, sink: WireId, const_value: i32) -> Option<PipId> {
+    let chipdb = ctx.chipdb();
+    for &pip_idx in chipdb.wire_info(sink).pips_uphill.get() {
+        let pip = PipId::new(sink.tile(), pip_idx);
+        if chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value {
+            return Some(pip);
+        }
+    }
+    let mut result: Option<PipId> = None;
+    chipdb.node_wires_cb(sink, |peer| {
+        if result.is_some() {
+            return;
+        }
+        for &pip_idx in chipdb.wire_info(peer).pips_uphill.get() {
+            let pip = PipId::new(peer.tile(), pip_idx);
+            if chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value {
+                result = Some(pip);
+                return;
+            }
+        }
+    });
+    result
+}
+
 /// Return true for global-clock wires in XC7-style chipdbs.
 pub fn is_global_clock_wire(ctx: &Context, wire: WireId) -> bool {
     let wire_type = ctx.chipdb().wire_type(wire);
@@ -460,7 +496,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 continue;
             }
 
-            // Walk parent PIPs back to the source.
+            // Walk parent PIPs back to the source. For constant nets (GND/VCC)
+            // the chain may terminate at any wire with matching `const_value`
+            // rather than at the driver's wire: each tile's switch matrix has
+            // its own tied const wire, so different sinks legitimately anchor
+            // on different local const wires. See `find_local_const_pip`.
+            let source_const_value = chipdb.wire_info(source_wire).const_value;
             let mut cur = sink_wire;
             let max_hops = net.wires().len() + 2;
             let mut hops = 0usize;
@@ -468,6 +509,13 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             let mut cause = "reached a wire with no parent pip";
             while hops <= max_hops {
                 if cur == source_wire {
+                    reached_source = true;
+                    break;
+                }
+                if source_const_value != 0
+                    && chipdb.wire_info(cur).const_value == source_const_value
+                    && net.wires().contains_key(&cur)
+                {
                     reached_source = true;
                     break;
                 }
@@ -674,6 +722,7 @@ pub fn diagnose_unroutable_net(
             50,
             None,
             visit_budget,
+            false,
         );
         let outcome = match (path.as_ref(), trace.exit) {
             (Some(p), AStarExit::Reached) => format!(

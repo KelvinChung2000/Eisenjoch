@@ -11,7 +11,7 @@ use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
 use nextpnr::packer;
-use nextpnr::placer::opt_trans::{place_opt_trans, GraphModel, OptTransPlacerCfg};
+use nextpnr::placer::opt_trans::{place_opt_trans, OptTransPlacerCfg};
 use nextpnr::router::common::validate_all_routed;
 use nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use nextpnr::router::Router;
@@ -35,9 +35,7 @@ fn main() {
 
     let mut pcfg = OptTransPlacerCfg::default();
     pcfg.max_outer_iters = 15;
-    pcfg.num_threads = 8;
-    pcfg.io_boost = 3.0;
-    pcfg.graph_model = GraphModel::CorridorPrune;
+    pcfg.num_threads = 1;
     let t = std::time::Instant::now();
     place_opt_trans(&mut ctx, &pcfg).expect("place_opt_trans");
     println!(
@@ -45,6 +43,29 @@ fn main() {
         t.elapsed().as_secs_f64(),
         nextpnr::metrics::total_hpwl(&ctx)
     );
+
+    // Post-placement density dump: count placed cells per (tile_x, tile_y)
+    // so we can see if failing short-distance nets cluster on overpacked tiles.
+    {
+        use std::collections::HashMap;
+        let mut per_tile: HashMap<(i32, i32), usize> = HashMap::new();
+        for (_cid, cell) in ctx.design.iter_alive_cells() {
+            if let Some(bel) = cell.bel {
+                let loc = ctx.bel(bel).loc();
+                *per_tile.entry((loc.x, loc.y)).or_insert(0) += 1;
+            }
+        }
+        let mut dense: Vec<((i32, i32), usize)> = per_tile
+            .iter()
+            .filter(|(_, &c)| c >= 8)
+            .map(|(&k, &v)| (k, v))
+            .collect();
+        dense.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+        println!("=== tiles with >=8 cells placed ({} total) ===", dense.len());
+        for ((x, y), c) in dense.iter().take(40) {
+            println!("  ({:3},{:3})  cells={}", x, y, c);
+        }
+    }
 
     let max_iters: usize = std::env::var("RASTER_ITERS")
         .ok()
@@ -230,6 +251,62 @@ fn main() {
         "routed_fraction = {:.2}%",
         100.0 * n_fully_routed as f64 / n_alive.max(1) as f64
     );
+
+    // Actual routed wirelength: sum of net.wires().len() over fully routed nets,
+    // plus a breakdown of per-net wire-count percentiles.
+    {
+        let mut wl_full: u64 = 0;
+        let mut wl_partial: u64 = 0;
+        let mut per_net_full: Vec<usize> = Vec::new();
+        for net_idx in ctx.design.iter_net_indices() {
+            let net = ctx.net(net_idx);
+            if !net.is_alive() || !net.has_driver() || net.num_users() == 0 {
+                continue;
+            }
+            let wires = net.wires().len();
+            if wires == 0 {
+                continue;
+            }
+            let missing = net.users().iter().any(|u| {
+                if !u.is_valid() {
+                    return false;
+                }
+                let Some(bel) = ctx.cell(u.cell).bel() else {
+                    return true;
+                };
+                let Some(w) = bel.pin_wire(u.port) else {
+                    return true;
+                };
+                !net.wires().contains_key(&w.id())
+            });
+            if missing {
+                wl_partial += wires as u64;
+            } else {
+                wl_full += wires as u64;
+                per_net_full.push(wires);
+            }
+        }
+        per_net_full.sort_unstable();
+        let n = per_net_full.len();
+        let p = |q: f64| -> usize {
+            if n == 0 {
+                0
+            } else {
+                per_net_full[((n as f64 * q) as usize).min(n - 1)]
+            }
+        };
+        println!(
+            "routed_wirelength: sum_full={} sum_partial={} grand_total={} fully_routed_nets={} p50={} p90={} p99={} max={}",
+            wl_full,
+            wl_partial,
+            wl_full + wl_partial,
+            n,
+            p(0.50),
+            p(0.90),
+            p(0.99),
+            per_net_full.last().copied().unwrap_or(0),
+        );
+    }
 
     println!("\n=== missing-sink manhattan histogram (bucket=10) ===");
     for (bucket, count) in &miss_hist {

@@ -461,6 +461,35 @@ impl ChipDb {
         unsafe { read_packed!(*wire_data, timing_idx) }
     }
 
+    /// Return a stable identifier for the multi-tile routing node `wire`
+    /// belongs to, or `None` if it is tile-local. Callers that iterate
+    /// `node_wires_cb` on many members of the same node can use this to
+    /// guard against redundant O(N) walks.
+    #[inline]
+    pub fn node_id(&self, wire: WireId) -> Option<u64> {
+        let tile = wire.tile();
+        let wire_idx = wire.index();
+        let shape = self.tile_shape(tile);
+        let wire_to_node = shape.wire_to_node.get();
+        let node_ref = wire_to_node.get(wire_idx as usize)?;
+        let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
+        if dx_mode == RelNodeRefPod::MODE_TILE_WIRE {
+            return None;
+        }
+        let (root_tile, shape_idx) = if dx_mode == RelNodeRefPod::MODE_IS_ROOT {
+            (tile, Self::node_shape_idx(node_ref))
+        } else {
+            let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+            let w: u16 = unsafe { read_packed!(*node_ref, wire) };
+            let root_tile = self.rel_tile(tile, dx_mode as i32, dy as i32);
+            let root_shape = self.tile_shape(root_tile);
+            let root_w2n = root_shape.wire_to_node.get();
+            let root_ref = root_w2n.get(w as usize)?;
+            (root_tile, Self::node_shape_idx(root_ref))
+        };
+        Some(((root_tile as u64) << 32) | (shape_idx as u64))
+    }
+
     /// Call `f` for each wire in the same routing node as `wire` (excluding `wire` itself).
     ///
     /// Does nothing if the wire is tile-local (not part of a multi-tile node).

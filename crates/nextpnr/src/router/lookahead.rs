@@ -9,10 +9,11 @@
 //! representative wires of each type at a sample tile.
 
 use crate::chipdb::{ChipDb, PipId, WireId};
+use crate::context::Context;
 use crate::timing::DelayT;
-use rustc_hash::FxHashMap;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 
 /// Compact wire class: groups wires by their routing capability.
 /// Wires of the same class at different tiles have equivalent routing reach.
@@ -33,36 +34,29 @@ pub struct Lookahead {
     num_classes: usize,
 }
 
-#[derive(Clone)]
-struct DijkEntry {
-    wire: WireId,
-    cost: DelayT,
-}
+/// Dijkstra cost model for the lookahead builder: same `pip_delay + 1` per
+/// PIP as `router::maze`, zero heuristic (Dijkstra is A* with `h = 0`).
+struct DijkstraCostModel;
 
-impl Eq for DijkEntry {}
-impl PartialEq for DijkEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
+impl PathCostModel for DijkstraCostModel {
+    fn pip_cost(&self, ctx: &Context, pip: PipId) -> DelayT {
+        default_pip_cost(ctx, pip)
     }
-}
-impl Ord for DijkEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.cmp(&self.cost)
-    }
-}
-impl PartialOrd for DijkEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+    fn heuristic(&self, _ctx: &Context, _wire: WireId, _dst: WireId) -> DelayT {
+        0
     }
 }
 
 impl Lookahead {
-    /// Build the lookahead table from the chipdb.
+    /// Build the lookahead table.
     ///
-    /// For each wire type in a representative tile, run Dijkstra to find
-    /// the minimum cost to reach each (dx, dy) offset. The table covers
-    /// offsets up to ±max_range tiles.
-    pub fn build(chipdb: &ChipDb, speed_grade_idx: usize, max_range: i32) -> Self {
+    /// For each wire type in a representative tile, run `astar_search` in
+    /// pure-Dijkstra mode (`heuristic = 0`, `exhaustive = true`) until the
+    /// per-class visit budget (50k pops) is exhausted, then harvest the
+    /// `visited` map to populate the cost-tables indexed by (class, dx, dy).
+    pub fn build(ctx: &Context, max_range: i32) -> Self {
+        let chipdb = ctx.chipdb();
+        let _speed_grade_idx = ctx.speed_grade_idx();
         let w = chipdb.width();
         let h = chipdb.height();
 
@@ -159,103 +153,53 @@ impl Lookahead {
             cost_tables.push(vec![vec![DelayT::MAX; table_h]; table_w]);
         }
 
-        // Get speed grade for pip delay computation.
-        let sg = chipdb.speed_grade(speed_grade_idx);
-
-        // Run Dijkstra from each wire class (each wire in the rep tile).
+        // Dijkstra == A* with zero heuristic. Delegate the actual search
+        // to the shared `astar_search` kernel and harvest the visited map
+        // to populate the per-offset cost table. Staying on the same
+        // kernel as `router::maze` guarantees the admissible-heuristic
+        // invariant: `h(w) ≤ true_cost(w, dst)` always holds because both
+        // sides compute the true cost via the same edge-weight function.
+        const MAX_EXPAND: usize = 50_000;
+        let model = DijkstraCostModel;
+        let mut src_set: FxHashSet<WireId> = FxHashSet::default();
         for src_wi in 0..n_wires {
             let src_wire = WireId::new(best_tile, src_wi as i32);
+            src_set.clear();
+            src_set.insert(src_wire);
 
-            let mut heap: BinaryHeap<DijkEntry> = BinaryHeap::new();
-            let mut visited: FxHashMap<WireId, DelayT> = FxHashMap::default();
+            // Dst is ignored in exhaustive mode; any WireId satisfies the
+            // signature. The search runs until the visit budget is
+            // exhausted (or the heap drains).
+            let result = astar_search(
+                ctx,
+                &model,
+                &src_set,
+                src_wire,
+                &AStarOptions {
+                    visit_limit: Some(MAX_EXPAND),
+                    exhaustive: true,
+                },
+            );
 
-            heap.push(DijkEntry {
-                wire: src_wire,
-                cost: 0,
-            });
-            visited.insert(src_wire, 0);
-
-            // Also seed with node wires (multi-tile nodes).
-            chipdb.node_wires_cb(src_wire, |nw| {
-                let (nx, ny) = chipdb.tile_xy(nw.tile());
-                let hop_dx = (nx - rep_x).abs();
-                let hop_dy = (ny - rep_y).abs();
-                let wire_cost = (hop_dx + hop_dy) as DelayT; // small cost for node hops
-                if !visited.contains_key(&nw) || wire_cost < visited[&nw] {
-                    visited.insert(nw, wire_cost);
-                    heap.push(DijkEntry {
-                        wire: nw,
-                        cost: wire_cost,
-                    });
-                }
-            });
-
-            // Dijkstra with limited expansion (don't explore entire chip).
-            let mut expanded = 0usize;
-            const MAX_EXPAND: usize = 50_000;
-
-            while let Some(entry) = heap.pop() {
-                if expanded >= MAX_EXPAND {
-                    break;
-                }
-
-                if let Some(&prev) = visited.get(&entry.wire) {
-                    if entry.cost > prev {
-                        continue;
-                    }
-                }
-
-                // Record cost at this tile offset.
-                let (wx, wy) = chipdb.tile_xy(entry.wire.tile());
+            // Harvest reachable costs into the per-offset table. Non-zero
+            // offsets floor at 1 so distant-peer-via-node-hop doesn't
+            // record cost 0 (which would give A* h=0 at that offset and
+            // destroy the gradient).
+            let table = &mut cost_tables[src_wi];
+            for (&wire, &(cost, _pen, _pip, _from)) in &result.trace.visited {
+                let (wx, wy) = chipdb.tile_xy(wire.tile());
                 let dx = wx - rep_x;
                 let dy = wy - rep_y;
-                if dx.abs() <= max_dx && dy.abs() <= max_dy {
-                    let ix = (dx + max_dx) as usize;
-                    let iy = (dy + max_dy) as usize;
-                    let table = &mut cost_tables[src_wi];
-                    if entry.cost < table[ix][iy] {
-                        table[ix][iy] = entry.cost;
-                    }
+                if dx.abs() > max_dx || dy.abs() > max_dy {
+                    continue;
                 }
-
-                // Expand node wires.
-                chipdb.node_wires_cb(entry.wire, |nw| {
-                    let (nx, ny) = chipdb.tile_xy(nw.tile());
-                    let hop_cost = ((nx - wx).abs() + (ny - wy).abs()) as DelayT;
-                    let new_cost = entry.cost + hop_cost;
-                    if !visited.contains_key(&nw) || new_cost < visited[&nw] {
-                        visited.insert(nw, new_cost);
-                        heap.push(DijkEntry {
-                            wire: nw,
-                            cost: new_cost,
-                        });
-                    }
-                });
-
-                // Expand PIP destinations.
-                let wire_info = chipdb.wire_info(entry.wire);
-                let downhill = wire_info.pips_downhill.get();
-                for &pip_idx in downhill {
-                    let pip = PipId::new(entry.wire.tile(), pip_idx);
-                    let pip_delay = match sg {
-                        Some(sg) => chipdb.compute_pip_delay(sg, pip),
-                        None => 100,
-                    };
-                    let next_wire = chipdb.pip_dst_wire(pip);
-                    let new_cost = entry.cost + pip_delay;
-
-                    if !visited.contains_key(&next_wire)
-                        || new_cost < *visited.get(&next_wire).unwrap()
-                    {
-                        visited.insert(next_wire, new_cost);
-                        heap.push(DijkEntry {
-                            wire: next_wire,
-                            cost: new_cost,
-                        });
-                    }
+                let ix = (dx + max_dx) as usize;
+                let iy = (dy + max_dy) as usize;
+                let floor: DelayT = if dx == 0 && dy == 0 { 0 } else { 1 };
+                let recorded = cost.max(floor);
+                if recorded < table[ix][iy] {
+                    table[ix][iy] = recorded;
                 }
-
-                expanded += 1;
             }
         }
 
@@ -312,11 +256,13 @@ impl Lookahead {
 
         let table_cost = self.cost_tables[class.0 as usize][ix][iy];
 
-        // If outside precomputed range, extrapolate with Manhattan.
+        // Fallback when Dijkstra never reached this offset (either because it's
+        // outside the precomputed range or the MAX_EXPAND cap fired before the
+        // offset was written). Use manhattan × 10 as a simple admissible lower
+        // bound, same as the unknown-class fallback above. Without this,
+        // in-range-but-unreached cells returned 0, leaving A* with no gradient.
         if table_cost == DelayT::MAX {
-            let extra_dx = (offset_x.abs() - self.max_dx).max(0);
-            let extra_dy = (offset_y.abs() - self.max_dy).max(0);
-            return (extra_dx + extra_dy) * 10;
+            return (offset_x.abs() + offset_y.abs()) * 10;
         }
 
         // Add extrapolation for offset beyond table.

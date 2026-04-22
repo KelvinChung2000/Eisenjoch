@@ -7,20 +7,22 @@
 //!
 //! Iterates with congestion feedback. Intended for fast wirelength estimation.
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::sync::Arc;
 
 use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
+use crate::metrics::BoundingBox;
 use crate::netlist::NetId;
+use crate::timing::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 use super::common::{
-    apply_route_plan, collect_routable_nets, collect_sink_wires, resolve_source_wire,
-    is_global_clock_pip, source_wire_const_value, unroute_net, validate_all_routed,
-    RoutePlan, SinkRoute,
+    apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
+    is_global_clock_wire, resolve_source_wire, source_wire_const_value,
+    unroute_net, validate_all_routed, RoutePlan, SinkRoute,
 };
-use super::maze::astar_route;
+use super::maze::{astar_route, astar_route_multihop};
 use super::RouterError;
 
 // ---------------------------------------------------------------------------
@@ -251,12 +253,15 @@ fn raster_corridor(
 // Beam search PIP walker
 // ---------------------------------------------------------------------------
 
-/// A candidate in the beam search.
+/// A candidate in the beam search. `best_dist` caches the node-min
+/// manhattan distance at the time the candidate was created so the
+/// stall-detection loop doesn't have to recompute it.
 #[derive(Clone)]
 struct BeamCandidate {
     wire: WireId,
     path_idx: u32, // index into path_arena, u32::MAX = root (no pips)
     cost: f32,
+    best_dist: i32,
 }
 
 /// Reconstruct the PIP path by walking the arena chain from leaf to root.
@@ -311,17 +316,18 @@ fn beam_search_route(
         (wx - dst_x).abs() + (wy - dst_y).abs()
     };
 
-    // Node-aware manhattan: closest tile reachable via routing node.
-    let node_manhattan = |wire: WireId| -> i32 {
-        let mut best = manhattan(wire);
-        chipdb.node_wires_cb(wire, |nw| {
-            let d = manhattan(nw);
-            if d < best {
-                best = d;
-            }
-        });
-        best
-    };
+    // Per-node memoization. Every quantity computed from `node_wires_cb`
+    // in the beam loop is a property of the *node*, not of the individual
+    // wire — the minimum manhattan over peers, whether any peer is
+    // owned by a different net, whether any peer hits `dst_nodes`, and
+    // which peers have outgoing PIPs. Walking a 65k-peer node once per
+    // wire would turn every per-wire operation into O(peers²); caching
+    // by node id collapses repeat lookups to O(1) after the first walk.
+    let mut node_taken_cache: FxHashMap<u64, bool> = FxHashMap::default();
+    let mut node_hit_cache: FxHashMap<u64, bool> = FxHashMap::default();
+    let mut node_best_dist_cache: FxHashMap<u64, i32> = FxHashMap::default();
+    let mut node_expansion_cache: FxHashMap<u64, Arc<Vec<WireId>>> = FxHashMap::default();
+    let mut node_min_manhattan_cache: FxHashMap<u64, i32> = FxHashMap::default();
 
     // Seed beam with all source wires and their node members.
     // visited tracks PIP destination wires to avoid re-expansion.
@@ -333,23 +339,62 @@ fn beam_search_route(
     // Path arena: each entry is (pip, parent_index). u32::MAX means root.
     let mut path_arena: Vec<(PipId, u32)> = Vec::new();
 
+    // Node-min manhattan: fetch (or compute once) the minimum manhattan
+    // distance across all peers of `wire`'s node. A per-wire computation
+    // walks the whole node every call; caching by node id makes the
+    // *second* query on the same node O(1).
+    let compute_node_min_manhattan = |wire: WireId,
+                                      cache: &mut FxHashMap<u64, i32>|
+     -> i32 {
+        let nid = chipdb.node_id(wire);
+        if let Some(id) = nid {
+            if let Some(&v) = cache.get(&id) {
+                return v;
+            }
+        }
+        let mut best = manhattan(wire);
+        chipdb.node_wires_cb(wire, |nw| {
+            let d = manhattan(nw);
+            if d < best {
+                best = d;
+            }
+        });
+        if let Some(id) = nid {
+            cache.insert(id, best);
+        }
+        best
+    };
+
     for &wire in src_wires {
+        let nm = compute_node_min_manhattan(wire, &mut node_min_manhattan_cache);
         beam.push(BeamCandidate {
             wire,
             path_idx: u32::MAX,
-            cost: node_manhattan(wire) as f32,
+            cost: nm as f32,
+            best_dist: nm,
         });
+        // Every peer on the same node shares `nm` (node-min manhattan is
+        // a node property), so we avoid another node walk per peer.
         chipdb.node_wires_cb(wire, |nw| {
             beam.push(BeamCandidate {
                 wire: nw,
                 path_idx: u32::MAX,
-                cost: node_manhattan(nw) as f32,
+                cost: nm as f32,
+                best_dist: nm,
             });
         });
     }
     // Dedup seeds by wire.
     beam.sort_by_key(|c| c.wire.raw());
     beam.dedup_by_key(|c| c.wire.raw());
+
+    // Bound the initial beam by cost so that mega-nodes (tens of thousands
+    // of peers seeded at once) don't turn step 0 into an O(N) inner loop
+    // before the usual per-step truncation kicks in.
+    if beam.len() > beam_width {
+        beam.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+        beam.truncate(beam_width);
+    }
 
     // Wall-clock timeout per beam search call: 500ms prevents hanging
     // while allowing enough time for complex routes.
@@ -397,13 +442,25 @@ fn beam_search_route(
                     _ => false,
                 };
                 if !wire_taken {
-                    chipdb.node_wires_cb(next_wire, |nw| {
-                        if let Some((owner, _)) = ctx.wire_binding(nw) {
-                            if owner != net {
-                                wire_taken = true;
+                    let nid = chipdb.node_id(next_wire);
+                    let cached = nid.and_then(|id| node_taken_cache.get(&id).copied());
+                    wire_taken = match cached {
+                        Some(v) => v,
+                        None => {
+                            let mut taken = false;
+                            chipdb.node_wires_cb(next_wire, |nw| {
+                                if let Some((owner, _)) = ctx.wire_binding(nw) {
+                                    if owner != net {
+                                        taken = true;
+                                    }
+                                }
+                            });
+                            if let Some(id) = nid {
+                                node_taken_cache.insert(id, taken);
                             }
+                            taken
                         }
-                    });
+                    };
                 }
                 if wire_taken {
                     continue;
@@ -419,17 +476,35 @@ fn beam_search_route(
                 }
 
                 // Check hit via node expansion and find best distance.
-                let mut best_dist = manhattan(next_wire);
-                let mut hit = false;
-                chipdb.node_wires_cb(next_wire, |nw| {
-                    if dst_nodes.contains(&nw) {
-                        hit = true;
+                // Both are pure functions of the routing node, so cache them
+                // by node id to avoid re-walking mega-nodes.
+                let nid = chipdb.node_id(next_wire);
+                let (hit, best_dist) = match nid {
+                    Some(id)
+                        if node_hit_cache.contains_key(&id)
+                            && node_best_dist_cache.contains_key(&id) =>
+                    {
+                        (node_hit_cache[&id], node_best_dist_cache[&id])
                     }
-                    let d = manhattan(nw);
-                    if d < best_dist {
-                        best_dist = d;
+                    _ => {
+                        let mut hit = false;
+                        let mut best = manhattan(next_wire);
+                        chipdb.node_wires_cb(next_wire, |nw| {
+                            if dst_nodes.contains(&nw) {
+                                hit = true;
+                            }
+                            let d = manhattan(nw);
+                            if d < best {
+                                best = d;
+                            }
+                        });
+                        if let Some(id) = nid {
+                            node_hit_cache.insert(id, hit);
+                            node_best_dist_cache.insert(id, best);
+                        }
+                        (hit, best)
                     }
-                });
+                };
 
                 if hit {
                     return Some(reconstruct_path(&path_arena, new_path_idx));
@@ -453,6 +528,7 @@ fn beam_search_route(
                     wire: next_wire,
                     path_idx: new_path_idx,
                     cost,
+                    best_dist,
                 });
             }
         }
@@ -467,28 +543,54 @@ fn beam_search_route(
 
         // Expand node members of surviving candidates into the beam.
         // Only add node members that have PIPs (useful for exploration).
+        // The "peers with downhill pips" list is a property of the node
+        // and is Arc-shared via `node_expansion_cache` so mega-nodes pay
+        // one walk per search, not one per surviving candidate.
         let mut expanded = Vec::new();
         for c in &next_candidates {
-            chipdb.node_wires_cb(c.wire, |nw| {
-                if dst_nodes.contains(&nw) {
-                    // Will be caught in hit check next step.
+            let nid = chipdb.node_id(c.wire);
+            let peers: Arc<Vec<WireId>> = match nid {
+                Some(id) => {
+                    if let Some(cached) = node_expansion_cache.get(&id) {
+                        Arc::clone(cached)
+                    } else {
+                        let mut v = Vec::new();
+                        chipdb.node_wires_cb(c.wire, |nw| {
+                            if !chipdb.wire_info(nw).pips_downhill.get().is_empty() {
+                                v.push(nw);
+                            }
+                        });
+                        let arc = Arc::new(v);
+                        node_expansion_cache.insert(id, Arc::clone(&arc));
+                        arc
+                    }
                 }
-                let nw_info = chipdb.wire_info(nw);
-                if nw_info.pips_downhill.get().len() > 0 {
-                    expanded.push(BeamCandidate {
-                        wire: nw,
-                        path_idx: c.path_idx,
-                        cost: c.cost,
-                    });
-                }
-            });
+                None => Arc::new(Vec::new()),
+            };
+            for &nw in peers.iter() {
+                expanded.push(BeamCandidate {
+                    wire: nw,
+                    path_idx: c.path_idx,
+                    cost: c.cost,
+                    best_dist: c.best_dist,
+                });
+            }
         }
         next_candidates.extend(expanded);
 
-        // Stall detection: if best manhattan distance hasn't improved, count it.
+        // Re-bound the beam after peer expansion: on a mega-node each
+        // survivor can pull in thousands of peers, and without a second
+        // truncation the beam width compounds across iterations.
+        if next_candidates.len() > effective_beam_width * 2 {
+            next_candidates.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+            next_candidates.truncate(effective_beam_width * 2);
+        }
+
+        // Stall detection uses the per-candidate `best_dist` cached at
+        // creation time, avoiding a manhattan recompute per survivor.
         let step_best = next_candidates
             .iter()
-            .map(|c| manhattan(c.wire))
+            .map(|c| c.best_dist)
             .min()
             .unwrap_or(i32::MAX);
         if step_best < best_manhattan {
@@ -505,39 +607,6 @@ fn beam_search_route(
     }
 
     None
-}
-
-// ---------------------------------------------------------------------------
-// Local A* queue entry
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct QueueEntry {
-    wire: WireId,
-    cost: i32,
-    #[allow(dead_code)]
-    penalty: i32,
-    estimate: i32,
-}
-
-impl Eq for QueueEntry {}
-impl PartialEq for QueueEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.estimate == other.estimate
-    }
-}
-impl PartialOrd for QueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for QueueEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .estimate
-            .cmp(&self.estimate)
-            .then_with(|| other.cost.cmp(&self.cost))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,20 +640,94 @@ fn decompose_segments(path: &[(i32, i32)]) -> Vec<(usize, usize)> {
     segments
 }
 
+/// Cost model for `segment_astar`. Corridor pruning is expressed as a union
+/// of small per-path-point bboxes (see `bboxes`); congestion enters the cost
+/// as a per-wire penalty proportional to the arrival tile's usage.
+struct SegmentCostModel<'a> {
+    bboxes: &'a [BoundingBox],
+    cong: &'a CongestionMap,
+    cong_weight: f32,
+    target_x: i32,
+    target_y: i32,
+}
+
+impl<'a> PathCostModel for SegmentCostModel<'a> {
+    fn pip_cost(&self, ctx: &Context, pip: PipId) -> DelayT {
+        default_pip_cost(ctx, pip)
+    }
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
+        (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
+    }
+    fn heuristic(&self, ctx: &Context, wire: WireId, _dst: WireId) -> DelayT {
+        let (wx, wy) = ctx.chipdb().tile_xy(wire.tile());
+        (wx - self.target_x).abs() + (wy - self.target_y).abs()
+    }
+    fn bboxes(&self) -> &[BoundingBox] {
+        self.bboxes
+    }
+}
+
+/// Build a union of small bboxes covering a corridor: one
+/// `(2*margin+1) × (2*margin+1)` box around each tile on the path, clamped
+/// to the grid. Used by `segment_astar` to express corridor-shaped tile
+/// pruning via `PathCostModel::bboxes`.
+fn corridor_bboxes(
+    chipdb: &crate::chipdb::ChipDb,
+    path: &[(i32, i32)],
+    start: usize,
+    end: usize,
+    margin: i32,
+) -> Vec<BoundingBox> {
+    let w = chipdb.width();
+    let h = chipdb.height();
+    let mut out: Vec<BoundingBox> = Vec::with_capacity(end - start + 1);
+    for i in start..=end {
+        let (x, y) = path[i];
+        let x0 = (x - margin).max(0);
+        let y0 = (y - margin).max(0);
+        let x1 = (x + margin).min(w - 1);
+        let y1 = (y + margin).min(h - 1);
+        out.push(BoundingBox { x0, y0, x1, y1 });
+    }
+    out
+}
+
+/// Pick a representative wire in `target_tile`: the wire with the most
+/// `pips_uphill`, so it's reachable from many directions. Used as the
+/// destination anchor when the actual goal is "any wire in `target_tile`".
+fn representative_wire_in_tile(chipdb: &crate::chipdb::ChipDb, target_tile: i32) -> Option<WireId> {
+    let tt = chipdb.tile_type(target_tile);
+    let n_wires = tt.wires.get().len();
+    let mut best: Option<(WireId, usize)> = None;
+    for wi in 0..n_wires {
+        let w = WireId::new(target_tile, wi as i32);
+        let up = chipdb.wire_info(w).pips_uphill.get().len();
+        match best {
+            Some((_, bu)) if up <= bu => {}
+            _ => best = Some((w, up)),
+        }
+    }
+    best.map(|(w, _)| w)
+}
+
 /// Confined A* search within a segment's tile region.
 ///
-/// Full A* (optimal within region) with congestion-aware cost. The tile
-/// confinement provides the pruning - only PIPs whose destination falls
-/// in `allowed_tiles` are expanded. This keeps the search space small
-/// enough for A* to be fast (5-30 tiles = 10K-50K PIPs max).
+/// Thin wrapper over [`astar_search`] that expresses the corridor as a union
+/// of small bboxes (`PathCostModel::bboxes`). The destination is the final
+/// sink when this is the last segment; otherwise a representative wire in
+/// `target_tile` (the one with the most `pips_uphill`), which the search
+/// will reach after any wire in `target_tile` enters the frontier via
+/// intra-tile switch-matrix PIPs.
 ///
-/// Returns (pips, end_wire) on success.
+/// Returns `(pips, end_wire)` on success. `end_wire` is the `dst` wire
+/// (reached by the path); callers seed the next segment from it plus its
+/// node peers.
 fn segment_astar(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
     target_tile: i32,
-    final_dst: Option<&FxHashSet<WireId>>,
-    allowed_tiles: &FxHashSet<i32>,
+    final_dst: Option<WireId>,
+    bboxes: &[BoundingBox],
     cong: &CongestionMap,
     cong_weight: f32,
     max_expansions: usize,
@@ -592,342 +735,59 @@ fn segment_astar(
     let chipdb = ctx.chipdb();
     let (target_x, target_y) = chipdb.tile_xy(target_tile);
 
-    let h = |wire: WireId| -> i32 {
-        let mut best = {
-            let (wx, wy) = chipdb.tile_xy(wire.tile());
-            (wx - target_x).abs() + (wy - target_y).abs()
-        };
-        chipdb.node_wires_cb(wire, |nw| {
-            if allowed_tiles.contains(&nw.tile()) || nw.tile() == target_tile {
-                let (nx, ny) = chipdb.tile_xy(nw.tile());
-                let d = (nx - target_x).abs() + (ny - target_y).abs();
-                if d < best {
-                    best = d;
-                }
-            }
-        });
-        best
+    let dst_wire = match final_dst {
+        Some(w) => w,
+        None => representative_wire_in_tile(chipdb, target_tile)?,
     };
 
-    let check_hit = |wire: WireId| -> Option<WireId> {
-        if let Some(dst) = final_dst {
-            if dst.contains(&wire) {
-                return Some(wire);
-            }
-            let mut hit = None;
-            chipdb.node_wires_cb(wire, |nw| {
-                if dst.contains(&nw) && hit.is_none() {
-                    hit = Some(nw);
-                }
-            });
-            return hit;
-        }
-        if wire.tile() == target_tile {
-            return Some(wire);
-        }
-        let mut hit = None;
-        chipdb.node_wires_cb(wire, |nw| {
-            if nw.tile() == target_tile && hit.is_none() {
-                hit = Some(nw);
-            }
-        });
-        hit
+    // Trivial hit: dst (or a peer) already in `src_wires`.
+    if src_wires.contains(&dst_wire) {
+        return Some((Vec::new(), dst_wire));
+    }
+
+    let model = SegmentCostModel {
+        bboxes,
+        cong,
+        cong_weight,
+        target_x,
+        target_y,
     };
-
-    // visited: wire -> (cost, Option<pip>, came_from)
-    let mut visited: FxHashMap<WireId, (i32, Option<PipId>, WireId)> = FxHashMap::default();
-    let mut heap = BinaryHeap::new();
-
-    // Seed.
-    for &w in src_wires {
-        let tile_ok = allowed_tiles.contains(&w.tile()) || w.tile() == target_tile;
-        if tile_ok {
-            visited.insert(w, (0, None, w));
-            heap.push(QueueEntry {
-                wire: w,
-                cost: 0,
-                penalty: 0,
-                estimate: h(w),
-            });
-        }
-        chipdb.node_wires_cb(w, |nw| {
-            let nw_ok = allowed_tiles.contains(&nw.tile()) || nw.tile() == target_tile;
-            if nw_ok && !visited.contains_key(&nw) {
-                visited.insert(nw, (0, None, w));
-                heap.push(QueueEntry {
-                    wire: nw,
-                    cost: 0,
-                    penalty: 0,
-                    estimate: h(nw),
-                });
-            }
-        });
-    }
-
-    // Check trivial hit.
-    for &w in src_wires {
-        if let Some(hw) = check_hit(w) {
-            return Some((Vec::new(), hw));
-        }
-    }
-
-    let mut expansions = 0usize;
-
-    while let Some(entry) = heap.pop() {
-        expansions += 1;
-        if expansions > max_expansions {
-            break;
-        }
-
-        // Stale check.
-        if let Some(&(pc, _, _)) = visited.get(&entry.wire) {
-            if entry.cost > pc {
-                continue;
-            }
-        }
-
-        // Hit check.
-        if let Some(hw) = check_hit(entry.wire) {
-            let pips = trace_path(&visited, entry.wire, chipdb);
-            return Some((pips, hw));
-        }
-
-        // Expand node members within allowed region.
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if allowed_tiles.contains(&nw.tile()) || nw.tile() == target_tile {
-                if let Some(&(pc, _, _)) = visited.get(&nw) {
-                    if entry.cost >= pc {
-                        return;
-                    }
-                }
-                visited.insert(nw, (entry.cost, None, entry.wire));
-                heap.push(QueueEntry {
-                    wire: nw,
-                    cost: entry.cost,
-                    penalty: 0,
-                    estimate: entry.cost + h(nw),
-                });
-            }
-        });
-
-        // PIP expansion within allowed region.
-        let wire_info = chipdb.wire_info(entry.wire);
-        let downhill = wire_info.pips_downhill.get();
-
-        for &pip_idx in downhill {
-            let pip = PipId::new(entry.wire.tile(), pip_idx);
-            let next_wire = chipdb.pip_dst_wire(pip);
-
-            // Tile confinement: hard prune.
-            let in_region =
-                allowed_tiles.contains(&next_wire.tile()) || next_wire.tile() == target_tile;
-            if !in_region {
-                let mut node_in = false;
-                chipdb.node_wires_cb(next_wire, |nw| {
-                    if allowed_tiles.contains(&nw.tile()) || nw.tile() == target_tile {
-                        node_in = true;
-                    }
-                });
-                if !node_in {
-                    continue;
-                }
-            }
-
-            let is_global_clock = is_global_clock_pip(ctx, pip);
-            let pip_delay = if is_global_clock {
-                0
-            } else {
-                ctx.pip(pip).delay().max_delay().max(1)
-            };
-            // Congestion cost: penalize PIPs landing on congested tiles.
-            let cong_cost = if is_global_clock {
-                0
-            } else {
-                (cong_weight * cong.congestion_at(next_wire.tile())) as i32
-            };
-            let step_cost = if is_global_clock { 0 } else { 1 };
-            let new_cost = entry.cost + pip_delay + cong_cost + step_cost;
-
-            if let Some(&(pc, _, _)) = visited.get(&next_wire) {
-                if new_cost >= pc {
-                    continue;
-                }
-            }
-
-            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-            let hval = h(next_wire);
-            heap.push(QueueEntry {
-                wire: next_wire,
-                cost: new_cost,
-                penalty: 0,
-                estimate: new_cost + hval,
-            });
-        }
-    }
-
-    None
+    let opts = AStarOptions {
+        visit_limit: Some(max_expansions),
+        exhaustive: false,
+    };
+    let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+    result.path.map(|pips| (pips, dst_wire))
 }
 
-/// Trace back a path through the visited map.
-fn trace_path(
-    visited: &FxHashMap<WireId, (i32, Option<PipId>, WireId)>,
-    end_wire: WireId,
-    chipdb: &crate::chipdb::ChipDb,
-) -> Vec<PipId> {
-    let mut pips = Vec::new();
-    let mut current = end_wire;
-    loop {
-        let Some(&(_, pip, from)) = visited.get(&current) else {
-            break;
-        };
-        match pip {
-            Some(p) => {
-                pips.push(p);
-                current = chipdb.pip_src_wire(p);
-            }
-            None => {
-                if from == current {
-                    break;
-                }
-                current = from;
-            }
-        }
-    }
-    pips.reverse();
-    pips
-}
-
-/// Local BFS for same-tile routing (feedback loops, FF→LUT in same CLB).
-/// No tile confinement - just A* from source to sink with a generous budget.
-/// These are short paths that use local jump wires.
+/// Unrestricted A* for same-tile (or short-distance) routing: no bbox
+/// pruning, manhattan heuristic, 20k-pop budget.
+///
+/// Wrapper over [`astar_search`]; kept separate from the full router
+/// `astar_route` because this path never uses the lookahead and never sees
+/// wire-penalty state.
 fn local_route(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
 ) -> Option<Vec<PipId>> {
-    let chipdb = ctx.chipdb();
-
-    let mut dst_nodes: FxHashSet<WireId> = FxHashSet::default();
-    dst_nodes.insert(dst_wire);
-    chipdb.node_wires_cb(dst_wire, |nw| {
-        dst_nodes.insert(nw);
-    });
-
-    for src in src_wires {
-        if dst_nodes.contains(src) {
-            return Some(Vec::new());
+    struct LocalModel;
+    impl PathCostModel for LocalModel {
+        fn pip_cost(&self, ctx: &Context, pip: PipId) -> DelayT {
+            default_pip_cost(ctx, pip)
+        }
+        fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
+            let chipdb = ctx.chipdb();
+            let (wx, wy) = chipdb.tile_xy(wire.tile());
+            let (dx, dy) = chipdb.tile_xy(dst.tile());
+            (wx - dx).abs() + (wy - dy).abs()
         }
     }
-
-    // Unrestricted A* with modest budget - no tile confinement.
-    let (dst_x, dst_y) = chipdb.tile_xy(dst_wire.tile());
-
-    let mut visited: FxHashMap<WireId, (i32, Option<PipId>, WireId)> = FxHashMap::default();
-    let mut heap = BinaryHeap::new();
-
-    for &w in src_wires {
-        visited.insert(w, (0, None, w));
-        let (wx, wy) = chipdb.tile_xy(w.tile());
-        let h = (wx - dst_x).abs() + (wy - dst_y).abs();
-        heap.push(QueueEntry {
-            wire: w,
-            cost: 0,
-            penalty: 0,
-            estimate: h,
-        });
-        chipdb.node_wires_cb(w, |nw| {
-            if !visited.contains_key(&nw) {
-                visited.insert(nw, (0, None, w));
-                let (nx, ny) = chipdb.tile_xy(nw.tile());
-                let h = (nx - dst_x).abs() + (ny - dst_y).abs();
-                heap.push(QueueEntry {
-                    wire: nw,
-                    cost: 0,
-                    penalty: 0,
-                    estimate: h,
-                });
-            }
-        });
-    }
-
-    let mut expansions = 0usize;
-    while let Some(entry) = heap.pop() {
-        expansions += 1;
-        if expansions > 20000 {
-            break;
-        }
-
-        if let Some(&(pc, _, _)) = visited.get(&entry.wire) {
-            if entry.cost > pc {
-                continue;
-            }
-        }
-
-        if dst_nodes.contains(&entry.wire) {
-            return Some(trace_path(&visited, entry.wire, chipdb));
-        }
-        let mut hit = None;
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if dst_nodes.contains(&nw) && hit.is_none() {
-                hit = Some(nw);
-            }
-        });
-        if let Some(hw) = hit {
-            // Insert hw into visited so trace_path works.
-            if !visited.contains_key(&hw) {
-                visited.insert(hw, (entry.cost, None, entry.wire));
-            }
-            return Some(trace_path(&visited, hw, chipdb));
-        }
-
-        // Node expansion.
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if let Some(&(pc, _, _)) = visited.get(&nw) {
-                if entry.cost >= pc {
-                    return;
-                }
-            }
-            visited.insert(nw, (entry.cost, None, entry.wire));
-            let (nx, ny) = chipdb.tile_xy(nw.tile());
-            let h = (nx - dst_x).abs() + (ny - dst_y).abs();
-            heap.push(QueueEntry {
-                wire: nw,
-                cost: entry.cost,
-                penalty: 0,
-                estimate: entry.cost + h,
-            });
-        });
-
-        // PIP expansion.
-        let wire_info = chipdb.wire_info(entry.wire);
-        for &pip_idx in wire_info.pips_downhill.get() {
-            let pip = PipId::new(entry.wire.tile(), pip_idx);
-            let next_wire = chipdb.pip_dst_wire(pip);
-            let is_global_clock = is_global_clock_pip(ctx, pip);
-            let pip_delay = if is_global_clock {
-                0
-            } else {
-                ctx.pip(pip).delay().max_delay().max(1)
-            };
-            let step_cost = if is_global_clock { 0 } else { 1 };
-            let new_cost = entry.cost + pip_delay + step_cost;
-            if let Some(&(pc, _, _)) = visited.get(&next_wire) {
-                if new_cost >= pc {
-                    continue;
-                }
-            }
-            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-            let (nx, ny) = chipdb.tile_xy(next_wire.tile());
-            let h = (nx - dst_x).abs() + (ny - dst_y).abs();
-            heap.push(QueueEntry {
-                wire: next_wire,
-                cost: new_cost,
-                penalty: 0,
-                estimate: new_cost + h,
-            });
-        }
-    }
-    None
+    let opts = AStarOptions {
+        visit_limit: Some(20_000),
+        exhaustive: false,
+    };
+    astar_search(ctx, &LocalModel, src_wires, dst_wire, &opts).path
 }
 
 /// Route using segment decomposition: break the rasterized line into
@@ -969,33 +829,24 @@ fn segment_route(
 
         let margin: i32 = 1;
 
-        // Allowed tile set: segment tiles + margin.
-        let mut allowed_tiles: FxHashSet<i32> = FxHashSet::default();
-        for i in start..=end {
-            let (x, y) = path[i];
-            for dy in -margin..=margin {
-                for dx in -margin..=margin {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if nx >= 0 && ny >= 0 && nx < chipdb.width() && ny < chipdb.height() {
-                        allowed_tiles.insert(chipdb.tile_by_xy(nx, ny));
-                    }
-                }
-            }
-        }
+        // Corridor pruning: one small bbox per path tile, union = corridor.
+        let bboxes = corridor_bboxes(chipdb, path, start, end, margin);
 
         let (tx, ty) = path[end];
         let target_tile = chipdb.tile_by_xy(tx, ty);
-        let final_dst = if is_last { Some(&dst_nodes) } else { None };
+        // For the final segment the real sink wire is the goal. For
+        // intermediate segments we only need to *reach* target_tile; the
+        // wrapper picks a representative wire with the most pips_uphill.
+        let final_dst = if is_last { Some(dst_wire) } else { None };
 
         // Confined A* within this segment's tiles.
-        let budget = (seg_len * 3000).max(5000);
+        let budget = (seg_len * 3000).max(5000) as usize;
         match segment_astar(
             ctx,
             &current_wires,
             target_tile,
             final_dst,
-            &allowed_tiles,
+            &bboxes,
             cong,
             cong_weight,
             budget,
@@ -1032,7 +883,7 @@ fn segment_route(
                     ex,
                     ey,
                     seg_len,
-                    allowed_tiles.len(),
+                    bboxes.len(),
                     is_last,
                 );
                 return None;
@@ -1435,7 +1286,7 @@ impl super::Router for RasterRouter {
         let mut neg_state = super::common::NegotiationState::new(neg_cfg);
 
         // Pre-build lookahead for A* cleanup (reused across iterations).
-        let lookahead = super::lookahead::Lookahead::build(ctx.chipdb(), ctx.speed_grade_idx(), 40);
+        let lookahead = super::lookahead::Lookahead::build(ctx, 40);
 
         // Iteration 0: route ALL nets (beam search).
         // Iterations 1+: selective rip-up of congested nets only (PathFinder-style).
@@ -1615,7 +1466,7 @@ impl super::Router for RasterRouter {
             // Cleanup pass: route remaining failed nets with A*.
             // Runs every iteration (not just iter==0) with per-net step budgets.
             if failed > 0 {
-                let failed_nets: Vec<NetId> = ordered_nets
+                let mut failed_nets: Vec<NetId> = ordered_nets
                     .iter()
                     .filter(|&&net| {
                         let n = ctx.net(net);
@@ -1623,6 +1474,29 @@ impl super::Router for RasterRouter {
                     })
                     .copied()
                     .collect();
+
+                // Route const nets first: their per-sink lookup is O(1) and
+                // deterministic, so we never lose a const net to the wall-clock
+                // budget getting burned by a slow non-const A*.
+                failed_nets.sort_by_key(|&n| {
+                    let cv = resolve_source_wire(ctx, n)
+                        .ok()
+                        .flatten()
+                        .map(|w| source_wire_const_value(ctx, w))
+                        .unwrap_or(0);
+                    if cv != 0 {
+                        0
+                    } else if resolve_source_wire(ctx, n)
+                        .ok()
+                        .flatten()
+                        .map(|w| is_global_clock_wire(ctx, w))
+                        .unwrap_or(false)
+                    {
+                        1
+                    } else {
+                        2
+                    }
+                });
 
                 if !failed_nets.is_empty() {
                     // Build wire penalty from negotiation state for A* cost.
@@ -1637,6 +1511,27 @@ impl super::Router for RasterRouter {
                             )
                         })
                         .collect();
+
+                    // Hoist clock-backbone enumeration out of the per-net
+                    // loop. Iterating every wire in the chipdb for each failed
+                    // net costs ~2.5M wires × ~16 nets per cleanup pass —
+                    // slow enough to eat the entire 30 s wall budget before
+                    // the first A* runs. Compute once per iteration.
+                    let mut clock_backbone_wires: Vec<WireId> = Vec::new();
+                    let needs_clock_backbone = failed_nets.iter().any(|&n| {
+                        resolve_source_wire(ctx, n)
+                            .ok()
+                            .flatten()
+                            .map(|w| is_global_clock_wire(ctx, w))
+                            .unwrap_or(false)
+                    });
+                    if needs_clock_backbone {
+                        for w in ctx.chipdb().wires() {
+                            if is_global_clock_wire(ctx, w) {
+                                clock_backbone_wires.push(w);
+                            }
+                        }
+                    }
 
                     eprintln!(
                         "RasterRouter: A* cleanup for {} failed nets (iter {})",
@@ -1683,19 +1578,65 @@ impl super::Router for RasterRouter {
                             Some(500_000)
                         };
 
+                        let src_const = source_wire_const_value(ctx, source_wire);
+
                         let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
                         tree_wires.insert(source_wire);
                         ctx.chipdb().node_wires_cb(source_wire, |nw| {
                             tree_wires.insert(nw);
                         });
 
+                        // Global-clock nets are driven by a single BUFG output
+                        // whose `pips_downhill` is near-empty. Seeding A* with
+                        // the whole clock backbone lets the search start from
+                        // anywhere nearby — without this the heap drains after
+                        // ≤4 expansions and no sink is reachable.
+                        if is_global_clock_wire(ctx, source_wire) {
+                            for &w in &clock_backbone_wires {
+                                tree_wires.insert(w);
+                            }
+                        }
+
                         let mut sink_routes = Vec::new();
+                        // For constant nets, remember each sink's switch-matrix
+                        // anchor (the `pip.src` whose `const_value` matches).
+                        // These are registered as leaves after apply_route_plan
+                        // so the validator's chain walk can terminate at them.
+                        let mut const_anchors: FxHashSet<WireId> = FxHashSet::default();
 
                         for &sink_wire in &sink_wires {
                             // Check cleanup budget per-sink to avoid hanging
                             // inside a single high-fanout net.
                             if cleanup_start.elapsed() > cleanup_budget {
                                 break;
+                            }
+
+                            // Constant-net fast path: each tile's switch matrix
+                            // ties GND/VCC to a local wire reachable from every
+                            // const-consuming sink via one PIP. Use that path
+                            // directly — it's deterministic, O(|pips_uphill|),
+                            // and avoids the multi-source A* heap blow-up that
+                            // a chip-wide const pool would cause.
+                            if src_const != 0 {
+                                if let Some(pip) =
+                                    find_local_const_pip(ctx, sink_wire, src_const)
+                                {
+                                    let anchor = ctx.chipdb().pip_src_wire(pip);
+                                    const_anchors.insert(anchor);
+                                    // Let subsequent sinks see this anchor as
+                                    // part of the routing tree so A* fallback
+                                    // (if triggered) skips re-routing to it.
+                                    tree_wires.insert(anchor);
+                                    tree_wires.insert(sink_wire);
+                                    ctx.chipdb().node_wires_cb(sink_wire, |nw| {
+                                        tree_wires.insert(nw);
+                                    });
+                                    sink_routes.push(SinkRoute {
+                                        sink_wire,
+                                        pips: vec![pip],
+                                    });
+                                    continue;
+                                }
                             }
 
                             if tree_wires.contains(&sink_wire) {
@@ -1706,7 +1647,24 @@ impl super::Router for RasterRouter {
                                 continue;
                             }
 
-                            match astar_route(
+                            // Use multi-pip-hop expansion for long-distance
+                            // sinks. Single-hop A* on IOB→interior routes
+                            // wastes its visit budget wandering in the IOB
+                            // column because the lookahead has no sample for
+                            // IO wire types and every short-range hop looks
+                            // equally promising. Two-hop expansion lets the
+                            // heuristic see past the IOB wall.
+                            let (sink_tx_early, sink_ty_early) =
+                                ctx.chipdb().tile_xy(sink_wire.tile());
+                            let manhattan =
+                                (sink_tx_early - sx).abs() + (sink_ty_early - sy).abs();
+                            let route_fn = if manhattan > 50 {
+                                astar_route_multihop
+                            } else {
+                                astar_route
+                            };
+
+                            match route_fn(
                                 ctx,
                                 &tree_wires,
                                 sink_wire,
@@ -1761,13 +1719,61 @@ impl super::Router for RasterRouter {
 
                         // Apply the route if at least some sinks succeeded.
                         if !sink_routes.is_empty() {
+                            // For A*-routed const sinks the first PIP's `src`
+                            // is a switch-matrix const wire — gather those too
+                            // so the validator accepts mixed local + A* const
+                            // routes.
+                            if src_const != 0 {
+                                for sink in &sink_routes {
+                                    if let Some(&first_pip) = sink.pips.first() {
+                                        let anchor = ctx.chipdb().pip_src_wire(first_pip);
+                                        if ctx.chipdb().wire_info(anchor).const_value
+                                            == src_const
+                                        {
+                                            const_anchors.insert(anchor);
+                                        }
+                                    }
+                                }
+                            }
+
                             let plan = RoutePlan {
                                 net,
                                 source_wire,
                                 sink_routes,
                             };
                             if apply_route_plan(ctx, &plan).is_ok() {
-                                cleanup_routed += 1;
+                                // Register const anchors as leaves so the
+                                // validator's chain walk terminates there via
+                                // the const_value match rule. Binding is
+                                // idempotent per net; anchor wires are tile-
+                                // local so cross-net conflicts only arise if
+                                // two different nets carry the same const
+                                // value (normally only one GND and one VCC
+                                // net exist).
+                                let mut anchor_conflict = false;
+                                for &anchor in &const_anchors {
+                                    if ctx
+                                        .try_bind_wire_node(
+                                            anchor,
+                                            net,
+                                            crate::common::PlaceStrength::Strong,
+                                        )
+                                        .is_err()
+                                    {
+                                        anchor_conflict = true;
+                                        break;
+                                    }
+                                    ctx.design.net_edit(net).add_wire(
+                                        anchor,
+                                        None,
+                                        crate::common::PlaceStrength::Strong,
+                                    );
+                                }
+                                if anchor_conflict {
+                                    unroute_net(ctx, net);
+                                } else {
+                                    cleanup_routed += 1;
+                                }
                             }
                         }
                     }

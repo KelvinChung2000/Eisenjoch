@@ -12,21 +12,27 @@
 //! by a configurable margin. During search, wires outside this bounding box are
 //! skipped, reducing the search space.
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
-
 use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::metrics::{compute_bbox, BoundingBox};
 use crate::netlist::NetId;
-use rustc_hash::{FxHashMap, FxHashSet};
+use crate::timing::DelayT;
+use rustc_hash::FxHashSet;
 
+use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
-    is_global_clock_pip, resolve_source_wire, source_wire_const_value, unroute_net,
-    NegotiationCfg, NegotiationState, RoutePlan, SinkRoute,
+    resolve_source_wire, source_wire_const_value, unroute_net, NegotiationCfg, NegotiationState,
+    RoutePlan, SinkRoute,
 };
 use super::RouterError;
+
+/// Fixed-point scale for converting Router2's f64 negotiation costs into
+/// the `DelayT` (integer) currency used by [`astar_search`]. 100× preserves
+/// two decimals; costs in the shared `NegotiationState` are typically in
+/// the range `[1, 100]`, so 100× keeps the scaled values comfortably
+/// inside `i32`.
+const R2_COST_SCALE: f64 = 100.0;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -56,48 +62,8 @@ impl Default for Router2Cfg {
     }
 }
 
-// ---------------------------------------------------------------------------
-// A* priority queue entry (f64-based costs)
-// ---------------------------------------------------------------------------
-
-/// An entry in the Router2 A* search priority queue.
-///
-/// Uses f64 costs (unlike Router1's integer DelayT costs) to accommodate the
-/// floating-point negotiation cost model.
-#[derive(Clone)]
-pub struct R2QueueEntry {
-    /// The wire this entry represents.
-    pub wire: WireId,
-    /// g(n): accumulated cost from the source to this wire.
-    pub cost: f64,
-    /// f(n) = g(n) + h(n): total estimated cost through this wire.
-    pub estimate: f64,
-}
-
-impl Eq for R2QueueEntry {}
-
-impl PartialEq for R2QueueEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.estimate == other.estimate
-    }
-}
-
-impl PartialOrd for R2QueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for R2QueueEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse ordering so BinaryHeap (max-heap) behaves as a min-heap
-        // by estimate. Break ties by preferring lower g-cost.
-        other
-            .estimate
-            .total_cmp(&self.estimate)
-            .then_with(|| other.cost.total_cmp(&self.cost))
-    }
-}
+// The priority queue + search kernel live in `router::astar`; Router2 only
+// supplies a cost model that looks up `state.wire_cost(wire, net_idx)`.
 
 // ---------------------------------------------------------------------------
 // Router2 state — thin alias over the shared NegotiationState
@@ -108,16 +74,43 @@ impl Ord for R2QueueEntry {
 /// This is a type alias for the shared `NegotiationState` from `common`.
 pub type Router2State = NegotiationState;
 
+/// Cost model for Router2's negotiation-based A*. `wire_penalty` scales the
+/// f64 `state.wire_cost(wire, net_idx)` into `DelayT` space; see
+/// [`R2_COST_SCALE`].
+struct Router2CostModel<'a> {
+    state: &'a Router2State,
+    net_idx: NetId,
+    bbox: &'a BoundingBox,
+}
+
+impl<'a> PathCostModel for Router2CostModel<'a> {
+    fn pip_cost(&self, ctx: &Context, pip: PipId) -> DelayT {
+        default_pip_cost(ctx, pip)
+    }
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
+        let cost = self.state.wire_cost(wire, self.net_idx);
+        (cost * R2_COST_SCALE).max(0.0) as DelayT
+    }
+    fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
+        // Router2 previously used ctx.estimate_delay on raw (unscaled) f64
+        // costs. Keep the same heuristic but in DelayT (pip delays are
+        // already integers, no scaling needed).
+        ctx.estimate_delay(wire, dst)
+    }
+    fn bboxes(&self) -> &[BoundingBox] {
+        std::slice::from_ref(self.bbox)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A* search with negotiation costs and bounding box pruning
 // ---------------------------------------------------------------------------
 
 /// Run A* search with negotiation costs from multiple source wires to a single
-/// destination wire.
-///
-/// This is similar to Router1's `astar_route`, but:
-/// - Uses floating-point costs from the negotiation cost model.
-/// - Prunes wires that fall outside the bounding box (with margin).
+/// destination wire. Delegates to [`super::astar::astar_search`] with a
+/// [`Router2CostModel`] that scales `state.wire_cost` by [`R2_COST_SCALE`]
+/// into the kernel's `DelayT` currency. Out-of-bbox tiles are rejected by
+/// the cost model's `bbox` method.
 pub fn astar_route_r2(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
@@ -126,118 +119,16 @@ pub fn astar_route_r2(
     state: &Router2State,
     bbox: &BoundingBox,
 ) -> Option<Vec<PipId>> {
-    // Trivial case: destination is already in the source set.
-    if src_wires.contains(&dst_wire) {
-        return Some(Vec::new());
-    }
-
-    let chipdb = ctx.chipdb();
-    let init_capacity = src_wires.len().saturating_mul(8).max(16);
-    let mut heap = BinaryHeap::with_capacity(init_capacity);
-    // visited: wire -> (best cost, Option<pip>, came_from wire)
-    let mut visited: FxHashMap<WireId, (f64, Option<PipId>, WireId)> =
-        FxHashMap::with_capacity_and_hasher(init_capacity, Default::default());
-
-    for &src in src_wires {
-        let h = ctx.estimate_delay(src, dst_wire) as f64;
-        heap.push(R2QueueEntry {
-            wire: src,
-            cost: 0.0,
-            estimate: h,
-        });
-        visited.insert(src, (0.0, None, src));
-    }
-
-    while let Some(entry) = heap.pop() {
-        if let Some(&(prev_cost, _, _)) = visited.get(&entry.wire) {
-            if entry.cost > prev_cost {
-                continue;
-            }
-        }
-
-        if entry.wire == dst_wire {
-            let mut pips = Vec::new();
-            let mut current = dst_wire;
-            loop {
-                let Some(&(_, pip, from)) = visited.get(&current) else {
-                    break;
-                };
-                match pip {
-                    Some(p) => {
-                        pips.push(p);
-                        current = chipdb.pip_src_wire(p);
-                    }
-                    None => {
-                        if from == current {
-                            break;
-                        }
-                        current = from;
-                    }
-                }
-            }
-            pips.reverse();
-            return Some(pips);
-        }
-
-        let wire_info = chipdb.wire_info(entry.wire);
-        let downhill_indices = wire_info.pips_downhill.get();
-
-        for &pip_index in downhill_indices {
-            let pip = PipId::new(entry.wire.tile(), pip_index);
-            let next_wire = chipdb.pip_dst_wire(pip);
-
-            let (wx, wy) = chipdb.tile_xy(next_wire.tile());
-            if !bbox.contains(wx, wy) {
-                continue;
-            }
-
-            let is_global_clock = is_global_clock_pip(ctx, pip);
-            let pip_delay = if is_global_clock {
-                0.0
-            } else {
-                ctx.pip(pip).delay().max_delay() as f64
-            };
-            let negotiation_cost = if is_global_clock {
-                state.wire_cost(next_wire, net_idx) * 0.01
-            } else {
-                state.wire_cost(next_wire, net_idx)
-            };
-            let new_cost = entry.cost + pip_delay + negotiation_cost;
-
-            if let Some(&(prev_cost, _, _)) = visited.get(&next_wire) {
-                if new_cost >= prev_cost {
-                    continue;
-                }
-            }
-
-            visited.insert(next_wire, (new_cost, Some(pip), entry.wire));
-
-            let h = ctx.estimate_delay(next_wire, dst_wire) as f64;
-            heap.push(R2QueueEntry {
-                wire: next_wire,
-                cost: new_cost,
-                estimate: new_cost + h,
-            });
-        }
-
-        // Node expansion for inter-tile routing nodes (allocation-free).
-        chipdb.node_wires_cb(entry.wire, |nw| {
-            if let Some(&(prev_cost, _, _)) = visited.get(&nw) {
-                if entry.cost >= prev_cost {
-                    return;
-                }
-            }
-            visited.insert(nw, (entry.cost, None, entry.wire));
-            let h = ctx.estimate_delay(nw, dst_wire) as f64;
-            heap.push(R2QueueEntry {
-                wire: nw,
-                cost: entry.cost,
-                estimate: entry.cost + h,
-            });
-        });
-    }
-
-    None
+    let model = Router2CostModel {
+        state,
+        net_idx,
+        bbox,
+    };
+    let opts = AStarOptions {
+        visit_limit: None,
+        exhaustive: false,
+    };
+    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
 }
 
 // ---------------------------------------------------------------------------

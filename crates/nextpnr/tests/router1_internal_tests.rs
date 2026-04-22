@@ -9,60 +9,18 @@ use nextpnr::router::common::{
     RoutePlan, SinkRoute,
 };
 use nextpnr::router::maze::{
-    astar_route, compute_route_r1, find_congested_nets, route_net, QueueEntry, Router1Cfg,
-    Router1State,
+    astar_route, compute_route_r1, find_congested_nets, route_net, Router1Cfg, Router1State,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::BinaryHeap;
 
 /// Helper: create an FxHashSet from a slice of WireIds.
 fn wire_set(wires: &[WireId]) -> FxHashSet<WireId> {
     wires.iter().copied().collect()
 }
 
-#[test]
-fn queue_entry_min_heap_ordering() {
-    let mut heap = BinaryHeap::new();
-    heap.push(QueueEntry {
-        wire: WireId::new(0, 0),
-        cost: 10,
-        penalty: 0,
-        estimate: 50,
-    });
-    heap.push(QueueEntry {
-        wire: WireId::new(0, 1),
-        cost: 5,
-        penalty: 0,
-        estimate: 20,
-    });
-    heap.push(QueueEntry {
-        wire: WireId::new(1, 0),
-        cost: 8,
-        penalty: 0,
-        estimate: 35,
-    });
-    assert_eq!(heap.pop().unwrap().estimate, 20);
-    assert_eq!(heap.pop().unwrap().estimate, 35);
-    assert_eq!(heap.pop().unwrap().estimate, 50);
-}
-
-#[test]
-fn queue_entry_tiebreak_by_cost() {
-    let mut heap = BinaryHeap::new();
-    heap.push(QueueEntry {
-        wire: WireId::new(0, 0),
-        cost: 30,
-        penalty: 0,
-        estimate: 50,
-    });
-    heap.push(QueueEntry {
-        wire: WireId::new(0, 1),
-        cost: 10,
-        penalty: 0,
-        estimate: 50,
-    });
-    assert_eq!(heap.pop().unwrap().cost, 10);
-}
+// Heap-ordering tests previously lived here; after the A* refactor the
+// priority queue is owned by `router::astar`, which has its own unit test
+// covering the ordering invariant (`queue_entry_orders_by_estimate_then_cost`).
 
 #[test]
 fn astar_same_wire_returns_empty_path() {

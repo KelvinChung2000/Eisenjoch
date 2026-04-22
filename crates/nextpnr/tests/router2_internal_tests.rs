@@ -6,9 +6,8 @@ use nextpnr::metrics::{compute_bbox, BoundingBox};
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
 use nextpnr::router::common::NegotiationCfg;
-use nextpnr::router::router2::{astar_route_r2, R2QueueEntry, Router2Cfg, Router2State};
+use nextpnr::router::router2::{astar_route_r2, Router2Cfg, Router2State};
 use rustc_hash::FxHashSet;
-use std::collections::BinaryHeap;
 
 /// Helper: create an FxHashSet from a slice of WireIds.
 fn wire_set(wires: &[WireId]) -> FxHashSet<WireId> {
@@ -277,44 +276,9 @@ fn find_congested_nets_shared_wire() {
     assert!(set.contains(&net_b));
 }
 
-#[test]
-fn r2_queue_min_heap_ordering() {
-    let mut heap = BinaryHeap::new();
-    heap.push(R2QueueEntry {
-        wire: WireId::new(0, 0),
-        cost: 10.0,
-        estimate: 50.0,
-    });
-    heap.push(R2QueueEntry {
-        wire: WireId::new(0, 1),
-        cost: 5.0,
-        estimate: 20.0,
-    });
-    heap.push(R2QueueEntry {
-        wire: WireId::new(1, 0),
-        cost: 8.0,
-        estimate: 35.0,
-    });
-    assert!((heap.pop().unwrap().estimate - 20.0).abs() < f64::EPSILON);
-    assert!((heap.pop().unwrap().estimate - 35.0).abs() < f64::EPSILON);
-    assert!((heap.pop().unwrap().estimate - 50.0).abs() < f64::EPSILON);
-}
-
-#[test]
-fn r2_queue_tiebreak_by_cost() {
-    let mut heap = BinaryHeap::new();
-    heap.push(R2QueueEntry {
-        wire: WireId::new(0, 0),
-        cost: 30.0,
-        estimate: 50.0,
-    });
-    heap.push(R2QueueEntry {
-        wire: WireId::new(0, 1),
-        cost: 10.0,
-        estimate: 50.0,
-    });
-    assert!((heap.pop().unwrap().cost - 10.0).abs() < f64::EPSILON);
-}
+// Router2's private priority queue was retired when the A* search moved to
+// the shared `router::astar` kernel. Heap ordering is now covered by that
+// module's unit test.
 
 #[test]
 fn astar_r2_same_wire_returns_empty_path() {
