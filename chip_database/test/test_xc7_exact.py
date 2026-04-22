@@ -1,4 +1,4 @@
-from nextpnr.benchmarks import gen_xc7
+from chip_database import gen_xc7
 
 
 def test_generate_standard_uses_composite_tilegrid(monkeypatch):

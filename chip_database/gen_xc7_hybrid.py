@@ -35,9 +35,9 @@ sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
 
 HERE = path.dirname(path.abspath(__file__))
-ROOT = path.dirname(path.dirname(path.dirname(HERE)))
+ROOT = path.dirname(HERE)
 FIXTURES_DIR = path.join(ROOT, "crates", "nextpnr", "tests", "fixtures")
-CHIPDB_DIR = path.join(ROOT, "chip_database")
+CHIPDB_DIR = HERE
 
 # Synthetic arch parameters
 K = 6  # LUT6 to match real XC7 SLICEL
@@ -678,8 +678,10 @@ def generate_xc7_hybrid(
 
     pip_stats = {"total": 0, "bidi": 0, "pseudo": 0, "pass_tx": 0,
                  "by_class": Counter()}
+    composite_infos = {}
     for synthetic_type, builder in sorted(synthetic_tile_builders.items()):
         info = builder(ch)
+        composite_infos[synthetic_type] = info
         tile_wire_sets[synthetic_type] = set(info.get("wire_set", set()))
         bels_per_type[synthetic_type] = Counter(info.get("bel_counts", Counter()))
         bel_capacity.update(bels_per_type[synthetic_type])
@@ -1044,6 +1046,85 @@ def generate_xc7_hybrid(
         direct_pair_count = 0
         direct_union_count = 0
         direct_overlap_count = 0
+
+        # Intra-composite node unification for long wires only.
+        #
+        # prjxray tileconn entries are node-equivalence statements (the
+        # adjacent-tile wires are the same physical metal). Pairs whose
+        # both endpoints land inside one composite instance are absorbed
+        # as internal PIPs by _absorb_internal_tileconn, which forfeits
+        # the node equivalence. Without this step, a 12-tile long-horizontal
+        # (LH) wire gets broken up into disconnected singletons inside each
+        # composite (M1_LH* in INT_L, M2_LH* in INT_R, M0_CLBLL_LH* and
+        # M3_CLBLM_LH* in the flanking CLBs) and the cross-composite LH
+        # synthetic tileconn pairs can only chain 2-wire nodes at a time.
+        #
+        # Restrict unification to long wires (LH / LV / LVB, including their
+        # CLB/BRAM/INT_INTERFACE tap variants). Short-range wires already
+        # route correctly via intra-composite PIPs and the prjxray
+        # node-pattern wire sets; unifying them too would add millions of
+        # tiny same-tile nodes and shatter tile-routing-shape dedup without
+        # improving connectivity.
+        def _is_long_wire(name):
+            # Strip the M<n>_ composite prefix if present.
+            if name.startswith("M") and "_" in name:
+                name = name.split("_", 1)[1]
+            # Walk past tap prefixes (CLBLL_, CLBLM_, INT_INTERFACE_, BRAM_)
+            # so we see the underlying LH/LV token.
+            for tap in ("CLBLL_", "CLBLM_", "INT_INTERFACE_", "BRAM_"):
+                if name.startswith(tap):
+                    name = name[len(tap):]
+                    break
+            return (
+                name.startswith("LH")
+                or name.startswith("LV")
+                or name.startswith("LVB")
+            )
+
+        internal_pair_count = 0
+        internal_union_count = 0
+        for comp_type, info in composite_infos.items():
+            spec = info.get("spec")
+            rename = info.get("wire_rename")
+            if spec is None or rename is None:
+                continue
+            member_idx_by_tiletype = defaultdict(list)
+            for idx, m in enumerate(spec.members):
+                member_idx_by_tiletype[m.tile_type].append((idx, m))
+            comp_tiles = tiles_by_xc7_type.get(comp_type, [])
+            for conn in tileconn:
+                a_type = conn["tile_types"][0]
+                b_type = conn["tile_types"][1]
+                if a_type in direct_tileconn_types or b_type in direct_tileconn_types:
+                    continue
+                dx = conn.get("grid_deltas", [0, 0])[0]
+                dy = conn.get("grid_deltas", [0, 0])[1]
+                for a_idx, a_m in member_idx_by_tiletype.get(a_type, []):
+                    for b_idx, b_m in member_idx_by_tiletype.get(b_type, []):
+                        if (a_m.dx + dx, a_m.dy + dy) != (b_m.dx, b_m.dy):
+                            continue
+                        for wa, wb in conn["wire_pairs"]:
+                            if not (_is_long_wire(wa) and _is_long_wire(wb)):
+                                continue
+                            if (a_idx, wa) not in rename or (b_idx, wb) not in rename:
+                                continue
+                            new_a = rename[(a_idx, wa)]
+                            new_b = rename[(b_idx, wb)]
+                            for tx, ty in comp_tiles:
+                                if not (0 <= tx < X and 0 <= ty < Y):
+                                    continue
+                                a_key = (tx, ty, new_a)
+                                b_key = (tx, ty, new_b)
+                                if a_key in wires_in_nodes or b_key in wires_in_nodes:
+                                    continue
+                                internal_pair_count += 1
+                                if direct_union(a_key, b_key):
+                                    internal_union_count += 1
+        print(
+            f"Intra-composite long-wire unifications: "
+            f"{internal_union_count} unions from {internal_pair_count} pairs"
+        )
+
         for conn in tileconn:
             a_type = conn["tile_types"][0]
             b_type = conn["tile_types"][1]
@@ -1080,10 +1161,16 @@ def generate_xc7_hybrid(
         for members in direct_groups.values():
             if len(members) < 2:
                 continue
-            ch.add_node([NodeWire(x, y, w) for x, y, w in members])
-            for m in members:
+            # Canonicalise member order so structurally-identical nodes at
+            # different chip positions produce the same NodeShape key and
+            # share both shape_idx and tile routing shape. Without this sort
+            # `direct_parent` insertion order (which depends on union timing)
+            # chooses different anchors for same-shape nodes, breaking dedup.
+            members_sorted = sorted(members, key=lambda m: (m[1], m[0], m[2]))
+            ch.add_node([NodeWire(x, y, w) for x, y, w in members_sorted])
+            for m in members_sorted:
                 wires_in_nodes.add(m)
-            direct_wire_count += len(members)
+            direct_wire_count += len(members_sorted)
             direct_node_count += 1
         print(
             "Created "
@@ -1175,106 +1262,94 @@ def generate_xc7_hybrid(
     for x in int_l_columns:
         int_l_columns[x].sort()
 
-    clk_node_count = 0
-
-    # Vertical clock chains
-    for c, cwire in enumerate(clk_wire_names):
-        for col_x in sorted(int_l_columns.keys()):
-            ys = int_l_columns[col_x]
-            for i in range(len(ys) - 1):
-                y0, y1 = ys[i], ys[i + 1]
-                key0 = (col_x, y0, cwire)
-                key1 = (col_x, y1, cwire)
-                if key0 not in wires_in_nodes and key1 not in wires_in_nodes:
-                    wires_in_nodes.add(key0)
-                    wires_in_nodes.add(key1)
-                    ch.add_node([NodeWire(col_x, y0, cwire), NodeWire(col_x, y1, cwire)])
-                    clk_node_count += 1
-
-    # Horizontal clock spines
-    SPINE_INTERVAL = 10
     int_l_col_list = sorted(int_l_columns.keys())
-    for c, cwire in enumerate(clk_wire_names):
-        for col_idx in range(len(int_l_col_list) - 1):
-            x0 = int_l_col_list[col_idx]
-            x1 = int_l_col_list[col_idx + 1]
-            common = sorted(set(int_l_columns[x0]) & set(int_l_columns[x1]))
-            for y in common[::SPINE_INTERVAL]:
-                key0 = (x0, y, cwire)
-                key1 = (x1, y, cwire)
-                if key0 not in wires_in_nodes and key1 not in wires_in_nodes:
-                    wires_in_nodes.add(key0)
-                    wires_in_nodes.add(key1)
-                    ch.add_node([NodeWire(x0, y, cwire), NodeWire(x1, y, cwire)])
-                    clk_node_count += 1
 
-    # Connect IO clock outputs to nearest INT_L clock wire
     io_tiles = (tiles_by_xc7_type.get("LIOB33", [])
                 + tiles_by_xc7_type.get("RIOB33", [])
                 + tiles_by_xc7_type.get("LIOB33_SING", [])
                 + tiles_by_xc7_type.get("RIOB33_SING", [])
                 + tiles_by_xc7_type.get("IOB", []))
-    for c in range(min(N_CLK, len(clk_wire_names), N_IO)):
-        for io_x, io_y in io_tiles:
-            if not (0 <= io_x < X and 0 <= io_y < Y):
-                continue
-            for col_x in int_l_col_list:
-                if abs(col_x - io_x) <= 4:
-                    ys = int_l_columns[col_x]
-                    closest_y = min(ys, key=lambda y: abs(y - io_y))
-                    gclk_key = (io_x, io_y, f"GCLK{c}_OUT")
-                    clk_key = (col_x, closest_y, clk_wire_names[c])
-                    if gclk_key not in wires_in_nodes and clk_key not in wires_in_nodes:
-                        wires_in_nodes.add(gclk_key)
-                        wires_in_nodes.add(clk_key)
-                        ch.add_node([
-                            NodeWire(io_x, io_y, f"GCLK{c}_OUT"),
-                            NodeWire(col_x, closest_y, clk_wire_names[c]),
-                        ])
-                        clk_node_count += 1
-                    break
-            break  # Only one IO per clock
+    has_bufg = "CLK_BUFG" in tile_wire_sets and bool(tiles_by_xc7_type.get("CLK_BUFG", []))
+    bufg_tile = tiles_by_xc7_type["CLK_BUFG"][0] if has_bufg else None
 
-    # Large composite fabrics use a simplified CLK_BUFG sidecar tile. Bridge
-    # the first clock lanes explicitly: IO GCLK output -> BUFG.I -> BUFG.O ->
-    # nearest composite clock wire. This keeps the sidecar out of the fabric
-    # while still making BUFG cells routable for the benchmark clocks.
-    bufg_bridge_count = 0
-    if "CLK_BUFG" in tile_wire_sets and clk_wire_names and int_l_col_list:
-        for bufg_x, bufg_y in tiles_by_xc7_type.get("CLK_BUFG", []):
-            for c in range(min(N_CLK, len(clk_wire_names), N_IO)):
-                if not io_tiles:
+    def _pick_io(bufg_xy):
+        if not io_tiles:
+            return None
+        if bufg_xy is not None:
+            bx, by_ = bufg_xy
+            return min(io_tiles, key=lambda pos: abs(pos[0] - bx) + abs(pos[1] - by_))
+        return io_tiles[0]
+
+    # Per-clock-index fabric-wide distribution. For each lane c:
+    #   - Collect every CLB.CLK{c} wire across all fabric columns into one
+    #     node (the output-side spine).
+    #   - When CLK_BUFG is present, BUFG{c}_O joins that spine and
+    #     BUFG{c}_I lives in a separate 2-wire node with IOB.GCLK{c}_OUT,
+    #     preserving the buffer's logical input/output separation.
+    #   - When CLK_BUFG is absent, IOB.GCLK{c}_OUT joins the spine
+    #     directly so the IO pin drives the fabric clock network.
+    # The aggressive `wires_in_nodes` guard from the previous pairwise
+    # design is dropped here: a single `add_node(members)` call per lane
+    # turns the entire column of clock wires into one routing node, which
+    # is what clock distribution requires.
+    clk_node_count = 0
+    for c, cwire in enumerate(clk_wire_names):
+        if c >= N_CLK:
+            break
+
+        spine_members = []
+        for col_x in int_l_col_list:
+            for row_y in int_l_columns[col_x]:
+                k = (col_x, row_y, cwire)
+                if k in wires_in_nodes:
                     continue
-                io_x, io_y = min(io_tiles, key=lambda pos: abs(pos[0] - bufg_x) + abs(pos[1] - bufg_y))
-                bufg_i = f"BUFG{c}_I"
-                bufg_o = f"BUFG{c}_O"
-                io_key = (io_x, io_y, f"GCLK{c}_OUT")
-                bi_key = (bufg_x, bufg_y, bufg_i)
-                if io_key not in wires_in_nodes and bi_key not in wires_in_nodes:
-                    ch.add_node([NodeWire(io_x, io_y, f"GCLK{c}_OUT"), NodeWire(bufg_x, bufg_y, bufg_i)])
-                    wires_in_nodes.add(io_key)
-                    wires_in_nodes.add(bi_key)
-                    bufg_bridge_count += 1
+                spine_members.append(k)
 
-                best_clk = None
-                for col_x in sorted(int_l_col_list, key=lambda col: abs(col - bufg_x)):
-                    for row_y in sorted(int_l_columns[col_x], key=lambda row: abs(row - bufg_y)):
-                        clk_key = (col_x, row_y, clk_wire_names[c])
-                        if clk_key not in wires_in_nodes:
-                            best_clk = (col_x, row_y, clk_key)
-                            break
-                    if best_clk is not None:
-                        break
-                bo_key = (bufg_x, bufg_y, bufg_o)
-                if best_clk is not None and bo_key not in wires_in_nodes:
-                    col_x, row_y, clk_key = best_clk
-                    ch.add_node([NodeWire(bufg_x, bufg_y, bufg_o), NodeWire(col_x, row_y, clk_wire_names[c])])
-                    wires_in_nodes.add(bo_key)
-                    wires_in_nodes.add(clk_key)
-                    bufg_bridge_count += 1
-        print(f"Created {bufg_bridge_count} CLK_BUFG bridge nodes")
+        io_pos = _pick_io(bufg_tile) if c < N_IO else None
+        io_key = None
+        if io_pos is not None and 0 <= io_pos[0] < X and 0 <= io_pos[1] < Y:
+            candidate = (io_pos[0], io_pos[1], f"GCLK{c}_OUT")
+            if candidate not in wires_in_nodes:
+                io_key = candidate
 
-    print(f"Created {clk_node_count} clock routing nodes")
+        if has_bufg:
+            bufg_x, bufg_y = bufg_tile
+            bi_key = (bufg_x, bufg_y, f"BUFG{c}_I")
+            bo_key = (bufg_x, bufg_y, f"BUFG{c}_O")
+
+            # Input-side node: IOB pad -> BUFG input pin.
+            if io_key is not None and bi_key not in wires_in_nodes:
+                ch.add_node([
+                    NodeWire(io_key[0], io_key[1], io_key[2]),
+                    NodeWire(bi_key[0], bi_key[1], bi_key[2]),
+                ])
+                wires_in_nodes.add(io_key)
+                wires_in_nodes.add(bi_key)
+                clk_node_count += 1
+
+            # Output-side node: BUFG output pin + fabric-wide CLB CLK{c}.
+            if bo_key not in wires_in_nodes and spine_members:
+                members = [NodeWire(bo_key[0], bo_key[1], bo_key[2])]
+                wires_in_nodes.add(bo_key)
+                for k in spine_members:
+                    members.append(NodeWire(k[0], k[1], k[2]))
+                    wires_in_nodes.add(k)
+                ch.add_node(members)
+                clk_node_count += 1
+        else:
+            # No BUFG: the IO pad drives the fabric spine directly.
+            members = []
+            if io_key is not None:
+                members.append(NodeWire(io_key[0], io_key[1], io_key[2]))
+                wires_in_nodes.add(io_key)
+            for k in spine_members:
+                members.append(NodeWire(k[0], k[1], k[2]))
+                wires_in_nodes.add(k)
+            if len(members) >= 2:
+                ch.add_node(members)
+                clk_node_count += 1
+
+    print(f"Created {clk_node_count} clock distribution nodes")
 
     # ------------------------------------------------------------------
     # Timing

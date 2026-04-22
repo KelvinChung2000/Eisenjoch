@@ -32,14 +32,7 @@ FORCE_CONFIGS = [
     {
         "star_weight": 0.0,
         "pressure_weight_end": 1.0,
-        "io_boost": 4.0,
-        "label": "gas_io4",
-    },
-    {
-        "star_weight": 0.0,
-        "pressure_weight_end": 1.0,
-        "io_boost": 8.0,
-        "label": "gas_io8",
+        "label": "gas",
     },
     # Pure star model (no gas)
     {"star_weight": 1.0, "pressure_weight_end": 0.0, "label": "star_only"},
@@ -49,19 +42,16 @@ FORCE_CONFIGS = [
     {
         "star_weight": 0.5,
         "pressure_weight_end": 1.0,
-        "io_boost": 4.0,
         "label": "balanced",
     },
     {
         "star_weight": 1.0,
         "pressure_weight_end": 0.5,
-        "io_boost": 8.0,
         "label": "star_dom",
     },
     {
         "star_weight": 0.2,
         "pressure_weight_end": 2.0,
-        "io_boost": 8.0,
         "label": "gas_dom",
     },
 ]

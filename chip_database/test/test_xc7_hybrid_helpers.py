@@ -1,4 +1,4 @@
-from nextpnr.benchmarks.gen_xc7_hybrid import (
+from chip_database.gen_xc7_hybrid import (
     _infer_pin_dir,
     _logical_pin_names,
     _site_bel_types,

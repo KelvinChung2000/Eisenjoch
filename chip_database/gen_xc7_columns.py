@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from os import path
 
-from nextpnr.benchmarks.gen_xc7_hybrid import (
+from chip_database.gen_xc7_hybrid import (
     BRAM_SITE_TYPES,
     BUFG_SITE_TYPES,
     DSP_SITE_TYPES,
@@ -142,7 +142,21 @@ def _discover_clb_members(tilegrid, xray):
     raise RuntimeError("could not discover a SLICEL/SLICEM CLB + INT_L/INT_R group")
 
 
+_LH_FILLER_TYPES = {"VBRK", "VFRAME", "CLK_FEED"}
+
+
 def _discover_resource_members(tilegrid, resource_types, site_types, name):
+    """Find the horizontal tile span that makes up one resource composite.
+
+    The span must include the resource tile itself and its flanking
+    INT_L/INT_R tiles (so the router-side has a switch matrix to reach the
+    site BEL). We also include any INT_INTERFACE and "filler" tiles (VBRK,
+    VFRAME, CLK_FEED) that physically sit inside the span: these carry LH
+    long-wire taps (`VBRK_LH*` etc.) that our intra-composite unification
+    step needs in order to chain the 12-tile LH wire across the composite.
+    Without them LH dies inside every DSP/BRAM column and left->right row
+    traversal is impossible.
+    """
     grid = _grid_by_xy(tilegrid)
     for (x, y), tile_type in sorted(grid.items(), key=lambda kv: (kv[0][1], kv[0][0])):
         if tile_type not in resource_types:
@@ -156,8 +170,11 @@ def _discover_resource_members(tilegrid, resource_types, site_types, name):
                 members = []
                 for xx in xs:
                     tt = grid.get((xx, y))
-                    if tt == tile_type or tt in {"INT_L", "INT_R"} or (
-                        tt and ("INTERFACE" in tt) and not tt.startswith("IO_")
+                    if (
+                        tt == tile_type
+                        or tt in {"INT_L", "INT_R"}
+                        or tt in _LH_FILLER_TYPES
+                        or (tt and ("INTERFACE" in tt) and not tt.startswith("IO_"))
                     ):
                         members.append(Member(tt, xx - x))
                 if any(m.tile_type == tile_type for m in members):
@@ -337,6 +354,7 @@ def build_composite_tile_type(chip, xray, spec, tileconn):
         "bel_types": bel_types,
         "wire_rename": wire_rename,
         "pip_stats": pip_stats,
+        "spec": spec,
     }
 
 

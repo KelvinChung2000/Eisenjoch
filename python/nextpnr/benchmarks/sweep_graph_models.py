@@ -47,7 +47,7 @@ except Exception as exc:
 
 print(f'=== Grid: {{ctx.width}} x {{ctx.height}}, cells={{len(ctx.cells)}} nets={{len(ctx.nets)}} ===')
 t0 = time.time()
-ctx.place(placer='opt_trans', max_iters=15, num_threads=8, io_boost=3.0)
+ctx.place(placer='opt_trans', max_iters=15, num_threads=8)
 elapsed = time.time() - t0
 print(f'=== Placement total: {{elapsed:.1f}}s ({{int(elapsed * 1000 / 15)}} ms/iter avg) ===')
 print(f'=== Total HPWL: {{ctx.total_hpwl():.0f}} ===')

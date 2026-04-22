@@ -12,7 +12,7 @@ import argparse
 import subprocess
 from os import path
 
-from nextpnr.benchmarks.gen_xc7_columns import (
+from chip_database.gen_xc7_columns import (
     PAPER_TARGETS,
     build_clk_bufg_tile_type,
     build_composite_tile_type,
@@ -22,7 +22,7 @@ from nextpnr.benchmarks.gen_xc7_columns import (
     load_tilegrid,
     parse_targets,
 )
-from nextpnr.benchmarks.gen_xc7_hybrid import BBASM, CHIPDB_DIR, generate_xc7_hybrid
+from chip_database.gen_xc7_hybrid import BBASM, CHIPDB_DIR, generate_xc7_hybrid
 
 
 def _composite_builders(xray, specs, tileconn):

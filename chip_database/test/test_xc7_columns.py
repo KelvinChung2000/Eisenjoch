@@ -1,4 +1,4 @@
-from nextpnr.benchmarks.gen_xc7_columns import (
+from chip_database.gen_xc7_columns import (
     CompositeSpec,
     Member,
     classify_columns,
