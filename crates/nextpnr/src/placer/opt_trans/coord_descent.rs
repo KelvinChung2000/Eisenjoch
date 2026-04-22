@@ -14,7 +14,7 @@ use crate::context::Context;
 use crate::metrics::congestion::bresenham_line;
 use crate::netlist::{CellId, NetId};
 use crate::placer::common;
-use crate::placer::common::{CellValidityMask, TypeAwarePlacement};
+use crate::placer::common::{CellValidityMask, MuxSlotTracker, TypeAwarePlacement};
 
 use super::config::{GraphModel, OptTransPlacerCfg, PathModel};
 use super::demand;
@@ -338,18 +338,12 @@ fn collect_net_infos_simple(
 }
 
 fn net_path_weight(info: &NetInfo, cfg: &OptTransPlacerCfg) -> f64 {
-    let io_factor = if info.has_fixed_pin {
-        cfg.io_boost
-    } else {
-        1.0
-    };
     let crit = cfg
         .timing_criticality
         .get(&info.net_id)
         .copied()
         .unwrap_or(0.0) as f64;
-    let timing = 1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0);
-    io_factor * timing
+    1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0)
 }
 
 fn source_node(info: &NetInfo) -> Option<usize> {
@@ -1699,6 +1693,12 @@ fn per_net_hpwl(net_infos: &[NetInfo], network: &PipeNetwork) -> (Vec<String>, V
 /// lowest cost seen so far so `exp()` stays bounded in `[0, 1]`; when a new
 /// lower cost arrives the accumulated sums are rescaled down to keep the
 /// anchor fresh. Also tracks the hard argmin for fallback.
+/// Number of ranked fallback candidates retained per cell probe. Used when
+/// the primary argmin/softmin tile is rejected by the mux-slot tracker:
+/// the caller walks these in order and commits the first one that still
+/// fits.
+const PROBE_TOPK: usize = 8;
+
 #[derive(Clone, Copy, Debug)]
 struct SoftminAccumulator {
     anchor: f64,
@@ -1709,6 +1709,11 @@ struct SoftminAccumulator {
     best_y: i32,
     best_cost: f64,
     theta: f64,
+    /// Ranked fallback candidates sorted ascending by cost.
+    /// `topk[0]` is the argmin; `topk[topk_len-1]` is the highest-cost
+    /// candidate we're still retaining.
+    topk: [(f64, i32, i32); PROBE_TOPK],
+    topk_len: usize,
 }
 
 impl SoftminAccumulator {
@@ -1722,7 +1727,15 @@ impl SoftminAccumulator {
             best_y: 0,
             best_cost: f64::INFINITY,
             theta: theta.max(0.0),
+            topk: [(f64::INFINITY, 0, 0); PROBE_TOPK],
+            topk_len: 0,
         }
+    }
+
+    /// Ranked fallback candidates (argmin first, then 2nd-best, ...). Used
+    /// by the commit path when the primary pick is rejected by the tracker.
+    fn topk(&self) -> &[(f64, i32, i32)] {
+        &self.topk[..self.topk_len]
     }
 
     #[inline]
@@ -1734,6 +1747,25 @@ impl SoftminAccumulator {
             self.best_cost = cost;
             self.best_x = gx;
             self.best_y = gy;
+        }
+        // Maintain the top-K sorted ascending by cost. Fast path when the
+        // buffer has a worse-than-`cost` last entry; otherwise we're not
+        // in the K best and can skip.
+        if self.topk_len < PROBE_TOPK {
+            let mut i = self.topk_len;
+            while i > 0 && self.topk[i - 1].0 > cost {
+                self.topk[i] = self.topk[i - 1];
+                i -= 1;
+            }
+            self.topk[i] = (cost, gx, gy);
+            self.topk_len += 1;
+        } else if cost < self.topk[PROBE_TOPK - 1].0 {
+            let mut i = PROBE_TOPK - 1;
+            self.topk[i] = (cost, gx, gy);
+            while i > 0 && self.topk[i - 1].0 > self.topk[i].0 {
+                self.topk.swap(i - 1, i);
+                i -= 1;
+            }
         }
         // If this probe lowers the anchor, shift accumulated sums down so
         // they remain expressed relative to the new anchor.
@@ -1814,6 +1846,7 @@ fn fullscan_sweep_probe(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
     theta: f64,
     collect_stats: bool,
 ) -> (SoftminAccumulator, Option<PlateauStat>) {
@@ -1840,6 +1873,13 @@ fn fullscan_sweep_probe(
 
     for gy in 0..network.height {
         for gx in 0..network.width {
+            // Mux-slot filter: skip candidates that would exceed destination
+            // tile's output-mux capacity. This lets argmin/softmin fall
+            // through to the next-best *legal* position automatically, with
+            // no INF sentinels.
+            if !mux_tracker.would_fit(cell_idx, cur_x, cur_y, gx, gy) {
+                continue;
+            }
             let cost = evaluate_cell_at(
                 cell_idx, gx, gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
             );
@@ -1873,6 +1913,7 @@ fn place_dcd_sweep(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
     theta: f64,
 ) -> usize {
@@ -1885,20 +1926,20 @@ fn place_dcd_sweep(
     let collect_stats = diag.enabled;
     let use_softmin = cfg.softmin_enabled && theta > 0.0;
 
-    // Phase 1: compute each cell's softmin/argmin position against the frozen
-    // landscape. Embarrassingly parallel — each cell reads shared read-only
-    // state. Each probe returns (chosen_xy, argmin_xy, stats): `chosen_xy` is
-    // the softmin-weighted tile (falling back to argmin when softmin is
-    // disabled or lands on an invalid tile); `argmin_xy` is kept for
-    // plateau/diag reporting.
-    let best: Vec<((i32, i32), Option<PlateauStat>)> = (0..n)
+    // Single-phase Jacobi: probe against the live (concurrently-updated)
+    // tracker, apply damping, and atomically commit the move — all inside
+    // the parallel map. The cost landscape (`net_infos`) stays frozen for
+    // the sweep; only the mux-slot occupancy is live, so two threads can
+    // not both claim the last slot in a tile (CAS in `try_commit`).
+    // Each entry returns `(final_gx, final_gy, committed, stats)`.
+    let probes: Vec<(i32, i32, bool, Option<PlateauStat>)> = (0..n)
         .into_par_iter()
         .map(|ci| {
             let cell_nets = &cell_net_map.map[ci];
+            let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
+            let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
             if cell_nets.is_empty() {
-                let gx = network.tile_to_net(cell_x[ci]).round() as i32;
-                let gy = network.tile_to_net(cell_y[ci]).round() as i32;
-                return ((gx, gy), None);
+                return (old_gx, old_gy, false, None);
             }
             let (acc, stats) = fullscan_sweep_probe(
                 ci,
@@ -1908,57 +1949,78 @@ fn place_dcd_sweep(
                 network,
                 cfg,
                 validity,
+                mux_tracker,
                 if use_softmin { theta } else { 0.0 },
                 collect_stats,
             );
-            let chosen = if use_softmin {
+            let (primary_gx, primary_gy) = if use_softmin {
                 acc.softmin_tile(ci, validity, network.width, network.height)
             } else {
                 acc.argmin()
             };
-            (chosen, stats)
+            // Walk the ranked candidate list: first the primary (softmin
+            // tile or argmin), then the top-K fallbacks in order of cost.
+            // Each candidate is damped against `old` and tried via an
+            // atomic `try_commit`; first success wins. Cells stay put only
+            // if every candidate fails.
+            let try_candidate =
+                |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
+                    if cand_gx == old_gx && cand_gy == old_gy {
+                        return None;
+                    }
+                    let new_gx_f =
+                        alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64;
+                    let new_gy_f =
+                        alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64;
+                    let new_gx = new_gx_f.round() as i32;
+                    let new_gy = new_gy_f.round() as i32;
+                    if new_gx == old_gx && new_gy == old_gy {
+                        return None;
+                    }
+                    if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
+                        Some((new_gx, new_gy))
+                    } else {
+                        None
+                    }
+                };
+            if let Some((new_gx, new_gy)) = try_candidate(primary_gx, primary_gy) {
+                return (new_gx, new_gy, true, stats);
+            }
+            for &(_, cand_gx, cand_gy) in acc.topk() {
+                if cand_gx == primary_gx && cand_gy == primary_gy {
+                    continue;
+                }
+                if let Some((new_gx, new_gy)) = try_candidate(cand_gx, cand_gy) {
+                    return (new_gx, new_gy, true, stats);
+                }
+            }
+            (old_gx, old_gy, false, stats)
         })
         .collect();
 
-    // Record plateau stats serially after Phase 1.
+    // Record plateau stats serially after the parallel phase.
     if collect_stats {
-        for (ci, (_, stat)) in best.iter().enumerate() {
+        for (ci, (_, _, _, stat)) in probes.iter().enumerate() {
             if let Some(s) = stat {
                 diag.record_plateau(ci, *s);
             }
         }
     }
 
-    // Phase 2: apply damped simultaneous update.
+    // Apply the committed positions: update cell_x/cell_y and the pin nodes
+    // in net_infos. These writes are sequential but cheap compared to the
+    // parallel probe+commit pass.
     let mut moved = 0usize;
     let mut final_positions: Vec<(i32, i32)> = Vec::with_capacity(n);
-    for ci in 0..n {
-        let (best_gx, best_gy) = best[ci].0;
-        let old_tile_x = cell_x[ci];
-        let old_tile_y = cell_y[ci];
-        let old_gx = network.tile_to_net(old_tile_x).round() as i32;
-        let old_gy = network.tile_to_net(old_tile_y).round() as i32;
-
-        if best_gx == old_gx && best_gy == old_gy {
+    for (ci, &(new_gx, new_gy, committed, _)) in probes.iter().enumerate() {
+        let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
+        let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+        if !committed {
             if collect_stats {
                 final_positions.push((old_gx, old_gy));
             }
             continue;
         }
-
-        // Damped blend in grid coordinates.
-        let new_gx_f = alpha * best_gx as f64 + (1.0 - alpha) * old_gx as f64;
-        let new_gy_f = alpha * best_gy as f64 + (1.0 - alpha) * old_gy as f64;
-        let new_gx = new_gx_f.round() as i32;
-        let new_gy = new_gy_f.round() as i32;
-
-        if new_gx == old_gx && new_gy == old_gy {
-            if collect_stats {
-                final_positions.push((old_gx, old_gy));
-            }
-            continue;
-        }
-
         cell_x[ci] = network.net_to_tile(new_gx as f64);
         cell_y[ci] = network.net_to_tile(new_gy as f64);
         let new_node = coord_to_node(network, new_gx, new_gy);
@@ -2189,6 +2251,7 @@ fn place_dcd_sweep_jacobi_bisection(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
 ) -> usize {
     let n = cell_x.len();
@@ -2223,6 +2286,9 @@ fn place_dcd_sweep_jacobi_bisection(
         let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
         let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
         if new_gx == old_gx && new_gy == old_gy {
+            continue;
+        }
+        if !mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
             continue;
         }
         cell_x[ci] = network.net_to_tile(new_gx as f64);
@@ -2551,6 +2617,7 @@ fn place_dcd_sweep_jacobi_bb(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
     iter_order: &[usize],
 ) -> usize {
@@ -2611,6 +2678,42 @@ fn place_dcd_sweep_jacobi_bb(
             tied.iter().copied().min().unwrap()
         };
         if new_gx != old_gx || new_gy != old_gy {
+            if !mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
+                // Destination's mux slots are full — pick the next tied
+                // candidate that fits, preferring candidates that are not
+                // the current position.
+                let mut accepted = false;
+                for &(cx, cy) in tied.iter() {
+                    if cx == old_gx && cy == old_gy {
+                        accepted = true;
+                        break;
+                    }
+                    if mux_tracker.try_commit(ci, old_gx, old_gy, cx, cy) {
+                        cell_x[ci] = network.net_to_tile(cx as f64);
+                        cell_y[ci] = network.net_to_tile(cy as f64);
+                        let new_node = coord_to_node(network, cx, cy);
+                        for &(net_idx, pin_idx) in cell_nets {
+                            net_infos[net_idx].pins[pin_idx].node = new_node;
+                        }
+                        if diag.enabled {
+                            diag.record_move(MoveRecord {
+                                cell_idx: ci,
+                                old_gx,
+                                old_gy,
+                                new_gx: cx,
+                                new_gy: cy,
+                            });
+                        }
+                        moved += 1;
+                        accepted = true;
+                        break;
+                    }
+                }
+                if !accepted {
+                    // All tied candidates full — leave cell at old position.
+                }
+                continue;
+            }
             cell_x[ci] = network.net_to_tile(new_gx as f64);
             cell_y[ci] = network.net_to_tile(new_gy as f64);
             let new_node = coord_to_node(network, new_gx, new_gy);
@@ -2657,6 +2760,7 @@ fn place_dcd_sweep_sequential_bisection(
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
     validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
 ) -> usize {
     let n_nodes = network.num_nodes();
@@ -2692,6 +2796,9 @@ fn place_dcd_sweep_sequential_bisection(
         }
 
         if new_gx == old_gx && new_gy == old_gy {
+            continue;
+        }
+        if !mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
             continue;
         }
 
@@ -2802,6 +2909,24 @@ pub fn run_inner_outer(
     let validity =
         CellValidityMask::build(ctx, _idx_to_cell, type_aware, network.width, network.height);
     let validity = &validity;
+
+    // Runtime mux-slot tracker: hard commit-time gate that rejects moves into
+    // tiles whose output-mux slots are full. Capacity is derived from the
+    // chipdb (count of distinct output-node roots per tile). Seeded from the
+    // current grid positions of every external-fanout cell.
+    let mut mux_tracker = MuxSlotTracker::build(ctx, _idx_to_cell, network.x0, network.y0);
+    {
+        let init_gx: Vec<i32> = cell_x
+            .iter()
+            .map(|&x| network.tile_to_net(x).round() as i32)
+            .collect();
+        let init_gy: Vec<i32> = cell_y
+            .iter()
+            .map(|&y| network.tile_to_net(y).round() as i32)
+            .collect();
+        mux_tracker.seed_positions(&init_gx, &init_gy);
+    }
+    mux_tracker.report("post-seed");
     if diag_ctx.enabled {
         eprintln!(
             "DCD diag: instrumentation ON, output dir /tmp/claude/ot_diag (or $NPNR_OT_DIAG_DIR)"
@@ -3468,6 +3593,7 @@ pub fn run_inner_outer(
                 network,
                 cfg,
                 validity,
+                &mux_tracker,
                 &mut diag_ctx,
                 theta_iter,
             ),
@@ -3480,6 +3606,7 @@ pub fn run_inner_outer(
                 network,
                 cfg,
                 validity,
+                &mux_tracker,
                 &mut diag_ctx,
             ),
             super::config::SweepMode::JacobiBisection => place_dcd_sweep_jacobi_bisection(
@@ -3491,6 +3618,7 @@ pub fn run_inner_outer(
                 network,
                 cfg,
                 validity,
+                &mux_tracker,
                 &mut diag_ctx,
             ),
             super::config::SweepMode::JacobiBB => {
@@ -3604,6 +3732,7 @@ pub fn run_inner_outer(
                     network,
                     cfg,
                     validity,
+                    &mux_tracker,
                     &mut diag_ctx,
                     &cell_net_map.topo_order,
                 )
@@ -3711,6 +3840,9 @@ pub fn run_inner_outer(
             best_state = state;
             best_x.copy_from_slice(cell_x);
             best_y.copy_from_slice(cell_y);
+        }
+        if !mux_tracker.is_legal() {
+            mux_tracker.report(&format!("sweep {} LEAK", outer));
         }
         // Relative-energy stability stall: iters where |dE| / E < 0.5% in a row
         // indicate the physical system has equilibrated.
@@ -4020,6 +4152,25 @@ pub fn run_inner_outer(
         best_state.n_overflow,
         best_state.overflow_excess,
     );
+    eprintln!(
+        "MuxSlotTracker: {} commit rejections over entire DCD",
+        mux_tracker.rejected(),
+    );
+    mux_tracker.report("pre-rollback");
+    // Re-seed from best_x/best_y so any post-DCD code reading the tracker
+    // sees the committed state (best_x/best_y is what cell_x/cell_y now hold).
+    {
+        let final_gx: Vec<i32> = cell_x
+            .iter()
+            .map(|&x| network.tile_to_net(x).round() as i32)
+            .collect();
+        let final_gy: Vec<i32> = cell_y
+            .iter()
+            .map(|&y| network.tile_to_net(y).round() as i32)
+            .collect();
+        mux_tracker.seed_positions(&final_gx, &final_gy);
+    }
+    mux_tracker.report("post-rollback");
 }
 
 #[cfg(test)]

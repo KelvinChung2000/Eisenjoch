@@ -77,5 +77,7 @@ pub fn legalize(
 ) -> Result<f64, PlacerError> {
     let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
     let legalizer = create_legalizer(strategy);
-    legalizer.legalize(ctx, idx_to_cell, cell_x, cell_y, &type_aware)
+    let displacement = legalizer.legalize(ctx, idx_to_cell, cell_x, cell_y, &type_aware)?;
+    common::verify_shared_mux_legality(ctx)?;
+    Ok(displacement)
 }

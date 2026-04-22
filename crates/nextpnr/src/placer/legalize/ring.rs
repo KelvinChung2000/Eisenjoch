@@ -7,7 +7,9 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::legalize::common::{
+    place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
+};
 use crate::placer::PlacerError;
 
 use rustc_hash::FxHashMap;
@@ -49,6 +51,12 @@ pub fn legalize_ring(
     let t_start = std::time::Instant::now();
 
     unbind_movable_cells(ctx, idx_to_cell);
+
+    // Seed shared-mux registry from already-bound cells (packer-placed
+    // fixed cells: BUFG, IO, clock buffers). Movable cells were just
+    // unbound so they don't contribute.
+    let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
+    let mut rejected_for_shared_mux: u64 = 0;
 
     // Group cells by type.
     let mut groups: FxHashMap<IdString, Vec<usize>> = FxHashMap::default();
@@ -113,7 +121,8 @@ pub fn legalize_ring(
             let ty = phys_y[solver_idx].round() as i32;
             let cell_id = idx_to_cell[solver_idx];
 
-            let mut best_bel: Option<(BelId, i32, i32, f64)> = None;
+            // Best candidate across the whole search: (bel, idx_in_bel_list, x, y, sq_dist).
+            let mut best: Option<(BelId, usize, i32, i32, f64)> = None;
 
             'search: for radius in 0..=max_search_radius {
                 for dx in -(radius as i32)..=(radius as i32) {
@@ -122,11 +131,24 @@ pub fn legalize_ring(
                         let px = tx + dx;
                         let py = ty + dy;
                         if let Some(bel_list) = bels_by_pos.get(&(px, py)) {
-                            if !bel_list.is_empty() {
+                            // Try each BEL at this position (newest first so
+                            // the popped list semantics match the old code),
+                            // keeping the first that is legal w.r.t. the
+                            // shared-mux constraint.
+                            let mut legal_pick: Option<(BelId, usize)> = None;
+                            for (i, &bid) in bel_list.iter().enumerate().rev() {
+                                if registry.is_legal(ctx, cell_id, bid) {
+                                    legal_pick = Some((bid, i));
+                                    break;
+                                } else {
+                                    rejected_for_shared_mux += 1;
+                                }
+                            }
+                            if let Some((bid, bi)) = legal_pick {
                                 let dist = (px as f64 - phys_x[solver_idx]).powi(2)
                                     + (py as f64 - phys_y[solver_idx]).powi(2);
-                                if best_bel.is_none() || dist < best_bel.as_ref().unwrap().3 {
-                                    best_bel = Some((*bel_list.last().unwrap(), px, py, dist));
+                                if best.is_none() || dist < best.as_ref().unwrap().4 {
+                                    best = Some((bid, bi, px, py, dist));
                                 }
                             }
                         }
@@ -135,23 +157,25 @@ pub fn legalize_ring(
                         }
                     }
                 }
-                if best_bel.is_some() {
+                if best.is_some() {
                     break 'search;
                 }
             }
 
-            let (bel_id, bx, by, _dist) = best_bel.ok_or_else(|| {
+            let (bel_id, bi, bx, by, _dist) = best.ok_or_else(|| {
                 PlacerError::PlacementFailed(format!(
-                    "No available BEL found for cell {} of type {} near ({}, {})",
+                    "No legal BEL found for cell {} of type {} near ({}, {}) \
+                     (shared-mux constraints: {} rejections)",
                     ctx.name_of(ctx.design.cell(cell_id).name),
                     ctx.name_of(cell_type),
                     tx,
                     ty,
+                    rejected_for_shared_mux,
                 ))
             })?;
 
             let bel_list = bels_by_pos.get_mut(&(bx, by)).unwrap();
-            bel_list.pop();
+            bel_list.swap_remove(bi);
 
             if !ctx.bind_bel(bel_id, cell_id, PlaceStrength::Placer) {
                 let cell_name = ctx.design.cell(cell_id).name;
@@ -160,12 +184,25 @@ pub fn legalize_ring(
                     ctx.name_of(cell_name),
                 )));
             }
+            registry.record(ctx, cell_id, bel_id);
 
             let dx = bx as f64 - phys_x[solver_idx];
             let dy = by as f64 - phys_y[solver_idx];
             total_displacement += dx * dx + dy * dy;
 
             place_cluster_children(ctx, cell_id, bel_id)?;
+
+            // Cluster children are bound via place_cluster_children; register
+            // their driver wires too so subsequent cells in the outer loop
+            // see the updated occupancy.
+            if let Some(cluster) = ctx.design.clusters.get(&cell_id) {
+                let children: Vec<CellId> = cluster.constr_children.clone();
+                for child_id in children {
+                    if let Some(child_bel) = ctx.design.cell(child_id).bel {
+                        registry.record(ctx, child_id, child_bel);
+                    }
+                }
+            }
         }
     }
 
@@ -173,10 +210,11 @@ pub fn legalize_ring(
     let rms_disp = (total_displacement / n.max(1.0)).sqrt();
     let _max_disp = total_displacement;
     eprintln!(
-        "  Legalization: {:.0}ms, rms_disp={:.2}, total_sq_disp={:.1}",
+        "  Legalization: {:.0}ms, rms_disp={:.2}, total_sq_disp={:.1}, shared_mux_rejects={}",
         t_start.elapsed().as_secs_f64() * 1000.0,
         rms_disp,
         total_displacement,
+        rejected_for_shared_mux,
     );
 
     Ok(total_displacement)

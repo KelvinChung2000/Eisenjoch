@@ -220,18 +220,16 @@ impl PyContext {
     ///     seed: RNG seed for reproducibility. Default 1.
     ///     max_iters: Maximum iterations (default varies by placer).
     ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 1.0.
-    ///     io_boost: IO net demand amplification (opt_trans). Default 3.0.
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
     ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "centroid".
     ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, io_boost=1.0, timing_weight=0.0, init_strategy="centroid", num_threads=8, legalization="ring"))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, timing_weight=0.0, init_strategy="centroid", num_threads=8, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
         seed: u64,
         max_iters: Option<usize>,
         congestion_weight: f64,
-        io_boost: f64,
         timing_weight: f64,
         init_strategy: &str,
         num_threads: usize,
@@ -257,7 +255,6 @@ impl PyContext {
             "opt_trans" | "hydraulic" => {
                 let mut cfg = OptTransPlacerCfg::default();
                 cfg.seed = seed;
-                cfg.io_boost = io_boost;
                 cfg.timing_weight = timing_weight;
                 cfg.num_threads = num_threads.max(1);
                 cfg.init_strategy = match init_strategy {

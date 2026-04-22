@@ -716,12 +716,7 @@ pub(crate) fn nearest_source_node(pin: &NetPinData) -> Option<usize> {
 }
 
 pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f64 {
-    let io_factor = if info.has_fixed_pin {
-        cfg.io_boost
-    } else {
-        1.0
-    };
-    io_factor * demand::net_timing_weight(info, cfg)
+    demand::net_timing_weight(info, cfg)
 }
 
 #[inline(never)]

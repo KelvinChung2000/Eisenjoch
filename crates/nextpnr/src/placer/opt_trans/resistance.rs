@@ -18,9 +18,45 @@
 //! hex=6 for xc7). Beyond that, longer wires rarely serve shorter nets.
 
 use super::network::{Pipe, PipeType};
+use std::sync::OnceLock;
 
-pub(crate) const BPR_ALPHA: f64 = 0.05;
-pub(crate) const BPR_BETA: f64 = 4.0;
+pub(crate) const BPR_ALPHA_DEFAULT: f64 = 0.05;
+pub(crate) const BPR_BETA_DEFAULT: f64 = 4.0;
+
+/// Read-once BPR alpha. Override via `NPNR_OT_BPR_ALPHA` env var
+/// (e.g. `=0` to disable congestion pushback for ablation).
+#[inline]
+pub(crate) fn bpr_alpha() -> f64 {
+    static ALPHA: OnceLock<f64> = OnceLock::new();
+    *ALPHA.get_or_init(|| {
+        std::env::var("NPNR_OT_BPR_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v.max(0.0))
+            .unwrap_or(BPR_ALPHA_DEFAULT)
+    })
+}
+
+/// Read-once BPR beta. Override via `NPNR_OT_BPR_BETA` env var. Higher β
+/// sharpens the congestion knee: penalty ≈ 0 below capacity, rises steeply
+/// above. Useful when the placer piles cells on one tile and the default
+/// β=4 doesn't produce enough edge-congestion pushback to spread them.
+#[inline]
+pub(crate) fn bpr_beta() -> f64 {
+    static BETA: OnceLock<f64> = OnceLock::new();
+    *BETA.get_or_init(|| {
+        std::env::var("NPNR_OT_BPR_BETA")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v.max(1.0))
+            .unwrap_or(BPR_BETA_DEFAULT)
+    })
+}
+
+#[cfg(test)]
+pub(crate) const BPR_ALPHA: f64 = BPR_ALPHA_DEFAULT;
+#[cfg(test)]
+pub(crate) const BPR_BETA: f64 = BPR_BETA_DEFAULT;
 
 /// Maximum span (in composite units) at which longer-wire borrowing is
 /// credible. xc7 hex wires reach 6 composites vertically; any shorter span
@@ -65,7 +101,7 @@ impl ResistanceModel {
         let eff_cap = cap * slack;
         let usage = pipe.net_count.max(0.0);
         let ratio = usage / eff_cap;
-        base * (1.0 + BPR_ALPHA * ratio.powf(BPR_BETA))
+        base * (1.0 + bpr_alpha() * ratio.powf(bpr_beta()))
     }
 }
 

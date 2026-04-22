@@ -106,8 +106,6 @@ pub struct OptTransPlacerCfg {
     pub timing_weight: f64,
     /// Optional per-net timing criticality map (0.0..1.0).
     pub timing_criticality: FxHashMap<NetId, f32>,
-    /// IO net demand amplification factor.
-    pub io_boost: f64,
     /// Report every N iterations.
     pub report_interval: usize,
     /// Maximum cells for legalization.
@@ -146,15 +144,6 @@ pub struct OptTransPlacerCfg {
     /// staleness inside a sweep for fewer per-net path solves.
     pub bisect_refresh_region: i32,
 
-    // --- Scarcity-scaled pipe cost (always on) ---
-    /// Slope of the linear scarcity penalty applied at pipe creation:
-    ///     factor = 1 + k * max(0, 1 - cap / median_cap(span))
-    ///     base   = sqrt(span) * factor
-    /// At `cap = median_cap(span)` factor=1 (no penalty). At `cap=0`, factor=1+k.
-    /// Penalises narrow (low-cap) pipes relative to their own span bucket, so
-    /// IOB/NULL/CLK boundary wires don't get used as general routing. Default 10.0.
-    pub scarcity_k: f64,
-
     /// EMA old-usage blend for updating fractional `pipe.net_count` between
     /// outer iterations: `net_count = α * net_count + (1-α) * new_usage`.
     /// Default 0.5.
@@ -190,10 +179,9 @@ impl Default for OptTransPlacerCfg {
             net_parallel_batch_size: 4,
             timing_weight: 0.0,
             timing_criticality: FxHashMap::default(),
-            io_boost: 1.0,
             report_interval: 5,
             lap_max_cells: 10000,
-            init_strategy: InitStrategy::RandomBel,
+            init_strategy: InitStrategy::Uniform,
             num_threads: 8,
             legalization: "ring".to_string(),
             max_outer_iters: 50,
@@ -201,10 +189,9 @@ impl Default for OptTransPlacerCfg {
             jacobi_alpha: 1.0,
             sweep_mode: SweepMode::JacobiFullscan,
             path_model: PathModel::DialLogit,
-            graph_model: GraphModel::FlatPipe,
+            graph_model: GraphModel::TwoLevelPip,
             bisect_seed_k: 8,
             bisect_refresh_region: 1,
-            scarcity_k: 10.0,
             blend_alpha: 0.5,
             skip_constants: true,
             skip_clocks: false,

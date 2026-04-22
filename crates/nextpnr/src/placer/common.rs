@@ -1,10 +1,11 @@
 //! Shared helper functions used by multiple placer implementations.
 
-use crate::chipdb::BelId;
+use crate::chipdb::{BelId, WireId};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::{CellId, NetId};
+use crate::netlist::{CellId, NetId, PortType};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Policy for whether GND/VCC/clock nets should contribute to placement cost.
 ///
@@ -1109,4 +1110,351 @@ impl CellValidityMask {
     pub fn n_cells(&self) -> usize {
         self.n_cells
     }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime mux-slot tracker: enforce shared-output-mux capacity during DCD
+// ---------------------------------------------------------------------------
+
+/// Live per-tile tracker of how many cells with external fanout occupy each
+/// tile, versus how many output-mux slots the silicon actually provides.
+///
+/// The xc7 slice physically shares one output multiplexer between a LUT and
+/// its paired FF (and similar sharing across halfslices), so a tile that has
+/// N raw BELs may only support K < N cells driving distinct external nets.
+///
+/// Capacity is derived from the chipdb: for each physical tile, count the
+/// distinct routing-node roots among every output pin of every BEL in the
+/// tile. Tiles without sharing (IOB, BUFG, BRAM) end up with capacity equal
+/// to raw BEL count.
+///
+/// The tracker exposes `try_commit` — a hard runtime gate that the placer
+/// calls right before mutating `cell_x[ci] / cell_y[ci]`. If the destination
+/// tile is full, the move is rejected and the cell stays at its current
+/// position; next sweep will re-propose.
+pub struct MuxSlotTracker {
+    /// Per (gx, gy): number of distinct output-mux slots.
+    capacity: FxHashMap<(i32, i32), u32>,
+    /// Per (gx, gy): current count of placed cells with external fanout.
+    /// Pre-populated at build time with an `AtomicU32::new(0)` entry for every
+    /// capacity-positive tile. The map's key set is frozen after build, so
+    /// concurrent readers/mutators only touch the inner atomics — no locking.
+    used: FxHashMap<(i32, i32), AtomicU32>,
+    /// Per cell index: does this cell drive at least one live, user-owned net?
+    drives_external: Vec<bool>,
+    /// Rejection counter for diagnostics.
+    rejected: AtomicU64,
+    /// Grid origin offset — physical (loc.x, loc.y) maps to (loc.x - x0, loc.y - y0).
+    x0: i32,
+    y0: i32,
+}
+
+impl MuxSlotTracker {
+    /// Build the tracker. Walks every tile and counts distinct output-node
+    /// roots; classifies each cell in `cell_ids` by whether it drives
+    /// external fanout. `used` is zeroed — call `seed_positions` after.
+    pub fn build(ctx: &Context, cell_ids: &[CellId], x0: i32, y0: i32) -> Self {
+        let t = std::time::Instant::now();
+
+        // Gather the active placement buckets from the movable-cell set.
+        // Then use `bels_for_bucket` as the authoritative enumeration of
+        // placeable BELs per bucket — that's what the legalizer uses and
+        // accounts for cell_type_aliases / bucket resolution.
+        let mut active_buckets: FxHashSet<IdString> = FxHashSet::default();
+        for &cid in cell_ids {
+            active_buckets.insert(ctx.resolve_bucket(ctx.design.cell(cid).cell_type));
+        }
+
+        // For each active bucket, walk its BELs; group by physical tile and
+        // record the BEL ids. This mirrors what `TypeAwarePlacement` does
+        // for capacity, but keeps the BEL list available so we can look up
+        // output-pin wires.
+        let mut bels_per_tile: FxHashMap<(i32, i32), Vec<BelId>> = FxHashMap::default();
+        for &bucket in &active_buckets {
+            for bel in ctx.bels_for_bucket(bucket) {
+                let loc = bel.loc();
+                bels_per_tile
+                    .entry((loc.x - x0, loc.y - y0))
+                    .or_default()
+                    .push(bel.id());
+            }
+        }
+
+        // Capacity[tile] = count of distinct output-node roots among the
+        // output pins of active-bucket BELs in that tile.
+        let mut capacity: FxHashMap<(i32, i32), u32> = FxHashMap::default();
+        for (&tile_key, bels) in &bels_per_tile {
+            let mut roots: FxHashSet<WireId> = FxHashSet::default();
+            for &bel_id in bels {
+                let bel_info = ctx.chipdb().bel_info(bel_id);
+                for pin in bel_info.pins.get() {
+                    if pin.dir() != 1 {
+                        continue;
+                    }
+                    let wire = WireId::new(bel_id.tile(), pin.wire());
+                    roots.insert(node_root(ctx, wire));
+                }
+            }
+            if !roots.is_empty() {
+                capacity.insert(tile_key, roots.len() as u32);
+            }
+        }
+
+        // Per-cell external-fanout flag.
+        let drives_external: Vec<bool> = cell_ids
+            .iter()
+            .map(|&cid| cell_drives_external(ctx, cid))
+            .collect();
+
+        let ext_count = drives_external.iter().filter(|&&b| b).count();
+        let total_cap: u32 = capacity.values().sum();
+        let bucket_names: Vec<String> = active_buckets
+            .iter()
+            .map(|b| ctx.name_of(*b).to_string())
+            .collect();
+        eprintln!(
+            "MuxSlotTracker: {} cells ({} with external fanout), {} tiles, total_cap={}, active_buckets=[{}], built in {:.1}ms",
+            cell_ids.len(),
+            ext_count,
+            capacity.len(),
+            total_cap,
+            bucket_names.join(","),
+            t.elapsed().as_secs_f64() * 1000.0,
+        );
+
+        // Pre-populate `used` with a zeroed atomic counter for every
+        // capacity-positive tile. The key set is closed after this point so
+        // concurrent callers only touch the inner atomics.
+        let mut used: FxHashMap<(i32, i32), AtomicU32> = FxHashMap::default();
+        used.reserve(capacity.len());
+        for &key in capacity.keys() {
+            used.insert(key, AtomicU32::new(0));
+        }
+
+        Self {
+            capacity,
+            used,
+            drives_external,
+            rejected: AtomicU64::new(0),
+            x0,
+            y0,
+        }
+    }
+
+    /// Seed the live `used` counts from the current grid positions of every
+    /// external-fanout cell. `cell_gx/cell_gy` are in virtual grid coords
+    /// (same convention as `(x0, y0)` passed to `build`). Cells placed on
+    /// tiles without a capacity entry are silently untracked — they can't
+    /// be committed to anyway.
+    pub fn seed_positions(&mut self, cell_gx: &[i32], cell_gy: &[i32]) {
+        for counter in self.used.values() {
+            counter.store(0, Ordering::Relaxed);
+        }
+        for (ci, (&gx, &gy)) in cell_gx.iter().zip(cell_gy.iter()).enumerate() {
+            if !self.drives_external.get(ci).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(counter) = self.used.get(&(gx, gy)) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn drives_external(&self, cell_idx: usize) -> bool {
+        self.drives_external.get(cell_idx).copied().unwrap_or(false)
+    }
+
+    /// Read-only check: would committing this move fit under capacity?
+    /// Returns true for cells that don't drive external fanout or for
+    /// null moves (same tile). Observes the live atomic counter — good
+    /// enough to prune obviously-full destinations during a concurrent
+    /// sweep, but the authoritative check still happens in `try_commit`
+    /// (CAS against the live counter).
+    #[inline]
+    pub fn would_fit(
+        &self,
+        cell_idx: usize,
+        from_gx: i32,
+        from_gy: i32,
+        to_gx: i32,
+        to_gy: i32,
+    ) -> bool {
+        if !self.drives_external(cell_idx) {
+            return true;
+        }
+        if from_gx == to_gx && from_gy == to_gy {
+            return true;
+        }
+        let cap = self.capacity.get(&(to_gx, to_gy)).copied().unwrap_or(0);
+        let used = self
+            .used
+            .get(&(to_gx, to_gy))
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        used < cap
+    }
+
+    /// Hard runtime gate: try to commit the move `(from) -> (to)` for cell
+    /// `cell_idx`. Returns true if committed, false if rejected. Safe to
+    /// call concurrently from many threads — the destination counter is
+    /// updated via CAS so only `cap` commits succeed per tile.
+    ///
+    /// No-op commit (same source and destination) always succeeds.
+    pub fn try_commit(
+        &self,
+        cell_idx: usize,
+        from_gx: i32,
+        from_gy: i32,
+        to_gx: i32,
+        to_gy: i32,
+    ) -> bool {
+        if !self.drives_external(cell_idx) {
+            return true;
+        }
+        if from_gx == to_gx && from_gy == to_gy {
+            return true;
+        }
+        let cap = self.capacity.get(&(to_gx, to_gy)).copied().unwrap_or(0);
+        let Some(to_entry) = self.used.get(&(to_gx, to_gy)) else {
+            self.rejected.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+        let mut current = to_entry.load(Ordering::Relaxed);
+        loop {
+            if current >= cap {
+                self.rejected.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            match to_entry.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        if let Some(from_entry) = self.used.get(&(from_gx, from_gy)) {
+            let mut prev = from_entry.load(Ordering::Relaxed);
+            while prev > 0 {
+                match from_entry.compare_exchange_weak(
+                    prev,
+                    prev - 1,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => prev = actual,
+                }
+            }
+        }
+        true
+    }
+
+    pub fn rejected(&self) -> u64 {
+        self.rejected.load(Ordering::Relaxed)
+    }
+
+    /// True iff every tile has `used <= capacity`. O(populated_tiles).
+    pub fn is_legal(&self) -> bool {
+        for (k, counter) in &self.used {
+            let used = counter.load(Ordering::Relaxed);
+            if used > self.capacity.get(k).copied().unwrap_or(0) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn capacity_at(&self, gx: i32, gy: i32) -> u32 {
+        self.capacity.get(&(gx, gy)).copied().unwrap_or(0)
+    }
+
+    pub fn used_at(&self, gx: i32, gy: i32) -> u32 {
+        self.used
+            .get(&(gx, gy))
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Report summary: capacity histogram + overflow tile count given the
+    /// current `used` map. Useful post-DCD or at key milestones.
+    pub fn report(&self, label: &str) {
+        use std::collections::BTreeMap;
+        let mut cap_hist: BTreeMap<u32, u32> = BTreeMap::new();
+        for &c in self.capacity.values() {
+            *cap_hist.entry(c).or_insert(0) += 1;
+        }
+        let mut populated_total = 0u32;
+        let mut overflow_tiles = 0u32;
+        let mut peak_excess: i32 = 0;
+        let mut at_cap_tiles = 0u32;
+        for (&key, counter) in &self.used {
+            let u = counter.load(Ordering::Relaxed);
+            populated_total += u;
+            let cap = self.capacity.get(&key).copied().unwrap_or(0);
+            if u > cap {
+                overflow_tiles += 1;
+                peak_excess = peak_excess.max(u as i32 - cap as i32);
+            } else if u == cap && cap > 0 {
+                at_cap_tiles += 1;
+            }
+        }
+        let cap_hist_str: Vec<String> = cap_hist
+            .iter()
+            .filter(|(&k, _)| k > 0)
+            .map(|(k, v)| format!("{}:{}", k, v))
+            .collect();
+        eprintln!(
+            "MuxSlotTracker[{}]: populated_cells={}, overflow_tiles={}, at_cap_tiles={}, peak_excess={}, capacity_hist={{{}}}",
+            label,
+            populated_total,
+            overflow_tiles,
+            at_cap_tiles,
+            peak_excess,
+            cap_hist_str.join(","),
+        );
+    }
+
+    pub fn x0(&self) -> i32 {
+        self.x0
+    }
+    pub fn y0(&self) -> i32 {
+        self.y0
+    }
+}
+
+/// True iff the cell has an Out/InOut port bound to a live net with ≥1 user.
+fn cell_drives_external(ctx: &Context, cell_id: CellId) -> bool {
+    let cell = ctx.design.cell(cell_id);
+    for (_, port) in cell.ports.iter() {
+        let pt = port.port_type();
+        if !matches!(pt, PortType::Out | PortType::InOut) {
+            continue;
+        }
+        let Some(net_id) = port.net() else { continue };
+        let net = ctx.net(net_id);
+        if net.is_alive() && net.num_users() > 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Canonical node root: the (tile, index)-lexicographically smallest wire
+/// across the routing node containing `wire`. Two wires share a node iff
+/// they have the same root.
+fn node_root(ctx: &Context, wire: WireId) -> WireId {
+    let mut root = wire;
+    let mut root_key = (wire.tile(), wire.index());
+    ctx.chipdb().node_wires_cb(wire, |nw| {
+        let key = (nw.tile(), nw.index());
+        if key < root_key {
+            root = nw;
+            root_key = key;
+        }
+    });
+    root
 }

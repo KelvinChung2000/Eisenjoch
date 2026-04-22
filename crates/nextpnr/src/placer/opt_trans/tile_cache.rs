@@ -15,7 +15,7 @@ use crate::chipdb::ChipDb;
 use crate::read_packed;
 
 use super::network::{PipeNetwork, DIST_SCALE};
-use super::resistance::{ResistanceModel, BPR_ALPHA, BPR_BETA};
+use super::resistance::{bpr_alpha, bpr_beta, ResistanceModel};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TileSpanCostKey {
@@ -534,7 +534,7 @@ pub fn compute_switch_matrix_costs(
     // tile_usage_q itself. Cap at 1024 to avoid integer overflow on the α·u^β
     // scale factor; in practice tile_usage on sv3 stays well below that.
     let usage = tile_usage_q.min(1024) as f64;
-    let scale = 1.0 + BPR_ALPHA * usage.powf(BPR_BETA);
+    let scale = 1.0 + bpr_alpha() * usage.powf(bpr_beta());
     let scaled_pip_cost =
         ((template.pip_base_cost as f64 * scale).round() as u32).max(template.pip_base_cost);
 

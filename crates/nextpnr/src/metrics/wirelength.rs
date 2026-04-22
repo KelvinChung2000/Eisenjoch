@@ -50,6 +50,60 @@ pub fn total_hpwl(ctx: &Context) -> f64 {
     net_indices.par_iter().map(|&idx| net_hpwl(ctx, idx)).sum()
 }
 
+/// Per-net HPWL considering only locked (IO-fixed) cells. Returns the bbox of
+/// fixed cells on the net, which is a strict lower bound on achievable HPWL for
+/// that net regardless of where movable cells go.
+pub fn net_hpwl_locked_only(ctx: &Context, net_idx: NetId) -> f64 {
+    let net = ctx.net(net_idx);
+    if !net.is_alive() || net.users().is_empty() {
+        return 0.0;
+    }
+    let Some(driver_pin) = net.driver_cell_port() else {
+        return 0.0;
+    };
+
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut min_y = i32::MAX;
+    let mut max_y = i32::MIN;
+
+    let cell_indices = std::iter::once(driver_pin.cell)
+        .chain(net.users().iter().filter(|u| u.is_valid()).map(|u| u.cell));
+
+    for cell_idx in cell_indices {
+        let cell = ctx.cell(cell_idx);
+        if !cell.bel_strength().is_locked() {
+            continue;
+        }
+        if let Some(bel) = cell.bel() {
+            let loc = bel.loc();
+            min_x = min_x.min(loc.x);
+            max_x = max_x.max(loc.x);
+            min_y = min_y.min(loc.y);
+            max_y = max_y.max(loc.y);
+        }
+    }
+
+    if min_x > max_x {
+        return 0.0;
+    }
+    ((max_x - min_x) + (max_y - min_y)) as f64
+}
+
+/// Sum of `net_hpwl_locked_only` across all alive nets. Ideal-clustering
+/// oracle: the achievable HPWL if every non-fixed cell could collapse to a
+/// single point per net (ignoring BEL conflicts and cross-net sharing). Used
+/// as a theoretical floor to compare against the real placer output.
+pub fn total_hpwl_locked_only(ctx: &Context) -> f64 {
+    use rayon::prelude::*;
+
+    let net_indices: Vec<NetId> = ctx.design.iter_alive_nets().map(|(idx, _)| idx).collect();
+    net_indices
+        .par_iter()
+        .map(|&idx| net_hpwl_locked_only(ctx, idx))
+        .sum()
+}
+
 /// Bresenham line estimate wirelength for a single net.
 ///
 /// Counts unique tile-to-tile edge crossings across all driver-to-sink lines,
