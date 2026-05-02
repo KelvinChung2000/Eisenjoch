@@ -1,6 +1,7 @@
 use crate::context::Context;
 use crate::metrics::{compute_net_demand, compute_tile_capacities};
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::common::{verify_cluster_placement, verify_shared_mux_legality};
 use crate::placer::legalize::sorted::sorted_legalize;
 use crate::placer::PlacerError;
 
@@ -13,7 +14,7 @@ impl HeapState {
     /// Delegates to the shared `sorted_legalize` algorithm, then updates
     /// HeapState cell_x/cell_y from the bound BEL positions.
     pub(super) fn legalize(&mut self, ctx: &mut Context) -> Result<(), PlacerError> {
-        // Delegate to shared sorted legalization.
+        // Delegate to shared sorted legalization (now shared-mux aware).
         let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
         sorted_legalize(
             ctx,
@@ -22,6 +23,13 @@ impl HeapState {
             &self.cell_y,
             &type_aware,
         )?;
+
+        // Hard post-checks. Cluster placement runs first because the
+        // shared-mux conflicts are usually a downstream symptom of a
+        // cluster child rebound to an unrelated BEL by the legalizer's
+        // any-available-BEL fallback.
+        verify_cluster_placement(ctx)?;
+        verify_shared_mux_legality(ctx)?;
 
         // HeAP-specific: update cell_x/cell_y from bound BEL positions.
         for (i, &cell_idx) in self.movable_cells.iter().enumerate() {

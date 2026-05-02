@@ -106,10 +106,15 @@ pub fn apply_packing_rule(
     }
 
     if base_cluster.is_none() {
+        // For relative rules the base cell's z stays unconstrained — the
+        // legalizer picks any letter slot, and children follow at root.z + rel_z.
+        // Pinning constr_z to rule.base_z would force every cluster instance
+        // sharing this rule into the same letter, causing collisions.
+        let base_z = if rule.is_absolute { rule.base_z } else { 0 };
         ctx.design
             .cell_edit(base_cell)
             .set_cluster(Some(base_cell))
-            .set_constraints(0, 0, rule.base_z, rule.is_absolute);
+            .set_constraints(0, 0, base_z, rule.is_absolute);
         ctx.design
             .clusters
             .entry(base_cell)

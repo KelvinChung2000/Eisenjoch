@@ -16,7 +16,6 @@ from chip_database.gen_xc7_hybrid import (
     DSP_SITE_TYPES,
     IMPORTANT_SITE_TYPES,
     K,
-    N_IO,
     PinType,
     _infer_pin_dir,
     _logical_pin_names,
@@ -344,18 +343,48 @@ def build_composite_tile_type(chip, xray, spec, tileconn):
 
     _absorb_internal_tileconn(tt, spec, tileconn, wire_rename)
     bel_counts, bel_types = _add_composite_bels(tt, xray, spec, wire_rename)
-    _add_composite_io_bridge(tt, spec, created)
     tt.create_group("SWITCHBOX", "SWITCHBOX")
+
+    wire_set = set(created) | set(wire_rename.values())
+    # Every composite tile type participates in the CLK_RELAY mesh (CLB,
+    # BRAM, DSP). CLB also taps the OUT mesh into its local M1/M2_GCLK
+    # wires for switch-matrix delivery; BRAM/DSP only pass-through. The
+    # pass-through is non-optional: without it, every BRAM and DSP column
+    # is a chain-break on y-row clock distribution, stranding BUFG_I.
+    wire_set |= add_clock_relay_to_composite(tt, wire_set)
 
     assert "CLB" != spec.name or bel_counts["LUT6"] == 8, bel_counts
     return {
-        "wire_set": set(created) | set(wire_rename.values()),
+        "wire_set": wire_set,
         "bel_counts": bel_counts,
         "bel_types": bel_types,
         "wire_rename": wire_rename,
         "pip_stats": pip_stats,
         "spec": spec,
     }
+
+
+CLOCK_RELAY_LANES = 12
+CLOCK_RELAY_DIRS = ("E", "W", "N", "S")
+
+
+def clock_relay_wire(c, direction, side="OUT"):
+    """Directional boundary wire for one of two clock PIP relay meshes.
+
+    ``side="OUT"`` is the BUFG → GCLK-track distribution mesh, carrying the
+    signal from ``BUFG{c}_O`` out to every CLB. Each CLB taps the OUT
+    mesh into the local ``M1_GCLK_L_B{c}`` / ``M2_GCLK_B{c}`` wires so
+    the intra-INT switch-matrix can drive the slice CLK BEL pin.
+
+    ``side="IN"`` is the IOB → BUFG_I input mesh: IO pads tap into IN
+    at the IOB tile, the IN mesh carries the signal across the fabric
+    to the BUFG tile, and the BUFG tile taps IN into ``BUFG{c}_I``.
+    IN has NO taps into the switch matrix; that's what keeps input-net
+    Dijkstra from leaking into the fabric and losing the sink.
+
+    Having two disjoint meshes also means an OUTPUT net driving lane-c
+    can't collide on wire capacity with an INPUT net using lane-c."""
+    return f"CLK_RELAY_{side}_{c}_{direction}"
 
 
 def build_clk_bufg_tile_type(chip):
@@ -370,6 +399,20 @@ def build_clk_bufg_tile_type(chip):
         tt.add_bel_pin(bel, "I", i_wire, PinType.INPUT)
         tt.add_bel_pin(bel, "O", o_wire, PinType.OUTPUT)
         wires.update((i_wire, o_wire))
+    # Clock PIP relay mesh terminals:
+    #   - OUT mesh: BUFG{c}_O → CLK_RELAY_OUT_{c}_{E,W,N,S}
+    #   - IN  mesh: CLK_RELAY_IN_{c}_{E,W,N,S} → BUFG{c}_I
+    # Each mesh is tileconn-chained through CLB and IOB pass-through PIPs.
+    for c in range(CLOCK_RELAY_LANES):
+        for side in ("OUT", "IN"):
+            for d in CLOCK_RELAY_DIRS:
+                wname = clock_relay_wire(c, d, side=side)
+                tt.create_wire(wname, "GCLK")
+                wires.add(wname)
+        if c < N_BUFG:
+            for d in CLOCK_RELAY_DIRS:
+                tt.create_pip(f"BUFG{c}_O", clock_relay_wire(c, d, side="OUT"))
+                tt.create_pip(clock_relay_wire(c, d, side="IN"), f"BUFG{c}_I")
     tt.create_wire("GND", "GND", const_value="GND")
     tt.create_wire("VCC", "VCC", const_value="VCC")
     wires.update(("GND", "VCC"))
@@ -378,6 +421,36 @@ def build_clk_bufg_tile_type(chip):
         "bel_counts": Counter({"BUFG": N_BUFG}),
         "bel_types": {"BUFG"},
     }
+
+
+def add_clock_relay_to_composite(tt, composite_wire_set):
+    """Add the OUT + IN clock PIP relay meshes to a CLB composite tile.
+
+    Both meshes have 4 directional boundary wires per lane with all-to-all
+    internal pass/turn PIPs. The OUT mesh additionally taps into the local
+    M1_GCLK_L_B{c} / M2_GCLK_B{c} wires so the switch-matrix can deliver
+    to the slice CLK BEL pin. The IN mesh has no taps — it's a clean
+    conduit for IOB → BUFG_I signals that never leaks into fabric."""
+    added = set()
+    for c in range(CLOCK_RELAY_LANES):
+        for side in ("OUT", "IN"):
+            dirs = []
+            for d in CLOCK_RELAY_DIRS:
+                wname = clock_relay_wire(c, d, side=side)
+                tt.create_wire(wname, "GCLK")
+                dirs.append(wname)
+                added.add(wname)
+            for i, src in enumerate(dirs):
+                for j, dst in enumerate(dirs):
+                    if i != j:
+                        tt.create_pip(src, dst)
+            if side == "OUT":
+                for tap in (f"M1_GCLK_L_B{c}", f"M2_GCLK_B{c}"):
+                    if tap not in composite_wire_set:
+                        continue
+                    for src in dirs:
+                        tt.create_pip(src, tap)
+    return added
 
 
 def _absorb_internal_tileconn(tt, spec, tileconn, wire_rename):
@@ -448,22 +521,6 @@ def _add_composite_bels(tt, xray, spec, wire_rename):
     return bel_counts, bel_types
 
 
-def _add_composite_io_bridge(tt, spec, created):
-    imux = sorted([w for w in created if "IMUX" in w])
-    logic_outs = sorted([w for w in created if "LOGIC_OUTS" in w])
-    if not imux and not logic_outs:
-        return
-    for i in range(N_IO):
-        for bname in (f"IO_BRIDGE_IN{i}", f"IO_BRIDGE_OUT{i}", f"IO_BRIDGE_T{i}"):
-            tt.create_wire(bname, "IO_BRIDGE")
-            created.add(bname)
-        for mux_wire in imux:
-            tt.create_pip(f"IO_BRIDGE_OUT{i}", mux_wire)
-        for lo_wire in logic_outs:
-            tt.create_pip(lo_wire, f"IO_BRIDGE_IN{i}")
-            tt.create_pip(lo_wire, f"IO_BRIDGE_T{i}")
-
-
 def build_synthetic_tileconn(specs, xray, tileconn):
     by_type = defaultdict(list)
     for spec in specs.values():
@@ -512,7 +569,7 @@ def compose_paper_scale_tilegrid(solution):
     tilegrid = {}
     x = 0
     for y in range(solution.h_device):
-        tilegrid[f"X{x:03d}Y{y:03d}__IOB_L"] = {"grid_x": x, "grid_y": y, "type": "IOB"}
+        tilegrid[f"X{x:03d}Y{y:03d}__IOB_L"] = {"grid_x": x, "grid_y": y, "type": "IOB_W"}
     x += 1
     for kind in layout:
         for y in range(solution.h_device):
@@ -523,7 +580,7 @@ def compose_paper_scale_tilegrid(solution):
             }
         x += 1
     for y in range(solution.h_device):
-        tilegrid[f"X{x:03d}Y{y:03d}__IOB_R"] = {"grid_x": x, "grid_y": y, "type": "IOB"}
+        tilegrid[f"X{x:03d}Y{y:03d}__IOB_R"] = {"grid_x": x, "grid_y": y, "type": "IOB_E"}
     x += 1
     # Keep the BUFG copy as a sidecar column outside the routed fabric. A mostly
     # NULL column must not be inserted between composite routing columns.

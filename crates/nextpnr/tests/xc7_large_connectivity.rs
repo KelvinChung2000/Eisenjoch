@@ -137,10 +137,11 @@ fn lh_nodes_span_multiple_columns() {
 }
 
 /// Pure-chipdb BFS test: starting from a mid-row left-column IOB
-/// `IO_BRIDGE_OUT*` wire, can we reach *any* right-column IOB
-/// `IO_BRIDGE_IN*` wire via PIP hops + node equivalence? This catches
+/// `IO{N}_O` pad-output wire, can we reach *any* right-column IOB
+/// `IO{N}_I` pad-input wire via PIP hops + node equivalence? This catches
 /// LH-chain gaps across DSP/BRAM composites (previously LH broke at the
-/// first non-CLB column).
+/// first non-CLB column). Replaces the old IO_BRIDGE-based probe now that
+/// IOB tiles use real prjxray IO_INT_INTERFACE wires.
 #[test]
 fn left_io_reaches_right_io() {
     let Some(db) = load_db() else {
@@ -153,7 +154,8 @@ fn left_io_reaches_right_io() {
 
     let (mut min_iob_x, mut max_iob_x) = (i32::MAX, i32::MIN);
     for t in 0..db.num_tiles() {
-        if db.tile_type_name(t) != "IOB" {
+        let tt_name = db.tile_type_name(t);
+        if tt_name != "IOB_W" && tt_name != "IOB_E" {
             continue;
         }
         let (tx, _) = db.tile_xy(t);
@@ -175,7 +177,8 @@ fn left_io_reaches_right_io() {
     let collect_wires = |col: i32, prefix: &str| -> Vec<WireId> {
         let mut out = Vec::new();
         for t in 0..db.num_tiles() {
-            if db.tile_type_name(t) != "IOB" {
+            let tt_name = db.tile_type_name(t);
+            if tt_name != "IOB_W" && tt_name != "IOB_E" {
                 continue;
             }
             let (tx, ty) = db.tile_xy(t);
@@ -193,20 +196,25 @@ fn left_io_reaches_right_io() {
         }
         out
     };
-    let left_sources = collect_wires(min_iob_x, "IO_BRIDGE_OUT");
+    // IO{N}_O is the pad-output wire (IOB → fabric); IO{N}_I is the
+    // pad-input wire (fabric → IOB). We want a BFS path between them.
+    let left_sources = collect_wires(min_iob_x, "IO0_O");
     let right_sinks: FxHashSet<WireId> =
-        collect_wires(max_iob_x, "IO_BRIDGE_IN").into_iter().collect();
+        collect_wires(max_iob_x, "IO0_I").into_iter().collect();
     assert!(
         !left_sources.is_empty(),
-        "no left IO_BRIDGE_OUT source wires found"
+        "no left IO0_O source wires found"
     );
-    assert!(!right_sinks.is_empty(), "no right IO_BRIDGE_IN sinks found");
+    assert!(!right_sinks.is_empty(), "no right IO0_I sinks found");
 
     // Cap the BFS — the chipdb has ~60M wires so unconditional BFS is slow.
+    // The real prjxray IO_INT_INTERFACE bridge explores the span network
+    // much more widely than the old IO_BRIDGE IMUX fan-out, so bump the
+    // default cap; 150M pops comfortably reaches the right column on sv3.
     let cap: usize = std::env::var("BFS_CAP")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(30_000_000);
+        .unwrap_or(150_000_000);
 
     let src = left_sources[0];
     let (sx, _sy) = db.tile_xy(src.tile());

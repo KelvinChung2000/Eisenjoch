@@ -20,7 +20,37 @@ use super::common::{
     find_congested_wires, resolve_source_wire, source_wire_const_value, unroute_net, RoutePlan,
     SinkRoute,
 };
+use super::lookahead::{Lookahead, LookaheadClass, UNKNOWN_CLASS};
 use super::RouterError;
+
+/// Numerator and denominator of the weighted-A* multiplier applied to the
+/// lookahead-derived heuristic. `f = g + (NUM/DEN)·h`. Set to 2.0 because
+/// the chain lookahead consistently underestimates true min-cost by 1.6–2.2×
+/// on xc7_large (intra-tile shortest paths ignore the entry/exit-wire
+/// pairing constraint between adjacent tiles). Bounded suboptimality:
+/// any returned path costs at most NUM/DEN times the true optimum.
+const HEURISTIC_WEIGHT_NUM: DelayT = 2;
+const HEURISTIC_WEIGHT_DEN: DelayT = 1;
+
+/// Resolve the driver-BEL class for `net`. Returns [`UNKNOWN_CLASS`]
+/// when no lookahead is provided, the net has no driver (constants),
+/// the driver hasn't been placed, or its BEL type isn't recognized —
+/// any of those means we can't safely class-gate the search.
+pub(super) fn driver_class_for_net(
+    ctx: &Context,
+    net: NetId,
+    lookahead: Option<&Lookahead>,
+) -> LookaheadClass {
+    let Some(la) = lookahead else { return UNKNOWN_CLASS };
+    let Some(driver_pin) = ctx.net(net).driver_cell_port() else {
+        return UNKNOWN_CLASS;
+    };
+    let Some(bel) = ctx.cell(driver_pin.cell).bel() else {
+        return UNKNOWN_CLASS;
+    };
+    let bel_type_id = ctx.chipdb().bel_info(bel.id()).bel_type();
+    la.class_for_bel_type(bel_type_id).unwrap_or(UNKNOWN_CLASS)
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -128,7 +158,7 @@ impl super::Router for Router1 {
         let mut state = Router1State::new();
 
         // Build lookahead table for A* heuristic.
-        let lookahead = super::lookahead::Lookahead::build(ctx, 40);
+        let lookahead = super::lookahead::Lookahead::build(ctx);
         let lookahead = std::sync::Arc::new(lookahead);
 
         // Phase 1: Parallel initial route computation.
@@ -295,6 +325,7 @@ pub fn compute_route_r1(
         }
         match astar_route(
             ctx,
+            net,
             &tree_wires,
             sink_wire,
             wire_penalty,
@@ -345,27 +376,114 @@ pub use super::astar::{AStarExit, AStarTrace};
 /// Cost model used by the router1 A*: `pip_delay + 1` per PIP, plus a
 /// per-wire congestion penalty looked up in `wire_penalty`.
 ///
-/// Stays in lockstep with `lookahead::Lookahead::build`'s Dijkstra model so
-/// that `h(w) ≤ true_cost(w, dst)` always holds and first-pop-optimal break
-/// is sound.
+/// `pip_delay + 1` is the same per-pip cost the lookahead's `per_tile_cost`
+/// is taken from, so `h = manhattan × per_tile_cost ≤ true_cost(w, dst)`
+/// stays admissible and first-pop-optimal break is sound.
 struct MazeCostModel<'a> {
     wire_penalty: &'a FxHashMap<WireId, DelayT>,
     bbox: Option<&'a BoundingBox>,
-    lookahead: Option<&'a super::lookahead::Lookahead>,
+    lookahead: Option<&'a Lookahead>,
+    /// Net being routed. Wires already bound to a different net are treated
+    /// as near-impassable (`DelayT::MAX / 4`) so A* plans around them rather
+    /// than through them. Without this, A* emits plans whose `apply_route_plan`
+    /// fails atomically on the first conflict, leaving the net empty.
+    net: NetId,
+    /// Driver-BEL class of the net being routed. Used together with
+    /// `lookahead` to hard-gate A* expansion onto wires not reachable
+    /// from this driver class (e.g. fabric data nets are never
+    /// candidates for the GCLK backbone).
+    driver_class: LookaheadClass,
+    /// When true, the `wire_binding` check is skipped. Used by the scoped
+    /// rip-up path to find the theoretical shortest corridor regardless of
+    /// current occupancy; the caller then inspects the returned PIPs to
+    /// decide which foreign nets need to be ripped up.
+    ignore_bindings: bool,
+}
+
+impl<'a> MazeCostModel<'a> {
+    fn new(
+        ctx: &Context,
+        net: NetId,
+        wire_penalty: &'a FxHashMap<WireId, DelayT>,
+        bbox: Option<&'a BoundingBox>,
+        lookahead: Option<&'a Lookahead>,
+        ignore_bindings: bool,
+    ) -> Self {
+        let driver_class = driver_class_for_net(ctx, net, lookahead);
+        Self {
+            wire_penalty,
+            bbox,
+            lookahead,
+            net,
+            driver_class,
+            ignore_bindings,
+        }
+    }
 }
 
 impl<'a> PathCostModel for MazeCostModel<'a> {
     fn pip_cost(&self, ctx: &Context, pip: PipId) -> DelayT {
-        default_pip_cost(ctx, pip)
+        // Explore mode = pure Dijkstra with uniform pip cost. Non-uniform
+        // lookahead costs inflate Dijkstra visit count via stale-entry
+        // re-pops; uniform cost keeps visit count tight and bounded by the
+        // reachable wire set, not by cost-shell granularity. The caller
+        // re-computes path delay using the lookahead pip_cost after a
+        // path is found, so the timing-driven decision is unaffected.
+        if self.ignore_bindings {
+            return 1;
+        }
+        match self.lookahead {
+            Some(la) => la.pip_cost(ctx.chipdb(), pip),
+            None => default_pip_cost(ctx, pip),
+        }
     }
-    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
+    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
+        if !self.ignore_bindings {
+            if let Some((owner, _)) = ctx.wire_binding(wire) {
+                if owner != self.net {
+                    return DelayT::MAX / 4;
+                }
+            }
+        }
         self.wire_penalty.get(&wire).copied().unwrap_or(0)
     }
-    fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
-        match self.lookahead {
-            Some(la) => la.estimate_delay(ctx.chipdb(), wire, dst),
-            None => ctx.estimate_delay(wire, dst),
+    fn is_blocked(&self, ctx: &Context, wire: WireId) -> bool {
+        // Class-gate: a fabric net cannot legally land on clock-only
+        // wires regardless of cost. Drop them from A*'s candidate set
+        // so the search never visits them. Skipped in explore mode
+        // because the lookahead reachability bitmap can have false
+        // negatives that would hide otherwise-legitimate corridors;
+        // exploration only needs to find ANY path, and the resulting
+        // PIP list is used solely to identify blocker nets, not to
+        // commit a route.
+        if self.ignore_bindings {
+            return false;
         }
+        if let Some(la) = self.lookahead {
+            if !la.is_reachable(ctx.chipdb(), wire, self.driver_class) {
+                return true;
+            }
+        }
+        false
+    }
+    fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
+        // Explore mode = pure Dijkstra: complete and provably finds any
+        // existing path. The scoped rip-up corridor probe must not miss
+        // a real path due to bounded-suboptimal weighted-A* incompleteness.
+        if self.ignore_bindings {
+            return 0;
+        }
+        let h = match self.lookahead {
+            Some(la) => la.estimate_delay(ctx.chipdb(), wire, dst, self.driver_class),
+            None => ctx.estimate_delay(wire, dst),
+        };
+        // Weighted A*: multiply the admissible-but-loose chain estimate
+        // by `HEURISTIC_WEIGHT_NUM / HEURISTIC_WEIGHT_DEN` so f = g + w·h
+        // becomes more discriminating between candidates and the search
+        // prunes harder. Bounded suboptimal: any path returned costs at
+        // most `w × optimal`. Weight matches the empirically measured
+        // ratio of true_cost / h_lookahead on long IO routes (≈1.6–2.2).
+        h.saturating_mul(HEURISTIC_WEIGHT_NUM) / HEURISTIC_WEIGHT_DEN
     }
     fn bboxes(&self) -> &[BoundingBox] {
         match self.bbox {
@@ -377,6 +495,7 @@ impl<'a> PathCostModel for MazeCostModel<'a> {
 
 pub fn astar_route(
     ctx: &Context,
+    net: NetId,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
@@ -385,18 +504,38 @@ pub fn astar_route(
     lookahead: Option<&super::lookahead::Lookahead>,
     visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
-    astar_route_with_trace(
-        ctx,
-        src_wires,
-        dst_wire,
-        wire_penalty,
-        bbox,
-        _estimate_precision,
-        lookahead,
+    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, false);
+    let opts = AStarOptions {
         visit_limit,
-        false,
-    )
-    .0
+        exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: false,
+    };
+    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
+}
+
+/// Exploration A*: same as [`astar_route`] but ignores `wire_binding`, so the
+/// returned path follows the theoretical shortest corridor regardless of which
+/// wires are currently claimed by other nets. Used exclusively by the scoped
+/// rip-up logic to identify the minimal set of blocker nets.
+pub fn astar_route_explore(
+    ctx: &Context,
+    net: NetId,
+    src_wires: &FxHashSet<WireId>,
+    dst_wire: WireId,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    bbox: Option<&crate::metrics::BoundingBox>,
+    lookahead: Option<&super::lookahead::Lookahead>,
+    visit_limit: Option<usize>,
+) -> Option<Vec<PipId>> {
+    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, true);
+    let opts = AStarOptions {
+        visit_limit,
+        exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: false,
+    };
+    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
 }
 
 /// Same semantics as [`astar_route`]. The `multi_hop` flag was historically
@@ -408,6 +547,7 @@ pub fn astar_route(
 /// compatibility but is now identical to [`astar_route`].
 pub fn astar_route_multihop(
     ctx: &Context,
+    net: NetId,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
@@ -418,6 +558,7 @@ pub fn astar_route_multihop(
 ) -> Option<Vec<PipId>> {
     astar_route(
         ctx,
+        net,
         src_wires,
         dst_wire,
         wire_penalty,
@@ -435,6 +576,7 @@ pub fn astar_route_multihop(
 /// stability but no longer changes behavior (see [`astar_route_multihop`]).
 pub fn astar_route_with_trace(
     ctx: &Context,
+    net: NetId,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
@@ -444,14 +586,12 @@ pub fn astar_route_with_trace(
     visit_limit: Option<usize>,
     _multi_hop: bool,
 ) -> (Option<Vec<PipId>>, CoreTrace) {
-    let model = MazeCostModel {
-        wire_penalty,
-        bbox,
-        lookahead,
-    };
+    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, false);
     let opts = AStarOptions {
         visit_limit,
         exhaustive: false,
+        retain_trace: true,
+        stop_on_first_touch: false,
     };
     let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
     (result.path, result.trace)

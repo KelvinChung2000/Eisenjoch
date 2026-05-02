@@ -11,8 +11,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::chipdb::ChipDb;
-use crate::read_packed;
+use crate::chipdb::{port_key, span_bucket_of, Side, TileLocalWs, TileTypeTemplate};
 
 use super::network::{PipeNetwork, DIST_SCALE};
 use super::resistance::{bpr_alpha, bpr_beta, ResistanceModel};
@@ -284,230 +283,12 @@ pub fn rebuild_span_cost_table(network: &mut PipeNetwork, resistance_model: &Res
 }
 
 // =============================================================================
-// v2 TwoLevelPip — TileTypeTemplate + SwitchMatrixCache
+// v2 TwoLevelPip — switch-matrix cost cache built on chipdb TileTypeTemplate
 // =============================================================================
-
-/// Cardinal side of a tile boundary port. Packed with a span bucket into a u16
-/// for compact cache keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum Side {
-    North = 0,
-    East = 1,
-    South = 2,
-    West = 3,
-}
-
-impl Side {
-    /// Classify a (dx, dy) boundary delta into a cardinal side.
-    /// Dominant-axis rule: larger |dx| wins; ties go to east/west.
-    pub fn from_delta(dx: i32, dy: i32) -> Option<Self> {
-        if dx == 0 && dy == 0 {
-            return None;
-        }
-        if dx.abs() >= dy.abs() {
-            if dx > 0 {
-                Some(Side::East)
-            } else {
-                Some(Side::West)
-            }
-        } else if dy > 0 {
-            Some(Side::South)
-        } else {
-            Some(Side::North)
-        }
-    }
-}
-
-/// Bucket a span into one of five categories: 1 / 2-3 / 4-6 / 7-12 / >12.
-#[inline]
-pub fn span_bucket_of(span: i32) -> u8 {
-    match span {
-        0 => 0,
-        1 => 0,
-        2 | 3 => 1,
-        4..=6 => 2,
-        7..=12 => 3,
-        _ => 4,
-    }
-}
-
-/// Pack (side, span_bucket) into a cache-key nibble.
-#[inline]
-pub fn port_key(side: Side, span_bucket: u8) -> u16 {
-    ((side as u16) << 8) | span_bucket as u16
-}
-
-/// Per-tile-type internal PIP graph + boundary-port classification.
-///
-/// Built once at `PipeNetwork::from_context` for each tile type and cached in
-/// `PipeNetwork::tile_templates`. The graph is a CSR adjacency over internal
-/// wires (index = chipdb wire index within the tile type). Boundary wires are
-/// classified by dominant-axis side and span bucket, so the switch-matrix
-/// cache can key on `(tile_type, out_side, out_span_bucket, tile_usage_q)`.
-///
-/// Memory: `O(n_wires + n_pips)` per tile type. On XC7 large chipdb the
-/// worst type (BRAM) has ~4.4k wires and ~16k PIPs — under 100 KB per type
-/// × 8 types ≈ < 1 MB total, L2-resident.
-#[derive(Clone, Debug, Default)]
-pub struct TileTypeTemplate {
-    pub n_wires: usize,
-    pub n_pips: usize,
-    /// CSR offsets: for wire `w`, its outgoing PIPs are
-    /// `pip_dst[pip_offsets[w]..pip_offsets[w+1]]`.
-    pub pip_offsets: Vec<u32>,
-    pub pip_dst: Vec<u32>,
-    /// Base cost per PIP hop in `DIST_SCALE` units (uniform for v2 phase 1).
-    pub pip_base_cost: u32,
-    /// Boundary wires grouped by `port_key(side, span_bucket)`.
-    pub boundary_wires_by_port: FxHashMap<u16, Vec<u32>>,
-    /// All boundary wires (any side) — used as the super-source for
-    /// entry-side-averaged tile-local Dijkstra.
-    pub boundary_wires_all: Vec<u32>,
-}
-
-/// Per-PIP base cost in DIST_SCALE-integer units for v2 phase 1.
-/// A single PIP hop ≈ 0.1 × one-tile wire cost (sqrt(1)=1, DIST_SCALE=100 →
-/// wire cost 100; PIP cost 10).
-pub const PIP_BASE_COST_INT: u32 = 10;
-
-impl TileTypeTemplate {
-    pub fn empty() -> Self {
-        Self {
-            n_wires: 0,
-            n_pips: 0,
-            pip_offsets: vec![0],
-            pip_dst: Vec::new(),
-            pip_base_cost: PIP_BASE_COST_INT,
-            boundary_wires_by_port: FxHashMap::default(),
-            boundary_wires_all: Vec::new(),
-        }
-    }
-
-    /// Build from chipdb for a single tile type. `representative_tile` is any
-    /// tile instance of that type; used to resolve wire node shapes.
-    pub fn from_chipdb(chipdb: &ChipDb, tt_idx: i32, representative_tile: i32) -> Self {
-        let tt = chipdb.tile_type_by_index(tt_idx);
-        let n_wires = tt.wires.len();
-        let pips = tt.pips.get();
-        let n_pips = pips.len();
-
-        // Count outgoing PIPs per source wire, then CSR-assemble.
-        let mut out_deg = vec![0u32; n_wires];
-        for pip in pips {
-            let src: i32 = unsafe { read_packed!(*pip, src_wire) };
-            let s = src as usize;
-            if s < n_wires {
-                out_deg[s] += 1;
-            }
-        }
-        let mut pip_offsets = Vec::with_capacity(n_wires + 1);
-        pip_offsets.push(0u32);
-        let mut running = 0u32;
-        for &d in &out_deg {
-            running += d;
-            pip_offsets.push(running);
-        }
-        let mut cursors = pip_offsets.clone();
-        let mut pip_dst = vec![0u32; running as usize];
-        for pip in pips {
-            let src: i32 = unsafe { read_packed!(*pip, src_wire) };
-            let dst: i32 = unsafe { read_packed!(*pip, dst_wire) };
-            let s = src as usize;
-            if s < n_wires {
-                let slot = cursors[s] as usize;
-                cursors[s] = slot as u32 + 1;
-                pip_dst[slot] = dst.max(0) as u32;
-            }
-        }
-
-        // Boundary classification via wire_node_shape — each wire whose node
-        // shape extends outside the representative tile (any non-zero (dx, dy))
-        // is a boundary wire. Dominant-axis delta sets the side; span bucket
-        // follows from the max |dx|+|dy|.
-        let mut boundary_wires_by_port: FxHashMap<u16, Vec<u32>> = FxHashMap::default();
-        let mut boundary_all = Vec::new();
-        for wire_idx in 0..n_wires {
-            let Some(shape) = chipdb.wire_node_shape(representative_tile, wire_idx) else {
-                continue;
-            };
-            let mut is_boundary = false;
-            let mut best_side: Option<Side> = None;
-            let mut best_span = 0i32;
-            for tw in shape.tile_wires.get() {
-                let dx: i16 = unsafe { read_packed!(*tw, dx) };
-                let dy: i16 = unsafe { read_packed!(*tw, dy) };
-                let dx = dx as i32;
-                let dy = dy as i32;
-                let span = dx.abs() + dy.abs();
-                if span == 0 {
-                    continue;
-                }
-                is_boundary = true;
-                if span > best_span {
-                    if let Some(s) = Side::from_delta(dx, dy) {
-                        best_side = Some(s);
-                        best_span = span;
-                    }
-                }
-            }
-            if is_boundary {
-                boundary_all.push(wire_idx as u32);
-                if let Some(side) = best_side {
-                    let key = port_key(side, span_bucket_of(best_span));
-                    boundary_wires_by_port
-                        .entry(key)
-                        .or_default()
-                        .push(wire_idx as u32);
-                }
-            }
-        }
-
-        Self {
-            n_wires,
-            n_pips,
-            pip_offsets,
-            pip_dst,
-            pip_base_cost: PIP_BASE_COST_INT,
-            boundary_wires_by_port,
-            boundary_wires_all: boundary_all,
-        }
-    }
-}
-
-/// Per-thread workspace for tile-local Dijkstra. Pooled via `thread_local!` at
-/// the call site to avoid per-miss allocation.
-#[derive(Debug)]
-pub struct TileLocalWs {
-    /// Shortest-path distance per wire (INT max = unreached).
-    pub dist: Vec<u32>,
-    /// Bucket heap: outer Vec indexed by integer distance, inner Vec is the
-    /// list of wires at that distance.
-    pub buckets: Vec<Vec<u32>>,
-}
-
-impl TileLocalWs {
-    pub fn new() -> Self {
-        Self {
-            dist: Vec::new(),
-            buckets: Vec::new(),
-        }
-    }
-
-    pub fn reset(&mut self, n_wires: usize) {
-        self.dist.clear();
-        self.dist.resize(n_wires, u32::MAX);
-        for b in &mut self.buckets {
-            b.clear();
-        }
-    }
-}
-
-impl Default for TileLocalWs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+//
+// `Side`, `span_bucket_of`, `port_key`, `TileTypeTemplate`, `TileLocalWs`,
+// and `PIP_BASE_COST_INT` now live in `crate::chipdb::tile_template`; they
+// are imported above and also used by `router::lookahead`.
 
 /// Compute switch-matrix cost for every (out_side, out_span_bucket) of a
 /// single tile type at a given quantised usage.
@@ -645,6 +426,7 @@ pub fn compute_switch_matrix_costs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chipdb::PIP_BASE_COST_INT;
 
     #[test]
     fn usage_quantization_is_non_negative() {

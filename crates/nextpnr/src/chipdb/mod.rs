@@ -7,6 +7,7 @@ mod ids;
 mod load;
 mod pod;
 mod relptr;
+pub mod tile_template;
 
 pub use access::RegArcInfo;
 pub use chip::ChipDb;
@@ -14,6 +15,9 @@ pub use grid::Loc;
 pub use ids::{BelId, PipId, WireId};
 pub use pod::*;
 pub use relptr::{RelPtr, RelSlice};
+pub use tile_template::{
+    port_key, span_bucket_of, Side, TileLocalWs, TileTypeTemplate, PIP_BASE_COST_INT,
+};
 
 pub const CHIPDB_MAGIC: i32 = 0x00ca7ca7u32 as i32;
 pub const CHIPDB_VERSION: i32 = 6;

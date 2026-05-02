@@ -4,7 +4,7 @@ use crate::chipdb::{PipId, WireId};
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::NetId;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // ---------------------------------------------------------------------------
 // Route plan types (pure computation output, no Context mutation)
@@ -446,7 +446,18 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 continue;
             }
         };
-        if !net.wires().contains_key(&source_wire) {
+        // Same node-peer tolerance as the sink check below: the router can
+        // bind a node-peer of the source instead of the source wire itself.
+        let source_in_tree = net.wires().contains_key(&source_wire) || {
+            let mut hit = false;
+            chipdb.node_wires_cb(source_wire, |peer| {
+                if !hit && net.wires().contains_key(&peer) {
+                    hit = true;
+                }
+            });
+            hit
+        };
+        if !source_in_tree {
             let sn = chipdb.wire_name(source_wire).to_owned();
             let wires_len = net.wires().len();
             source_not_in_tree.add(|| format!(
@@ -485,7 +496,24 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                     continue;
                 }
             };
-            if !net.wires().contains_key(&sink_wire) {
+            // A sink reached via a free node hop (one electrical wire
+            // spanning multiple tiles) ends its route at a PIP whose dst
+            // wire is a NODE PEER of the sink rather than the sink wire
+            // itself; `apply_route_plan` binds the PIP dst and only
+            // implicitly claims the sink via `try_bind_wire_node` (which
+            // locks all peers at the ctx level but does not expand the
+            // net's wire map). Treat the sink as routed whenever it or
+            // any of its node peers landed in the net's tree.
+            let sink_in_tree = net.wires().contains_key(&sink_wire) || {
+                let mut hit = false;
+                chipdb.node_wires_cb(sink_wire, |peer| {
+                    if !hit && net.wires().contains_key(&peer) {
+                        hit = true;
+                    }
+                });
+                hit
+            };
+            if !sink_in_tree {
                 let sn = chipdb.wire_name(sink_wire).to_owned();
                 let cell_name = user_cell.name().to_owned();
                 let port_name = ctx.name_of(user.port).to_owned();
@@ -501,14 +529,24 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             // rather than at the driver's wire: each tile's switch matrix has
             // its own tied const wire, so different sinks legitimately anchor
             // on different local const wires. See `find_local_const_pip`.
+            //
+            // A* expansion treats all node peers as one electrical wire and may
+            // record a PIP whose src_wire is a peer of a tree-bound wire rather
+            // than the tree-bound wire itself. When `cur` isn't in the tree,
+            // consult `node_wires_cb` for a peer that is — a free node hop is
+            // not a break in the chain.
             let source_const_value = chipdb.wire_info(source_wire).const_value;
+            let source_node_id = chipdb.node_id(source_wire);
             let mut cur = sink_wire;
-            let max_hops = net.wires().len() + 2;
-            let mut hops = 0usize;
+            let mut seen: FxHashSet<WireId> = FxHashSet::default();
             let mut reached_source = false;
             let mut cause = "reached a wire with no parent pip";
-            while hops <= max_hops {
+            loop {
                 if cur == source_wire {
+                    reached_source = true;
+                    break;
+                }
+                if source_node_id.is_some() && chipdb.node_id(cur) == source_node_id {
                     reached_source = true;
                     break;
                 }
@@ -519,19 +557,39 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                     reached_source = true;
                     break;
                 }
-                let Some(pm) = net.wires().get(&cur) else {
-                    cause = "parent chain left the routing tree";
+                if !seen.insert(cur) {
+                    cause = "cycle detected in parent-pip chain";
                     break;
+                }
+                let pm = match net.wires().get(&cur) {
+                    Some(pm) => pm,
+                    None => {
+                        // Free node hop: find a peer of `cur` that is in the
+                        // tree and continue from there. Peers are electrically
+                        // the same wire; binding any one binds the whole node.
+                        let mut peer_in_tree: Option<WireId> = None;
+                        chipdb.node_wires_cb(cur, |peer| {
+                            if peer_in_tree.is_none() && net.wires().contains_key(&peer) {
+                                peer_in_tree = Some(peer);
+                            }
+                        });
+                        match peer_in_tree {
+                            Some(peer) => {
+                                cur = peer;
+                                continue;
+                            }
+                            None => {
+                                cause = "parent chain left the routing tree";
+                                break;
+                            }
+                        }
+                    }
                 };
                 let Some(parent_pip) = pm.pip else {
                     cause = "reached a wire with no parent pip before hitting the source";
                     break;
                 };
                 cur = chipdb.pip_src_wire(parent_pip);
-                hops += 1;
-            }
-            if !reached_source && hops > max_hops {
-                cause = "cycle detected in parent-pip chain";
             }
             if !reached_source {
                 let sn = chipdb.wire_name(sink_wire).to_owned();
@@ -715,6 +773,7 @@ pub fn diagnose_unroutable_net(
 
         let (path, trace) = astar_route_with_trace(
             ctx,
+            net_idx,
             &src_set,
             dst_wire,
             &empty_penalty,
@@ -836,6 +895,12 @@ pub struct NegotiationCfg {
     pub initial_present_cost: f64,
     /// Growth factor applied to the present-congestion cost each iteration.
     pub present_cost_growth: f64,
+    /// A net that has been ripped up at least this many times becomes
+    /// "sticky": the pass-level rip-up loop preserves its routing tree and
+    /// instead forces the conflict partners to find paths around it. This
+    /// breaks the rip-up thrash where the same net keeps getting torn down
+    /// and rebuilt across passes.
+    pub sticky_ripup_threshold: u32,
 }
 
 impl Default for NegotiationCfg {
@@ -846,6 +911,7 @@ impl Default for NegotiationCfg {
             history_cost_multiplier: 1.0,
             initial_present_cost: 1.0,
             present_cost_growth: 1.5,
+            sticky_ripup_threshold: 1,
         }
     }
 }
@@ -871,6 +937,14 @@ pub struct NegotiationState {
     /// External congestion hints (e.g. from placer density map).
     /// Wire -> additional cost added to wire_cost().
     pub external_hints: FxHashMap<WireId, f64>,
+    /// Per-net rip-up count: how many times a net has been torn down across
+    /// passes. Used to detect rip-up thrash and switch to sticky behavior.
+    pub rip_up_count: FxHashMap<NetId, u32>,
+    /// Nets that have ever had a partial tree at gate-entry time. Once a
+    /// net hits this set, the gate refuses to rip it up again — its partial
+    /// is its best bet, and rebuilding from scratch only repeats whatever
+    /// failure produced the partial in the first place.
+    pub ever_seen_partial: FxHashSet<NetId>,
 }
 
 impl NegotiationState {
@@ -884,7 +958,20 @@ impl NegotiationState {
             wire_usage: FxHashMap::default(),
             wire_owner: FxHashMap::default(),
             external_hints: FxHashMap::default(),
+            rip_up_count: FxHashMap::default(),
+            ever_seen_partial: FxHashSet::default(),
         }
+    }
+
+    /// Record that a net has been ripped up.
+    pub fn bump_rip_up(&mut self, net: NetId) {
+        *self.rip_up_count.entry(net).or_default() += 1;
+    }
+
+    /// Returns true once a net has been ripped up enough times to be
+    /// preserved instead of torn down again.
+    pub fn is_sticky(&self, net: NetId) -> bool {
+        self.rip_up_count.get(&net).copied().unwrap_or(0) >= self.cfg.sticky_ripup_threshold
     }
 
     /// Compute the negotiation-based cost of using a wire for a given net.

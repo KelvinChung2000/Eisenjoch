@@ -66,9 +66,7 @@ pub struct DiagCtx {
     /// Current sweep index.
     sweep_idx: usize,
     /// Cumulative acceptance breakdown.
-    total_accept_hpwl_only: usize,
     total_accept_friction_only: usize,
-    total_accept_both: usize,
     total_reject: usize,
     /// Summary CSV writer kept across sweeps.
     summary_w: Option<BufWriter<File>>,
@@ -89,9 +87,9 @@ impl DiagCtx {
             let mut w = BufWriter::new(f);
             writeln!(
                 w,
-                "sweep,n_cells,n_nets,chpwl,line,friction,max_overflow,n_overflow,overflow_excess,\
+                "sweep,n_cells,n_nets,line,friction,max_overflow,n_overflow,overflow_excess,\
                  moves_committed,accept,accept_reason,\
-                 d_hpwl,d_friction,\
+                 d_friction,\
                  plateau_mean_n_within_1pct,plateau_mean_n_within_5pct,plateau_mean_tied,\
                  plateau_cells_with_ties,plateau_cells_flat,\
                  move_mag_mean,move_mag_p50,move_mag_p90,move_mag_max,\
@@ -112,9 +110,7 @@ impl DiagCtx {
             history: Vec::new(),
             prev_net_hpwl: Vec::new(),
             sweep_idx: 0,
-            total_accept_hpwl_only: 0,
             total_accept_friction_only: 0,
-            total_accept_both: 0,
             total_reject: 0,
             summary_w,
         }
@@ -244,12 +240,11 @@ impl DiagCtx {
     }
 
     /// Finish a sweep: write per-sweep CSVs and summary row.
-    /// `accepted` is the revert decision; `d_hpwl` and `d_friction` are the delta vs best-so-far
+    /// `accepted` is the revert decision; `d_friction` is the delta vs best-so-far
     /// (negative = improvement).
     pub fn sweep_end(
         &mut self,
         n_cells: usize,
-        chpwl: f64,
         line: f64,
         friction: f64,
         max_overflow: f64,
@@ -257,7 +252,6 @@ impl DiagCtx {
         overflow_excess: f64,
         moves_committed: usize,
         accepted: bool,
-        d_hpwl: f64,
         d_friction: f64,
         net_names: &[String],
         net_fanout: &[u32],
@@ -270,22 +264,11 @@ impl DiagCtx {
 
         // Accept reason classification.
         let reason_str = if accepted {
-            let imp_h = d_hpwl < 0.0;
-            let imp_f = d_friction < 0.0;
-            match (imp_h, imp_f) {
-                (true, true) => {
-                    self.total_accept_both += 1;
-                    "both"
-                }
-                (true, false) => {
-                    self.total_accept_hpwl_only += 1;
-                    "hpwl_only"
-                }
-                (false, true) => {
-                    self.total_accept_friction_only += 1;
-                    "friction_only"
-                }
-                (false, false) => "no_improve",
+            if d_friction < 0.0 {
+                self.total_accept_friction_only += 1;
+                "friction"
+            } else {
+                "no_improve"
             }
         } else {
             self.total_reject += 1;
@@ -350,13 +333,12 @@ impl DiagCtx {
         if let Some(w) = self.summary_w.as_mut() {
             writeln!(
                 w,
-                "{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.2},{},{},{},{:.1},{:.1},\
+                "{},{},{},{:.1},{:.1},{:.2},{},{:.2},{},{},{},{:.1},\
                  {:.1},{:.1},{:.2},{},{},{:.2},{},{},{},{},\
                  {},{},{},{:.3},{},{}",
                 self.sweep_idx,
                 n_cells,
                 net_names.len(),
-                chpwl,
                 line,
                 friction,
                 max_overflow,
@@ -365,7 +347,6 @@ impl DiagCtx {
                 moves_committed,
                 accepted as i32,
                 reason_str,
-                d_hpwl,
                 d_friction,
                 mean1,
                 mean5,
@@ -595,10 +576,8 @@ impl DiagCtx {
             let mut w = BufWriter::new(f);
             let _ = writeln!(
                 w,
-                "accept_hpwl_only={}\naccept_friction_only={}\naccept_both={}\nreject={}\npipe_gini={:.4}",
-                self.total_accept_hpwl_only,
+                "accept_friction_only={}\nreject={}\npipe_gini={:.4}",
                 self.total_accept_friction_only,
-                self.total_accept_both,
                 self.total_reject,
                 gini
             );

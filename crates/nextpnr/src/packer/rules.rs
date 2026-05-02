@@ -171,11 +171,118 @@ pub fn derive_rules_from_topology(ctx: &Context) -> Vec<PackingRule> {
     rules
 }
 
-/// Get packing rules. Tries chipdb extra_data first, falls back to topology derivation.
+/// Derive packing rules from intra-tile-type PIPs that connect a BEL output
+/// pin directly to a BEL input pin (e.g. `LUT.F → DFF.D` via the synthetic
+/// `letter → letterX` PIP). These pairs have a 1-PIP route inside the slice;
+/// without clustering the placer is free to land driver and user in different
+/// letter slots, forcing the route to leave the slice.
+pub fn derive_rules_from_pips(ctx: &Context) -> Vec<PackingRule> {
+    use crate::read_packed;
+    let chipdb = ctx.chipdb();
+    let mut rules = Vec::new();
+    let intern = |id: i32| intern_constid(chipdb, ctx, id);
+
+    for tt_idx in 0..chipdb.num_tile_types() {
+        let tt = chipdb.tile_type_by_index(tt_idx as i32);
+        let bels = tt.bels.get();
+        let n_wires = tt.wires.get().len();
+
+        let mut wire_outputs: Vec<Option<(i32, i32)>> = vec![None; n_wires];
+        let mut wire_inputs: Vec<Vec<(i32, i32)>> = vec![Vec::new(); n_wires];
+        for (bel_idx, bel) in bels.iter().enumerate() {
+            for pin in bel.pins.get() {
+                let wire_idx = pin.wire() as usize;
+                if wire_idx >= n_wires {
+                    continue;
+                }
+                match pin.dir() {
+                    PIN_DIR_OUTPUT => {
+                        if wire_outputs[wire_idx].is_none() {
+                            wire_outputs[wire_idx] = Some((bel_idx as i32, pin.name()));
+                        }
+                    }
+                    PIN_DIR_INPUT => {
+                        wire_inputs[wire_idx].push((bel_idx as i32, pin.name()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for pip in tt.pips.get() {
+            let src: i32 = unsafe { read_packed!(*pip, src_wire) };
+            let dst: i32 = unsafe { read_packed!(*pip, dst_wire) };
+            if src < 0 || dst < 0 {
+                continue;
+            }
+            let (sw, dw) = (src as usize, dst as usize);
+            if sw >= n_wires || dw >= n_wires {
+                continue;
+            }
+            let Some((drv_bel, drv_pin)) = wire_outputs[sw] else {
+                continue;
+            };
+            for &(usr_bel, usr_pin) in &wire_inputs[dw] {
+                if usr_bel == drv_bel {
+                    continue;
+                }
+                let drv = &bels[drv_bel as usize];
+                let usr = &bels[usr_bel as usize];
+                rules.push(PackingRule {
+                    driver: CellTypePort {
+                        cell_type: intern(drv.bel_type()),
+                        port: intern(drv_pin),
+                    },
+                    user: CellTypePort {
+                        cell_type: intern(usr.bel_type()),
+                        port: intern(usr_pin),
+                    },
+                    rel_x: 0,
+                    rel_y: 0,
+                    rel_z: usr.z() as i32 - drv.z() as i32,
+                    base_z: drv.z() as i32,
+                    is_base_rule: true,
+                    is_absolute: false,
+                });
+            }
+        }
+    }
+
+    rules.sort_by_key(|r| {
+        (
+            r.driver.cell_type.index(),
+            r.driver.port.index(),
+            r.user.cell_type.index(),
+            r.user.port.index(),
+            r.rel_z,
+        )
+    });
+    rules.dedup_by(|a, b| {
+        a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z
+    });
+    rules
+}
+
+/// Get packing rules. Tries chipdb extra_data first, falls back to topology
+/// derivation (shared-wire + intra-tile-pip pairs).
 pub fn get_packing_rules(ctx: &Context) -> Vec<PackingRule> {
     let rules = load_rules_from_extra_data(ctx);
     if !rules.is_empty() {
         return rules;
     }
-    derive_rules_from_topology(ctx)
+    let mut rules = derive_rules_from_topology(ctx);
+    rules.extend(derive_rules_from_pips(ctx));
+    rules.sort_by_key(|r| {
+        (
+            r.driver.cell_type.index(),
+            r.driver.port.index(),
+            r.user.cell_type.index(),
+            r.user.port.index(),
+            r.rel_z,
+        )
+    });
+    rules.dedup_by(|a, b| {
+        a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z
+    });
+    rules
 }

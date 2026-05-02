@@ -47,6 +47,17 @@ struct DistCache {
     dist: Vec<f64>,
     n_nets: usize,
     n_nodes: usize,
+    /// 1-Steiner pseudo-node centroids in network grid coords. One entry per
+    /// net. Zeros when `steiner_weight == 0.0` in config (term disabled).
+    /// Refreshed by `compute_steiner_centroids` at the top of each outer iter.
+    steiner_cx: Vec<f64>,
+    steiner_cy: Vec<f64>,
+    /// Per-net rectilinear MST adjacency. `mst_neighbors[net_idx][pin_idx]` is
+    /// the list of pin indices that pin_idx shares an MST edge with on its
+    /// net. Net-level cost is `Σ |p_i - p_j|` over MST edges; per-pin
+    /// gradient pulls toward each MST neighbor (no central attractor).
+    /// Empty when `mst_edge_weight == 0.0`. Refreshed per outer iter.
+    mst_neighbors: Vec<Vec<Vec<u16>>>,
 }
 
 impl DistCache {
@@ -55,6 +66,9 @@ impl DistCache {
             dist: vec![f64::INFINITY; n_nets * n_nodes],
             n_nets,
             n_nodes,
+            steiner_cx: vec![0.0; n_nets],
+            steiner_cy: vec![0.0; n_nets],
+            mst_neighbors: Vec::new(),
         }
     }
 
@@ -88,6 +102,111 @@ impl DistCache {
     #[inline]
     fn get(&self, net_idx: usize, node: usize) -> f64 {
         self.dist[net_idx * self.n_nodes + node]
+    }
+}
+
+/// Recompute per-net Steiner pseudo-node centroids from current pin positions.
+/// The centroid is the arithmetic mean of all pin positions (driver + sinks)
+/// in network grid coords. Called at the top of each outer iter so the Jacobi
+/// sweep sees a stable hub during inner evaluation.
+fn compute_steiner_centroids(
+    dist_cache: &mut DistCache,
+    net_infos: &[NetInfo],
+    network: &PipeNetwork,
+) {
+    let width = network.width;
+    for (net_idx, info) in net_infos.iter().enumerate() {
+        if info.pins.is_empty() {
+            dist_cache.steiner_cx[net_idx] = 0.0;
+            dist_cache.steiner_cy[net_idx] = 0.0;
+            continue;
+        }
+        let mut sx = 0.0f64;
+        let mut sy = 0.0f64;
+        for pin in &info.pins {
+            let nx = (pin.node % width as usize) as f64;
+            let ny = (pin.node / width as usize) as f64;
+            sx += nx;
+            sy += ny;
+        }
+        let n = info.pins.len() as f64;
+        dist_cache.steiner_cx[net_idx] = sx / n;
+        dist_cache.steiner_cy[net_idx] = sy / n;
+    }
+}
+
+/// Recompute per-net rectilinear MST adjacency from current pin positions.
+/// Prim's algorithm in O(n²) per net. The MST length is an upper bound on
+/// the rectilinear Steiner tree (within 3/2) and a tight wirelength
+/// approximation that distributes pull across pin-pair edges instead of a
+/// single centroid attractor. Called per outer iter when
+/// `cfg.mst_edge_weight > 0.0`.
+fn compute_mst_neighbors(
+    dist_cache: &mut DistCache,
+    net_infos: &[NetInfo],
+    network: &PipeNetwork,
+) {
+    let width = network.width as usize;
+    dist_cache.mst_neighbors.clear();
+    dist_cache.mst_neighbors.resize(net_infos.len(), Vec::new());
+
+    for (net_idx, info) in net_infos.iter().enumerate() {
+        let n = info.pins.len();
+        let mut neighbors: Vec<Vec<u16>> = vec![Vec::new(); n];
+        if n < 2 {
+            dist_cache.mst_neighbors[net_idx] = neighbors;
+            continue;
+        }
+
+        let pos: Vec<(f64, f64)> = info
+            .pins
+            .iter()
+            .map(|p| ((p.node % width) as f64, (p.node / width) as f64))
+            .collect();
+
+        // Prim's: grow tree from pin 0, picking nearest non-tree pin each step.
+        let mut in_tree = vec![false; n];
+        let mut min_dist = vec![f64::INFINITY; n];
+        let mut parent = vec![u16::MAX; n];
+        in_tree[0] = true;
+        for j in 1..n {
+            let dx = (pos[0].0 - pos[j].0).abs();
+            let dy = (pos[0].1 - pos[j].1).abs();
+            min_dist[j] = dx + dy;
+            parent[j] = 0;
+        }
+
+        for _ in 1..n {
+            let mut best_j = usize::MAX;
+            let mut best_d = f64::INFINITY;
+            for j in 0..n {
+                if !in_tree[j] && min_dist[j] < best_d {
+                    best_d = min_dist[j];
+                    best_j = j;
+                }
+            }
+            if best_j == usize::MAX {
+                break;
+            }
+            in_tree[best_j] = true;
+            let p = parent[best_j] as usize;
+            neighbors[best_j].push(p as u16);
+            neighbors[p].push(best_j as u16);
+
+            for j in 0..n {
+                if !in_tree[j] {
+                    let dx = (pos[best_j].0 - pos[j].0).abs();
+                    let dy = (pos[best_j].1 - pos[j].1).abs();
+                    let d = dx + dy;
+                    if d < min_dist[j] {
+                        min_dist[j] = d;
+                        parent[j] = best_j as u16;
+                    }
+                }
+            }
+        }
+
+        dist_cache.mst_neighbors[net_idx] = neighbors;
     }
 }
 
@@ -217,6 +336,11 @@ fn position_to_node(network: &PipeNetwork, x: f64, y: f64) -> usize {
     coord_to_node(network, gx, gy)
 }
 
+/// Pin position in tile coords plus the index of the cell whose motion
+/// drives this pin. Cluster children move rigidly with their root, so their
+/// pin position is `root_pos + (constr_x, constr_y)` and the gradient is
+/// attributed to the root index — this is what tells the optimizer that
+/// minimizing wirelength on a cluster-child net should move the root.
 fn pin_pos(
     ctx: &Context,
     cell_id: CellId,
@@ -230,20 +354,44 @@ fn pin_pos(
     }
 
     let cell = ctx.design.cell(cell_id);
+
+    // Cluster child: derive position from root's current placement.
+    if let Some(root_id) = cell.cluster {
+        if root_id != cell_id {
+            if let Some(&root_idx) = cell_to_idx.get(&root_id) {
+                return (
+                    cell_x[root_idx] + cell.constr_x as f64,
+                    cell_y[root_idx] + cell.constr_y as f64,
+                    Some(root_idx),
+                );
+            }
+            // Root is not a movable cell: fall through to BEL location of
+            // either the child (if already bound) or the root.
+            let root_cell = ctx.design.cell(root_id);
+            if let Some(root_bel) = root_cell.bel {
+                let loc = ctx.bel(root_bel).loc();
+                return (
+                    (loc.x + cell.constr_x - network.x0) as f64,
+                    (loc.y + cell.constr_y - network.y0) as f64,
+                    None,
+                );
+            }
+        }
+    }
+
     if let Some(bel) = cell.bel {
         let loc = ctx.bel(bel).loc();
-        (
+        return (
             (loc.x - network.x0) as f64,
             (loc.y - network.y0) as f64,
             None,
-        )
-    } else {
-        (
-            network.net_to_tile((network.width - 1).max(0) as f64 * 0.5),
-            network.net_to_tile((network.height - 1).max(0) as f64 * 0.5),
-            None,
-        )
+        );
     }
+
+    panic!(
+        "pin_pos: cell {} is neither movable, a placed cluster child, nor bound to a BEL",
+        ctx.name_of(cell.name),
+    );
 }
 
 fn collect_net_infos_simple(
@@ -343,7 +491,13 @@ fn net_path_weight(info: &NetInfo, cfg: &OptTransPlacerCfg) -> f64 {
         .get(&info.net_id)
         .copied()
         .unwrap_or(0.0) as f64;
-    1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0)
+    let timing = 1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0);
+    let locked = if info.has_fixed_pin {
+        cfg.locked_pin_weight.max(0.0)
+    } else {
+        1.0
+    };
+    timing * locked
 }
 
 fn source_node(info: &NetInfo) -> Option<usize> {
@@ -1188,21 +1342,56 @@ fn evaluate_cell_at(
     }
 
     let node = coord_to_node(network, gx, gy);
+    let steiner_w = cfg.steiner_weight;
+    let mst_w = cfg.mst_edge_weight;
+    let width = network.width as usize;
+    // Candidate position in network grid coords. `gx`/`gy` are already in
+    // that system (see `coord_to_node` call above), so no conversion.
+    let cand_nx = gx as f64;
+    let cand_ny = gy as f64;
     let mut cost = 0.0;
     for &(net_idx, pin_idx) in cell_nets {
         let info = &net_infos[net_idx];
         let pin = &info.pins[pin_idx];
         debug_assert_eq!(pin.cell_idx, Some(cell_idx));
 
-        if pin.is_driver {
-            // Skip -- driver position emerges from sink forces on other nets.
-        } else {
+        let weight = net_path_weight(info, cfg);
+
+        if !pin.is_driver {
             let d = dist_cache.get(net_idx, node);
             if !d.is_finite() {
                 return f64::INFINITY;
             }
-            let weight = net_path_weight(info, cfg);
             cost += weight * d;
+        }
+
+        // 1-Steiner pseudo-node term: pull every pin (driver + sinks) toward
+        // the shared per-net centroid. This is the pairwise sink-sink
+        // coupling that the driver-anchored star model is missing.
+        if steiner_w > 0.0 {
+            let cx = dist_cache.steiner_cx[net_idx];
+            let cy = dist_cache.steiner_cy[net_idx];
+            let dx = (cand_nx - cx).abs();
+            let dy = (cand_ny - cy).abs();
+            cost += steiner_w * weight * (dx + dy);
+        }
+
+        // MST edge pull: net-level cost is `Σ |p_i - p_j|` over MST edges;
+        // per-pin contribution is the sum of distances from candidate
+        // position to each MST neighbour. No central attractor → no
+        // crowding pathology of the centroid term.
+        if mst_w > 0.0 && net_idx < dist_cache.mst_neighbors.len() {
+            let nbrs = &dist_cache.mst_neighbors[net_idx];
+            if pin_idx < nbrs.len() {
+                for &nbr_pin in &nbrs[pin_idx] {
+                    let nbr_node = info.pins[nbr_pin as usize].node;
+                    let nbr_x = (nbr_node % width) as f64;
+                    let nbr_y = (nbr_node / width) as f64;
+                    let dx = (cand_nx - nbr_x).abs();
+                    let dy = (cand_ny - nbr_y).abs();
+                    cost += mst_w * weight * (dx + dy);
+                }
+            }
         }
     }
 
@@ -2870,7 +3059,6 @@ fn place_dcd_sweep_sequential_bisection(
 #[derive(Clone, Copy, Debug)]
 struct ObjState {
     energy: f64,
-    chpwl: f64,
     line: f64,
     friction: f64,
     max_overflow: f64,
@@ -2896,7 +3084,7 @@ pub fn run_inner_outer(
     phys_max_y: f64,
     phys_grid_w: usize,
     phys_grid_h: usize,
-) {
+) -> f64 {
     let n = cell_x.len();
     let n_nodes = network.num_nodes();
     let mut dist_cache = DistCache::new(0, n_nodes);
@@ -2948,10 +3136,8 @@ pub fn run_inner_outer(
 
     let mut best_x = cell_x.to_vec();
     let mut best_y = cell_y.to_vec();
-    let initial_chpwl = demand::continuous_hpwl(ctx, cell_to_idx, cell_x, cell_y, network);
     let mut best_state = ObjState {
         energy: f64::INFINITY,
-        chpwl: initial_chpwl,
         line: f64::INFINITY,
         friction: f64::INFINITY,
         max_overflow: f64::INFINITY,
@@ -2959,11 +3145,20 @@ pub fn run_inner_outer(
         overflow_excess: f64::INFINITY,
     };
 
-    eprintln!("  Initial chpwl={:.0}", initial_chpwl);
-
     let mut stalls = 0usize;
     let max_stalls = 5;
     let mut prev_energy: Option<f64> = None;
+    // Iterations since `best_state` last improved. The energy trace on
+    // converged designs oscillates ±1% even after the placement is
+    // essentially stable; the consecutive-stall criterion below resets
+    // every time the oscillation crosses the 0.5% bound and never trips.
+    // Tracking iters-since-best ensures we exit once the placement plateau
+    // is entered, regardless of noise.
+    let mut iters_since_best = 0usize;
+    let max_no_improve = std::env::var("NPNR_OT_NO_IMPROVE_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(3);
     // Per-net pin-node signature captured at the end of the previous outer
     // iter's post-solve. Compared against the current iter's pre-solve pin
     // layout to decide which nets' `dist_cache` rows can be reused.
@@ -2999,6 +3194,16 @@ pub fn run_inner_outer(
         let dist_cache_was_realloced = prev_dist_cache_shape
             != (dist_cache.n_nets, dist_cache.n_nodes)
             || outer == 0;
+
+        // Refresh per-net 1-Steiner centroids before the Jacobi sweep so
+        // every `evaluate_cell_at` call in this iter uses a hub consistent
+        // with the current pin layout. Skip when the term is disabled.
+        if cfg.steiner_weight > 0.0 {
+            compute_steiner_centroids(&mut dist_cache, &net_infos, network);
+        }
+        if cfg.mst_edge_weight > 0.0 {
+            compute_mst_neighbors(&mut dist_cache, &net_infos, network);
+        }
 
         // Skip-refresh: reuse last iter's dist_cache row for any net whose
         // pin node signature is identical to the pin layout from the
@@ -3795,7 +4000,6 @@ pub fn run_inner_outer(
             (post_solve.energy, refresh_ms, solve_stats)
         };
 
-        let chpwl = demand::continuous_hpwl(ctx, cell_to_idx, cell_x, cell_y, network);
         let line = demand::continuous_line_estimate(ctx, cell_to_idx, cell_x, cell_y, network);
         let friction = super::congestion::compute_friction_energy(network);
         let (max_overflow, n_overflow, overflow_excess) = type_aware.compute_overflow(
@@ -3809,7 +4013,6 @@ pub fn run_inner_outer(
 
         let state = ObjState {
             energy: state_energy,
-            chpwl,
             line,
             friction,
             max_overflow,
@@ -3820,17 +4023,8 @@ pub fn run_inner_outer(
         // DCD objective: post-sweep Dial energy under the conductance field
         // used during the sweep. The loaded usage is blended only for the next
         // iteration's BPR field.
-        let improved = if cfg.path_model == PathModel::BresenhamLogit {
-            state.chpwl < best_state.chpwl
-        } else {
-            state.energy < best_state.energy
-        };
+        let improved = state.energy < best_state.energy;
         let d_energy = prev_energy.map_or(0.0, |prev| state.energy - prev);
-        let d_hpwl = if best_state.chpwl.is_finite() {
-            state.chpwl - best_state.chpwl
-        } else {
-            0.0
-        };
         let d_friction = if best_state.friction.is_finite() {
             state.friction - best_state.friction
         } else {
@@ -3840,6 +4034,9 @@ pub fn run_inner_outer(
             best_state = state;
             best_x.copy_from_slice(cell_x);
             best_y.copy_from_slice(cell_y);
+            iters_since_best = 0;
+        } else {
+            iters_since_best += 1;
         }
         if !mux_tracker.is_legal() {
             mux_tracker.report(&format!("sweep {} LEAK", outer));
@@ -3868,7 +4065,6 @@ pub fn run_inner_outer(
             let bb = compute_bounding_boxes(cell_x, cell_y, &post_net_infos, network);
             diag_ctx.sweep_end(
                 n,
-                chpwl,
                 line,
                 friction,
                 max_overflow,
@@ -3876,7 +4072,6 @@ pub fn run_inner_outer(
                 overflow_excess,
                 moved,
                 improved,
-                d_hpwl,
                 d_friction,
                 &net_names,
                 &net_fanout,
@@ -4102,10 +4297,9 @@ pub fn run_inner_outer(
         }
 
         eprintln!(
-            "  DCD {:3}: nets={} chpwl={:.0} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} skip={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
+            "  DCD {:3}: nets={} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} skip={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
             outer,
             post_net_infos.len(),
-            chpwl,
             line,
             state.energy,
             d_energy,
@@ -4135,6 +4329,13 @@ pub fn run_inner_outer(
             );
             break;
         }
+        if iters_since_best >= max_no_improve {
+            eprintln!(
+                "  DCD stopped: {} iters since best energy improvement",
+                iters_since_best
+            );
+            break;
+        }
     }
 
     cell_x.copy_from_slice(&best_x);
@@ -4143,15 +4344,15 @@ pub fn run_inner_outer(
     diag_ctx.finalize(network);
 
     eprintln!(
-        "DCD done: energy={:.3} chpwl={:.0} line={:.0} friction={:.1} bins={:.1}x({}) excess={:.1}",
+        "DCD done: energy={:.3} line={:.0} friction={:.1} bins={:.1}x({}) excess={:.1}",
         best_state.energy,
-        best_state.chpwl,
         best_state.line,
         best_state.friction,
         best_state.max_overflow,
         best_state.n_overflow,
         best_state.overflow_excess,
     );
+    let final_energy = best_state.energy;
     eprintln!(
         "MuxSlotTracker: {} commit rejections over entire DCD",
         mux_tracker.rejected(),
@@ -4171,6 +4372,7 @@ pub fn run_inner_outer(
         mux_tracker.seed_positions(&final_gx, &final_gy);
     }
     mux_tracker.report("post-rollback");
+    final_energy
 }
 
 #[cfg(test)]

@@ -391,6 +391,313 @@ pub(crate) fn init_positions_center_drop(
     );
 }
 
+/// Sugiyama-style topological layout for movable cells.
+///
+/// Builds a directed graph from net driver→user pairs, weighted by 1/fanout to
+/// dampen high-fanout nets. Cluster children resolve to their root for the graph.
+/// Pipeline:
+///   1. Cycle removal: iterative DFS marks back-edges (kept out of the DAG).
+///   2. Longest-path layering via Kahn's algorithm on the DAG.
+///   3. Map layer index → physical X linearly across grid width.
+///   4. Barycenter sweeps (forward+backward) reorder Y within each layer.
+///   5. Blend X with anchor mean from connected fixed cells.
+///
+/// Output is fully deterministic — no RNG, no seed dependence. Purely
+/// topology-driven; chipdb constraints are ignored (downstream legalization
+/// snaps cells to legal BELs).
+///
+/// Nets with fanout > 32 (clock, reset, broadcast) are skipped to avoid
+/// dominating the layout.
+pub fn init_positions_topological(
+    ctx: &Context,
+    idx_to_cell: &[CellId],
+    cell_x: &mut [f64],
+    cell_y: &mut [f64],
+) {
+    use std::collections::VecDeque;
+
+    let n = idx_to_cell.len();
+    if n == 0 {
+        return;
+    }
+
+    let cell_to_idx: FxHashMap<CellId, usize> = idx_to_cell
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| (c, i))
+        .collect();
+
+    let w = ctx.chipdb().width() as f64;
+    let h = ctx.chipdb().height() as f64;
+
+    enum Endpoint {
+        Movable(usize),
+        Fixed(f64, f64),
+        None,
+    }
+
+    let resolve = |cid: CellId| -> Endpoint {
+        let cell = ctx.design.cell(cid);
+        let effective = match cell.cluster {
+            Some(root) if root != cid => root,
+            _ => cid,
+        };
+        if let Some(&idx) = cell_to_idx.get(&effective) {
+            return Endpoint::Movable(idx);
+        }
+        let eff_cell = ctx.design.cell(effective);
+        if let Some(bel) = eff_cell.bel {
+            let loc = ctx.bel(bel).loc();
+            return Endpoint::Fixed(loc.x as f64, loc.y as f64);
+        }
+        if let Some(bel) = cell.bel {
+            let loc = ctx.bel(bel).loc();
+            return Endpoint::Fixed(loc.x as f64, loc.y as f64);
+        }
+        Endpoint::None
+    };
+
+    let mut edges: Vec<(usize, usize, f64)> = Vec::new();
+    let mut anchor_sum_x = vec![0.0f64; n];
+    let mut anchor_sum_y = vec![0.0f64; n];
+    let mut anchor_w = vec![0.0f64; n];
+
+    const FANOUT_CAP: usize = 32;
+    for (_net_id, net) in ctx.design.iter_alive_nets() {
+        let users = net.users();
+        let fanout = users.len();
+        if fanout == 0 || fanout > FANOUT_CAP {
+            continue;
+        }
+        let weight = 1.0 / fanout as f64;
+        let Some(driver_pin) = net.driver() else {
+            continue;
+        };
+        let driver_ep = resolve(driver_pin.cell);
+
+        for u in users.iter() {
+            if !u.is_valid() {
+                continue;
+            }
+            let user_ep = resolve(u.cell);
+            match (&driver_ep, &user_ep) {
+                (Endpoint::Movable(di), Endpoint::Movable(ui)) if di != ui => {
+                    edges.push((*di, *ui, weight));
+                }
+                (Endpoint::Movable(di), Endpoint::Fixed(fx, fy)) => {
+                    anchor_sum_x[*di] += weight * fx;
+                    anchor_sum_y[*di] += weight * fy;
+                    anchor_w[*di] += weight;
+                }
+                (Endpoint::Fixed(fx, fy), Endpoint::Movable(ui)) => {
+                    anchor_sum_x[*ui] += weight * fx;
+                    anchor_sum_y[*ui] += weight * fy;
+                    anchor_w[*ui] += weight;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut adj_out: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut adj_in: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (e_idx, &(di, ui, _)) in edges.iter().enumerate() {
+        adj_out[di].push(e_idx);
+        adj_in[ui].push(e_idx);
+    }
+
+    let mut visited = vec![false; n];
+    let mut on_stack = vec![false; n];
+    let mut back_edge = vec![false; edges.len()];
+    let mut dfs_stack: Vec<(usize, usize)> = Vec::new();
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        on_stack[start] = true;
+        dfs_stack.push((start, 0));
+        while let Some(&(v, i)) = dfs_stack.last() {
+            if i < adj_out[v].len() {
+                let e_idx = adj_out[v][i];
+                let (_, u, _) = edges[e_idx];
+                dfs_stack.last_mut().unwrap().1 += 1;
+                if on_stack[u] {
+                    back_edge[e_idx] = true;
+                } else if !visited[u] {
+                    visited[u] = true;
+                    on_stack[u] = true;
+                    dfs_stack.push((u, 0));
+                }
+            } else {
+                on_stack[v] = false;
+                dfs_stack.pop();
+            }
+        }
+    }
+
+    let mut in_deg = vec![0usize; n];
+    for (e_idx, &(_, ui, _)) in edges.iter().enumerate() {
+        if !back_edge[e_idx] {
+            in_deg[ui] += 1;
+        }
+    }
+    let mut queue: VecDeque<usize> = (0..n).filter(|&v| in_deg[v] == 0).collect();
+    let mut layer = vec![0usize; n];
+    while let Some(v) = queue.pop_front() {
+        for &e_idx in &adj_out[v] {
+            if back_edge[e_idx] {
+                continue;
+            }
+            let (_, u, _) = edges[e_idx];
+            if layer[u] < layer[v] + 1 {
+                layer[u] = layer[v] + 1;
+            }
+            in_deg[u] -= 1;
+            if in_deg[u] == 0 {
+                queue.push_back(u);
+            }
+        }
+    }
+    let max_layer = layer.iter().copied().max().unwrap_or(0);
+
+    let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
+    for v in 0..n {
+        layers[layer[v]].push(v);
+    }
+
+    let mut pos_x = vec![0.0; n];
+    let mut pos_y = vec![0.0; n];
+    let denom_layers = (max_layer + 1) as f64;
+    let max_x = (w - 1.0).max(0.0);
+    let max_y = (h - 1.0).max(0.0);
+    for (li, cells) in layers.iter().enumerate() {
+        let x = (li as f64 + 0.5) * max_x / denom_layers;
+        let m = cells.len().max(1) as f64;
+        for (rank, &v) in cells.iter().enumerate() {
+            pos_x[v] = x;
+            pos_y[v] = (rank as f64 + 0.5) * max_y / m;
+        }
+    }
+
+    const SWEEPS: usize = 6;
+    for _ in 0..SWEEPS {
+        for li in 1..=max_layer {
+            let mut new_y: Vec<(usize, f64)> = layers[li]
+                .iter()
+                .map(|&v| {
+                    let mut s = anchor_sum_y[v];
+                    let mut wsum = anchor_w[v];
+                    for &e_idx in &adj_in[v] {
+                        if back_edge[e_idx] {
+                            continue;
+                        }
+                        let (di, _, ew) = edges[e_idx];
+                        s += ew * pos_y[di];
+                        wsum += ew;
+                    }
+                    let y = if wsum > 0.0 { s / wsum } else { pos_y[v] };
+                    (v, y)
+                })
+                .collect();
+            new_y.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let m = new_y.len().max(1) as f64;
+            for (rank, &(v, _)) in new_y.iter().enumerate() {
+                pos_y[v] = (rank as f64 + 0.5) * max_y / m;
+            }
+        }
+        for li in (0..max_layer).rev() {
+            let mut new_y: Vec<(usize, f64)> = layers[li]
+                .iter()
+                .map(|&v| {
+                    let mut s = anchor_sum_y[v];
+                    let mut wsum = anchor_w[v];
+                    for &e_idx in &adj_out[v] {
+                        if back_edge[e_idx] {
+                            continue;
+                        }
+                        let (_, ui, ew) = edges[e_idx];
+                        s += ew * pos_y[ui];
+                        wsum += ew;
+                    }
+                    let y = if wsum > 0.0 { s / wsum } else { pos_y[v] };
+                    (v, y)
+                })
+                .collect();
+            new_y.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            let m = new_y.len().max(1) as f64;
+            for (rank, &(v, _)) in new_y.iter().enumerate() {
+                pos_y[v] = (rank as f64 + 0.5) * max_y / m;
+            }
+        }
+    }
+
+    // Blend layer-X with anchor-X mean. Layer-X has weight 1, anchor-X has
+    // weight equal to its summed edge weights — cells with strong fixed
+    // connections move toward IOs; unanchored cells stay on the layer line.
+    for v in 0..n {
+        if anchor_w[v] > 0.0 {
+            pos_x[v] = (pos_x[v] + anchor_sum_x[v]) / (1.0 + anchor_w[v]);
+        }
+    }
+
+    // Density-driven compression: shrink the layout around its centroid until
+    // occupied tile count hits the target ratio. NPNR_OT_TOPO_DENSITY is the
+    // fraction of per-tile capacity to fill (default 0.6 = 60% of 8 BEL slots
+    // per SLICE = ~4.8 cells/tile mean). Without this, the natural layered
+    // layout spans the full chip and ends up at ~1.2 cells/tile, leaving DCD
+    // stuck in a low-density local minimum.
+    let target_density: f64 = std::env::var("NPNR_OT_TOPO_DENSITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.6);
+    if target_density > 0.0 && target_density < 1.0 && n >= 2 {
+        const CAP_PER_TILE: f64 = 8.0;
+        let target_tiles = (n as f64 / (target_density * CAP_PER_TILE)).max(1.0);
+        let cx: f64 = pos_x.iter().sum::<f64>() / n as f64;
+        let cy: f64 = pos_y.iter().sum::<f64>() / n as f64;
+        let orig_x = pos_x.clone();
+        let orig_y = pos_y.clone();
+        let mut scale = 1.0_f64;
+        let mut final_tiles = 0usize;
+        for _ in 0..60 {
+            let mut occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
+            for v in 0..n {
+                let nx = cx + (orig_x[v] - cx) * scale;
+                let ny = cy + (orig_y[v] - cy) * scale;
+                occupied.insert((nx.round() as i32, ny.round() as i32));
+            }
+            final_tiles = occupied.len();
+            if (final_tiles as f64) <= target_tiles {
+                break;
+            }
+            scale *= 0.92;
+        }
+        for v in 0..n {
+            pos_x[v] = cx + (orig_x[v] - cx) * scale;
+            pos_y[v] = cy + (orig_y[v] - cy) * scale;
+        }
+        eprintln!(
+            "  topological compress: density={:.2} target_tiles={:.0} final_tiles={} scale={:.3} center=({:.1},{:.1})",
+            target_density, target_tiles, final_tiles, scale, cx, cy
+        );
+    }
+
+    for v in 0..n {
+        cell_x[v] = pos_x[v].clamp(0.0, max_x);
+        cell_y[v] = pos_y[v].clamp(0.0, max_y);
+    }
+
+    eprintln!(
+        "  topological init: n_movable={}, n_edges={}, max_layer={}, back_edges={}, n_anchored={}",
+        n,
+        edges.len(),
+        max_layer,
+        back_edge.iter().filter(|&&b| b).count(),
+        anchor_w.iter().filter(|&&w| w > 0.0).count(),
+    );
+}
+
 /// Compute WA wirelength gradient for all nets, accumulating into grad_x/grad_y.
 ///
 /// Same pattern as `add_wirelength_gradient` but uses WA instead of LSE.

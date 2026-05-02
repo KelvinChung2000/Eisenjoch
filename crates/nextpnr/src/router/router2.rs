@@ -127,6 +127,8 @@ pub fn astar_route_r2(
     let opts = AStarOptions {
         visit_limit: None,
         exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: false,
     };
     astar_search(ctx, &model, src_wires, dst_wire, &opts).path
 }

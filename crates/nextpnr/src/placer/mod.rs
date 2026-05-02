@@ -7,6 +7,7 @@ pub mod legalize;
 pub mod opt_trans;
 pub mod pipeline;
 pub mod report;
+pub mod routability;
 pub mod sa;
 
 pub use electro_place::PlacerElectro;

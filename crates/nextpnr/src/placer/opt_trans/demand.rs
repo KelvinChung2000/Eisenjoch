@@ -231,7 +231,7 @@ pub fn collect_nets_for_solve(
 
             // Driver.
             let dc = ctx.design.cell(dp.cell);
-            let (dx, dy) = pin_pos(
+            let (dx, dy, ci) = pin_pos(
                 ctx,
                 dp.cell,
                 cell_to_idx,
@@ -240,7 +240,6 @@ pub fn collect_nets_for_solve(
                 network,
                 coord_scale,
             );
-            let ci = cell_to_idx.get(&dp.cell).copied();
             let is_fixed = dc.bel_strength.is_locked();
             if is_fixed {
                 has_fixed = true;
@@ -257,7 +256,7 @@ pub fn collect_nets_for_solve(
                     continue;
                 }
                 let uc = ctx.design.cell(user.cell);
-                let (ux, uy) = pin_pos(
+                let (ux, uy, ci) = pin_pos(
                     ctx,
                     user.cell,
                     cell_to_idx,
@@ -266,7 +265,6 @@ pub fn collect_nets_for_solve(
                     network,
                     coord_scale,
                 );
-                let ci = cell_to_idx.get(&user.cell).copied();
                 let is_fixed = uc.bel_strength.is_locked();
                 if is_fixed {
                     has_fixed = true;
@@ -313,7 +311,13 @@ pub fn net_timing_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f64 {
         .get(&info.net_id)
         .copied()
         .unwrap_or(0.0) as f64;
-    1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0)
+    let timing = 1.0 + cfg.timing_weight.max(0.0) * crit.clamp(0.0, 1.0);
+    let locked = if info.has_fixed_pin {
+        cfg.locked_pin_weight.max(0.0)
+    } else {
+        1.0
+    };
+    timing * locked
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +366,11 @@ pub(crate) fn grid_index(gx: usize, gy: usize, tile_w: usize) -> usize {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Get position of a pin (movable or fixed) in virtual tile coordinates.
+/// Pin position in network coords plus the index of the cell whose motion
+/// drives this pin. Cluster children move rigidly with their root, so their
+/// position is `root_pos + (constr_x, constr_y)` and the driving index is
+/// the root's. Returns `None` for the third value only when the pin belongs
+/// to a non-movable already-placed cell.
 fn pin_pos(
     ctx: &Context,
     cell_id: CellId,
@@ -371,102 +379,47 @@ fn pin_pos(
     cell_y: &[f64],
     network: &PipeNetwork,
     coord_scale: f64,
-) -> (f64, f64) {
+) -> (f64, f64, Option<usize>) {
     if let Some(&idx) = cell_to_idx.get(&cell_id) {
-        (cell_x[idx], cell_y[idx])
-    } else {
-        let cell = ctx.design.cell(cell_id);
-        if let Some(bel) = cell.bel {
-            let loc = ctx.bel(bel).loc();
-            (
-                (loc.x - network.x0) as f64 / coord_scale,
-                (loc.y - network.y0) as f64 / coord_scale,
-            )
-        } else {
-            (
-                network.width as f64 / (2.0 * coord_scale.max(1.0)),
-                network.height as f64 / (2.0 * coord_scale.max(1.0)),
-            )
+        return (cell_x[idx], cell_y[idx], Some(idx));
+    }
+
+    let cell = ctx.design.cell(cell_id);
+
+    if let Some(root_id) = cell.cluster {
+        if root_id != cell_id {
+            if let Some(&root_idx) = cell_to_idx.get(&root_id) {
+                return (
+                    cell_x[root_idx] + cell.constr_x as f64 / coord_scale,
+                    cell_y[root_idx] + cell.constr_y as f64 / coord_scale,
+                    Some(root_idx),
+                );
+            }
+            let root_cell = ctx.design.cell(root_id);
+            if let Some(root_bel) = root_cell.bel {
+                let loc = ctx.bel(root_bel).loc();
+                return (
+                    (loc.x + cell.constr_x - network.x0) as f64 / coord_scale,
+                    (loc.y + cell.constr_y - network.y0) as f64 / coord_scale,
+                    None,
+                );
+            }
         }
     }
-}
 
-/// Compute continuous HPWL from cell positions.
-pub fn continuous_hpwl(
-    ctx: &Context,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    network: &PipeNetwork,
-) -> f64 {
-    let coord_scale = 1.0;
-    let skip_constants = env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() != Some("1");
-    let skip_clocks = env::var("NPNR_OT_EXCLUDE_CLOCKS").ok().as_deref() == Some("1")
-        || env::var("NPNR_OT_EXCLUDE_GLOBALS").ok().as_deref() == Some("1");
-    let net_ids: Vec<_> = ctx
-        .design
-        .iter_alive_nets()
-        .map(|(net_id, _)| net_id)
-        .collect();
+    if let Some(bel) = cell.bel {
+        let loc = ctx.bel(bel).loc();
+        return (
+            (loc.x - network.x0) as f64 / coord_scale,
+            (loc.y - network.y0) as f64 / coord_scale,
+            None,
+        );
+    }
 
-    net_ids
-        .par_iter()
-        .map(|&net_id| {
-            let net = ctx.design.net(net_id);
-            let net_name = ctx.name_of(net.name);
-            let is_const = net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET";
-            if skip_constants && is_const {
-                return 0.0;
-            }
-            if skip_clocks {
-                let lower = net_name.to_ascii_lowercase();
-                if lower.contains("clk") || lower.contains("clock") {
-                    return 0.0;
-                }
-            }
-            let Some(dp) = net.driver() else {
-                return 0.0;
-            };
-
-            let (dxx, dyy) = pin_pos(
-                ctx,
-                dp.cell,
-                cell_to_idx,
-                cell_x,
-                cell_y,
-                network,
-                coord_scale,
-            );
-            let (mut min_x, mut max_x) = (dxx, dxx);
-            let (mut min_y, mut max_y) = (dyy, dyy);
-
-            let mut has_valid_sink = false;
-            for user in net.users() {
-                if !user.is_valid() {
-                    continue;
-                }
-                has_valid_sink = true;
-                let (x, y) = pin_pos(
-                    ctx,
-                    user.cell,
-                    cell_to_idx,
-                    cell_x,
-                    cell_y,
-                    network,
-                    coord_scale,
-                );
-                min_x = min_x.min(x);
-                max_x = max_x.max(x);
-                min_y = min_y.min(y);
-                max_y = max_y.max(y);
-            }
-            if !has_valid_sink {
-                return 0.0;
-            }
-
-            (max_x - min_x) + (max_y - min_y)
-        })
-        .reduce(|| 0.0, |a, b| a + b)
+    panic!(
+        "demand::pin_pos: cell {} is neither movable, a placed cluster child, nor bound to a BEL",
+        ctx.name_of(cell.name),
+    );
 }
 
 /// Compute a continuous analogue of the line estimate from current floating-point positions.
@@ -510,7 +463,7 @@ pub fn continuous_line_estimate(
                 return 0.0;
             }
 
-            let (dx, dy) = pin_pos(
+            let (dx, dy, _) = pin_pos(
                 ctx,
                 dp.cell,
                 cell_to_idx,
@@ -526,7 +479,7 @@ pub fn continuous_line_estimate(
                 if !user.is_valid() {
                     continue;
                 }
-                let (sx, sy) = pin_pos(
+                let (sx, sy, _) = pin_pos(
                     ctx,
                     user.cell,
                     cell_to_idx,

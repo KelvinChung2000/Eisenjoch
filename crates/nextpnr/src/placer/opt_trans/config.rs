@@ -87,6 +87,9 @@ pub enum InitStrategy {
     Centroid,
     /// Uniform grid distribution.
     Uniform,
+    /// Sugiyama-style layered DAG layout: cycle-break, longest-path layering,
+    /// barycenter sweep. Deterministic — no seed dependence.
+    Topological,
 }
 
 impl Default for InitStrategy {
@@ -149,6 +152,30 @@ pub struct OptTransPlacerCfg {
     /// Default 0.5.
     pub blend_alpha: f64,
 
+    /// Multiplier applied to the per-net cost weight when at least one pin of
+    /// the net is locked (typically an IO). Locked endpoints can't move, so
+    /// the movable side of the net is the only thing that can shrink HPWL —
+    /// boosting this weight biases the solver toward pulling movable cells
+    /// toward their fixed endpoint. `1.0` disables the boost.
+    pub locked_pin_weight: f64,
+
+    /// MST-edge pull weight. For each net, the rectilinear MST is computed
+    /// once per outer iter; the net-level cost contribution becomes
+    /// `λ · Σ |p_i − p_j|` over MST edges, applied per pin as the sum of
+    /// distances from the pin to its MST neighbours. Unlike `steiner_weight`,
+    /// there is no central attractor — pins on the perimeter of the net stay
+    /// on the perimeter, eliminating the centroid-stacking pathology.
+    /// Default 0.0 (disabled).
+    pub mst_edge_weight: f64,
+
+    /// 1-Steiner pseudo-node weight. Adds `λ · manhattan(cand, centroid[net])`
+    /// per (cell, net) pair in `evaluate_cell_at`, where `centroid[net]` is
+    /// the mean pin position for that net (refreshed per outer iter). This
+    /// gives every pin a pull toward a shared floating hub, producing the
+    /// sink-sink coupling that the driver-anchored star model lacks.
+    /// Default 0.0 (term disabled → behaviour matches prior DCD exactly).
+    pub steiner_weight: f64,
+
     // --- Softmin position update ---
     /// If true, the Jacobi commit step picks a softmin-weighted expected
     /// position over the cell's probe set instead of the hard argmin. This
@@ -183,7 +210,7 @@ impl Default for OptTransPlacerCfg {
             lap_max_cells: 10000,
             init_strategy: InitStrategy::Uniform,
             num_threads: 8,
-            legalization: "ring".to_string(),
+            legalization: "sorted".to_string(),
             max_outer_iters: 50,
             dcd_iters_per_cell: 8,
             jacobi_alpha: 1.0,
@@ -193,6 +220,9 @@ impl Default for OptTransPlacerCfg {
             bisect_seed_k: 8,
             bisect_refresh_region: 1,
             blend_alpha: 0.5,
+            steiner_weight: 0.0,
+            mst_edge_weight: 0.0,
+            locked_pin_weight: 1.5,
             skip_constants: true,
             skip_clocks: false,
             exclude_globals: false,
@@ -215,6 +245,51 @@ impl OptTransPlacerCfg {
         {
             self.blend_alpha = v.clamp(0.0, 1.0);
         }
+        if let Some(v) = env::var("NPNR_OT_STEINER")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.steiner_weight = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_LOCKED_PIN_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.locked_pin_weight = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_MST_EDGE")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.mst_edge_weight = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_JACOBI_ALPHA")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.jacobi_alpha = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_SEED")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            self.seed = v;
+        }
+        if let Some(v) = env::var("NPNR_OT_MAX_ITERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.max_outer_iters = v;
+        }
+        if let Some(v) = env::var("NPNR_OT_SWEEP").ok() {
+            self.sweep_mode = match v.as_str() {
+                "jacobi" | "JacobiFullscan" => SweepMode::JacobiFullscan,
+                "seq" | "SequentialBisection" => SweepMode::SequentialBisection,
+                "jacobi_bb" | "JacobiBB" => SweepMode::JacobiBB,
+                "jacobi_bisect" | "JacobiBisection" => SweepMode::JacobiBisection,
+                _ => self.sweep_mode,
+            };
+        }
         // NPNR_OT_INCLUDE_CONSTANTS=1 disables the default skip_constants.
         if env::var("NPNR_OT_INCLUDE_CONSTANTS").ok().as_deref() == Some("1") {
             self.skip_constants = false;
@@ -228,6 +303,15 @@ impl OptTransPlacerCfg {
         }
         if env::var("NPNR_OT_BRESENHAM_LOGIT").ok().as_deref() == Some("1") {
             self.path_model = PathModel::BresenhamLogit;
+        }
+        if let Some(v) = env::var("NPNR_OT_INIT").ok() {
+            self.init_strategy = match v.as_str() {
+                "random" | "RandomBel" | "RANDOM" => InitStrategy::RandomBel,
+                "centroid" | "Centroid" | "CENTROID" => InitStrategy::Centroid,
+                "uniform" | "Uniform" | "UNIFORM" => InitStrategy::Uniform,
+                "topo" | "topological" | "Topological" | "TOPO" => InitStrategy::Topological,
+                _ => self.init_strategy,
+            };
         }
         if let Some(v) = env::var("NPNR_OT_GRAPH_MODEL").ok() {
             self.graph_model = match v.as_str() {

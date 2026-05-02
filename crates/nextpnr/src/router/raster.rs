@@ -7,8 +7,6 @@
 //!
 //! Iterates with congestion feedback. Intended for fast wirelength estimation.
 
-use std::sync::Arc;
-
 use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::metrics::BoundingBox;
@@ -16,14 +14,489 @@ use crate::netlist::NetId;
 use crate::timing::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
+use super::astar::{astar_search, default_pip_cost, reconstruct_path_to, AStarOptions, PathCostModel};
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
     is_global_clock_wire, resolve_source_wire, source_wire_const_value,
     unroute_net, validate_all_routed, RoutePlan, SinkRoute,
 };
-use super::maze::{astar_route, astar_route_multihop};
+use super::astar::AStarExit;
+use super::maze::{astar_route, astar_route_explore, astar_route_multihop, astar_route_with_trace};
 use super::RouterError;
+
+/// True iff every valid sink of `net` is bound to the net (directly or via a
+/// node-equivalent peer). Used to identify nets the primary pass left
+/// partially unrouted so the cleanup A* can finish them.
+fn net_fully_routed(ctx: &Context, net_id: NetId) -> bool {
+    let net = ctx.net(net_id);
+    let chipdb = ctx.chipdb();
+    for user in net.users().iter() {
+        if !user.is_valid() {
+            continue;
+        }
+        let Some(bel) = ctx.cell(user.cell).bel() else {
+            continue;
+        };
+        let Some(sink_wv) = bel.pin_wire(user.port) else {
+            continue;
+        };
+        let sink_wire = sink_wv.id();
+        if net.wires().contains_key(&sink_wire) {
+            continue;
+        }
+        let mut peer_in_tree = false;
+        chipdb.node_wires_cb(sink_wire, |peer| {
+            if !peer_in_tree && net.wires().contains_key(&peer) {
+                peer_in_tree = true;
+            }
+        });
+        if !peer_in_tree {
+            return false;
+        }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Scoped rip-up negotiation
+// ---------------------------------------------------------------------------
+//
+// When A* cleanup fails for a net whose routing tree is still empty, the
+// failure mode is usually a blocked corridor: no legal path exists because
+// every candidate path passes through wires claimed by other nets, and the
+// binding-aware cost model correctly refuses to plan through them. Generic
+// PathFinder-style negotiation does not help here — `wire_cong` is zero
+// (nobody is double-using a wire), so the history-cost mechanism has no
+// signal to amplify.
+//
+// Scoped rip-up resolves a stuck net by:
+//   1. Computing `min_cost` = total pip-cost of the theoretical shortest
+//      corridor (ignoring bindings). Used only as a diagnostic baseline.
+//   2. Trying a binding-aware A* with extended visit budget — finds a free
+//      detour through unbound wires if one exists.
+//   3. If any detour exists, applying it. We accept slow detours: at this
+//      stage of cleanup a routed-but-slow net beats an unrouted one, and
+//      timing-driven rejection only makes sense when we have headroom to
+//      chase a cleaner solution.
+//   4. Only if NO detour exists at all, ripping up ALL foreign nets occupying
+//      the min-cost corridor and re-routing.
+//
+// On any cascade failure during re-route the entire change rolls back so the
+// graph state is preserved exactly as we found it.
+
+/// Total rip-up attempts per `run()` invocation. Prevents pathological cases
+/// (e.g. a mutual-blocker loop) from consuming unbounded time.
+const MAX_RIPUP_ATTEMPTS_PER_RUN: u32 = 8;
+
+/// Visit budget for the exploratory (bindings-ignored) Dijkstra used to
+/// identify blockers. With a bbox-restricted search the heap stays bounded
+/// by the corridor area (not chip area), so even pure h=0 Dijkstra
+/// terminates in a few million pops on the worst sv3 cases.
+const EXPLORE_VISIT_LIMIT: usize = 10_000_000;
+
+/// Lower bound on the explore A*'s bounding-box margin. The actual margin
+/// is `max(this, manhattan_span * 3)` so a small net still has a wide
+/// corridor for plausible detours and a long net gets headroom
+/// proportional to its span. Distinct from the per-net routing bbox
+/// margin (small, ~8) because exploration may detour through
+/// neighbouring tiles to find ANY path.
+const EXPLORE_BBOX_MARGIN_MIN: i32 = 60;
+const EXPLORE_BBOX_SPAN_MULT: i32 = 3;
+
+/// Visit budget for the binding-aware detour A* and post-rip-up reroute
+/// of the net we're trying to recover. Weighted-A* heuristic prunes much
+/// harder than Dijkstra, so this can be smaller than the explore budget
+/// while still covering the worst observed cases. Keep above ~3M because
+/// some sv3 SLICEM-D paths need a wide visit shell before the heuristic
+/// can pull tight.
+const SCOPED_RIPUP_RETRY_LIMIT: usize = 5_000_000;
+
+/// Visit budget for each per-sink re-route after rip-up. The blockers that
+/// were already routed must each find a new home through tiles where our
+/// net now occupies the path they previously used, so this needs to be on
+/// par with the post-rip-up reroute budget for our own net.
+const RIPUP_REROUTE_LIMIT: usize = 5_000_000;
+
+/// Snapshot of a net's routed state, sufficient to restore it if rip-up+retry
+/// fails. Captures the wire/pip pairs the net owned via `apply_route_plan`;
+/// node-equivalent wires are re-derived from the chipdb at restore time.
+struct NetSnapshot {
+    net: NetId,
+    wires: Vec<(WireId, Option<PipId>)>,
+}
+
+/// Capture a net's current routing so it can be restored by `restore_net`.
+fn snapshot_net(ctx: &Context, net: NetId) -> NetSnapshot {
+    let wires: Vec<(WireId, Option<PipId>)> = ctx
+        .net(net)
+        .wires()
+        .iter()
+        .map(|(&w, pm)| (w, pm.pip))
+        .collect();
+    NetSnapshot { net, wires }
+}
+
+/// Fully unroute a net: unbind every wire (including node-equivalents) and
+/// every PIP it owns, and clear its wire map. Differs from
+/// `super::common::unroute_net` in that it also walks `node_wires_cb` to
+/// release node-equivalent bindings that `try_bind_wire_node` installed,
+/// ensuring the corridor is truly free for the net we're trying to place.
+fn ripup_net_with_equivs(ctx: &mut Context, net: NetId) {
+    let entries: Vec<(WireId, Option<PipId>)> = ctx
+        .net(net)
+        .wires()
+        .iter()
+        .map(|(&w, pm)| (w, pm.pip))
+        .collect();
+    for (wire, pip) in &entries {
+        let mut equivs: Vec<WireId> = Vec::new();
+        ctx.chipdb().node_wires_cb(*wire, |nw| equivs.push(nw));
+        ctx.unbind_wire(*wire);
+        for nw in equivs {
+            ctx.unbind_wire(nw);
+        }
+        if let Some(p) = pip {
+            ctx.unbind_pip(*p);
+        }
+    }
+    ctx.design.net_edit(net).clear_wires();
+}
+
+/// Re-apply a snapshot after a failed rip-up attempt. Returns false if any
+/// wire re-bind fails (which would indicate external state corruption — the
+/// caller should treat this as a hard error).
+fn restore_net(ctx: &mut Context, snap: &NetSnapshot) -> bool {
+    for (wire, pip) in &snap.wires {
+        if ctx
+            .try_bind_wire_node(*wire, snap.net, crate::common::PlaceStrength::Strong)
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(p) = pip {
+            ctx.bind_pip(*p, snap.net, crate::common::PlaceStrength::Strong);
+        }
+        ctx.design
+            .net_edit(snap.net)
+            .add_wire(*wire, *pip, crate::common::PlaceStrength::Strong);
+    }
+    true
+}
+
+/// Re-route an already-unbound net from scratch using the binding-aware
+/// MazeCostModel. Returns true on success. On any failure (unroutable sink,
+/// apply conflict), the caller is responsible for rolling back: this
+/// function may partially apply before failing, so callers unroute the net
+/// before restoring snapshots.
+fn reroute_from_scratch(
+    ctx: &mut Context,
+    net: NetId,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    lookahead: &super::lookahead::Lookahead,
+    visit_limit: usize,
+    bbox: Option<&crate::metrics::BoundingBox>,
+) -> bool {
+    let source_wire = match resolve_source_wire(ctx, net) {
+        Ok(Some(w)) => w,
+        _ => return false,
+    };
+    let sink_wires = collect_sink_wires(ctx, net);
+    if sink_wires.is_empty() {
+        return true; // no users to route — treat as trivially routed
+    }
+
+    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    tree_wires.insert(source_wire);
+    ctx.chipdb().node_wires_cb(source_wire, |nw| {
+        tree_wires.insert(nw);
+    });
+
+    let mut sink_routes = Vec::new();
+    for &sink_wire in &sink_wires {
+        if tree_wires.contains(&sink_wire) {
+            sink_routes.push(SinkRoute {
+                sink_wire,
+                pips: vec![],
+            });
+            continue;
+        }
+        match astar_route(
+            ctx,
+            net,
+            &tree_wires,
+            sink_wire,
+            wire_penalty,
+            bbox,
+            50,
+            Some(lookahead),
+            Some(visit_limit),
+        ) {
+            Some(pips) => {
+                for &pip in &pips {
+                    let dw = ctx.chipdb().pip_dst_wire(pip);
+                    tree_wires.insert(dw);
+                    ctx.chipdb().node_wires_cb(dw, |nw| {
+                        tree_wires.insert(nw);
+                    });
+                }
+                sink_routes.push(SinkRoute { sink_wire, pips });
+            }
+            None => {
+                let net_name = ctx.name_of(ctx.net(net).name_id()).to_owned();
+                let (sxt, syt) = ctx.chipdb().tile_xy(sink_wire.tile());
+                let (srx, sry) = ctx.chipdb().tile_xy(source_wire.tile());
+                let bbox_str = bbox
+                    .map(|b| format!("[{},{}]x[{},{}]", b.x0, b.x1, b.y0, b.y1))
+                    .unwrap_or_else(|| "none".to_string());
+                eprintln!(
+                    "    reroute_from_scratch FAIL: net='{}' src=({},{}) sink=({},{}) bbox={}",
+                    net_name, srx, sry, sxt, syt, bbox_str,
+                );
+                return false;
+            }
+        }
+    }
+
+    let plan = RoutePlan {
+        net,
+        source_wire,
+        sink_routes,
+    };
+    apply_route_plan(ctx, &plan).is_ok()
+}
+
+/// Attempt to route `net` by temporarily ripping up foreign nets that occupy
+/// its theoretical shortest corridor. Returns true if the net is now routed.
+///
+/// Precondition: `net`'s routing tree is empty (normal A* cleanup has already
+/// failed). On any failure, the full graph state is rolled back and this
+/// function returns false.
+fn scoped_ripup_route(
+    ctx: &mut Context,
+    net: NetId,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    lookahead: &super::lookahead::Lookahead,
+    budget: &mut u32,
+    neg_state: &mut super::common::NegotiationState,
+) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+
+    let source_wire = match resolve_source_wire(ctx, net) {
+        Ok(Some(w)) => w,
+        _ => return false,
+    };
+    let sink_wires = collect_sink_wires(ctx, net);
+    if sink_wires.is_empty() {
+        return false;
+    }
+
+    // Build source wire set (source + node equivalents).
+    let mut src_set: FxHashSet<WireId> = FxHashSet::default();
+    src_set.insert(source_wire);
+    ctx.chipdb().node_wires_cb(source_wire, |nw| {
+        src_set.insert(nw);
+    });
+
+    // Step 1: theoretical-min path (ignore bindings). Establishes the timing
+    // baseline (`min_cost`) and the full set of foreign nets occupying it.
+    // Bounded to the net's BEL bounding box plus a margin scaled by the
+    // net's manhattan span — without this, pure Dijkstra walks the entire
+    // chip and the heap blows up before the sink can be reached. The margin
+    // must comfortably exceed any plausible detour, so it scales with the
+    // direct path length: a 1-tile net needs a tight corridor; a 100-tile
+    // net may need to detour 100 tiles in either dimension.
+    let first_sink = sink_wires[0];
+    let bel_bbox_for_span = crate::metrics::compute_bbox(ctx, net, 0);
+    let span = (bel_bbox_for_span.x1 - bel_bbox_for_span.x0)
+        .max(bel_bbox_for_span.y1 - bel_bbox_for_span.y0)
+        .max(0);
+    let explore_margin = EXPLORE_BBOX_MARGIN_MIN.max(span * EXPLORE_BBOX_SPAN_MULT);
+    let explore_bbox = crate::metrics::compute_bbox(ctx, net, explore_margin);
+    let explore_path = match astar_route_explore(
+        ctx,
+        net,
+        &src_set,
+        first_sink,
+        wire_penalty,
+        Some(&explore_bbox),
+        Some(lookahead),
+        Some(EXPLORE_VISIT_LIMIT),
+    ) {
+        Some(p) => p,
+        None => return false,
+    };
+    let min_cost: i64 = explore_path
+        .iter()
+        .map(|&p| lookahead.pip_cost(ctx.chipdb(), p) as i64)
+        .sum();
+
+    let mut blockers: FxHashSet<NetId> = FxHashSet::default();
+    for &pip in &explore_path {
+        let dst = ctx.chipdb().pip_dst_wire(pip);
+        // Binding is at node granularity (try_bind_wire_node), so a wire
+        // whose dst is unbound can still be unroutable if any node-equivalent
+        // wire belongs to another net. Walk the node to catch all blockers.
+        if let Some((owner, _)) = ctx.wire_binding(dst) {
+            if owner != net {
+                blockers.insert(owner);
+            }
+        }
+        ctx.chipdb().node_wires_cb(dst, |nw| {
+            if let Some((owner, _)) = ctx.wire_binding(nw) {
+                if owner != net {
+                    blockers.insert(owner);
+                }
+            }
+        });
+    }
+    if blockers.is_empty() {
+        // Corridor already clear — normal A* should have succeeded but hit
+        // some other limit; scoped rip-up can't help.
+        return false;
+    }
+
+    // Step 2: try a binding-aware A* on the same first_sink with extended
+    // visit budget. If it returns a path, every wire is unbound (binding
+    // hard-block ensures that), so this is a true zero-blocker detour.
+    let detour_path = astar_route(
+        ctx,
+        net,
+        &src_set,
+        first_sink,
+        wire_penalty,
+        None,
+        0,
+        Some(lookahead),
+        Some(SCOPED_RIPUP_RETRY_LIMIT),
+    );
+
+    // Step 3: if any binding-aware detour exists, accept it regardless of cost.
+    // A slow routed net beats an unrouted one — timing-driven rejection only
+    // makes sense when we have headroom to chase a cleaner solution, and at
+    // this point in cleanup we don't.
+    if let Some(detour) = &detour_path {
+        let detour_cost: i64 = detour
+            .iter()
+            .map(|&p| lookahead.pip_cost(ctx.chipdb(), p) as i64)
+            .sum();
+        // No rip-up here, so no budget consumed — just an alternate reroute.
+        let ok = reroute_from_scratch(
+            ctx,
+            net,
+            wire_penalty,
+            lookahead,
+            SCOPED_RIPUP_RETRY_LIMIT,
+            Some(&explore_bbox),
+        );
+        eprintln!(
+            "  scoped_ripup: detour cost {} (min {}) accepted (applied={})",
+            detour_cost, min_cost, ok,
+        );
+        if ok {
+            return true;
+        }
+        // reroute_from_scratch (which routes ALL sinks, not just first_sink)
+        // couldn't apply it; fall through to rip-up.
+    } else {
+        eprintln!(
+            "  scoped_ripup: no detour at all (min_cost={} blockers={}), ripping up",
+            min_cost,
+            blockers.len(),
+        );
+    }
+
+    // Snapshot every blocker before unrouting. Order matters only for
+    // restoration symmetry; a Vec<NetSnapshot> preserves insertion order.
+    let blocker_list: Vec<NetId> = blockers.iter().copied().collect();
+    let snapshots: Vec<NetSnapshot> = blocker_list
+        .iter()
+        .map(|&b| snapshot_net(ctx, b))
+        .collect();
+
+    for &b in &blocker_list {
+        ripup_net_with_equivs(ctx, b);
+        neg_state.bump_rip_up(b);
+    }
+
+    // Retry our net with the corridor now free. Use the same
+    // binding-aware route path as the normal cleanup loop.
+    if !reroute_from_scratch(
+        ctx,
+        net,
+        wire_penalty,
+        lookahead,
+        SCOPED_RIPUP_RETRY_LIMIT,
+        Some(&explore_bbox),
+    ) {
+        // Our net still can't route — undo and restore blockers.
+        // Use equiv-aware ripup because apply_route_plan binds node
+        // equivalents via try_bind_wire_node; plain unroute_net would
+        // leave them stale and cause the subsequent restore_net to fail.
+        ripup_net_with_equivs(ctx, net);
+        for snap in &snapshots {
+            if !restore_net(ctx, snap) {
+                eprintln!(
+                    "  scoped_ripup: CRITICAL restore failure for blocker net (idx={:?})",
+                    snap.net
+                );
+            }
+        }
+        return false;
+    }
+
+    // Re-route each blocker. On any failure, fully roll back.
+    for (i, &b) in blocker_list.iter().enumerate() {
+        // Blocker reroute uses the blocker's own bbox, not ours — they may
+        // need to find a path through entirely different tiles now that our
+        // net occupies their previous corridor. Margin scales with span the
+        // same way explore does, so a long blocker still has room to detour.
+        let blocker_span_bbox = crate::metrics::compute_bbox(ctx, b, 0);
+        let blocker_span = (blocker_span_bbox.x1 - blocker_span_bbox.x0)
+            .max(blocker_span_bbox.y1 - blocker_span_bbox.y0)
+            .max(0);
+        let blocker_margin =
+            EXPLORE_BBOX_MARGIN_MIN.max(blocker_span * EXPLORE_BBOX_SPAN_MULT);
+        let blocker_bbox = crate::metrics::compute_bbox(ctx, b, blocker_margin);
+        if !reroute_from_scratch(
+            ctx,
+            b,
+            wire_penalty,
+            lookahead,
+            RIPUP_REROUTE_LIMIT,
+            Some(&blocker_bbox),
+        ) {
+            // Undo blocker partial re-route (reroute_from_scratch is
+            // atomic-on-failure so no bindings should exist, but defend
+            // against node-equiv leaks anyway), undo our net, then undo
+            // any blockers we already successfully re-routed earlier in
+            // the loop, then restore every original snapshot.
+            ripup_net_with_equivs(ctx, b);
+            ripup_net_with_equivs(ctx, net);
+            for snap in &snapshots[..i] {
+                ripup_net_with_equivs(ctx, snap.net);
+            }
+            for snap in &snapshots {
+                if !restore_net(ctx, snap) {
+                    eprintln!(
+                        "  scoped_ripup: CRITICAL restore failure for blocker net (idx={:?})",
+                        snap.net
+                    );
+                }
+            }
+            return false;
+        }
+    }
+
+    *budget -= 1;
+    eprintln!(
+        "  scoped_ripup: routed net via {} blocker rip-ups (budget={} left)",
+        blocker_list.len(),
+        *budget
+    );
+    true
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -37,6 +510,9 @@ pub struct RasterRouterCfg {
     pub filter_radius: f32,
     pub beam_width: usize,
     pub max_beam_steps: usize,
+    /// Margin (in tiles) around each net's bounding box for A* pruning.
+    /// 0 disables bbox pruning (search the whole chip).
+    pub bbox_margin: i32,
     /// If true, use pure greedy line-walk instead of beam search.
     pub use_greedy: bool,
     pub verbose: bool,
@@ -51,6 +527,7 @@ impl Default for RasterRouterCfg {
             filter_radius: 1.0,
             beam_width: 128,
             max_beam_steps: 1000,
+            bbox_margin: 8,
             use_greedy: false,
             verbose: false,
         }
@@ -250,363 +727,67 @@ fn raster_corridor(
 }
 
 // ---------------------------------------------------------------------------
-// Beam search PIP walker
+// Per-sink A* (bbox-pruned, lookahead heuristic)
 // ---------------------------------------------------------------------------
 
-/// A candidate in the beam search. `best_dist` caches the node-min
-/// manhattan distance at the time the candidate was created so the
-/// stall-detection loop doesn't have to recompute it.
-#[derive(Clone)]
-struct BeamCandidate {
-    wire: WireId,
-    path_idx: u32, // index into path_arena, u32::MAX = root (no pips)
-    cost: f32,
-    best_dist: i32,
+/// Weighted A* cost model: uniform pip cost (g = number of pips) and
+/// manhattan heuristic. h is admissible (≤ true pip count); scaling by
+/// `H_WEIGHT > 1` trades optimality for search speed (returned cost ≤
+/// `H_WEIGHT × optimal`). `H_WEIGHT = 2` is a typical balance.
+const H_WEIGHT: DelayT = 2;
+
+struct RasterCostModel<'a> {
+    net: NetId,
+    bbox: Option<&'a BoundingBox>,
+    cong: &'a CongestionMap,
+    cong_weight: f32,
 }
 
-/// Reconstruct the PIP path by walking the arena chain from leaf to root.
-fn reconstruct_path(arena: &[(PipId, u32)], mut idx: u32) -> Vec<PipId> {
-    let mut pips = Vec::new();
-    while idx != u32::MAX {
-        let (pip, parent) = arena[idx as usize];
-        pips.push(pip);
-        idx = parent;
+impl<'a> PathCostModel for RasterCostModel<'a> {
+    fn pip_cost(&self, _ctx: &Context, _pip: PipId) -> DelayT { 1 }
+
+    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
+        if let Some((owner, _)) = ctx.wire_binding(wire) {
+            if owner != self.net {
+                return DelayT::MAX / 4;
+            }
+        }
+        (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
     }
-    pips.reverse();
-    pips
+
+    fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
+        let chipdb = ctx.chipdb();
+        let (wx, wy) = chipdb.tile_xy(wire.tile());
+        let (dx, dy) = chipdb.tile_xy(dst.tile());
+        let m = ((wx - dx).abs() + (wy - dy).abs()) as DelayT;
+        m.saturating_mul(H_WEIGHT)
+    }
+
+    fn bboxes(&self) -> &[BoundingBox] {
+        match self.bbox {
+            Some(bb) => std::slice::from_ref(bb),
+            None => &[],
+        }
+    }
 }
 
-/// Greedy beam search from source wires to a destination wire.
-///
-/// At each step, expands `pips_downhill` from all beam candidates. Each PIP
-/// is scored by remaining manhattan distance to the sink (lower = better).
-/// Node-aware: considers the closest tile reachable via the wire's routing
-/// node. Long wires naturally win because their node members reach tiles
-/// close to the sink for a single PIP traversal.
-fn beam_search_route(
+fn route_sink_astar(
     ctx: &Context,
     net: NetId,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
-    corridor: &FxHashSet<i32>,
+    bbox: Option<&BoundingBox>,
     cong: &CongestionMap,
     cong_weight: f32,
-    beam_width: usize,
-    max_steps: usize,
 ) -> Option<Vec<PipId>> {
-    let chipdb = ctx.chipdb();
-    let (dst_x, dst_y) = chipdb.tile_xy(dst_wire.tile());
-
-    // Build destination node set for hit detection.
-    let mut dst_nodes: FxHashSet<WireId> = FxHashSet::default();
-    dst_nodes.insert(dst_wire);
-    chipdb.node_wires_cb(dst_wire, |nw| {
-        dst_nodes.insert(nw);
-    });
-
-    // Check trivial case.
-    for src in src_wires {
-        if dst_nodes.contains(src) {
-            return Some(Vec::new());
-        }
-    }
-
-    let manhattan = |wire: WireId| -> i32 {
-        let (wx, wy) = chipdb.tile_xy(wire.tile());
-        (wx - dst_x).abs() + (wy - dst_y).abs()
+    let model = RasterCostModel { net, bbox, cong, cong_weight };
+    let opts = AStarOptions {
+        visit_limit: None,
+        exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: true,
     };
-
-    // Per-node memoization. Every quantity computed from `node_wires_cb`
-    // in the beam loop is a property of the *node*, not of the individual
-    // wire — the minimum manhattan over peers, whether any peer is
-    // owned by a different net, whether any peer hits `dst_nodes`, and
-    // which peers have outgoing PIPs. Walking a 65k-peer node once per
-    // wire would turn every per-wire operation into O(peers²); caching
-    // by node id collapses repeat lookups to O(1) after the first walk.
-    let mut node_taken_cache: FxHashMap<u64, bool> = FxHashMap::default();
-    let mut node_hit_cache: FxHashMap<u64, bool> = FxHashMap::default();
-    let mut node_best_dist_cache: FxHashMap<u64, i32> = FxHashMap::default();
-    let mut node_expansion_cache: FxHashMap<u64, Arc<Vec<WireId>>> = FxHashMap::default();
-    let mut node_min_manhattan_cache: FxHashMap<u64, i32> = FxHashMap::default();
-
-    // Seed beam with all source wires and their node members.
-    // visited tracks PIP destination wires to avoid re-expansion.
-    // Node members are NOT added to visited - they remain reachable
-    // as PIP destinations from other paths.
-    let mut visited_pips: FxHashSet<u64> = FxHashSet::default(); // packed pip ids
-    let mut beam: Vec<BeamCandidate> = Vec::new();
-
-    // Path arena: each entry is (pip, parent_index). u32::MAX means root.
-    let mut path_arena: Vec<(PipId, u32)> = Vec::new();
-
-    // Node-min manhattan: fetch (or compute once) the minimum manhattan
-    // distance across all peers of `wire`'s node. A per-wire computation
-    // walks the whole node every call; caching by node id makes the
-    // *second* query on the same node O(1).
-    let compute_node_min_manhattan = |wire: WireId,
-                                      cache: &mut FxHashMap<u64, i32>|
-     -> i32 {
-        let nid = chipdb.node_id(wire);
-        if let Some(id) = nid {
-            if let Some(&v) = cache.get(&id) {
-                return v;
-            }
-        }
-        let mut best = manhattan(wire);
-        chipdb.node_wires_cb(wire, |nw| {
-            let d = manhattan(nw);
-            if d < best {
-                best = d;
-            }
-        });
-        if let Some(id) = nid {
-            cache.insert(id, best);
-        }
-        best
-    };
-
-    for &wire in src_wires {
-        let nm = compute_node_min_manhattan(wire, &mut node_min_manhattan_cache);
-        beam.push(BeamCandidate {
-            wire,
-            path_idx: u32::MAX,
-            cost: nm as f32,
-            best_dist: nm,
-        });
-        // Every peer on the same node shares `nm` (node-min manhattan is
-        // a node property), so we avoid another node walk per peer.
-        chipdb.node_wires_cb(wire, |nw| {
-            beam.push(BeamCandidate {
-                wire: nw,
-                path_idx: u32::MAX,
-                cost: nm as f32,
-                best_dist: nm,
-            });
-        });
-    }
-    // Dedup seeds by wire.
-    beam.sort_by_key(|c| c.wire.raw());
-    beam.dedup_by_key(|c| c.wire.raw());
-
-    // Bound the initial beam by cost so that mega-nodes (tens of thousands
-    // of peers seeded at once) don't turn step 0 into an O(N) inner loop
-    // before the usual per-step truncation kicks in.
-    if beam.len() > beam_width {
-        beam.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
-        beam.truncate(beam_width);
-    }
-
-    // Wall-clock timeout per beam search call: 500ms prevents hanging
-    // while allowing enough time for complex routes.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
-    let mut step_count: usize = 0;
-
-    // Stall detection: break if best manhattan doesn't improve for 50 steps.
-    let mut best_manhattan = i32::MAX;
-    let mut stall_count: usize = 0;
-
-    let effective_beam_width = beam_width;
-
-    for _step in 0..max_steps {
-        if beam.is_empty() {
-            return None;
-        }
-
-        let mut next_candidates: Vec<BeamCandidate> = Vec::new();
-
-        for candidate in &beam {
-            let wire_info = chipdb.wire_info(candidate.wire);
-            let downhill = wire_info.pips_downhill.get();
-
-            for &pip_idx in downhill {
-                // Check timeout every 1000 PIPs to avoid syscall overhead.
-                step_count += 1;
-                if step_count % 1000 == 0 && std::time::Instant::now() > deadline {
-                    return None;
-                }
-                let pip = PipId::new(candidate.wire.tile(), pip_idx);
-
-                // Skip PIPs we've already used.
-                if !visited_pips.insert(pip.raw()) {
-                    continue;
-                }
-
-                let next_wire = chipdb.pip_dst_wire(pip);
-
-                // Wire-binding check: skip PIPs whose destination (or any
-                // node-equivalent) is bound to a different net. Without this,
-                // beam search is blind to actual claims and produces plans
-                // that apply_route_plan rejects via try_bind_wire_node.
-                let mut wire_taken = match ctx.wire_binding(next_wire) {
-                    Some((owner, _)) if owner != net => true,
-                    _ => false,
-                };
-                if !wire_taken {
-                    let nid = chipdb.node_id(next_wire);
-                    let cached = nid.and_then(|id| node_taken_cache.get(&id).copied());
-                    wire_taken = match cached {
-                        Some(v) => v,
-                        None => {
-                            let mut taken = false;
-                            chipdb.node_wires_cb(next_wire, |nw| {
-                                if let Some((owner, _)) = ctx.wire_binding(nw) {
-                                    if owner != net {
-                                        taken = true;
-                                    }
-                                }
-                            });
-                            if let Some(id) = nid {
-                                node_taken_cache.insert(id, taken);
-                            }
-                            taken
-                        }
-                    };
-                }
-                if wire_taken {
-                    continue;
-                }
-
-                // Push PIP into the arena and get its index.
-                let new_path_idx = path_arena.len() as u32;
-                path_arena.push((pip, candidate.path_idx));
-
-                // Check hit on direct wire.
-                if dst_nodes.contains(&next_wire) {
-                    return Some(reconstruct_path(&path_arena, new_path_idx));
-                }
-
-                // Check hit via node expansion and find best distance.
-                // Both are pure functions of the routing node, so cache them
-                // by node id to avoid re-walking mega-nodes.
-                let nid = chipdb.node_id(next_wire);
-                let (hit, best_dist) = match nid {
-                    Some(id)
-                        if node_hit_cache.contains_key(&id)
-                            && node_best_dist_cache.contains_key(&id) =>
-                    {
-                        (node_hit_cache[&id], node_best_dist_cache[&id])
-                    }
-                    _ => {
-                        let mut hit = false;
-                        let mut best = manhattan(next_wire);
-                        chipdb.node_wires_cb(next_wire, |nw| {
-                            if dst_nodes.contains(&nw) {
-                                hit = true;
-                            }
-                            let d = manhattan(nw);
-                            if d < best {
-                                best = d;
-                            }
-                        });
-                        if let Some(id) = nid {
-                            node_hit_cache.insert(id, hit);
-                            node_best_dist_cache.insert(id, best);
-                        }
-                        (hit, best)
-                    }
-                };
-
-                if hit {
-                    return Some(reconstruct_path(&path_arena, new_path_idx));
-                }
-
-                // Corridor penalty: wires outside the raster corridor are penalized
-                // proportionally to manhattan distance so it scales with net length.
-                let corridor_bonus = if corridor.contains(&next_wire.tile()) {
-                    0.0f32
-                } else {
-                    (best_dist as f32 * 0.5).max(2.0)
-                };
-
-                // Congestion penalty.
-                let cong_pen = cong_weight * cong.congestion_at(next_wire.tile());
-
-                // Cost = remaining distance + penalties. Lower is better.
-                let cost = best_dist as f32 + corridor_bonus + cong_pen;
-
-                next_candidates.push(BeamCandidate {
-                    wire: next_wire,
-                    path_idx: new_path_idx,
-                    cost,
-                    best_dist,
-                });
-            }
-        }
-
-        if next_candidates.is_empty() {
-            return None;
-        }
-
-        // Keep top candidates (lowest cost = closest to destination).
-        next_candidates.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
-        next_candidates.truncate(effective_beam_width);
-
-        // Expand node members of surviving candidates into the beam.
-        // Only add node members that have PIPs (useful for exploration).
-        // The "peers with downhill pips" list is a property of the node
-        // and is Arc-shared via `node_expansion_cache` so mega-nodes pay
-        // one walk per search, not one per surviving candidate.
-        let mut expanded = Vec::new();
-        for c in &next_candidates {
-            let nid = chipdb.node_id(c.wire);
-            let peers: Arc<Vec<WireId>> = match nid {
-                Some(id) => {
-                    if let Some(cached) = node_expansion_cache.get(&id) {
-                        Arc::clone(cached)
-                    } else {
-                        let mut v = Vec::new();
-                        chipdb.node_wires_cb(c.wire, |nw| {
-                            if !chipdb.wire_info(nw).pips_downhill.get().is_empty() {
-                                v.push(nw);
-                            }
-                        });
-                        let arc = Arc::new(v);
-                        node_expansion_cache.insert(id, Arc::clone(&arc));
-                        arc
-                    }
-                }
-                None => Arc::new(Vec::new()),
-            };
-            for &nw in peers.iter() {
-                expanded.push(BeamCandidate {
-                    wire: nw,
-                    path_idx: c.path_idx,
-                    cost: c.cost,
-                    best_dist: c.best_dist,
-                });
-            }
-        }
-        next_candidates.extend(expanded);
-
-        // Re-bound the beam after peer expansion: on a mega-node each
-        // survivor can pull in thousands of peers, and without a second
-        // truncation the beam width compounds across iterations.
-        if next_candidates.len() > effective_beam_width * 2 {
-            next_candidates.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
-            next_candidates.truncate(effective_beam_width * 2);
-        }
-
-        // Stall detection uses the per-candidate `best_dist` cached at
-        // creation time, avoiding a manhattan recompute per survivor.
-        let step_best = next_candidates
-            .iter()
-            .map(|c| c.best_dist)
-            .min()
-            .unwrap_or(i32::MAX);
-        if step_best < best_manhattan {
-            best_manhattan = step_best;
-            stall_count = 0;
-        } else {
-            stall_count += 1;
-            if stall_count >= 50 {
-                break;
-            }
-        }
-
-        beam = next_candidates;
-    }
-
-    None
+    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
 }
 
 // ---------------------------------------------------------------------------
@@ -735,14 +916,16 @@ fn segment_astar(
     let chipdb = ctx.chipdb();
     let (target_x, target_y) = chipdb.tile_xy(target_tile);
 
-    let dst_wire = match final_dst {
+    // Anchor for the heuristic. For the final segment this is the real
+    // sink; for intermediate segments we pick any well-connected wire in
+    // `target_tile` so the search has a pole to aim at.
+    let anchor = match final_dst {
         Some(w) => w,
         None => representative_wire_in_tile(chipdb, target_tile)?,
     };
 
-    // Trivial hit: dst (or a peer) already in `src_wires`.
-    if src_wires.contains(&dst_wire) {
-        return Some((Vec::new(), dst_wire));
+    if src_wires.contains(&anchor) {
+        return Some((Vec::new(), anchor));
     }
 
     let model = SegmentCostModel {
@@ -754,10 +937,38 @@ fn segment_astar(
     };
     let opts = AStarOptions {
         visit_limit: Some(max_expansions),
-        exhaustive: false,
+        // Intermediate segments need the search to keep expanding even
+        // after the anchor wire pops so we can harvest any other wire in
+        // target_tile reached along the way. Final segments stop on the
+        // real sink (exhaustive=false) for speed.
+        exhaustive: final_dst.is_none(),
+        retain_trace: final_dst.is_none(),
+        stop_on_first_touch: false,
     };
-    let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
-    result.path.map(|pips| (pips, dst_wire))
+    let result = astar_search(ctx, &model, src_wires, anchor, &opts);
+
+    match final_dst {
+        Some(dst) => result.path.map(|pips| (pips, dst)),
+        None => {
+            // Scan the visited map for the lowest-cost wire that landed
+            // in `target_tile`; reconstruct a path to it. This
+            // generalises the old "accept any wire in target_tile" hit
+            // condition without adding multi-goal support to the kernel.
+            let mut best: Option<(WireId, DelayT)> = None;
+            for (&w, &(cost, pen, _, _)) in result.trace.visited.iter() {
+                if w.tile() != target_tile {
+                    continue;
+                }
+                let score = cost + pen;
+                if best.map_or(true, |(_, b)| score < b) {
+                    best = Some((w, score));
+                }
+            }
+            let (end_wire, _) = best?;
+            let pips = reconstruct_path_to(chipdb, &result.trace.visited, end_wire)?;
+            Some((pips, end_wire))
+        }
+    }
 }
 
 /// Unrestricted A* for same-tile (or short-distance) routing: no bbox
@@ -786,6 +997,8 @@ fn local_route(
     let opts = AStarOptions {
         visit_limit: Some(20_000),
         exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: false,
     };
     astar_search(ctx, &LocalModel, src_wires, dst_wire, &opts).path
 }
@@ -1050,6 +1263,7 @@ fn route_net_raster(
     cong: &CongestionMap,
     cong_weight: f32,
     cfg: &RasterRouterCfg,
+    lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
         Some(w) => w,
@@ -1063,8 +1277,6 @@ fn route_net_raster(
     };
 
     let chipdb = ctx.chipdb();
-    let chip_w = chipdb.width();
-    let chip_h = chipdb.height();
 
     // Skip constant nets.
     let const_val = source_wire_const_value(ctx, source_wire);
@@ -1085,16 +1297,21 @@ fn route_net_raster(
         });
     }
 
-    let (src_x, src_y) = chipdb.tile_xy(source_wire.tile());
+    let bbox = if cfg.bbox_margin > 0 {
+        Some(crate::metrics::compute_bbox(ctx, net, cfg.bbox_margin))
+    } else {
+        None
+    };
 
-    // Nearest-unrouted-sink Steiner heuristic.
-    let mut tree_tiles: Vec<(i32, i32)> = vec![(src_x, src_y)];
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
     chipdb.node_wires_cb(source_wire, |nw| {
         tree_wires.insert(nw);
     });
 
+    // Nearest-unrouted-sink Steiner heuristic: route the sink with smallest
+    // manhattan to source first; subsequent sinks attach via tree_wires.
+    let (src_x, src_y) = chipdb.tile_xy(source_wire.tile());
     let mut remaining_sinks: Vec<(WireId, i32, i32)> = sink_wires
         .iter()
         .map(|&w| {
@@ -1102,6 +1319,7 @@ fn route_net_raster(
             (w, sx, sy)
         })
         .collect();
+    remaining_sinks.sort_by_key(|&(_, sx, sy)| (sx - src_x).abs() + (sy - src_y).abs());
 
     // Per-net time budget: 2s base + 10ms per sink. Prevents high-fanout nets
     // from monopolizing routing time across rip-up-reroute passes.
@@ -1110,30 +1328,10 @@ fn route_net_raster(
 
     let mut sink_routes = Vec::new();
 
-    while !remaining_sinks.is_empty() {
-        // Check per-net time budget.
+    for (sink_wire, sink_x, sink_y) in remaining_sinks {
         if std::time::Instant::now() > net_deadline {
             break;
         }
-
-        // Find nearest unrouted sink to any tile in the tree.
-        let mut best_sink_idx = 0;
-        let mut best_tree_tile = tree_tiles[0];
-        let mut best_dist = i32::MAX;
-
-        for (si, &(_, sx, sy)) in remaining_sinks.iter().enumerate() {
-            for &(tx, ty) in &tree_tiles {
-                let d = (sx - tx).abs() + (sy - ty).abs();
-                if d < best_dist {
-                    best_dist = d;
-                    best_sink_idx = si;
-                    best_tree_tile = (tx, ty);
-                }
-            }
-        }
-
-        let (sink_wire, sink_x, sink_y) = remaining_sinks.remove(best_sink_idx);
-
         if tree_wires.contains(&sink_wire) {
             sink_routes.push(SinkRoute {
                 sink_wire,
@@ -1142,37 +1340,18 @@ fn route_net_raster(
             continue;
         }
 
-        // Rasterize corridor from nearest tree tile to sink.
-        let (_path, corridor) = raster_corridor(
-            best_tree_tile.0,
-            best_tree_tile.1,
-            sink_x,
-            sink_y,
-            cong,
-            cong_weight,
-            cfg.filter_radius,
-            chip_w,
-            chip_h,
-        );
-
-        // Beam search through the actual PIP graph.
-        match beam_search_route(
+        match route_sink_astar(
             ctx,
             net,
             &tree_wires,
             sink_wire,
-            &corridor,
+            bbox.as_ref(),
             cong,
             cong_weight,
-            cfg.beam_width,
-            cfg.max_beam_steps,
         ) {
             Some(pips) => {
-                // Add path tiles and wires to tree.
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
-                    let (tx, ty) = chipdb.tile_xy(dst.tile());
-                    tree_tiles.push((tx, ty));
                     tree_wires.insert(dst);
                     chipdb.node_wires_cb(dst, |nw| {
                         tree_wires.insert(nw);
@@ -1183,10 +1362,27 @@ fn route_net_raster(
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }
             None => {
+                static FAIL_COUNT: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                let n = FAIL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 100 {
+                    let net_name = ctx.net(net).name_id();
+                    let (sxw, syw) = chipdb.tile_xy(source_wire.tile());
+                    let dist = (sink_x - sxw).abs() + (sink_y - syw).abs();
+                    eprintln!(
+                        "  raster_fail #{}: net='{}' src=({},{}) sink=({},{}) dist={} tree={}",
+                        n,
+                        ctx.name_of(net_name),
+                        sxw,
+                        syw,
+                        sink_x,
+                        sink_y,
+                        dist,
+                        tree_wires.len(),
+                    );
+                }
                 // Preserve partial progress: keep sinks routed so far, skip
                 // this sink, and let the A* cleanup pass attempt it later.
-                // Returning Err would discard the whole plan and leave the
-                // net empty, which makes rip-up passes destructive.
                 continue;
             }
         }
@@ -1270,10 +1466,14 @@ impl super::Router for RasterRouter {
         }
         let mut reservations_applied = 0usize;
         let mut reservation_conflicts = 0usize;
-        for (wire, net) in pin_wires {
-            match ctx.try_bind_wire_node(wire, net, crate::common::PlaceStrength::Strong) {
-                Ok(()) => reservations_applied += 1,
-                Err(_) => reservation_conflicts += 1,
+        // Temporarily disabled for diagnostic: pre-reservation binds whole
+        // routing nodes and may block local routes in dense tiles.
+        if std::env::var("NPNR_SKIP_PIN_RESERVE").ok().as_deref() != Some("1") {
+            for (wire, net) in pin_wires {
+                match ctx.try_bind_wire_node(wire, net, crate::common::PlaceStrength::Strong) {
+                    Ok(()) => reservations_applied += 1,
+                    Err(_) => reservation_conflicts += 1,
+                }
             }
         }
         eprintln!(
@@ -1286,7 +1486,10 @@ impl super::Router for RasterRouter {
         let mut neg_state = super::common::NegotiationState::new(neg_cfg);
 
         // Pre-build lookahead for A* cleanup (reused across iterations).
-        let lookahead = super::lookahead::Lookahead::build(ctx, 40);
+        let lookahead = super::lookahead::Lookahead::build(ctx);
+
+        // Scoped rip-up budget, shared across all passes within this run.
+        let mut ripup_budget: u32 = MAX_RIPUP_ATTEMPTS_PER_RUN;
 
         // Iteration 0: route ALL nets (beam search).
         // Iterations 1+: selective rip-up of congested nets only (PathFinder-style).
@@ -1303,22 +1506,70 @@ impl super::Router for RasterRouter {
                 // beam-search failure). Empty-tree nets contribute no wire
                 // usage so find_congested_nets can't surface them.
                 let congested = neg_state.find_congested_nets(&ctx.design);
+                // Sticky-rip-up gate: any net we've attempted to re-route in a
+                // prior pass becomes "sticky" — its current routing tree is
+                // preserved and the cleanup A* at the end of this pass tries
+                // to extend it to the missing sinks. Conflict partners must
+                // detour around the sticky net. Without this, the rip-up loop
+                // tears down a partial tree (e.g. tree=853 on an IO-to-fabric
+                // net), the next pass routes from scratch and fails on both
+                // sinks, and the partial progress is permanently lost.
+                let mut sticky_skipped = 0usize;
+                let mut bumped_in_pass = 0usize;
+                let mut to_retry: Vec<NetId> = Vec::with_capacity(congested.len());
                 for &net in &congested {
+                    if neg_state.is_sticky(net) {
+                        sticky_skipped += 1;
+                        continue;
+                    }
                     neg_state.remove_net_usage(&ctx.design, net);
                     if ctx.net(net).wires().len() > 0 {
                         unroute_net(ctx, net);
                     }
+                    neg_state.bump_rip_up(net);
+                    bumped_in_pass += 1;
+                    to_retry.push(net);
                 }
-                let mut to_retry = congested;
+                // Collect retry candidates without mutating ctx, then rip up.
+                // `unroute_net` takes &mut Context, which conflicts with the
+                // immutable borrow held by `ctx.net(idx)` inside the same loop.
+                let mut to_unroute: Vec<NetId> = Vec::new();
                 for idx in ctx.design.iter_net_indices() {
                     let n = ctx.net(idx);
-                    if n.is_alive() && n.has_driver() && n.num_users() > 0 && n.wires().is_empty() {
+                    if !n.is_alive() || !n.has_driver() || n.num_users() == 0 {
+                        continue;
+                    }
+                    let empty = n.wires().is_empty();
+                    drop(n);
+                    if empty || !net_fully_routed(ctx, idx) {
+                        if !empty {
+                            // Never rip up a partial tree at the gate. A
+                            // partial is concrete progress (e.g. tree=853 on a
+                            // long IO-to-fabric route) that cleanup A* can
+                            // extend; rebuilding from empty under unchanged
+                            // congestion just repeats whatever failure
+                            // produced the partial. Track it for diagnostics.
+                            neg_state.ever_seen_partial.insert(idx);
+                            sticky_skipped += 1;
+                            continue;
+                        }
+                        // Empty trees always get retried — there is nothing to
+                        // preserve, and forcing a retry here is the only way
+                        // they get bound at all (route_net_raster on iter 0
+                        // failed → empty plan → no source bind).
                         to_retry.push(idx);
                     }
                 }
+                for idx in to_unroute {
+                    unroute_net(ctx, idx);
+                }
+                eprintln!(
+                    "  pass {} gate: bumped={} sticky_skipped={} (threshold={})",
+                    iter, bumped_in_pass, sticky_skipped, neg_state.cfg.sticky_ripup_threshold,
+                );
                 to_retry.sort_unstable();
                 to_retry.dedup();
-                if to_retry.is_empty() {
+                if to_retry.is_empty() && sticky_skipped == 0 {
                     eprintln!("RasterRouter: no wire congestion at pass {}, validating", iter);
                     return validate_all_routed(ctx);
                 }
@@ -1373,7 +1624,7 @@ impl super::Router for RasterRouter {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
                 } else {
-                    route_net_raster(ctx, net, &cong, cong_weight, cfg)
+                    route_net_raster(ctx, net, &cong, cong_weight, cfg, Some(&lookahead))
                 };
                 if let Ok(plan) = result {
                     if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() {
@@ -1413,7 +1664,7 @@ impl super::Router for RasterRouter {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
                 } else {
-                    route_net_raster(ctx, net, &cong, cong_weight, cfg)
+                    route_net_raster(ctx, net, &cong, cong_weight, cfg, Some(&lookahead))
                 };
                 match result {
                     Ok(plan) if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() => {
@@ -1463,17 +1714,24 @@ impl super::Router for RasterRouter {
                 return Ok(());
             }
 
-            // Cleanup pass: route remaining failed nets with A*.
-            // Runs every iteration (not just iter==0) with per-net step budgets.
-            if failed > 0 {
-                let mut failed_nets: Vec<NetId> = ordered_nets
-                    .iter()
-                    .filter(|&&net| {
-                        let n = ctx.net(net);
-                        n.is_alive() && n.has_driver() && n.num_users() > 0 && n.wires().is_empty()
-                    })
-                    .copied()
-                    .collect();
+            // Cleanup pass: route every net that isn't fully routed —
+            // empty-tree AND partial-tree alike. Iterate over ALL alive nets,
+            // not just `ordered_nets`, so sticky nets (which bypass the rip-up
+            // gate at iter>=1 and stay out of the routing loop) still get a
+            // chance to have their missing sinks completed from their preserved
+            // partial tree.
+            let mut failed_nets: Vec<NetId> = ctx
+                .design
+                .iter_net_indices()
+                .filter(|&net| {
+                    let n = ctx.net(net);
+                    n.is_alive()
+                        && n.has_driver()
+                        && n.num_users() > 0
+                        && !net_fully_routed(ctx, net)
+                })
+                .collect();
+            if !failed_nets.is_empty() {
 
                 // Route const nets first: their per-sink lookup is O(1) and
                 // deterministic, so we never lose a const net to the wall-clock
@@ -1540,19 +1798,8 @@ impl super::Router for RasterRouter {
                     );
 
                     let mut cleanup_routed = 0usize;
-                    let cleanup_start = std::time::Instant::now();
-                    let cleanup_budget = std::time::Duration::from_secs(30);
 
                     for &net in &failed_nets {
-                        if cleanup_start.elapsed() > cleanup_budget {
-                            eprintln!(
-                                "RasterRouter: A* cleanup timeout after {}s, {}/{} recovered",
-                                cleanup_budget.as_secs(),
-                                cleanup_routed,
-                                failed_nets.len(),
-                            );
-                            break;
-                        }
                         let source_wire = match resolve_source_wire(ctx, net) {
                             Ok(Some(w)) => w,
                             _ => continue,
@@ -1568,16 +1815,6 @@ impl super::Router for RasterRouter {
                             (wx - sx).abs() + (wy - sy).abs()
                         });
 
-                        // Visit limit per sink. xc7_large needs hundreds of
-                        // node hops through ~10k-PIP switch matrices, so a
-                        // few-thousand budget cannot reach anything further
-                        // than ~2 composite columns with the lookahead.
-                        let per_sink_limit = if sink_wires.len() > 50 {
-                            Some(200_000)
-                        } else {
-                            Some(500_000)
-                        };
-
                         let src_const = source_wire_const_value(ctx, source_wire);
 
                         let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
@@ -1585,6 +1822,14 @@ impl super::Router for RasterRouter {
                         ctx.chipdb().node_wires_cb(source_wire, |nw| {
                             tree_wires.insert(nw);
                         });
+                        // Seed the partial-routed tree so cleanup A* can reach
+                        // unrouted sinks via the net's existing pip chain.
+                        for &w in ctx.net(net).wires().keys() {
+                            tree_wires.insert(w);
+                            ctx.chipdb().node_wires_cb(w, |nw| {
+                                tree_wires.insert(nw);
+                            });
+                        }
 
                         // Global-clock nets are driven by a single BUFG output
                         // whose `pips_downhill` is near-empty. Seeding A* with
@@ -1605,12 +1850,6 @@ impl super::Router for RasterRouter {
                         let mut const_anchors: FxHashSet<WireId> = FxHashSet::default();
 
                         for &sink_wire in &sink_wires {
-                            // Check cleanup budget per-sink to avoid hanging
-                            // inside a single high-fanout net.
-                            if cleanup_start.elapsed() > cleanup_budget {
-                                break;
-                            }
-
                             // Constant-net fast path: each tile's switch matrix
                             // ties GND/VCC to a local wire reachable from every
                             // const-consuming sink via one PIP. Use that path
@@ -1658,22 +1897,76 @@ impl super::Router for RasterRouter {
                                 ctx.chipdb().tile_xy(sink_wire.tile());
                             let manhattan =
                                 (sink_tx_early - sx).abs() + (sink_ty_early - sy).abs();
+
+                            // Spatial bound: a bbox enclosing all of this net's
+                            // BEL locations plus a margin scaled by the net's
+                            // span. Inside a finite bbox, A* either finds a
+                            // path or drains its state space — there is no
+                            // legitimate reason to also impose an artificial
+                            // visit cap. Leaving `visit_limit=None` lets the
+                            // astar core compute a default from the bbox.
+                            let cleanup_margin =
+                                EXPLORE_BBOX_MARGIN_MIN.max(manhattan * EXPLORE_BBOX_SPAN_MULT);
+                            let cleanup_bbox =
+                                crate::metrics::compute_bbox(ctx, net, cleanup_margin);
+                            let per_sink_limit: Option<usize> = None;
+
                             let route_fn = if manhattan > 50 {
                                 astar_route_multihop
                             } else {
                                 astar_route
                             };
 
-                            match route_fn(
-                                ctx,
-                                &tree_wires,
-                                sink_wire,
-                                &wire_penalty,
-                                None,
-                                50,
-                                Some(&lookahead),
-                                per_sink_limit,
-                            ) {
+                            let trace_cleanup = std::env::var("RASTER_CLEANUP_TRACE").is_ok();
+                            let pips_opt = if trace_cleanup {
+                                let (pips, trace) = astar_route_with_trace(
+                                    ctx,
+                                    net,
+                                    &tree_wires,
+                                    sink_wire,
+                                    &wire_penalty,
+                                    Some(&cleanup_bbox),
+                                    50,
+                                    Some(&lookahead),
+                                    per_sink_limit,
+                                    manhattan > 50,
+                                );
+                                if pips.is_none() {
+                                    let net_name = ctx.name_of(ctx.net(net).name_id()).to_owned();
+                                    let (sxt, syt) = ctx.chipdb().tile_xy(sink_wire.tile());
+                                    let exit_label = match trace.exit {
+                                        AStarExit::Reached => "Reached",
+                                        AStarExit::VisitLimit => "VisitLimit",
+                                        AStarExit::HeapDrained => "HeapDrained",
+                                    };
+                                    eprintln!(
+                                        "  cleanup_fail: net='{}' sink=({},{}) manhattan={} exit={} visits={} budget={} visited_wires={}",
+                                        net_name,
+                                        sxt,
+                                        syt,
+                                        manhattan,
+                                        exit_label,
+                                        trace.visit_count,
+                                        trace.max_visits,
+                                        trace.visited.len(),
+                                    );
+                                }
+                                pips
+                            } else {
+                                route_fn(
+                                    ctx,
+                                    net,
+                                    &tree_wires,
+                                    sink_wire,
+                                    &wire_penalty,
+                                    Some(&cleanup_bbox),
+                                    50,
+                                    Some(&lookahead),
+                                    per_sink_limit,
+                                )
+                            };
+
+                            match pips_opt {
                                 Some(pips) => {
                                     for &pip in &pips {
                                         let dw = ctx.chipdb().pip_dst_wire(pip);
@@ -1717,6 +2010,28 @@ impl super::Router for RasterRouter {
                             }
                         }
 
+                        // Scoped rip-up: if normal A* cleanup routed nothing for
+                        // this net, its corridor is occupied by other nets and
+                        // the binding-aware cost model correctly refused to plan
+                        // through them. Try ripping up the minimal blocker set
+                        // (exploration A* identifies exactly which foreign nets
+                        // need to move), then re-route both this net and each
+                        // blocker. Full rollback on any cascade so the baseline
+                        // is preserved.
+                        if sink_routes.is_empty() && ripup_budget > 0 {
+                            if scoped_ripup_route(
+                                ctx,
+                                net,
+                                &wire_penalty,
+                                &lookahead,
+                                &mut ripup_budget,
+                                &mut neg_state,
+                            ) {
+                                cleanup_routed += 1;
+                                continue;
+                            }
+                        }
+
                         // Apply the route if at least some sinks succeeded.
                         if !sink_routes.is_empty() {
                             // For A*-routed const sinks the first PIP's `src`
@@ -1741,7 +2056,8 @@ impl super::Router for RasterRouter {
                                 source_wire,
                                 sink_routes,
                             };
-                            if apply_route_plan(ctx, &plan).is_ok() {
+                            let apply_res = apply_route_plan(ctx, &plan);
+                            if apply_res.is_ok() {
                                 // Register const anchors as leaves so the
                                 // validator's chain walk terminates there via
                                 // the const_value match rule. Binding is
@@ -1771,16 +2087,38 @@ impl super::Router for RasterRouter {
                                 }
                                 if anchor_conflict {
                                     unroute_net(ctx, net);
-                                } else {
+                                } else if net_fully_routed(ctx, net) {
                                     cleanup_routed += 1;
                                 }
                             }
                         }
                     }
 
-                    failed -= cleanup_routed;
+                    // Recompute remaining failures from ground truth: anything
+                    // still partial after this cleanup pass should drive the
+                    // next PathFinder iteration. Subtracting `cleanup_routed`
+                    // from the prior `failed` undercounts when the first pass
+                    // routed nets only partially (the per-sink loop applies a
+                    // plan with missing sinks, leaving the net partial but
+                    // counted as "routed").
+                    // Count from the full design, not `ordered_nets`. Sticky
+                    // nets (skipped at the gate) are not in `ordered_nets` but
+                    // are still genuine failures if they aren't fully routed,
+                    // and undercounting trips the `failed == 0` early-exit
+                    // before they get more cleanup attempts.
+                    failed = ctx
+                        .design
+                        .iter_net_indices()
+                        .filter(|&n| {
+                            let net = ctx.net(n);
+                            net.is_alive()
+                                && net.has_driver()
+                                && net.num_users() > 0
+                                && !net_fully_routed(ctx, n)
+                        })
+                        .count();
                     eprintln!(
-                        "  A* cleanup: +{} routed, {} still failed",
+                        "  A* cleanup: +{} fully-routed, {} still partial/failed",
                         cleanup_routed, failed,
                     );
                 }

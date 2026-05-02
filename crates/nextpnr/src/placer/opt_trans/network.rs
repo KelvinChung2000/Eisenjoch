@@ -7,7 +7,7 @@
 //! - Inter-tile: adjacent tiles connected across tile edges (4-connected)
 //! - Long-range: multi-tile span pipes from chipdb routing analysis
 
-use crate::chipdb::ChipDb;
+use crate::chipdb::{ChipDb, TileTypeTemplate};
 use crate::context::Context;
 use crate::read_packed;
 use rayon::prelude::*;
@@ -15,7 +15,7 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 use super::config::OptTransPlacerCfg;
-use super::tile_cache::{SpanCostTable, TileTypeTemplate};
+use super::tile_cache::SpanCostTable;
 
 /// Direction of an inter-tile pipe between two adjacent tiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -773,6 +773,67 @@ impl PipeNetwork {
             .filter(|p| p.capacity > 0.0)
             .map(|p| p.flow.abs() / p.capacity)
             .reduce(|| 0.0, f64::max)
+    }
+
+    /// Print a per-span pipe utilization histogram. For each span bucket emits
+    /// pipe count, total raw usage / capacity, and effective ratio percentiles
+    /// (p50/p90/p99/max). `effective ratio` divides raw usage by `capacity *
+    /// borrow_slack(span)` to match the BPR resistance model. Used to verify
+    /// whether the placer is actually saturating short-span pipes.
+    pub fn report_span_utilization(&self, label: &str) {
+        use super::resistance::borrow_slack;
+        let mut by_span: FxHashMap<i32, Vec<(f64, f64)>> = FxHashMap::default();
+        for p in &self.pipes {
+            if p.capacity <= 0.0 {
+                continue;
+            }
+            let span = match p.pipe_type {
+                PipeType::InterTile(_) => 1,
+                PipeType::LongRange { dx, dy } => dx.abs() + dy.abs(),
+            };
+            by_span
+                .entry(span)
+                .or_default()
+                .push((p.net_count.max(0.0), p.capacity));
+        }
+        let mut spans: Vec<i32> = by_span.keys().copied().collect();
+        spans.sort();
+        eprintln!("Pipe span utilization ({label}):");
+        eprintln!(
+            "  span  pipes  cap_sum  use_sum  raw_avg   raw_p99  raw_max   eff_p99  eff_max  pct_over_eff_1"
+        );
+        for s in spans {
+            let v = &by_span[&s];
+            let n = v.len();
+            let cap_sum: f64 = v.iter().map(|(_, c)| *c).sum();
+            let use_sum: f64 = v.iter().map(|(u, _)| *u).sum();
+            let slack = borrow_slack(s);
+            let mut raw_ratios: Vec<f64> =
+                v.iter().map(|(u, c)| u / c).collect();
+            let mut eff_ratios: Vec<f64> =
+                v.iter().map(|(u, c)| u / (c * slack)).collect();
+            raw_ratios.sort_by(|a, b| a.total_cmp(b));
+            eff_ratios.sort_by(|a, b| a.total_cmp(b));
+            let pct = |v: &[f64], q: f64| -> f64 {
+                if v.is_empty() {
+                    0.0
+                } else {
+                    let idx = ((v.len() as f64 - 1.0) * q).round() as usize;
+                    v[idx]
+                }
+            };
+            let raw_avg = if cap_sum > 0.0 { use_sum / cap_sum } else { 0.0 };
+            let raw_p99 = pct(&raw_ratios, 0.99);
+            let raw_max = *raw_ratios.last().unwrap_or(&0.0);
+            let eff_p99 = pct(&eff_ratios, 0.99);
+            let eff_max = *eff_ratios.last().unwrap_or(&0.0);
+            let n_over =
+                eff_ratios.iter().filter(|&&r| r > 1.0).count() as f64 * 100.0 / n as f64;
+            eprintln!(
+                "  {:>3}   {:>5}  {:>7.0}  {:>7.0}  {:>6.3}   {:>6.3}   {:>6.3}   {:>6.3}   {:>6.3}   {:>5.1}%",
+                s, n, cap_sum, use_sum, raw_avg, raw_p99, raw_max, eff_p99, eff_max, n_over
+            );
+        }
     }
 
     /// Build a 1D chain network for a single axis.

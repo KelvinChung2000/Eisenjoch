@@ -34,15 +34,192 @@ fn main() {
     println!("packed: {} cells, {} nets", ctx.design.num_cells(), ctx.design.num_nets());
 
     let mut pcfg = OptTransPlacerCfg::default();
-    pcfg.max_outer_iters = 15;
-    pcfg.num_threads = 1;
+    pcfg.max_outer_iters = 50;
+    pcfg.num_threads = 8;
     let t = std::time::Instant::now();
     place_opt_trans(&mut ctx, &pcfg).expect("place_opt_trans");
+    let placed_hpwl = nextpnr::metrics::total_hpwl(&ctx);
+    let floor_hpwl = nextpnr::metrics::total_hpwl_locked_only(&ctx);
+    let mut movable = 0usize;
+    let mut fixed = 0usize;
+    let mut by_tile: std::collections::HashMap<(i32, i32), usize> =
+        std::collections::HashMap::new();
+    for (_cid, cell) in ctx.design.iter_alive_cells() {
+        if let Some(bel) = cell.bel {
+            let loc = ctx.bel(bel).loc();
+            *by_tile.entry((loc.x, loc.y)).or_insert(0) += 1;
+            if cell.bel_strength.is_locked() {
+                fixed += 1;
+            } else {
+                movable += 1;
+            }
+        }
+    }
+    let mut hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for &c in by_tile.values() {
+        *hist.entry(c).or_insert(0) += 1;
+    }
     println!(
-        "placed in {:.1}s, total_hpwl={:.0}",
+        "placed in {:.1}s, hpwl={:.0} floor_hpwl_locked={:.0} ratio={:.2} movable={} fixed={} occupied_tiles={} cells_per_tile_hist={:?}",
         t.elapsed().as_secs_f64(),
-        nextpnr::metrics::total_hpwl(&ctx)
+        placed_hpwl,
+        floor_hpwl,
+        if floor_hpwl > 0.0 { placed_hpwl / floor_hpwl } else { 0.0 },
+        movable,
+        fixed,
+        by_tile.len(),
+        hist,
     );
+
+    // HPWL-by-fanout breakdown. The placer can tighten low-fanout nets but
+    // not high-fanout IO-spanning ones — splitting buckets shows where slack
+    // remains versus what is architecture-bound.
+    {
+        let mut buckets: Vec<(usize, usize, &str)> = vec![
+            (0, 0, "fanout=1 (2-pin)"),
+            (0, 0, "fanout=2-4"),
+            (0, 0, "fanout=5-15"),
+            (0, 0, "fanout=16-50"),
+            (0, 0, "fanout>50"),
+        ];
+        for net_idx in ctx.design.iter_net_indices() {
+            let net = ctx.net(net_idx);
+            if !net.is_alive() || !net.has_driver() {
+                continue;
+            }
+            let n_users = net.num_users();
+            if n_users == 0 {
+                continue;
+            }
+            let hpwl = nextpnr::metrics::net_hpwl(&ctx, net_idx) as usize;
+            let bi = match n_users {
+                1 => 0,
+                2..=4 => 1,
+                5..=15 => 2,
+                16..=50 => 3,
+                _ => 4,
+            };
+            buckets[bi].0 += 1;
+            buckets[bi].1 += hpwl;
+        }
+        println!("HPWL by fanout:");
+        for (count, sum_hpwl, label) in &buckets {
+            let avg = if *count > 0 {
+                *sum_hpwl as f64 / *count as f64
+            } else {
+                0.0
+            };
+            println!(
+                "  {:18}: {:4} nets, sum_hpwl={:6}, avg={:6.1}",
+                label, count, sum_hpwl, avg
+            );
+        }
+    }
+
+    // Worst-HPWL nets in the fanout=2-4 bucket. Goal: tell whether the placer
+    // is failing to pull movable cells toward a fixed (locked IO) endpoint, or
+    // movable cells are simply far apart from each other. For each net we
+    // print: name, fanout, hpwl, locked_floor, driver loc/lock, user
+    // locs/locks, centroid drift = max(|x-cx|,|y-cy|) over endpoints.
+    {
+        struct NetRow {
+            name: String,
+            fanout: usize,
+            hpwl: i32,
+            floor: i32,
+            drv_x: i32,
+            drv_y: i32,
+            drv_locked: bool,
+            users: Vec<(i32, i32, bool)>,
+        }
+        let mut rows: Vec<NetRow> = Vec::new();
+        for net_idx in ctx.design.iter_net_indices() {
+            let net = ctx.net(net_idx);
+            if !net.is_alive() || !net.has_driver() {
+                continue;
+            }
+            let n_users = net.num_users();
+            if !(2..=4).contains(&n_users) {
+                continue;
+            }
+            let Some(drv_pin) = net.driver_cell_port() else {
+                continue;
+            };
+            let drv_cell = ctx.cell(drv_pin.cell);
+            let Some(drv_bel) = drv_cell.bel() else {
+                continue;
+            };
+            let drv_loc = drv_bel.loc();
+            let drv_locked = drv_cell.bel_strength().is_locked();
+            let mut users = Vec::with_capacity(n_users);
+            for u in net.users() {
+                if !u.is_valid() {
+                    continue;
+                }
+                let uc = ctx.cell(u.cell);
+                if let Some(ub) = uc.bel() {
+                    let l = ub.loc();
+                    users.push((l.x, l.y, uc.bel_strength().is_locked()));
+                }
+            }
+            let hpwl = nextpnr::metrics::net_hpwl(&ctx, net_idx) as i32;
+            let floor = nextpnr::metrics::net_hpwl_locked_only(&ctx, net_idx) as i32;
+            rows.push(NetRow {
+                name: ctx.name_of(net.name_id()).to_owned(),
+                fanout: n_users,
+                hpwl,
+                floor,
+                drv_x: drv_loc.x,
+                drv_y: drv_loc.y,
+                drv_locked,
+                users,
+            });
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.hpwl));
+        println!("\n=== top-20 worst-HPWL nets in fanout=2-4 bucket ===");
+        println!(
+            "{:>4} {:>3} {:>5} {:>5} {:>4} drv          users",
+            "rank", "fan", "hpwl", "floor", "slack"
+        );
+        for (i, r) in rows.iter().take(20).enumerate() {
+            let slack = r.hpwl - r.floor;
+            let drv_tag = if r.drv_locked { "L" } else { "m" };
+            let users_str: String = r
+                .users
+                .iter()
+                .map(|(x, y, lk)| format!("({},{}){}", x, y, if *lk { "L" } else { "m" }))
+                .collect::<Vec<_>>()
+                .join(" ");
+            println!(
+                "{:>4} {:>3} {:>5} {:>5} {:>4} ({:>3},{:>3}){}  {}  [{}]",
+                i + 1,
+                r.fanout,
+                r.hpwl,
+                r.floor,
+                slack,
+                r.drv_x,
+                r.drv_y,
+                drv_tag,
+                users_str,
+                r.name,
+            );
+        }
+
+        // Aggregate: how much of the 2-4 bucket HPWL is slack (above floor)?
+        let total_hpwl: i32 = rows.iter().map(|r| r.hpwl).sum();
+        let total_floor: i32 = rows.iter().map(|r| r.floor).sum();
+        let with_locked = rows.iter().filter(|r| r.floor > 0).count();
+        let movable_only = rows.iter().filter(|r| r.floor == 0).count();
+        println!(
+            "fanout=2-4 totals: nets={} hpwl={} floor={} slack={} | with_locked={} movable_only={}",
+            rows.len(),
+            total_hpwl,
+            total_floor,
+            total_hpwl - total_floor,
+            with_locked,
+            movable_only,
+        );
+    }
 
     // Post-placement density dump: count placed cells per (tile_x, tile_y)
     // so we can see if failing short-distance nets cluster on overpacked tiles.
@@ -74,6 +251,12 @@ fn main() {
     let mut rcfg = RasterRouterCfg::default();
     rcfg.max_iterations = max_iters;
     rcfg.verbose = false;
+    if let Ok(v) = std::env::var("NPNR_RASTER_MAX_BEAM_STEPS").and_then(|s| s.parse::<usize>().map_err(|_| std::env::VarError::NotPresent)) {
+        rcfg.max_beam_steps = v;
+    }
+    if let Ok(v) = std::env::var("NPNR_RASTER_BEAM_WIDTH").and_then(|s| s.parse::<usize>().map_err(|_| std::env::VarError::NotPresent)) {
+        rcfg.beam_width = v;
+    }
     let t = std::time::Instant::now();
     let res = RasterRouter.route(&mut ctx, &rcfg);
     let route_secs = t.elapsed().as_secs_f64();

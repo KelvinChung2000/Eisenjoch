@@ -7,16 +7,10 @@ use crate::metrics::{total_hpwl, total_line_estimate};
 use crate::netlist::CellId;
 
 /// Print the HPWL/line metrics after legalization and return the post-legalization values.
-pub fn report_post_legalization(ctx: &Context, pre_legal_hpwl: f64) -> (f64, f64) {
+pub fn report_post_legalization(ctx: &Context) -> (f64, f64) {
     let post_hpwl = total_hpwl(ctx);
     let post_line = total_line_estimate(ctx);
-    eprintln!(
-        "Post-legalization: HPWL={:.0}, line={:.0}, delta={:+.0} ({:+.1}%)",
-        post_hpwl,
-        post_line,
-        post_hpwl - pre_legal_hpwl,
-        (post_hpwl - pre_legal_hpwl) / pre_legal_hpwl.max(1.0) * 100.0,
-    );
+    eprintln!("Post-legalization: HPWL={:.0}, line={:.0}", post_hpwl, post_line);
     (post_hpwl, post_line)
 }
 
