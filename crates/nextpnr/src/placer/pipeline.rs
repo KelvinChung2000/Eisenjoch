@@ -55,9 +55,8 @@ impl PlacerPipeline {
     /// boundary cells movable.
     pub fn prepare_discrete(ctx: &mut Context, seed: u64) -> Result<(), PlacerError> {
         ctx.reseed_rng(seed);
-        common::initial_placement(ctx)?;
         let strategy = InitStrategy::from_env_or(InitStrategy::Topological);
-        strategy.place_boundary_cells(ctx);
+        strategy.initial_placement(ctx)?;
         let do_pin = std::env::var("NPNR_PIN_BOUNDARY")
             .ok()
             .map(|v| v != "0" && v.to_ascii_lowercase() != "false")

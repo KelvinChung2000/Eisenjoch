@@ -113,19 +113,25 @@ impl InitStrategy {
         }
     }
 
-    /// Bind boundary cells (IOBs, clock buffers) to BELs according to this
-    /// strategy. Called after `initial_placement` has assigned random BELs to
-    /// every cell, including boundary cells.
-    ///
-    /// - `RandomBel` / `Uniform`: keep the random BEL from `initial_placement`.
-    /// - `Centroid` / `Topological`: re-bind each boundary cell to the BEL
-    ///   nearest the centroid of its connected non-boundary cells.
-    pub fn place_boundary_cells(self, ctx: &mut crate::context::Context) {
+    /// Bind every cell (including boundary cells) to a BEL according to this
+    /// strategy. Each strategy is self-contained — there is no separate
+    /// post-patching step. Callers run this once during `prepare_discrete`,
+    /// after which every cell has a BEL and the choice of whether to pin
+    /// boundary cells is independent of the init algorithm.
+    pub fn initial_placement(
+        self,
+        ctx: &mut crate::context::Context,
+    ) -> Result<(), super::super::PlacerError> {
         match self {
-            Self::RandomBel | Self::Uniform => {}
-            Self::Centroid | Self::Topological => {
-                super::super::common::centroid_place_boundary_cells(ctx);
+            Self::RandomBel | Self::Uniform => {
+                super::super::common::initial_placement(ctx)
             }
+            Self::Centroid => {
+                super::super::common::initial_placement(ctx)?;
+                super::super::common::centroid_place_boundary_cells(ctx);
+                Ok(())
+            }
+            Self::Topological => super::super::common::initial_placement_topological(ctx),
         }
     }
 }

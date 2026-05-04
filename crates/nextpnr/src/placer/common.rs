@@ -153,6 +153,25 @@ pub(crate) fn lock_boundary_cells(ctx: &mut Context) {
 /// reassign to the nearest available BEL of the same bucket. The locking step
 /// then anchors a placement that already respects netlist topology.
 pub(crate) fn centroid_place_boundary_cells(ctx: &mut Context) {
+    centroid_place_boundary_cells_with_lookup(ctx, &|ctx, cid| {
+        ctx.design.cell(cid).bel.map(|bel| {
+            let loc = ctx.bel(bel).loc();
+            (loc.x as f64, loc.y as f64)
+        })
+    });
+}
+
+/// Re-bind boundary cells (IOBs / clock buffers) to the BEL nearest the centroid
+/// of their connected non-boundary cells, where each non-boundary cell's
+/// position is supplied by `pos_lookup`.
+///
+/// `pos_lookup` returns `None` for cells whose position is unknown; those
+/// cells contribute nothing to the centroid. The default wrapper
+/// [`centroid_place_boundary_cells`] uses each cell's current BEL location.
+pub(crate) fn centroid_place_boundary_cells_with_lookup(
+    ctx: &mut Context,
+    pos_lookup: &dyn Fn(&Context, CellId) -> Option<(f64, f64)>,
+) {
     use std::cmp::Ordering;
 
     // 1. Classify cell types as CLB-resident (logic) vs boundary.
@@ -184,41 +203,34 @@ pub(crate) fn centroid_place_boundary_cells(ctx: &mut Context) {
             continue;
         }
         // Walk every port of this cell, find connected non-boundary cells via
-        // their nets, accumulate position.
+        // their nets, accumulate position via the supplied lookup.
         let mut sx = 0.0_f64;
         let mut sy = 0.0_f64;
         let mut count = 0usize;
+        let mut accumulate = |ctx: &Context, neighbor: CellId| {
+            let nc = ctx.design.cell(neighbor);
+            if !clb_cell_types.contains(&nc.cell_type) {
+                return;
+            }
+            if let Some((x, y)) = pos_lookup(ctx, neighbor) {
+                sx += x;
+                sy += y;
+                count += 1;
+            }
+        };
         for (_port, pdata) in cell.ports.iter() {
             let Some(net_id) = pdata.net() else { continue };
             let net = ctx.design.net(net_id);
             if let Some(drv) = net.driver() {
                 if drv.cell != cid {
-                    let dc = ctx.design.cell(drv.cell);
-                    if !clb_cell_types.contains(&dc.cell_type) {
-                        // Skip other boundary cells; their position is also
-                        // random at this stage and would only add noise.
-                    } else if let Some(bel) = dc.bel {
-                        let loc = ctx.bel(bel).loc();
-                        sx += loc.x as f64;
-                        sy += loc.y as f64;
-                        count += 1;
-                    }
+                    accumulate(ctx, drv.cell);
                 }
             }
             for user in net.users.iter() {
                 if user.cell == cid {
                     continue;
                 }
-                let uc = ctx.design.cell(user.cell);
-                if !clb_cell_types.contains(&uc.cell_type) {
-                    continue;
-                }
-                if let Some(bel) = uc.bel {
-                    let loc = ctx.bel(bel).loc();
-                    sx += loc.x as f64;
-                    sy += loc.y as f64;
-                    count += 1;
-                }
+                accumulate(ctx, user.cell);
             }
         }
         if count == 0 {
@@ -433,6 +445,75 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Topological initial placement: every cell ends up bound to a BEL whose
+/// position reflects its place in the netlist DAG, not a random shuffle.
+///
+/// Implementation:
+///
+/// 1. Random `initial_placement` to give every cell *a* starting BEL.
+/// 2. Compute Kahn-layered barycenter coordinates for movable non-boundary
+///    cells via [`init_positions_topological`].
+/// 3. Re-bind each boundary cell (IOB / clock buffer) to the BEL nearest the
+///    centroid of its connected non-boundary cells *using the topo
+///    coordinates from step 2*, not the random BEL coordinates from step 1.
+///
+/// Step 3 is what makes this method genuinely different from
+/// [`InitStrategy::Centroid`][crate::placer::opt_trans::InitStrategy::Centroid]:
+/// the centroid an IOB sees is computed against structural (DAG-derived)
+/// positions, so two seeds that differ only in random shuffle still produce
+/// the same IOB targets — boundary cells stop wandering with the seed.
+pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerError> {
+    initial_placement(ctx)?;
+
+    let mut clb_cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
+    for (_id, cell) in ctx.design.iter_alive_cells() {
+        if clb_cell_types.contains(&cell.cell_type) {
+            continue;
+        }
+        let on_clb = ctx.bels_for_bucket(cell.cell_type).any(|b| {
+            let loc = b.loc();
+            let tile = ctx.chipdb().tile_by_xy(loc.x, loc.y);
+            ctx.chipdb().tile_type(tile).bels.len() >= 4
+        });
+        if on_clb {
+            clb_cell_types.insert(cell.cell_type);
+        }
+    }
+
+    let mut idx_to_cell: Vec<CellId> = Vec::new();
+    for (cell_idx, cell) in ctx.design.iter_alive_cells() {
+        if cell.bel_strength.is_locked() {
+            continue;
+        }
+        if let Some(root_id) = cell.cluster {
+            if root_id != cell_idx {
+                continue;
+            }
+        }
+        if !clb_cell_types.contains(&cell.cell_type) {
+            continue;
+        }
+        idx_to_cell.push(cell_idx);
+    }
+
+    if !idx_to_cell.is_empty() {
+        let mut cell_x = vec![0.0f64; idx_to_cell.len()];
+        let mut cell_y = vec![0.0f64; idx_to_cell.len()];
+        init_positions_from_bels(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
+        init_positions_topological(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
+
+        let topo_pos: FxHashMap<CellId, (f64, f64)> = idx_to_cell
+            .iter()
+            .enumerate()
+            .map(|(i, &cid)| (cid, (cell_x[i], cell_y[i])))
+            .collect();
+
+        centroid_place_boundary_cells_with_lookup(ctx, &|_, cid| topo_pos.get(&cid).copied());
     }
 
     Ok(())
