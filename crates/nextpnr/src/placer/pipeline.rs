@@ -5,6 +5,7 @@ use crate::netlist::CellId;
 use rustc_hash::FxHashMap;
 
 use super::common;
+use super::opt_trans::InitStrategy;
 use super::PlacerError;
 
 /// Setup data returned by [`PlacerPipeline::prepare`].
@@ -43,10 +44,11 @@ impl PlacerPipeline {
 
     /// Lightweight init for discrete placers (SA) that don't need continuous positions.
     ///
-    /// `initial_placement` shuffles every cell (including IOBs / clock buffers)
-    /// onto a random BEL of its type. For boundary cells that random BEL is then
-    /// refined by `centroid_place_boundary_cells`, which re-binds each boundary
-    /// cell to the BEL nearest the centroid of its connected non-boundary cells.
+    /// `initial_placement` shuffles every cell onto a random BEL of its type.
+    /// `init_strategy.place_boundary_cells` then refines BEL choice for boundary
+    /// cells (IOBs, clock buffers) according to the strategy: random strategies
+    /// keep the shuffle, graph-aware strategies (Centroid / Topological)
+    /// re-bind each boundary cell to a BEL informed by its connected logic.
     ///
     /// `NPNR_PIN_BOUNDARY` (default on) freezes boundary cells at that BEL so
     /// the OT solver cannot relocate them. Set `NPNR_PIN_BOUNDARY=0` to leave
@@ -54,7 +56,8 @@ impl PlacerPipeline {
     pub fn prepare_discrete(ctx: &mut Context, seed: u64) -> Result<(), PlacerError> {
         ctx.reseed_rng(seed);
         common::initial_placement(ctx)?;
-        common::centroid_place_boundary_cells(ctx);
+        let strategy = InitStrategy::from_env_or(InitStrategy::Topological);
+        strategy.place_boundary_cells(ctx);
         let do_pin = std::env::var("NPNR_PIN_BOUNDARY")
             .ok()
             .map(|v| v != "0" && v.to_ascii_lowercase() != "false")

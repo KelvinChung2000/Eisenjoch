@@ -98,6 +98,38 @@ impl Default for InitStrategy {
     }
 }
 
+impl InitStrategy {
+    /// Parse `NPNR_OT_INIT`, falling back to `default` if the var is unset
+    /// or unrecognized.
+    pub fn from_env_or(default: Self) -> Self {
+        match std::env::var("NPNR_OT_INIT").ok().as_deref() {
+            Some("random") | Some("RandomBel") | Some("RANDOM") => Self::RandomBel,
+            Some("centroid") | Some("Centroid") | Some("CENTROID") => Self::Centroid,
+            Some("uniform") | Some("Uniform") | Some("UNIFORM") => Self::Uniform,
+            Some("topo") | Some("topological") | Some("Topological") | Some("TOPO") => {
+                Self::Topological
+            }
+            _ => default,
+        }
+    }
+
+    /// Bind boundary cells (IOBs, clock buffers) to BELs according to this
+    /// strategy. Called after `initial_placement` has assigned random BELs to
+    /// every cell, including boundary cells.
+    ///
+    /// - `RandomBel` / `Uniform`: keep the random BEL from `initial_placement`.
+    /// - `Centroid` / `Topological`: re-bind each boundary cell to the BEL
+    ///   nearest the centroid of its connected non-boundary cells.
+    pub fn place_boundary_cells(self, ctx: &mut crate::context::Context) {
+        match self {
+            Self::RandomBel | Self::Uniform => {}
+            Self::Centroid | Self::Topological => {
+                super::super::common::centroid_place_boundary_cells(ctx);
+            }
+        }
+    }
+}
+
 /// Configuration for the Beckmann optimal transport placer.
 #[derive(Debug, Clone)]
 pub struct OptTransPlacerCfg {
@@ -304,15 +336,7 @@ impl OptTransPlacerCfg {
         if env::var("NPNR_OT_BRESENHAM_LOGIT").ok().as_deref() == Some("1") {
             self.path_model = PathModel::BresenhamLogit;
         }
-        if let Some(v) = env::var("NPNR_OT_INIT").ok() {
-            self.init_strategy = match v.as_str() {
-                "random" | "RandomBel" | "RANDOM" => InitStrategy::RandomBel,
-                "centroid" | "Centroid" | "CENTROID" => InitStrategy::Centroid,
-                "uniform" | "Uniform" | "UNIFORM" => InitStrategy::Uniform,
-                "topo" | "topological" | "Topological" | "TOPO" => InitStrategy::Topological,
-                _ => self.init_strategy,
-            };
-        }
+        self.init_strategy = InitStrategy::from_env_or(self.init_strategy);
         if let Some(v) = env::var("NPNR_OT_GRAPH_MODEL").ok() {
             self.graph_model = match v.as_str() {
                 "flat" | "FlatPipe" | "FLAT" => GraphModel::FlatPipe,

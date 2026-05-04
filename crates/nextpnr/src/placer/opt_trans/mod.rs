@@ -18,7 +18,7 @@ mod resistance;
 pub(crate) mod tile_cache;
 
 pub use algorithm::place_opt_trans;
-pub use config::{GraphModel, OptTransPlacerCfg, PathModel, SweepMode};
+pub use config::{GraphModel, InitStrategy, OptTransPlacerCfg, PathModel, SweepMode};
 
 use rustc_hash::FxHashSet;
 
