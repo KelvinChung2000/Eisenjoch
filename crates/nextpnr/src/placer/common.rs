@@ -141,6 +141,192 @@ pub(crate) fn lock_boundary_cells(ctx: &mut Context) {
     }
 }
 
+/// Reassign boundary cells (IOB / clock buffers) to BELs near the centroid of
+/// their connected non-boundary cells.
+///
+/// `initial_placement` shuffles boundary cells onto random BELs, which means
+/// e.g. an IOB driver whose sinks live in the middle of the chip can land at
+/// the bottom-edge IOB column purely by chance. Once `lock_boundary_cells`
+/// freezes that assignment, the continuous solve cannot fix it. This pass
+/// runs between the two: for each boundary cell, compute the centroid of its
+/// connected non-boundary cells (using their current placements) and greedy-
+/// reassign to the nearest available BEL of the same bucket. The locking step
+/// then anchors a placement that already respects netlist topology.
+pub(crate) fn centroid_place_boundary_cells(ctx: &mut Context) {
+    use std::cmp::Ordering;
+
+    // 1. Classify cell types as CLB-resident (logic) vs boundary.
+    let mut cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
+    for (_id, cell) in ctx.design.iter_alive_cells() {
+        cell_types.insert(cell.cell_type);
+    }
+    let mut clb_cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
+    for &ct in &cell_types {
+        let on_clb = ctx.bels_for_bucket(ct).any(|b| {
+            let loc = b.loc();
+            let tile = ctx.chipdb().tile_by_xy(loc.x, loc.y);
+            ctx.chipdb().tile_type(tile).bels.len() >= 4
+        });
+        if on_clb {
+            clb_cell_types.insert(ct);
+        }
+    }
+
+    // 2. Compute target centroid for each boundary cell.
+    let cell_ids: Vec<_> = ctx.design.iter_alive_cells().map(|(id, _)| id).collect();
+    let mut targets: Vec<(CellId, f64, f64)> = Vec::new();
+    for &cid in &cell_ids {
+        let cell = ctx.design.cell(cid);
+        if cell.bel_strength.is_locked() || cell.bel.is_none() {
+            continue;
+        }
+        if clb_cell_types.contains(&cell.cell_type) {
+            continue;
+        }
+        // Walk every port of this cell, find connected non-boundary cells via
+        // their nets, accumulate position.
+        let mut sx = 0.0_f64;
+        let mut sy = 0.0_f64;
+        let mut count = 0usize;
+        for (_port, pdata) in cell.ports.iter() {
+            let Some(net_id) = pdata.net() else { continue };
+            let net = ctx.design.net(net_id);
+            if let Some(drv) = net.driver() {
+                if drv.cell != cid {
+                    let dc = ctx.design.cell(drv.cell);
+                    if !clb_cell_types.contains(&dc.cell_type) {
+                        // Skip other boundary cells; their position is also
+                        // random at this stage and would only add noise.
+                    } else if let Some(bel) = dc.bel {
+                        let loc = ctx.bel(bel).loc();
+                        sx += loc.x as f64;
+                        sy += loc.y as f64;
+                        count += 1;
+                    }
+                }
+            }
+            for user in net.users.iter() {
+                if user.cell == cid {
+                    continue;
+                }
+                let uc = ctx.design.cell(user.cell);
+                if !clb_cell_types.contains(&uc.cell_type) {
+                    continue;
+                }
+                if let Some(bel) = uc.bel {
+                    let loc = ctx.bel(bel).loc();
+                    sx += loc.x as f64;
+                    sy += loc.y as f64;
+                    count += 1;
+                }
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        targets.push((cid, sx / count as f64, sy / count as f64));
+    }
+
+    if targets.is_empty() {
+        return;
+    }
+
+    // 3. Group targets by bucket (cells that share a BEL pool compete for
+    //    BELs in the same pool). Process each bucket independently.
+    let mut by_bucket: FxHashMap<crate::common::IdString, Vec<(CellId, f64, f64)>> =
+        FxHashMap::default();
+    for (cid, tx, ty) in targets {
+        let cell_type = ctx.design.cell(cid).cell_type;
+        let bucket = ctx.resolve_bucket(cell_type);
+        by_bucket.entry(bucket).or_default().push((cid, tx, ty));
+    }
+
+    let mut moved = 0usize;
+    for (bucket, mut group) in by_bucket {
+        // Order: cells whose target is FAR from chip center first. They have
+        // the strongest preference and should pick before the herd.
+        let chip_cx = (ctx.chipdb().width() / 2) as f64;
+        let chip_cy = (ctx.chipdb().height() / 2) as f64;
+        group.sort_by(|a, b| {
+            let da = (a.1 - chip_cx).abs() + (a.2 - chip_cy).abs();
+            let db = (b.1 - chip_cx).abs() + (b.2 - chip_cy).abs();
+            db.partial_cmp(&da).unwrap_or(Ordering::Equal)
+        });
+
+        // Snapshot current bel of each group member, then unbind so the BEL
+        // pool reflects "fresh" availability from this group's perspective
+        // (other cells already at non-bucket BELs stay claimed).
+        let cur_bels: Vec<(CellId, BelId)> = group
+            .iter()
+            .filter_map(|&(cid, _, _)| ctx.design.cell(cid).bel.map(|b| (cid, b)))
+            .collect();
+        for &(_cid, bel) in &cur_bels {
+            ctx.unbind_bel(bel);
+        }
+
+        // Build the candidate pool from all bucket BELs, filtering for
+        // currently-available (no other cell occupying it).
+        let pool: Vec<(BelId, i32, i32)> = ctx
+            .bels_for_bucket(bucket)
+            .filter(|b| b.is_available())
+            .map(|b| {
+                let loc = b.loc();
+                (b.id(), loc.x, loc.y)
+            })
+            .collect();
+
+        let mut available: Vec<bool> = vec![true; pool.len()];
+
+        for &(cid, tx, ty) in &group {
+            // Linear scan is fine: pool is ~1k entries per bucket on xc7.
+            let mut best_idx: Option<usize> = None;
+            let mut best_dist = i32::MAX;
+            let tx_i = tx.round() as i32;
+            let ty_i = ty.round() as i32;
+            for (i, &(_, bx, by)) in pool.iter().enumerate() {
+                if !available[i] {
+                    continue;
+                }
+                let d = (bx - tx_i).abs() + (by - ty_i).abs();
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = Some(i);
+                }
+            }
+            let Some(idx) = best_idx else { continue };
+            let bel = pool[idx].0;
+            available[idx] = false;
+            if !ctx.bind_bel(bel, cid, PlaceStrength::Placer) {
+                // Fall back to the original bel if rebind fails — `bind_bel`
+                // returns false on validity violations (e.g. cluster slot
+                // mismatch). Restore from the snapshot.
+                if let Some(&(_, orig_bel)) = cur_bels.iter().find(|&&(c, _)| c == cid) {
+                    ctx.bind_bel(orig_bel, cid, PlaceStrength::Placer);
+                }
+                continue;
+            }
+            moved += 1;
+        }
+
+        // Any group cell that didn't get re-bound (failed bind) needs its
+        // original BEL back, but only if still available. The fall-back path
+        // above already handles the common case; this pass catches cells
+        // whose original BEL was claimed by a sibling in the meantime.
+        for &(cid, orig_bel) in &cur_bels {
+            if ctx.design.cell(cid).bel.is_none() {
+                ctx.bind_bel(orig_bel, cid, PlaceStrength::Placer);
+            }
+        }
+    }
+
+    if moved > 0 {
+        eprintln!(
+            "Centroid-relocated {} boundary cells before locking",
+            moved
+        );
+    }
+}
+
 use super::PlacerError;
 
 /// Collect all live, placeable cell indices grouped by their cell type.

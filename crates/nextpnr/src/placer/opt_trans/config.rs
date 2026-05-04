@@ -208,7 +208,7 @@ impl Default for OptTransPlacerCfg {
             timing_criticality: FxHashMap::default(),
             report_interval: 5,
             lap_max_cells: 10000,
-            init_strategy: InitStrategy::Uniform,
+            init_strategy: InitStrategy::Topological,
             num_threads: 8,
             legalization: "sorted".to_string(),
             max_outer_iters: 50,

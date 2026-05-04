@@ -42,10 +42,28 @@ impl PlacerPipeline {
     }
 
     /// Lightweight init for discrete placers (SA) that don't need continuous positions.
+    ///
+    /// `initial_placement` shuffles every cell (including IOBs / clock buffers)
+    /// onto a random BEL of its type. For boundary cells that random BEL is then
+    /// refined by `centroid_place_boundary_cells`, which re-binds each boundary
+    /// cell to the BEL nearest the centroid of its connected non-boundary cells.
+    ///
+    /// `NPNR_PIN_BOUNDARY` (default on) freezes boundary cells at that BEL so
+    /// the OT solver cannot relocate them. Set `NPNR_PIN_BOUNDARY=0` to leave
+    /// boundary cells movable.
     pub fn prepare_discrete(ctx: &mut Context, seed: u64) -> Result<(), PlacerError> {
         ctx.reseed_rng(seed);
         common::initial_placement(ctx)?;
-        common::lock_boundary_cells(ctx);
+        common::centroid_place_boundary_cells(ctx);
+        let do_pin = std::env::var("NPNR_PIN_BOUNDARY")
+            .ok()
+            .map(|v| v != "0" && v.to_ascii_lowercase() != "false")
+            .unwrap_or(true);
+        if do_pin {
+            common::lock_boundary_cells(ctx);
+        } else {
+            eprintln!("NPNR_PIN_BOUNDARY=0: boundary cells left movable");
+        }
         Ok(())
     }
 
