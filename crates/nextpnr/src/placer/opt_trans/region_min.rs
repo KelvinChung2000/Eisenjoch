@@ -11,6 +11,7 @@
 //! rectangles whose lower bound already exceeds the current best cost.
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PyrLevel {
@@ -47,11 +48,11 @@ impl RegionMinPyramid {
 
     /// Build a pyramid from a dist grid. `dist` has `width*height` entries,
     /// row-major.
-    pub fn build(dist: &[f64], width: i32, height: i32) -> Self {
+    pub fn build(dist: &[f32], width: i32, height: i32) -> Self {
         assert_eq!(dist.len(), (width as usize) * (height as usize));
         let mut levels: Vec<PyrLevel> = Vec::new();
 
-        // Level 1 from level 0 (raw dist, f64 → f32).
+        // Level 1 directly from raw dist (already f32 in the cache).
         let mut cur_w = width;
         let mut cur_h = height;
         {
@@ -60,7 +61,7 @@ impl RegionMinPyramid {
             let mut data = vec![f32::INFINITY; (w1 * h1) as usize];
             for cy in 0..h1 {
                 for cx in 0..w1 {
-                    let mut m = f64::INFINITY;
+                    let mut m = f32::INFINITY;
                     for dy in 0..2 {
                         for dx in 0..2 {
                             let gx = 2 * cx + dx;
@@ -73,7 +74,7 @@ impl RegionMinPyramid {
                             }
                         }
                     }
-                    data[(cy * w1 + cx) as usize] = if m.is_finite() { m as f32 } else { f32::INFINITY };
+                    data[(cy * w1 + cx) as usize] = m;
                 }
             }
             levels.push(PyrLevel { w: w1, h: h1, data });
@@ -125,22 +126,31 @@ impl RegionMinPyramid {
     }
 }
 
-/// Build pyramids for every net in parallel. `dist` is a flat strided buffer
-/// of `n_nets * (width * height)` entries, row-major per net. Nets with an
-/// empty or all-INF row still produce a valid pyramid (all cells INF).
+/// Build pyramids for every net in parallel from sparse per-net rows.
+/// `rows[ni]` is the settled-node set for net `ni`; absent nodes are
+/// treated as `INFINITY`. `n_nodes` must equal `width * height`.
+///
+/// Each worker thread reuses a single dense `Vec<f32>` scratch (size
+/// `n_nodes`) across all nets it processes — `map_init` ensures the
+/// allocation is paid once per thread, not once per net.
 pub(crate) fn build_all(
-    dist: &[f64],
-    n_nets: usize,
+    rows: &[FxHashMap<u32, f32>],
+    n_nodes: usize,
     width: i32,
     height: i32,
 ) -> Vec<RegionMinPyramid> {
     let stride = (width as usize) * (height as usize);
-    assert_eq!(dist.len(), n_nets * stride);
-    (0..n_nets)
-        .into_par_iter()
-        .map(|ni| {
-            let start = ni * stride;
-            RegionMinPyramid::build(&dist[start..start + stride], width, height)
-        })
+    assert_eq!(stride, n_nodes);
+    rows.par_iter()
+        .map_init(
+            || vec![f32::INFINITY; stride],
+            |scratch, row| {
+                scratch.fill(f32::INFINITY);
+                for (&node, &v) in row {
+                    scratch[node as usize] = v;
+                }
+                RegionMinPyramid::build(scratch, width, height)
+            },
+        )
         .collect()
 }

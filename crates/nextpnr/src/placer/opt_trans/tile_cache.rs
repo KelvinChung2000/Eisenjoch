@@ -340,12 +340,17 @@ pub fn compute_switch_matrix_costs(
         // `target_side`. If the excluded set empties the super-source (single
         // tile type with only one boundary side), skip — switch-matrix cost is
         // undefined here.
+        //
+        // Every edge has the same uniform cost `scaled_pip_cost`, so the
+        // shortest-path distance reduces to `hop_count * scaled_pip_cost`. We
+        // BFS in hop space (bounded by `n_wires`) and scale at harvest. The
+        // earlier bucket-Dial Dijkstra sized `ws.buckets` to absolute distance
+        // and OOM'd in iter 1+ when BPR drove `scaled_pip_cost` into the
+        // millions, since `buckets[idx + 1]` then asks for ~hops·pip_cost
+        // entries (tens of GB). `ws.dist` now stores hop counts.
         ws.reset(template.n_wires);
-        if ws.buckets.is_empty() {
-            ws.buckets.push(Vec::new());
-        } else {
-            ws.buckets[0].clear();
-        }
+        let mut frontier: Vec<u32> = Vec::new();
+        let mut next_frontier: Vec<u32> = Vec::new();
         let mut seeded = 0usize;
         for (&port, wires) in &template.boundary_wires_by_port {
             let port_side = (port >> 8) as u8;
@@ -356,7 +361,7 @@ pub fn compute_switch_matrix_costs(
                 let wu = w as usize;
                 if wu < ws.dist.len() && ws.dist[wu] != 0 {
                     ws.dist[wu] = 0;
-                    ws.buckets[0].push(w);
+                    frontier.push(w);
                     seeded += 1;
                 }
             }
@@ -365,57 +370,47 @@ pub fn compute_switch_matrix_costs(
             continue;
         }
 
-        // Bucket-Dial Dijkstra. Uniform edge cost = scaled_pip_cost.
-        let mut cur: u32 = 0;
-        loop {
-            if (cur as usize) >= ws.buckets.len() {
-                break;
-            }
-            let node = match ws.buckets[cur as usize].pop() {
-                Some(n) => n,
-                None => {
-                    cur += 1;
-                    continue;
-                }
-            };
-            let node_u = node as usize;
-            if ws.dist[node_u] < cur {
-                continue;
-            }
-            let start = template.pip_offsets[node_u] as usize;
-            let end = template.pip_offsets[node_u + 1] as usize;
-            for &dst in &template.pip_dst[start..end] {
-                let du = dst as usize;
-                if du >= ws.dist.len() {
-                    continue;
-                }
-                let nd = cur.saturating_add(scaled_pip_cost);
-                if nd < ws.dist[du] {
-                    ws.dist[du] = nd;
-                    let idx = nd as usize;
-                    if idx >= ws.buckets.len() {
-                        ws.buckets.resize(idx + 1, Vec::new());
+        let mut hop: u32 = 0;
+        while !frontier.is_empty() {
+            let next_hop = hop + 1;
+            for &node in frontier.iter() {
+                let node_u = node as usize;
+                let start = template.pip_offsets[node_u] as usize;
+                let end = template.pip_offsets[node_u + 1] as usize;
+                for &dst in &template.pip_dst[start..end] {
+                    let du = dst as usize;
+                    if du >= ws.dist.len() {
+                        continue;
                     }
-                    ws.buckets[idx].push(dst);
+                    if next_hop < ws.dist[du] {
+                        ws.dist[du] = next_hop;
+                        next_frontier.push(dst);
+                    }
                 }
             }
+            std::mem::swap(&mut frontier, &mut next_frontier);
+            next_frontier.clear();
+            hop = next_hop;
         }
 
-        // Harvest (target_side, span_bucket) entries.
+        // Harvest (target_side, span_bucket) entries. Distances are hop
+        // counts; scale to `scaled_pip_cost` units, saturating at u32::MAX.
         for (&port, wires) in &template.boundary_wires_by_port {
             let port_side = (port >> 8) as u8;
             if port_side != target_side as u8 {
                 continue;
             }
-            let mut best = u32::MAX;
+            let mut best_hops = u32::MAX;
             for &w in wires {
                 let wu = w as usize;
-                if wu < ws.dist.len() && ws.dist[wu] < best {
-                    best = ws.dist[wu];
+                if wu < ws.dist.len() && ws.dist[wu] < best_hops {
+                    best_hops = ws.dist[wu];
                 }
             }
-            if best != u32::MAX {
-                out.insert(port, best);
+            if best_hops != u32::MAX {
+                let scaled = (best_hops as u64).saturating_mul(scaled_pip_cost as u64);
+                let scaled_u32 = scaled.min(u32::MAX as u64) as u32;
+                out.insert(port, scaled_u32);
             }
         }
     }

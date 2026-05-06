@@ -40,11 +40,25 @@ struct NetInfo {
     has_fixed_pin: bool,
 }
 
-/// Flat `n_nets × n_nodes` dist grid stored as a strided `Vec<f64>`. Row `ni`
-/// starts at `ni * n_nodes`. Per-net slices are contiguous so cache-line reuse
-/// across adjacent `node` indices is optimal.
+/// Sparse per-net Dijkstra distance labels. `rows[net_idx]` holds only the
+/// nodes that the per-net solve actually settled — absent nodes implicitly
+/// have distance `INFINITY`. On a 105k-cell / 69k-node design, typical
+/// per-net settle counts are 50–500, so the sparse representation is roughly
+/// 100× smaller than the prior flat `n_nets × n_nodes` `Vec<f32>` (≈170 MB
+/// vs ≈29 GB on FPGA01).
+///
+/// Sparse storage matches the access pattern: writers (Dijkstra fold) write
+/// exactly the settled nodes via `ws.settle_order`; the dominant reader
+/// (`get`) is a single-node lookup that maps absent → INFINITY.
+///
+/// `f32` storage gives 7 digits of precision — plenty for argmin selection
+/// in the cost path; values are bounded by `chip_diameter × max_pipe_cost`.
+///
+/// Code paths that genuinely need a dense row (BB-pyramid build, the
+/// Bresenham-surrogate writer) call `materialize_row` to copy the sparse
+/// entries into a caller-supplied scratch buffer once per use.
 struct DistCache {
-    dist: Vec<f64>,
+    rows: Vec<FxHashMap<u32, f32>>,
     n_nets: usize,
     n_nodes: usize,
     /// 1-Steiner pseudo-node centroids in network grid coords. One entry per
@@ -63,7 +77,7 @@ struct DistCache {
 impl DistCache {
     fn new(n_nets: usize, n_nodes: usize) -> Self {
         Self {
-            dist: vec![f64::INFINITY; n_nets * n_nodes],
+            rows: (0..n_nets).map(|_| FxHashMap::default()).collect(),
             n_nets,
             n_nodes,
             steiner_cx: vec![0.0; n_nets],
@@ -74,9 +88,8 @@ impl DistCache {
 
     /// Reallocates if shape changed; otherwise leaves stored rows intact
     /// so the skip-refresh path can reuse per-net labels across iterations.
-    /// Callers of `solve_all_nets` that don't pass a skip mask still get
-    /// fresh rows because the non-skip path does `dist_out.fill(INFINITY)`
-    /// before writing settled labels per net.
+    /// Callers that drop the skip-mask path explicitly clear rows before
+    /// re-writing them (sparse rows don't need a global INF fill).
     fn ensure_shape(&mut self, n_nets: usize, n_nodes: usize) {
         if self.n_nets != n_nets || self.n_nodes != n_nodes {
             *self = Self::new(n_nets, n_nodes);
@@ -84,25 +97,95 @@ impl DistCache {
     }
 
     fn reset(&mut self) {
-        self.dist.fill(f64::INFINITY);
+        for row in &mut self.rows {
+            row.clear();
+        }
     }
 
     #[inline]
-    fn row(&self, net_idx: usize) -> &[f64] {
-        let start = net_idx * self.n_nodes;
-        &self.dist[start..start + self.n_nodes]
+    fn row(&self, net_idx: usize) -> &FxHashMap<u32, f32> {
+        &self.rows[net_idx]
     }
 
     #[inline]
-    fn row_mut(&mut self, net_idx: usize) -> &mut [f64] {
-        let start = net_idx * self.n_nodes;
-        &mut self.dist[start..start + self.n_nodes]
+    fn row_mut(&mut self, net_idx: usize) -> &mut FxHashMap<u32, f32> {
+        &mut self.rows[net_idx]
     }
 
+    /// Read a single dist label. Returned as `f64` so callers in the cost
+    /// path don't have to track the storage precision; absent → INFINITY.
     #[inline]
     fn get(&self, net_idx: usize, node: usize) -> f64 {
-        self.dist[net_idx * self.n_nodes + node]
+        match self.rows[net_idx].get(&(node as u32)) {
+            Some(&v) => v as f64,
+            None => f64::INFINITY,
+        }
     }
+
+    /// Copy this net's sparse row into a dense scratch buffer of length
+    /// `n_nodes`. Absent entries become `f32::INFINITY`. Used by code paths
+    /// that need contiguous random-access reads (BB-pyramid build).
+    fn materialize_row(&self, net_idx: usize, scratch: &mut [f32]) {
+        debug_assert_eq!(scratch.len(), self.n_nodes);
+        scratch.fill(f32::INFINITY);
+        for (&node, &v) in &self.rows[net_idx] {
+            scratch[node as usize] = v;
+        }
+    }
+
+    /// Diagnostic: total live entries and total reserved capacity across all
+    /// rows. Returned `est_bytes` estimates hashbrown overhead (~9 B/slot:
+    /// 8 B for `(K, V)` + 1 ctrl byte) plus 48 B per FxHashMap header.
+    fn memory_stats(&self) -> (usize, usize, usize) {
+        let mut total_entries = 0usize;
+        let mut total_capacity = 0usize;
+        for row in &self.rows {
+            total_entries += row.len();
+            total_capacity += row.capacity();
+        }
+        let est_bytes = total_capacity * 9 + self.rows.len() * 48;
+        (total_entries, total_capacity, est_bytes)
+    }
+}
+
+/// Read `VmRSS` (resident set size) from `/proc/self/status` in KiB. Returns
+/// 0 if unavailable. Used in DCD diagnostics so we can compare reported
+/// hashmap memory against actual process RSS each iter.
+/// Manhattan radius (in tiles) around each pin within which DistCache
+/// entries are kept. Distances to nodes farther than this radius from every
+/// pin are computed by Dijkstra (Dial back-pass needs them) but never
+/// queried by DCD, so we drop them at cache-write time. Default 12, tuned
+/// to comfortably cover the bisection step (avg ~14, max ~356 manhattan
+/// in FPGA01 iter 0 — outliers will pay an `INFINITY` cost and be skipped,
+/// which is acceptable for placement-cost surrogate use). Override via
+/// `NPNR_OT_CACHE_RADIUS`.
+fn cache_radius_tiles() -> i32 {
+    use std::sync::OnceLock;
+    static RADIUS: OnceLock<i32> = OnceLock::new();
+    *RADIUS.get_or_init(|| {
+        std::env::var("NPNR_OT_CACHE_RADIUS")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+            .map(|v| v.max(0))
+            .unwrap_or(12)
+    })
+}
+
+fn process_rss_kb() -> usize {
+    let Ok(s) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            return rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+        }
+    }
+    0
 }
 
 /// Recompute per-net Steiner pseudo-node centroids from current pin positions.
@@ -314,6 +397,23 @@ struct SolveAccum {
     edge_usage: Vec<f64>,
     energy: f64,
     stats: PathStats,
+    /// Diagnostics: number of nets where the corridor attempt missed demand
+    /// and fell through to a full-graph Dijkstra. Each fallback settles up
+    /// to `n_nodes` nodes, ballooning the per-net `dist_cache` row.
+    diag_corridor_fallback: u64,
+    /// Diagnostic: number of nets where the sink-bounded distance cap
+    /// actually armed (every unique sink settled before Dijkstra exhausted
+    /// the corridor). The complement — nets where the cap never armed —
+    /// pays the full `corridor_size` settle cost and is the dominant memory
+    /// driver on chip-spanning / disconnected nets.
+    diag_cap_armed: u64,
+    diag_solves: u64,
+    diag_settle_sum: u64,
+    diag_settle_max: u32,
+    /// Tally of how many times the rayon fold-init closure ran. With many
+    /// splits each init pays a fresh `vec![0.0; n_pipes]` allocation, so
+    /// this is the second possible source of large transient memory.
+    diag_init_count: u32,
 }
 
 #[inline]
@@ -507,19 +607,20 @@ fn source_node(info: &NetInfo) -> Option<usize> {
         .map(|pin| pin.node)
 }
 
-/// Unsafe wrapper for parallel mutable access to disjoint rows of the flat
-/// `DistCache` buffer. Each row is a contiguous slice of length `stride`.
-struct DistSlicePtr {
-    base: *mut f64,
-    stride: usize,
+/// Unsafe wrapper for parallel mutable access to disjoint hashmap rows of
+/// the sparse `DistCache`. Each worker thread takes `&mut FxHashMap` for a
+/// distinct `net_idx`; rayon's `par_chunks` guarantees disjointness via
+/// `chunk_idx * batch_size + local_idx`, so the aliasing rule holds.
+struct DistMapPtr {
+    base: *mut FxHashMap<u32, f32>,
     n_nets: usize,
 }
-unsafe impl Send for DistSlicePtr {}
-unsafe impl Sync for DistSlicePtr {}
-impl DistSlicePtr {
-    fn row_mut(&self, idx: usize) -> &mut [f64] {
+unsafe impl Send for DistMapPtr {}
+unsafe impl Sync for DistMapPtr {}
+impl DistMapPtr {
+    fn row_mut(&self, idx: usize) -> &mut FxHashMap<u32, f32> {
         assert!(idx < self.n_nets);
-        unsafe { std::slice::from_raw_parts_mut(self.base.add(idx * self.stride), self.stride) }
+        unsafe { &mut *self.base.add(idx) }
     }
 }
 
@@ -567,11 +668,14 @@ fn solve_all_nets_with_displacement(
 
     let n_nodes = network.num_nodes();
     let n_pipes = network.num_pipes();
-    let batch_size = cfg.net_parallel_batch_size.max(1);
+    let batch_size = path_solver::auto_batch_size(
+        cfg.net_parallel_batch_size,
+        net_infos.len(),
+        solve_pool,
+    );
 
-    let dist_access = DistSlicePtr {
-        base: dist_cache.dist.as_mut_ptr(),
-        stride: dist_cache.n_nodes,
+    let dist_access = DistMapPtr {
+        base: dist_cache.rows.as_mut_ptr(),
         n_nets: dist_cache.n_nets,
     };
     solve_pool.install(|| {
@@ -585,6 +689,12 @@ fn solve_all_nets_with_displacement(
                             edge_usage: vec![0.0; n_pipes],
                             energy: 0.0,
                             stats: PathStats::default(),
+                            diag_corridor_fallback: 0,
+                            diag_cap_armed: 0,
+                            diag_solves: 0,
+                            diag_settle_sum: 0,
+                            diag_settle_max: 0,
+                            diag_init_count: 1,
                         },
                         PathSolverWorkspace::new(n_nodes, n_pipes),
                     )
@@ -656,10 +766,64 @@ fn solve_all_nets_with_displacement(
                             accum.stats.failures += 1;
                         }
 
+                        let settle_len = ws.settle_order.len() as u64;
+                        accum.diag_solves += 1;
+                        accum.diag_settle_sum += settle_len;
+                        if settle_len as u32 > accum.diag_settle_max {
+                            accum.diag_settle_max = settle_len as u32;
+                        }
+                        if result.corridor_fallback {
+                            accum.diag_corridor_fallback += 1;
+                        }
+                        if result.cap_armed {
+                            accum.diag_cap_armed += 1;
+                        }
+
+                        // Filter cache writes by "within R Manhattan tiles of
+                        // any pin of this net". DCD's per-cell cost eval
+                        // queries `dist_cache.get(net, candidate_pos)` only
+                        // for candidate positions that a cell on this net
+                        // might occupy — which by construction is a small
+                        // bbox around each pin. Distances beyond that radius
+                        // are computed by Dijkstra (needed for the Dial
+                        // back-pass) but never read by DCD, so storing them
+                        // is pure waste. On FPGA01 chip-spanning nets this
+                        // is the dominant DistCache cost.
+                        let r = cache_radius_tiles();
+                        let width_n = network.width as usize;
+                        ws.pin_xy_scratch.clear();
+                        ws.pin_xy_scratch.reserve(info.pins.len());
+                        for pin in &info.pins {
+                            ws.pin_xy_scratch.push((
+                                (pin.node % width_n) as i32,
+                                (pin.node / width_n) as i32,
+                            ));
+                        }
+
                         let dist_out = dist_access.row_mut(net_idx);
-                        dist_out.fill(f64::INFINITY);
+                        dist_out.clear();
+                        dist_out.reserve(ws.settle_order.len() / 4 + 8);
                         for &node in &ws.settle_order {
-                            dist_out[node] = ws.dist[node];
+                            let nx = (node % width_n) as i32;
+                            let ny = (node / width_n) as i32;
+                            let mut near = false;
+                            for &(px, py) in ws.pin_xy_scratch.iter() {
+                                if (nx - px).abs() + (ny - py).abs() <= r {
+                                    near = true;
+                                    break;
+                                }
+                            }
+                            if near {
+                                dist_out.insert(node as u32, ws.dist[node] as f32);
+                            }
+                        }
+                        // Reclaim capacity if a previous iter grew this row
+                        // (e.g. the cell was near a high-fanout net then moved
+                        // away). `clear()` keeps hashbrown's table allocation,
+                        // so without this hashmaps that ever ballooned stay
+                        // ballooned and total memory grows monotonically.
+                        if dist_out.capacity() > 4 * dist_out.len().max(8) {
+                            dist_out.shrink_to_fit();
                         }
                         accum.energy += net_path_weight(info, cfg) * result.energy;
                     }
@@ -672,6 +836,12 @@ fn solve_all_nets_with_displacement(
                     edge_usage: vec![0.0; n_pipes],
                     energy: 0.0,
                     stats: PathStats::default(),
+                    diag_corridor_fallback: 0,
+                    diag_cap_armed: 0,
+                    diag_solves: 0,
+                    diag_settle_sum: 0,
+                    diag_settle_max: 0,
+                    diag_init_count: 0,
                 },
                 |mut a, b| {
                     for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
@@ -682,6 +852,12 @@ fn solve_all_nets_with_displacement(
                     a.stats.total_heap_pops += b.stats.total_heap_pops;
                     a.stats.max_heap_pops = a.stats.max_heap_pops.max(b.stats.max_heap_pops);
                     a.stats.failures += b.stats.failures;
+                    a.diag_corridor_fallback += b.diag_corridor_fallback;
+                    a.diag_cap_armed += b.diag_cap_armed;
+                    a.diag_solves += b.diag_solves;
+                    a.diag_settle_sum += b.diag_settle_sum;
+                    a.diag_settle_max = a.diag_settle_max.max(b.diag_settle_max);
+                    a.diag_init_count += b.diag_init_count;
                     a
                 },
             )
@@ -704,10 +880,13 @@ fn solve_all_nets_bresenham_logit(
     collect_usage: bool,
 ) -> SolveAccum {
     let n_pipes = network.num_pipes();
-    let batch_size = cfg.net_parallel_batch_size.max(1);
-    let dist_access = DistSlicePtr {
-        base: dist_cache.dist.as_mut_ptr(),
-        stride: dist_cache.n_nodes,
+    let batch_size = path_solver::auto_batch_size(
+        cfg.net_parallel_batch_size,
+        net_infos.len(),
+        solve_pool,
+    );
+    let dist_access = DistMapPtr {
+        base: dist_cache.rows.as_mut_ptr(),
         n_nets: dist_cache.n_nets,
     };
 
@@ -727,7 +906,12 @@ fn solve_all_nets_bresenham_logit(
                         for (local_idx, info) in chunk.iter().enumerate() {
                             let net_idx = base_net_idx + local_idx;
                             let dist_out = dist_access.row_mut(net_idx);
-                            dist_out.fill(f64::INFINITY);
+                            // Bresenham writes every node, so the hashmap
+                            // ends up dense — no memory win vs the legacy
+                            // flat layout. Default Dijkstra path stays
+                            // sparse; this branch is opt-in via PathModel.
+                            dist_out.clear();
+                            dist_out.reserve(network.num_nodes());
 
                             let Some(source) = source_node(info) else {
                                 accum.failures += 1;
@@ -789,7 +973,11 @@ fn solve_bresenham_usage_only(
     solve_pool: &rayon::ThreadPool,
 ) -> SolveAccum {
     let n_pipes = network.num_pipes();
-    let batch_size = cfg.net_parallel_batch_size.max(1);
+    let batch_size = path_solver::auto_batch_size(
+        cfg.net_parallel_batch_size,
+        net_infos.len(),
+        solve_pool,
+    );
 
     solve_pool
         .install(|| {
@@ -859,6 +1047,12 @@ impl TemplateAccum {
                 max_heap_pops: 0,
                 failures: self.failures,
             },
+            diag_corridor_fallback: 0,
+            diag_cap_armed: 0,
+            diag_solves: 0,
+            diag_settle_sum: 0,
+            diag_settle_max: 0,
+            diag_init_count: 0,
         }
     }
 }
@@ -949,7 +1143,11 @@ fn template_path_cost(network: &PipeNetwork, path: &[usize]) -> f64 {
     cost
 }
 
-fn fill_bresenham_surrogate_field(network: &PipeNetwork, source: usize, dist_out: &mut [f64]) {
+fn fill_bresenham_surrogate_field(
+    network: &PipeNetwork,
+    source: usize,
+    dist_out: &mut FxHashMap<u32, f32>,
+) {
     let src = &network.nodes[source];
     for (node_idx, node) in network.nodes.iter().enumerate() {
         let dx = (node.tile_x - src.tile_x).abs() as f64;
@@ -958,7 +1156,10 @@ fn fill_bresenham_surrogate_field(network: &PipeNetwork, source: usize, dist_out
         // Sparse route templates provide the usage estimate. The DCD field is
         // deliberately a cheap smooth surrogate: route length plus a local
         // BPR-like pressure sample around the candidate node.
-        dist_out[node_idx] = manhattan + local_node_pressure(network, node_idx);
+        dist_out.insert(
+            node_idx as u32,
+            (manhattan + local_node_pressure(network, node_idx)) as f32,
+        );
     }
 }
 
@@ -2419,9 +2620,13 @@ fn refresh_net_dist_cache(
     path_solver::dial_logit_load(network, source, &sink_demands, ws, None);
 
     let dist_out = dist_cache.row_mut(net_idx);
-    dist_out.fill(f64::INFINITY);
+    dist_out.clear();
+    dist_out.reserve(ws.settle_order.len());
     for &node in &ws.settle_order {
-        dist_out[node] = ws.dist[node];
+        dist_out.insert(node as u32, ws.dist[node] as f32);
+    }
+    if dist_out.capacity() > 4 * dist_out.len().max(8) {
+        dist_out.shrink_to_fit();
     }
 }
 
@@ -3134,31 +3339,27 @@ pub fn run_inner_outer(
         eprintln!("Softmin position update: disabled (hard argmin commit)");
     }
 
-    let mut best_x = cell_x.to_vec();
-    let mut best_y = cell_y.to_vec();
-    let mut best_state = ObjState {
-        energy: f64::INFINITY,
-        line: f64::INFINITY,
-        friction: f64::INFINITY,
-        max_overflow: f64::INFINITY,
-        n_overflow: usize::MAX,
-        overflow_excess: f64::INFINITY,
-    };
-
-    let mut stalls = 0usize;
-    let max_stalls = 5;
-    let mut prev_energy: Option<f64> = None;
-    // Iterations since `best_state` last improved. The energy trace on
-    // converged designs oscillates ±1% even after the placement is
-    // essentially stable; the consecutive-stall criterion below resets
-    // every time the oscillation crosses the 0.5% bound and never trips.
-    // Tracking iters-since-best ensures we exit once the placement plateau
-    // is entered, regardless of noise.
-    let mut iters_since_best = 0usize;
-    let max_no_improve = std::env::var("NPNR_OT_NO_IMPROVE_LIMIT")
+    // DCD is a continuation method: per-iter BPR field strengthens as usage
+    // feeds back. We trust the schedule and take the converged state — no
+    // rollback to "best" iterate. Convergence is measured by per-cell
+    // displacement between consecutive iters (a fixed-point signal that does
+    // not depend on the BPR ramp). NPNR_OT_DISP_TOL sets the average-tile
+    // threshold (default 0.5); NPNR_OT_DISP_STALL sets how many consecutive
+    // sub-threshold iters trigger stop (default 3).
+    let disp_tol = std::env::var("NPNR_OT_DISP_TOL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|v| v.max(0.0))
+        .unwrap_or(0.5);
+    let max_disp_stalls = std::env::var("NPNR_OT_DISP_STALL")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(3);
+    let mut disp_stalls = 0usize;
+    let mut prev_cell_x: Option<Vec<f64>> = None;
+    let mut prev_cell_y: Option<Vec<f64>> = None;
+    let mut prev_state: Option<ObjState> = None;
+    let mut last_state: Option<ObjState> = None;
     // Per-net pin-node signature captured at the end of the previous outer
     // iter's post-solve. Compared against the current iter's pre-solve pin
     // layout to decide which nets' `dist_cache` rows can be reused.
@@ -3249,6 +3450,7 @@ pub fn run_inner_outer(
         } else {
             None
         };
+        let rss_before_pre_solve = process_rss_kb();
         let pre_solve = solve_distance_cache(
             network,
             &net_infos,
@@ -3259,6 +3461,31 @@ pub fn run_inner_outer(
             displacement_table.as_ref(),
         );
         let pre_refresh_ms = t_refresh.elapsed().as_millis();
+        let (entries_pre, capacity_pre, est_pre) = dist_cache.memory_stats();
+        eprintln!(
+            "    rss_probe[outer={}]: pre_refresh_rss={:.0}MB post_pre_solve_rss={:.0}MB cache_entries={} cache_cap={} cache_est_mb={:.0}",
+            outer,
+            rss_before_pre_solve as f64 / 1024.0,
+            process_rss_kb() as f64 / 1024.0,
+            entries_pre,
+            capacity_pre,
+            est_pre as f64 / (1024.0 * 1024.0),
+        );
+        {
+            let solves = pre_solve.diag_solves.max(1);
+            eprintln!(
+                "    pre_solve_diag[outer={}]: solves={} fallback={} ({:.1}%) cap_armed={} ({:.1}%) settle_avg={:.0} settle_max={} init_count={}",
+                outer,
+                pre_solve.diag_solves,
+                pre_solve.diag_corridor_fallback,
+                100.0 * pre_solve.diag_corridor_fallback as f64 / solves as f64,
+                pre_solve.diag_cap_armed,
+                100.0 * pre_solve.diag_cap_armed as f64 / solves as f64,
+                pre_solve.diag_settle_sum as f64 / solves as f64,
+                pre_solve.diag_settle_max,
+                pre_solve.diag_init_count,
+            );
+        }
 
         // Cell-placement-by-tile-type histogram (iter 0 only). Confirms that
         // LUT/FF cells land on CLB tiles, not BRAM/DSP/IO columns.
@@ -3536,8 +3763,9 @@ pub fn run_inner_outer(
                             per_net_counts.push(grid_area);
                             continue;
                         }
-                        let row = dist_cache.row(net_idx);
-                        let c = row.iter().filter(|d| d.is_finite()).count();
+                        // Sparse rows only hold finite settled entries, so
+                        // every key counts.
+                        let c = dist_cache.row(net_idx).len();
                         per_net_counts.push(c);
                     }
                     for gy in 0..network.height {
@@ -3834,8 +4062,8 @@ pub fn run_inner_outer(
                 // sinks).
                 let t_pyr = std::time::Instant::now();
                 let pyramids = region_min::build_all(
-                    &dist_cache.dist,
-                    dist_cache.n_nets,
+                    &dist_cache.rows,
+                    dist_cache.n_nodes,
                     network.width,
                     network.height,
                 );
@@ -3970,6 +4198,7 @@ pub fn run_inner_outer(
             (post_solve.energy, refresh_ms, solve_stats)
         } else {
             dist_cache.ensure_shape(post_net_infos.len(), n_nodes);
+            let rss_before_post = process_rss_kb();
             let post_solve = solve_usage_and_energy(
                 network,
                 &post_net_infos,
@@ -3978,8 +4207,16 @@ pub fn run_inner_outer(
                 &mut dist_cache,
                 displacement_table.as_ref(),
             );
+            let rss_after_post = process_rss_kb();
             apply_usage_for_next_iter(network, &post_solve.edge_usage, cfg, solve_pool);
             let refresh_ms = pre_refresh_ms + t_post_refresh.elapsed().as_millis();
+            eprintln!(
+                "    rss_probe[outer={}]: pre_post_solve={:.0}MB post_post_solve={:.0}MB after_apply={:.0}MB",
+                outer,
+                rss_before_post as f64 / 1024.0,
+                rss_after_post as f64 / 1024.0,
+                process_rss_kb() as f64 / 1024.0,
+            );
 
             let mut solve_stats = pre_solve.stats;
             solve_stats.total_solves += post_solve.stats.total_solves;
@@ -4020,44 +4257,44 @@ pub fn run_inner_outer(
             overflow_excess,
         };
 
-        // DCD objective: post-sweep Dial energy under the conductance field
-        // used during the sweep. The loaded usage is blended only for the next
-        // iteration's BPR field.
-        let improved = state.energy < best_state.energy;
-        let d_energy = prev_energy.map_or(0.0, |prev| state.energy - prev);
-        let d_friction = if best_state.friction.is_finite() {
-            state.friction - best_state.friction
-        } else {
-            0.0
-        };
-        if improved {
-            best_state = state;
-            best_x.copy_from_slice(cell_x);
-            best_y.copy_from_slice(cell_y);
-            iters_since_best = 0;
-        } else {
-            iters_since_best += 1;
-        }
+        // Continuation step: trust the schedule, take this iter's state. The
+        // diag `accepted` flag is true when this iter's line dropped versus
+        // the previous iter (placement quality improved); `d_friction` is the
+        // step delta. These are display-only — they do not gate progress.
+        let accepted = prev_state.map_or(true, |prev| state.line < prev.line);
+        let d_energy = prev_state.map_or(0.0, |prev| state.energy - prev.energy);
+        let d_friction = prev_state.map_or(0.0, |prev| state.friction - prev.friction);
         if !mux_tracker.is_legal() {
             mux_tracker.report(&format!("sweep {} LEAK", outer));
         }
-        // Relative-energy stability stall: iters where |dE| / E < 0.5% in a row
-        // indicate the physical system has equilibrated.
-        let rel_de = if let Some(prev) = prev_energy {
-            if state.energy.abs() > 1e-12 {
-                ((state.energy - prev) / state.energy.abs()).abs()
-            } else {
-                0.0
+        // Average per-cell Manhattan displacement vs the previous iter's
+        // committed positions. At a fixed point cells stop moving (or only
+        // jitter sub-tile via softmin). Threshold-stalling on this is the
+        // proper convergence signal for a continuation method.
+        let disp_avg = match (&prev_cell_x, &prev_cell_y) {
+            (Some(px), Some(py)) => {
+                let mut sum = 0.0f64;
+                for i in 0..n {
+                    sum += (cell_x[i] - px[i]).abs();
+                    sum += (cell_y[i] - py[i]).abs();
+                }
+                if n == 0 {
+                    0.0
+                } else {
+                    sum / n as f64
+                }
             }
-        } else {
-            f64::INFINITY
+            _ => f64::INFINITY,
         };
-        if rel_de < 0.005 {
-            stalls += 1;
+        if disp_avg < disp_tol {
+            disp_stalls += 1;
         } else {
-            stalls = 0;
+            disp_stalls = 0;
         }
-        prev_energy = Some(state.energy);
+        prev_cell_x = Some(cell_x.to_vec());
+        prev_cell_y = Some(cell_y.to_vec());
+        prev_state = Some(state);
+        last_state = Some(state);
 
         // Diagnostic: per-net HPWL (tile coords via network nodes) and sweep summary.
         if diag_ctx.enabled {
@@ -4071,7 +4308,7 @@ pub fn run_inner_outer(
                 n_overflow,
                 overflow_excess,
                 moved,
-                improved,
+                accepted,
                 d_friction,
                 &net_names,
                 &net_fanout,
@@ -4297,7 +4534,7 @@ pub fn run_inner_outer(
         }
 
         eprintln!(
-            "  DCD {:3}: nets={} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} stalls={} solves={} skip={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
+            "  DCD {:3}: nets={} line={:.0} energy={:.3} dE={:+.3} friction={:.1} bins={:.1}x({}) excess={:.1} moved={} disp={:.3} solves={} skip={} pops={} theta={:.3} refresh={}ms dcd={}ms total={}ms",
             outer,
             post_net_infos.len(),
             line,
@@ -4308,7 +4545,7 @@ pub fn run_inner_outer(
             n_overflow,
             overflow_excess,
             moved,
-            stalls,
+            disp_avg,
             solve_stats.total_solves,
             n_skipped,
             solve_stats.total_heap_pops,
@@ -4318,61 +4555,53 @@ pub fn run_inner_outer(
             t_outer.elapsed().as_millis(),
         );
 
+        let (entries, capacity, est_bytes) = dist_cache.memory_stats();
+        eprintln!(
+            "    cache_stats: entries={} capacity={} est_mb={:.0} rss_mb={:.0}",
+            entries,
+            capacity,
+            est_bytes as f64 / (1024.0 * 1024.0),
+            process_rss_kb() as f64 / 1024.0,
+        );
+
         if moved == 0 {
             eprintln!("  DCD converged: no cells moved in iteration {}", outer);
             break;
         }
-        if stalls >= max_stalls {
+        if disp_stalls >= max_disp_stalls {
             eprintln!(
-                "  DCD stopped: {} consecutive non-improving iterations",
-                max_stalls
-            );
-            break;
-        }
-        if iters_since_best >= max_no_improve {
-            eprintln!(
-                "  DCD stopped: {} iters since best energy improvement",
-                iters_since_best
+                "  DCD converged: avg per-cell displacement < {:.3} tile for {} iters",
+                disp_tol, disp_stalls,
             );
             break;
         }
     }
 
-    cell_x.copy_from_slice(&best_x);
-    cell_y.copy_from_slice(&best_y);
-
     diag_ctx.finalize(network);
 
+    let final_state = last_state.unwrap_or(ObjState {
+        energy: 0.0,
+        line: 0.0,
+        friction: 0.0,
+        max_overflow: 0.0,
+        n_overflow: 0,
+        overflow_excess: 0.0,
+    });
     eprintln!(
         "DCD done: energy={:.3} line={:.0} friction={:.1} bins={:.1}x({}) excess={:.1}",
-        best_state.energy,
-        best_state.line,
-        best_state.friction,
-        best_state.max_overflow,
-        best_state.n_overflow,
-        best_state.overflow_excess,
+        final_state.energy,
+        final_state.line,
+        final_state.friction,
+        final_state.max_overflow,
+        final_state.n_overflow,
+        final_state.overflow_excess,
     );
-    let final_energy = best_state.energy;
     eprintln!(
         "MuxSlotTracker: {} commit rejections over entire DCD",
         mux_tracker.rejected(),
     );
-    mux_tracker.report("pre-rollback");
-    // Re-seed from best_x/best_y so any post-DCD code reading the tracker
-    // sees the committed state (best_x/best_y is what cell_x/cell_y now hold).
-    {
-        let final_gx: Vec<i32> = cell_x
-            .iter()
-            .map(|&x| network.tile_to_net(x).round() as i32)
-            .collect();
-        let final_gy: Vec<i32> = cell_y
-            .iter()
-            .map(|&y| network.tile_to_net(y).round() as i32)
-            .collect();
-        mux_tracker.seed_positions(&final_gx, &final_gy);
-    }
-    mux_tracker.report("post-rollback");
-    final_energy
+    mux_tracker.report("post-DCD");
+    final_state.energy
 }
 
 #[cfg(test)]

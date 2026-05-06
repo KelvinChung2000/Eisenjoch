@@ -11,6 +11,22 @@ use super::network::{Pipe, PipeNetwork, DIST_SCALE};
 
 pub(crate) const LOGIT_THETA: f64 = 0.25;
 
+/// Pick a chunk size that gives Rayon ~8 chunks per worker thread for
+/// work-stealing without spawning thousands of fold-init allocations.
+/// Each fold init pays a `vec![0.0; n_pipes]` (~20 MB on FPGA01), so on
+/// large designs the default `cfg.net_parallel_batch_size = 4` produced
+/// hundreds of inits per pre_solve. Floor at the configured minimum so
+/// small designs keep their tuning.
+pub(crate) fn auto_batch_size(
+    cfg_min: usize,
+    n_items: usize,
+    pool: &rayon::ThreadPool,
+) -> usize {
+    let cfg_min = cfg_min.max(1);
+    let threads = pool.current_num_threads().max(1);
+    (n_items / (threads * 8)).max(cfg_min)
+}
+
 /// Precomputed `exp(-LOGIT_THETA · slack / DIST_SCALE)` as f32, indexed by
 /// integer slack in `DIST_SCALE` units. `LOGIT_THETA = 0.25` and `DIST_SCALE =
 /// 100.0` are both compile-time constants, so this table is static for the
@@ -48,24 +64,57 @@ const CORRIDOR_MIN_HALO_TIGHT: i32 = 4;
 const CORRIDOR_REL_HALO_NUM_TIGHT: i32 = 1;
 const CORRIDOR_REL_HALO_DEN_TIGHT: i32 = 8;
 
+/// Hard cap on per-net corridor halo. Without it, halo grows linearly with
+/// pin span (rel_halo = span/rel_den), so a span-200 net gets halo=25 even in
+/// tight mode and the resulting bbox covers a quarter of a large fabric. The
+/// cap bounds DistCache memory: with cap=12, settle counts stay in the low
+/// hundreds even for chip-spanning nets. Override via `NPNR_OT_CORRIDOR_HALO_MAX`.
+const CORRIDOR_MAX_HALO_DEFAULT: i32 = 12;
+
+/// Distance slack added to `max_sink_dist` when terminating Dijkstra. Once
+/// every sink has been settled, the sweep continues out to
+/// `max_sink_dist + slack` so DCD's per-cell candidate evaluation can still
+/// query distances within `slack / DIST_SCALE` tiles of any pin.
+/// Override via `NPNR_OT_CACHE_SLACK_TILES`. Default = 8 tiles.
+const CACHE_SLACK_TILES_DEFAULT: u32 = 8;
+
+fn cache_slack_int() -> u32 {
+    use super::network::DIST_SCALE;
+    static SLACK: OnceLock<u32> = OnceLock::new();
+    *SLACK.get_or_init(|| {
+        let tiles = std::env::var("NPNR_OT_CACHE_SLACK_TILES")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(CACHE_SLACK_TILES_DEFAULT);
+        tiles.saturating_mul(DIST_SCALE as u32)
+    })
+}
+
 #[derive(Clone, Copy)]
 struct CorridorParams {
     stretch: f64,
     min_halo: i32,
     rel_num: i32,
     rel_den: i32,
+    max_halo: i32,
 }
 
 fn corridor_params() -> CorridorParams {
     static PARAMS: OnceLock<CorridorParams> = OnceLock::new();
     *PARAMS.get_or_init(|| {
         let tight = std::env::var("NPNR_OT_CORRIDOR_TIGHT").ok().as_deref() == Some("1");
+        let max_halo = std::env::var("NPNR_OT_CORRIDOR_HALO_MAX")
+            .ok()
+            .and_then(|s| s.parse::<i32>().ok())
+            .map(|v| v.max(1))
+            .unwrap_or(CORRIDOR_MAX_HALO_DEFAULT);
         if tight {
             CorridorParams {
                 stretch: CORRIDOR_STRETCH_TIGHT,
                 min_halo: CORRIDOR_MIN_HALO_TIGHT,
                 rel_num: CORRIDOR_REL_HALO_NUM_TIGHT,
                 rel_den: CORRIDOR_REL_HALO_DEN_TIGHT,
+                max_halo,
             }
         } else {
             CorridorParams {
@@ -73,6 +122,7 @@ fn corridor_params() -> CorridorParams {
                 min_halo: CORRIDOR_MIN_HALO_DEFAULT,
                 rel_num: CORRIDOR_REL_HALO_NUM_DEFAULT,
                 rel_den: CORRIDOR_REL_HALO_DEN_DEFAULT,
+                max_halo,
             }
         }
     })
@@ -153,6 +203,17 @@ pub struct PathSolverWorkspace {
     /// `build_corridor` clears and refills this.
     pub(crate) corridor_sinks: Vec<CorridorSink>,
 
+    /// Per-net sink-node scratch buffer used by `dial_logit_load_inner` to
+    /// hand the sink list to `dijkstra_and_forward` for sink-bounded
+    /// termination. Reused across nets so the hot per-net path doesn't
+    /// allocate.
+    pub(crate) sink_nodes_scratch: Vec<usize>,
+
+    /// Per-net pin (tile_x, tile_y) scratch used by the DistCache filter
+    /// in `coord_descent::solve_all_nets_with_displacement` to drop cache
+    /// entries that lie outside `R` Manhattan tiles of any pin. Reused.
+    pub(crate) pin_xy_scratch: Vec<(i32, i32)>,
+
     /// Flat bucket array for Dial's O(V+E+D_max) Dijkstra. `buckets[d]`
     /// holds every node whose tentative dist == d. Grown on demand.
     /// After each Dijkstra all buckets are empty (reset is implicit).
@@ -181,6 +242,8 @@ impl PathSolverWorkspace {
             corridor_bbox: None,
             corridor_long_pipes: Vec::with_capacity(64),
             corridor_sinks: Vec::with_capacity(16),
+            sink_nodes_scratch: Vec::with_capacity(16),
+            pin_xy_scratch: Vec::with_capacity(16),
             buckets: Vec::new(),
             max_bucket: 0,
             heap: BinaryHeap::with_capacity(4096),
@@ -309,6 +372,16 @@ pub(crate) struct DialLogitResult {
     pub heap_pops: usize,
     pub energy: f64,
     pub missing_demand: f64,
+    /// Retained for caller compatibility. Always false now that the
+    /// unbounded fallback is gone.
+    pub corridor_fallback: bool,
+    /// Diagnostic: true when the sink-bounded distance cap actually armed
+    /// during Dijkstra (i.e. every unique sink was settled). False when
+    /// Dijkstra exhausted the corridor or heap before all sinks settled —
+    /// those are the chip-spanning / disconnected nets that pay the
+    /// `settle_order ≈ corridor_size` cost. Lets the solver fold count
+    /// how often the bound saves work.
+    pub cap_armed: bool,
 }
 
 #[derive(Debug)]
@@ -371,7 +444,7 @@ fn build_corridor(
 
     let params = corridor_params();
     let rel_halo = (max_direct * params.rel_num + params.rel_den - 1) / params.rel_den;
-    let halo = params.min_halo.max(rel_halo);
+    let halo = params.min_halo.max(rel_halo).min(params.max_halo);
     Some(Corridor {
         source_x: source.tile_x,
         source_y: source.tile_y,
@@ -551,7 +624,7 @@ fn compute_path_forward_and_gradient_impl(
         );
     }
 
-    let batch_size = cfg.net_parallel_batch_size.max(1);
+    let batch_size = auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
     let accum = solve_pool.install(|| {
         net_infos
             .par_chunks(batch_size)
@@ -720,11 +793,14 @@ pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f
 }
 
 #[inline(never)]
-/// Fused bucket-Dial Dijkstra **and** Dial forward pass.
+/// Fused binary-heap Dijkstra **and** Dial forward pass.
 ///
-/// Each bucket `buckets[d]` holds nodes whose tentative quantized distance
-/// equals `d`. We advance `cur` monotonically and pop one node at a time
-/// from the non-empty bucket under `cur`; empty buckets cause `cur += 1`.
+/// Was a bucket-Dial Dijkstra (`buckets[d]` indexed by absolute integer
+/// distance), but BPR scaling under congestion blew `cost_int` past 10⁷ per
+/// edge in iter 1+, sending `buckets.resize(idx+1, ...)` into multi-GB
+/// allocations. The binary heap is `O((V+E)·log V)` instead of
+/// `O(V+E+D_max)` but its memory footprint is proportional to live entries
+/// only, independent of the absolute distance values.
 ///
 /// When a node is popped it is settled at `dist_int[node] == cur`. In the
 /// same edge iteration we already need for relaxation, we also compute
@@ -734,15 +810,13 @@ pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f
 /// and outgoing (not-yet-settled) edges in the same adjacency list — each
 /// edge falls into exactly one branch of the dispatch below, so this fuses
 /// Dijkstra + Dial forward into a single pass over the edge set.
-///
-/// The original two-pass layout (Dijkstra then a second forward sweep) is
-/// strictly equivalent; fusing halves the edge iterations for dial_logit.
 fn dijkstra_and_forward(
     network: &PipeNetwork,
     source_node: usize,
+    sink_nodes: &[usize],
     ws: &mut PathSolverWorkspace,
     use_corridor: bool,
-) -> usize {
+) -> (usize, bool) {
     use super::network::DIST_SCALE;
     let inv_scale = 1.0 / DIST_SCALE;
 
@@ -754,39 +828,62 @@ fn dijkstra_and_forward(
     let adj_neighbors = adj.neighbors.as_slice();
     let adj_cost_int = adj.cost_int.as_slice();
     let adj_offsets = adj.offsets.as_slice();
-    let buckets = &mut ws.buckets;
+    let heap = &mut ws.heap;
+    heap.clear();
 
     dist_int[source_node] = 0;
     path_weight[source_node] = 1.0;
-    if buckets.is_empty() {
-        buckets.push(Vec::new());
-    }
-    buckets[0].push(source_node as u32);
+    heap.push(HeapEntry { dist: 0.0, node: source_node });
+
+    // Sink-bounded termination: stop popping once every sink has been
+    // settled and the slack budget around the farthest sink is exhausted.
+    // `max_dist_cap == u32::MAX` until that flips. Using `dist_int[sink]`
+    // as the "settled?" check (set to label, was u32::MAX) avoids a parallel
+    // bookkeeping vector at the cost of an O(n_sinks) scan when n_sinks is
+    // tiny in practice (median = 2).
+    let n_sinks = sink_nodes.len();
+    let mut sinks_settled = 0usize;
+    let mut max_sink_dist: u32 = 0;
+    let cache_slack = cache_slack_int();
+    let mut max_dist_cap: u32 = u32::MAX;
 
     let mut pops = 0usize;
-    let mut cur: u32 = 0;
-    let mut max_bucket: u32 = 0;
 
-    loop {
-        if (cur as usize) >= buckets.len() {
+    while let Some(HeapEntry { dist: cur_f, node }) = heap.pop() {
+        // `dist` round-trips an integer through f64; `as u32` recovers the
+        // exact bucket value because `cost_int < 2^31` keeps the running
+        // sum well within f64's integer-exact range.
+        let cur = cur_f as u32;
+        if cur > max_dist_cap {
+            // All sinks settled and we've exhausted the slack budget around
+            // the farthest one. Anything beyond this label is uninteresting
+            // for both DCD distance lookups and the Dial flow back-pass
+            // (which only walks settled predecessors of sinks).
             break;
         }
-        let node_u32 = match buckets[cur as usize].pop() {
-            Some(n) => n,
-            None => {
-                cur += 1;
-                continue;
-            }
-        };
-        let node = node_u32 as usize;
-        // Stale entry: a later push shortened this node's dist; the fresh
-        // copy lives in a smaller bucket we've already processed, and
-        // `dist_int[node] < cur` so we must skip.
+        // Stale entry: a later push shortened this node's dist.
         if dist_int[node] < cur {
             continue;
         }
         pops += 1;
         settle_order.push(node);
+
+        // Track sink settlement. Cheap because sink_nodes is small (median
+        // 2, p99 ~30 on FPGA01); check fires once per node, exits early.
+        if sinks_settled < n_sinks {
+            for &sink in sink_nodes {
+                if sink == node {
+                    sinks_settled += 1;
+                    if cur > max_sink_dist {
+                        max_sink_dist = cur;
+                    }
+                    break;
+                }
+            }
+            if sinks_settled == n_sinks && max_dist_cap == u32::MAX {
+                max_dist_cap = max_sink_dist.saturating_add(cache_slack);
+            }
+        }
 
         // Start from whatever `path_weight[node]` already holds.
         // - Source was pre-set to 1.0 above.
@@ -806,9 +903,6 @@ fn dijkstra_and_forward(
             let neigh_dist_int = dist_int[neighbour];
             if neigh_dist_int < cur {
                 // Upstream settled predecessor: forward-pass contribution.
-                // Slack is computed in integer units; the likelihood table
-                // folds in both the exp and the f64 conversion so this branch
-                // no longer touches libm.
                 let neigh_weight = path_weight[neighbour];
                 if neigh_weight > 0.0 && neigh_weight.is_finite() {
                     let likelihood =
@@ -822,14 +916,10 @@ fn dijkstra_and_forward(
                 let candidate = cur.saturating_add(cost_int);
                 if candidate < neigh_dist_int {
                     dist_int[neighbour] = candidate;
-                    let idx = candidate as usize;
-                    if idx >= buckets.len() {
-                        buckets.resize(idx + 1, Vec::new());
-                    }
-                    buckets[idx].push(neighbour as u32);
-                    if candidate > max_bucket {
-                        max_bucket = candidate;
-                    }
+                    heap.push(HeapEntry {
+                        dist: candidate as f64,
+                        node: neighbour,
+                    });
                 }
             }
         }
@@ -837,14 +927,15 @@ fn dijkstra_and_forward(
         path_weight[node] = acc_weight;
     }
 
-    ws.max_bucket = max_bucket;
+    ws.max_bucket = 0;
 
     // Materialise f64 labels for settled nodes; unvisited ones keep INF.
     for &node in settle_order.iter() {
         ws.dist[node] = dist_int[node] as f64 * inv_scale;
     }
 
-    pops
+    let cap_armed = max_dist_cap != u32::MAX;
+    (pops, cap_armed)
 }
 
 /// Likelihood weighting `exp(-LOGIT_THETA · slack / DIST_SCALE)` where
@@ -908,30 +999,29 @@ pub(crate) fn dial_logit_load(
     source_node: usize,
     sink_demands: &[(usize, f64)],
     ws: &mut PathSolverWorkspace,
-    mut edge_usage: Option<&mut [f64]>,
+    edge_usage: Option<&mut [f64]>,
 ) -> DialLogitResult {
-    if let Some(corridor) =
+    // Bounded-corridor solve only. The historical "fall back to full-graph
+    // Dijkstra when the corridor fails" branch was removed: per CLAUDE.md
+    // ("Never add any fallback for any implementation"), and on FPGA01 it was
+    // pinning DistCache memory at >20 GB by letting 5 % of nets settle the
+    // entire 69 k-node graph. When the corridor cannot reach a sink, we
+    // surface that as `missing_demand`/`failures` so the caller (and
+    // pre_solve_diag) sees the gap; affected nodes simply have no entry in
+    // `dist_cache` and downstream cost lookups return INFINITY.
+    let Some(corridor) =
         build_corridor(network, source_node, sink_demands, &mut ws.corridor_sinks)
-    {
-        ws.mark_corridor(network, &corridor);
-        let result = dial_logit_load_inner(
-            network,
-            source_node,
-            sink_demands,
-            ws,
-            edge_usage.as_deref_mut(),
-            true,
-        );
-        if result.missing_demand == 0.0 {
-            return result;
-        }
-        if let Some(usage) = edge_usage.as_deref_mut() {
-            ws.rollback_edge_usage(usage);
-        }
-        ws.begin_net();
-    }
-
-    dial_logit_load_inner(network, source_node, sink_demands, ws, edge_usage, false)
+    else {
+        return DialLogitResult {
+            heap_pops: 0,
+            energy: 0.0,
+            missing_demand: sink_demands.iter().map(|(_, d)| d.abs()).sum(),
+            corridor_fallback: false,
+            cap_armed: false,
+        };
+    };
+    ws.mark_corridor(network, &corridor);
+    dial_logit_load_inner(network, source_node, sink_demands, ws, edge_usage, true)
 }
 
 fn dial_logit_load_inner(
@@ -947,10 +1037,33 @@ fn dial_logit_load_inner(
     // `NPNR_OT_USE_FSM=1` gate, substitute the discrete Fast Sweeping solver;
     // it produces identical `dist_int` labels and matching `path_weight` from
     // a post-sweep forward pass.
-    let heap_pops = if use_fsm() {
-        super::fsm::fsm_dist_and_forward(network, source_node, ws, use_corridor)
+    //
+    // Sink-bounded termination needs the sink node list separated from the
+    // demand values. Reuse the workspace buffer (`sink_nodes_scratch`) so the
+    // hot per-net path doesn't allocate. Dedup is mandatory: high-fanout nets
+    // have multiple pins on the same coarse-cell node, and the cap-fire
+    // condition `sinks_settled == n_sinks` is satisfied per UNIQUE node — if
+    // we leave duplicates in, the counter under-reports and the cap never
+    // arms, leaving Dijkstra unbounded.
+    ws.sink_nodes_scratch.clear();
+    ws.sink_nodes_scratch.reserve(sink_demands.len());
+    for &(node, _) in sink_demands {
+        ws.sink_nodes_scratch.push(node);
+    }
+    ws.sink_nodes_scratch.sort_unstable();
+    ws.sink_nodes_scratch.dedup();
+    let (heap_pops, cap_armed) = if use_fsm() {
+        // FSM path is unbounded today; sink list stays untyped here so we
+        // don't churn that signature until FSM is back on the hot path.
+        let pops = super::fsm::fsm_dist_and_forward(network, source_node, ws, use_corridor);
+        (pops, false)
     } else {
-        dijkstra_and_forward(network, source_node, ws, use_corridor)
+        // Borrow split: sink_nodes_scratch lives on `ws`. Take a raw pointer
+        // to the slice so the rest of `ws` stays mutable for the inner loop.
+        let sink_ptr = ws.sink_nodes_scratch.as_ptr();
+        let sink_len = ws.sink_nodes_scratch.len();
+        let sinks: &[usize] = unsafe { std::slice::from_raw_parts(sink_ptr, sink_len) };
+        dijkstra_and_forward(network, source_node, sinks, ws, use_corridor)
     };
 
     let adj = &network.flat_adjacency;
@@ -1030,6 +1143,8 @@ fn dial_logit_load_inner(
         heap_pops,
         energy,
         missing_demand,
+        corridor_fallback: false,
+        cap_armed,
     }
 }
 
@@ -1176,6 +1291,8 @@ fn dial_logit_displacement(
         heap_pops: 0,
         energy,
         missing_demand,
+        corridor_fallback: false,
+        cap_armed: true,
     })
 }
 
@@ -1549,18 +1666,11 @@ mod tests {
         assert_eq!(usage[0], 0.0);
     }
 
-    #[test]
-    fn corridor_fallback_does_not_double_count_usage() {
-        let network =
-            test_network_with_coords(&[(0, 0), (0, 100), (10, 0)], &[(0, 1, 1.0), (1, 2, 1.0)]);
-        let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
-        ws.begin_net();
-        let mut usage = vec![0.0; network.num_pipes()];
-        let result = dial_logit_load(&network, 0, &[(2, 1.0)], &mut ws, Some(&mut usage));
-
-        assert_eq!(result.missing_demand, 0.0);
-        assert!((usage[0] - 1.0).abs() < 1e-12);
-        assert!((usage[1] - 1.0).abs() < 1e-12);
-        assert!((ws.dist[2] - 2.0).abs() < 1e-12);
-    }
+    // The historical `corridor_fallback_does_not_double_count_usage` test
+    // exercised the rollback path that fired when the corridor missed sinks
+    // and the solver re-ran on the full graph. That fallback was removed
+    // (see CLAUDE.md "no fallback" rule and the FPGA01 memory work in
+    // 2026-05-06 that capped DistCache). The "unreachable sink → missing
+    // demand" behaviour is already covered by
+    // `dial_reports_unreachable_sink_demand`.
 }
