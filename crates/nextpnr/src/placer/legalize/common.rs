@@ -225,24 +225,26 @@ pub fn cell_pin_wires_pub(
 /// input mux, as in xc7 slices) can only coexist if the shared node carries
 /// a single net. This is the placer-side gate that prevents the router's
 /// later `try_bind_wire_node` from rejecting a pre-reservation as a conflict.
+///
+/// Storage is per-node, not per-wire. The previous implementation expanded
+/// every claimed wire's node-equivalence class into `claimed` at record
+/// time and re-walked the class at is_legal time. Both walks were O(peers),
+/// and mega-nodes (BUFG ≈ 65 k peers) were silently truncated at
+/// `NODE_PEER_CAP`. Keying directly on `chipdb.node_id(w)` makes record and
+/// is_legal both O(1) per pin, and the mega-node truncation goes away.
 pub(crate) struct DriverNodeRegistry {
-    /// Wire -> owning NetId. Populated with every BEL-pin wire (driver +
-    /// user) of placed cells plus all of their node-equivalent wires so
-    /// membership lookup is O(1).
-    claimed: FxHashMap<WireId, NetId>,
+    /// Multi-tile node id -> owning NetId. Populated for every BEL-pin wire
+    /// of a placed cell whose `chipdb.node_id(...)` returns `Some(_)`.
+    claimed_nodes: FxHashMap<u64, NetId>,
+    /// Tile-local wires (no multi-tile node) keyed directly.
+    claimed_local: FxHashMap<WireId, NetId>,
 }
-
-/// Maximum peers walked per pin wire. Mega-nodes (xc7 BUFG global clock
-/// distribution has ~65k peers) would dominate runtime if walked in full.
-/// Set high enough to cover SLICE shared input mux topology (observed up
-/// to several hundred peers when long routing wires fan into shared mux
-/// inputs across multiple tiles).
-const NODE_PEER_CAP: usize = 4096;
 
 impl DriverNodeRegistry {
     pub fn new() -> Self {
         Self {
-            claimed: FxHashMap::default(),
+            claimed_nodes: FxHashMap::default(),
+            claimed_local: FxHashMap::default(),
         }
     }
 
@@ -261,58 +263,51 @@ impl DriverNodeRegistry {
         reg
     }
 
+    #[inline]
+    fn lookup(&self, ctx: &Context, wire: WireId) -> Option<NetId> {
+        match ctx.chipdb().node_id(wire) {
+            Some(node) => self.claimed_nodes.get(&node).copied(),
+            None => self.claimed_local.get(&wire).copied(),
+        }
+    }
+
+    #[inline]
+    fn insert(&mut self, ctx: &Context, wire: WireId, net: NetId) {
+        match ctx.chipdb().node_id(wire) {
+            Some(node) => {
+                self.claimed_nodes.insert(node, net);
+            }
+            None => {
+                self.claimed_local.insert(wire, net);
+            }
+        }
+    }
+
     /// True iff placing `cell_id` at `bel` would not collide with an existing
     /// claim in the same routing node — either a shared output mux or a
     /// shared input mux from another placed cell.
     pub fn is_legal(&self, ctx: &Context, cell_id: CellId, bel: BelId) -> bool {
         for (w, net) in cell_pin_wires(ctx, cell_id, bel) {
-            if let Some(&existing) = self.claimed.get(&w) {
+            if let Some(existing) = self.lookup(ctx, w) {
                 if existing != net {
                     return false;
                 }
-            }
-            let mut conflict = false;
-            let mut peers = 0usize;
-            ctx.chipdb().node_wires_cb(w, |nw| {
-                if conflict || peers >= NODE_PEER_CAP {
-                    peers += 1;
-                    return;
-                }
-                peers += 1;
-                if let Some(&existing) = self.claimed.get(&nw) {
-                    if existing != net {
-                        conflict = true;
-                    }
-                }
-            });
-            if conflict {
-                return false;
             }
         }
         true
     }
 
-    /// Record `cell_id`'s driver and user pin wires (plus node-equivalents)
-    /// as claimed. Call this after a successful `bind_bel`.
+    /// Record `cell_id`'s driver and user pin wires as claimed. Call this
+    /// after a successful `bind_bel`.
     pub fn record(&mut self, ctx: &Context, cell_id: CellId, bel: BelId) {
         for (w, net) in cell_pin_wires(ctx, cell_id, bel) {
-            self.claimed.insert(w, net);
-            let mut peers = 0usize;
-            ctx.chipdb().node_wires_cb(w, |nw| {
-                if peers >= NODE_PEER_CAP {
-                    peers += 1;
-                    return;
-                }
-                peers += 1;
-                self.claimed.insert(nw, net);
-            });
+            self.insert(ctx, w, net);
         }
     }
 
     /// Same as `is_legal`, but takes a precomputed `CellPinTemplate` so the
-    /// per-call cost is only the `bel.pin_wire(name)` lookups + node peer
-    /// scans, skipping the per-call cell-port enumeration that was ~30-40%
-    /// of `is_legal` cost on FPGA01.
+    /// per-call cost is only the `bel.pin_wire(name)` lookups + a single
+    /// `node_id` resolution per pin, skipping per-call cell-port walks.
     pub fn is_legal_template(
         &self,
         ctx: &Context,
@@ -326,27 +321,10 @@ impl DriverNodeRegistry {
                 continue;
             };
             let w = w.id();
-            if let Some(&existing) = self.claimed.get(&w) {
+            if let Some(existing) = self.lookup(ctx, w) {
                 if existing != net {
                     return false;
                 }
-            }
-            let mut conflict = false;
-            let mut peers = 0usize;
-            ctx.chipdb().node_wires_cb(w, |nw| {
-                if conflict || peers >= NODE_PEER_CAP {
-                    peers += 1;
-                    return;
-                }
-                peers += 1;
-                if let Some(&existing) = self.claimed.get(&nw) {
-                    if existing != net {
-                        conflict = true;
-                    }
-                }
-            });
-            if conflict {
-                return false;
             }
         }
         true
