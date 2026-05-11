@@ -450,44 +450,69 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
     Ok(())
 }
 
-/// Topological initial placement: every cell ends up bound to a BEL whose
-/// position reflects its place in the netlist DAG, not a random shuffle.
+/// Topological initial placement: bind every cell to a BEL whose location
+/// reflects its position in the netlist DAG.
 ///
-/// Implementation:
+/// Single pass, single bind per cell:
 ///
-/// 1. Random `initial_placement` to give every cell *a* starting BEL.
-/// 2. Compute Kahn-layered barycenter coordinates for movable non-boundary
-///    cells via [`init_positions_topological`].
-/// 3. Re-bind each boundary cell (IOB / clock buffer) to the BEL nearest the
-///    centroid of its connected non-boundary cells *using the topo
-///    coordinates from step 2*, not the random BEL coordinates from step 1.
+/// 1. Place region-constrained cells via random shuffle within their region
+///    (topo coords aren't region-aware, so this is required for correctness).
+/// 2. Run [`init_positions_topological`] over every remaining unbound cell
+///    (movable cluster roots + boundary cells alike). The Kahn-layered
+///    barycenter sweep produces continuous (x, y) coordinates whose layout
+///    is fully determined by the netlist structure.
+/// 3. For each cell, snap to the nearest available BEL of its bucket and
+///    bind. Cells whose target sits far from the chip centre claim BELs
+///    first, so they don't get displaced by the herd. IOBs fall onto chip-
+///    edge BELs naturally because their bucket only contains IO column BELs.
 ///
-/// Step 3 is what makes this method genuinely different from
-/// [`InitStrategy::Centroid`][crate::placer::opt_trans::InitStrategy::Centroid]:
-/// the centroid an IOB sees is computed against structural (DAG-derived)
-/// positions, so two seeds that differ only in random shuffle still produce
-/// the same IOB targets — boundary cells stop wandering with the seed.
+/// No random pre-binding for IOBs, no separate centroid-rebind: the topo
+/// coords alone determine the BEL choice for every cell.
 pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerError> {
-    initial_placement(ctx)?;
+    ctx.populate_bel_buckets();
 
-    let mut clb_cell_types: FxHashSet<crate::common::IdString> = FxHashSet::default();
-    for (_id, cell) in ctx.design.iter_alive_cells() {
-        if clb_cell_types.contains(&cell.cell_type) {
-            continue;
-        }
-        let on_clb = ctx.bels_for_bucket(cell.cell_type).any(|b| {
-            let loc = b.loc();
-            let tile = ctx.chipdb().tile_by_xy(loc.x, loc.y);
-            ctx.chipdb().tile_type(tile).bels.len() >= 4
-        });
-        if on_clb {
-            clb_cell_types.insert(cell.cell_type);
+    // Stage 1: region-constrained cells (random within region).
+    let grouped = cells_by_type(ctx);
+    for (&cell_type, cell_indices) in &grouped {
+        let cell_type_name = ctx.name_of(cell_type).to_owned();
+        for &ci in cell_indices {
+            let cell = ctx.design.cell(ci);
+            if cell.bel.is_some() {
+                continue;
+            }
+            let Some(region_idx) = cell.region else {
+                continue;
+            };
+            let region_bels = ctx
+                .bels_for_bucket_in_region(cell_type, region_idx)
+                .to_vec();
+            let mut available: Vec<BelId> = region_bels
+                .iter()
+                .copied()
+                .filter(|b| ctx.bel(*b).is_available())
+                .collect();
+            if available.is_empty() {
+                let cell_name = ctx.cell(ci).name_id();
+                return Err(PlacerError::NoBelsAvailable(format!(
+                    "{} in region (cell {})",
+                    cell_type_name,
+                    ctx.name_of(cell_name)
+                )));
+            }
+            ctx.rng_mut().shuffle(&mut available);
+            if !ctx.bind_bel(available[0], ci, PlaceStrength::Placer) {
+                let cell_name = ctx.cell(ci).name_id();
+                return Err(PlacerError::InitialPlacementFailed(
+                    ctx.name_of(cell_name).to_owned(),
+                ));
+            }
         }
     }
 
+    // Stage 2: collect unbound cluster roots / non-cluster cells.
     let mut idx_to_cell: Vec<CellId> = Vec::new();
     for (cell_idx, cell) in ctx.design.iter_alive_cells() {
-        if cell.bel_strength.is_locked() {
+        if cell.bel.is_some() {
             continue;
         }
         if let Some(root_id) = cell.cluster {
@@ -495,27 +520,99 @@ pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerErro
                 continue;
             }
         }
-        if !clb_cell_types.contains(&cell.cell_type) {
-            continue;
-        }
         idx_to_cell.push(cell_idx);
     }
-
-    if !idx_to_cell.is_empty() {
-        let mut cell_x = vec![0.0f64; idx_to_cell.len()];
-        let mut cell_y = vec![0.0f64; idx_to_cell.len()];
-        init_positions_from_bels(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
-        init_positions_topological(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
-
-        let topo_pos: FxHashMap<CellId, (f64, f64)> = idx_to_cell
-            .iter()
-            .enumerate()
-            .map(|(i, &cid)| (cid, (cell_x[i], cell_y[i])))
-            .collect();
-
-        centroid_place_boundary_cells_with_lookup(ctx, &|_, cid| topo_pos.get(&cid).copied());
+    if idx_to_cell.is_empty() {
+        return Ok(());
     }
 
+    let mut cell_x = vec![0.0f64; idx_to_cell.len()];
+    let mut cell_y = vec![0.0f64; idx_to_cell.len()];
+    init_positions_topological(ctx, &idx_to_cell, &mut cell_x, &mut cell_y);
+
+    // Stage 3: snap each cell to nearest available BEL of its bucket.
+    snap_and_bind_cells_to_bels(ctx, &idx_to_cell, &cell_x, &cell_y)
+}
+
+/// For each cell in `idx_to_cell`, find the nearest available BEL of its
+/// bucket and bind it there. Cells with targets far from the chip centre are
+/// processed first so they aren't displaced by ones with central targets.
+fn snap_and_bind_cells_to_bels(
+    ctx: &mut Context,
+    idx_to_cell: &[CellId],
+    cell_x: &[f64],
+    cell_y: &[f64],
+) -> Result<(), PlacerError> {
+    use std::cmp::Ordering;
+
+    let chip_cx = (ctx.chipdb().width() / 2) as f64;
+    let chip_cy = (ctx.chipdb().height() / 2) as f64;
+
+    let mut by_bucket: FxHashMap<IdString, Vec<usize>> = FxHashMap::default();
+    for (i, &cid) in idx_to_cell.iter().enumerate() {
+        let cell_type = ctx.design.cell(cid).cell_type;
+        let bucket = ctx.resolve_bucket(cell_type);
+        by_bucket.entry(bucket).or_default().push(i);
+    }
+
+    for (bucket, mut indices) in by_bucket {
+        indices.sort_by(|&a, &b| {
+            let da = (cell_x[a] - chip_cx).abs() + (cell_y[a] - chip_cy).abs();
+            let db = (cell_x[b] - chip_cx).abs() + (cell_y[b] - chip_cy).abs();
+            db.partial_cmp(&da).unwrap_or(Ordering::Equal)
+        });
+
+        let pool: Vec<(BelId, i32, i32)> = ctx
+            .bels_for_bucket(bucket)
+            .filter(|b| b.is_available())
+            .map(|b| {
+                let loc = b.loc();
+                (b.id(), loc.x, loc.y)
+            })
+            .collect();
+
+        if indices.len() > pool.len() {
+            let bucket_name = ctx.name_of(bucket).to_owned();
+            return Err(PlacerError::NoBelsAvailable(format!(
+                "{} (need {} BELs but only {} available)",
+                bucket_name,
+                indices.len(),
+                pool.len(),
+            )));
+        }
+
+        let mut available: Vec<bool> = vec![true; pool.len()];
+        for &ci in &indices {
+            let cid = idx_to_cell[ci];
+            let target_x = cell_x[ci].round() as i32;
+            let target_y = cell_y[ci].round() as i32;
+            let mut best_idx: Option<usize> = None;
+            let mut best_dist = i32::MAX;
+            for (i, &(_, bx, by)) in pool.iter().enumerate() {
+                if !available[i] {
+                    continue;
+                }
+                let d = (bx - target_x).abs() + (by - target_y).abs();
+                if d < best_dist {
+                    best_dist = d;
+                    best_idx = Some(i);
+                }
+            }
+            let Some(idx) = best_idx else {
+                let cell_name = ctx.cell(cid).name_id();
+                return Err(PlacerError::InitialPlacementFailed(
+                    ctx.name_of(cell_name).to_owned(),
+                ));
+            };
+            available[idx] = false;
+            if !ctx.bind_bel(pool[idx].0, cid, PlaceStrength::Placer) {
+                let cell_name = ctx.cell(cid).name_id();
+                return Err(PlacerError::InitialPlacementFailed(
+                    ctx.name_of(cell_name).to_owned(),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -927,7 +1024,10 @@ pub fn init_positions_topological(
         let orig_y = pos_y.clone();
         let mut scale = 1.0_f64;
         let mut final_tiles = 0usize;
-        for _ in 0..60 {
+        // Bidirectional: shrink if too sparse vs target, expand if too dense.
+        // Without expansion the legalizer must spread tightly-packed init
+        // layouts up to ~60 tiles per cell, blowing up post-legal HPWL ~200x.
+        for _ in 0..120 {
             let mut occupied: FxHashSet<(i32, i32)> = FxHashSet::default();
             for v in 0..n {
                 let nx = cx + (orig_x[v] - cx) * scale;
@@ -935,10 +1035,15 @@ pub fn init_positions_topological(
                 occupied.insert((nx.round() as i32, ny.round() as i32));
             }
             final_tiles = occupied.len();
-            if (final_tiles as f64) <= target_tiles {
+            let ratio = final_tiles as f64 / target_tiles;
+            if (0.95..=1.05).contains(&ratio) {
                 break;
             }
-            scale *= 0.92;
+            if ratio > 1.0 {
+                scale *= 0.92;
+            } else {
+                scale *= 1.08;
+            }
         }
         for v in 0..n {
             pos_x[v] = cx + (orig_x[v] - cx) * scale;

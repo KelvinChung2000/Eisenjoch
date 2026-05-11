@@ -105,6 +105,28 @@ pub fn apply_packing_rule(
         return false;
     }
 
+    // Refuse packing if the base cluster already has a child of the same
+    // cell type at the same (rel_x, rel_y) tile. Two cells of the same type
+    // sharing one tile (e.g. two DFFs in the same SLICE) trigger shared-mux
+    // node conflicts on their non-driver pins (CE/CLK/RST) even when they
+    // sit at distinct z slots, because xc7 SLICE input muxes route those
+    // pins through wires that resolve to the same routing node.
+    let new_type = ctx.design.cell(new_cell).cell_type;
+    if let Some(root_id) = base_cluster {
+        if let Some(cluster) = ctx.design.clusters.get(&root_id) {
+            for &child_id in &cluster.constr_children {
+                let child = ctx.design.cell(child_id);
+                if child.constr_x == rule.rel_x
+                    && child.constr_y == rule.rel_y
+                    && child.constr_abs_z == rule.is_absolute
+                    && (child.constr_z == rule.rel_z || child.cell_type == new_type)
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
     if base_cluster.is_none() {
         // For relative rules the base cell's z stays unconstrained — the
         // legalizer picks any letter slot, and children follow at root.z + rel_z.

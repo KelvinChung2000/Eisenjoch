@@ -9,12 +9,12 @@ use super::{
 pub struct Design {
     cells: FxHashMap<IdString, CellId>,
     cell_store: Vec<Option<CellInfo>>,
-    cell_generation: Vec<u16>,
+    cell_generation: Vec<u8>,
     free_cell_slots: Vec<u32>,
 
     nets: FxHashMap<IdString, NetId>,
     net_store: Vec<Option<NetInfo>>,
-    net_generation: Vec<u16>,
+    net_generation: Vec<u8>,
     free_net_slots: Vec<u32>,
 
     pub hierarchy: FxHashMap<IdString, HierarchicalCell>,

@@ -11,8 +11,8 @@ impl CellId {
     pub const NONE: Self = Self(u32::MAX);
 
     #[inline]
-    pub(crate) const fn new(slot: u32, generation: u16) -> Self {
-        Self(((generation as u32) << 16) | (slot & 0xFFFF))
+    pub(crate) const fn new(slot: u32, generation: u8) -> Self {
+        Self(((generation as u32) << 24) | (slot & 0x00FF_FFFF))
     }
 
     #[inline]
@@ -27,12 +27,12 @@ impl CellId {
 
     #[inline]
     pub(crate) const fn slot(self) -> u32 {
-        self.0 & 0xFFFF
+        self.0 & 0x00FF_FFFF
     }
 
     #[inline]
-    pub(crate) const fn generation(self) -> u16 {
-        (self.0 >> 16) as u16
+    pub(crate) const fn generation(self) -> u8 {
+        (self.0 >> 24) as u8
     }
 
     #[inline]
@@ -53,8 +53,8 @@ impl NetId {
     pub const NONE: Self = Self(u32::MAX);
 
     #[inline]
-    pub(crate) const fn new(slot: u32, generation: u16) -> Self {
-        Self(((generation as u32) << 16) | (slot & 0xFFFF))
+    pub(crate) const fn new(slot: u32, generation: u8) -> Self {
+        Self(((generation as u32) << 24) | (slot & 0x00FF_FFFF))
     }
 
     #[inline]
@@ -69,12 +69,12 @@ impl NetId {
 
     #[inline]
     pub(crate) const fn slot(self) -> u32 {
-        self.0 & 0xFFFF
+        self.0 & 0x00FF_FFFF
     }
 
     #[inline]
-    pub(crate) const fn generation(self) -> u16 {
-        (self.0 >> 16) as u16
+    pub(crate) const fn generation(self) -> u8 {
+        (self.0 >> 24) as u8
     }
 
     #[inline]
