@@ -8,7 +8,7 @@ use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::legalize::common::{build_bel_by_loc, place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use ndarray::Array2;
@@ -75,6 +75,7 @@ pub fn legalize_bipartite(
     type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     unbind_movable_cells(ctx, idx_to_cell);
+    let bel_by_loc = build_bel_by_loc(ctx);
 
     // Group cells by type
     let mut groups: FxHashMap<crate::common::IdString, Vec<usize>> = FxHashMap::default();
@@ -105,6 +106,11 @@ pub fn legalize_bipartite(
             .map(|cap_map| cap_map.values().sum())
             .unwrap_or(0);
         if (total_capacity as usize) < n_cells {
+            // Switch-matrix-sourced constants (VCC_DRV/GND_DRV) have no
+            // BEL bucket; the router handles them via PIP tieoffs.
+            if total_capacity == 0 {
+                continue;
+            }
             return Err(PlacerError::NoBelsAvailable(format!(
                 "{} (need {} BELs but only {} total capacity)",
                 ctx.name_of(cell_type),
@@ -176,7 +182,7 @@ pub fn legalize_bipartite(
             let dy = by as f64 - cell_y[solver_idx];
             total_displacement += dx * dx + dy * dy;
 
-            place_cluster_children(ctx, cell_id, bel_id)?;
+            place_cluster_children(ctx, &bel_by_loc, cell_id, bel_id)?;
         }
     }
 

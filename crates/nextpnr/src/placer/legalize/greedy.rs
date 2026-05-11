@@ -4,7 +4,7 @@ use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::legalize::common::{build_bel_by_loc, place_cluster_children, unbind_movable_cells};
 use crate::placer::PlacerError;
 
 use super::Legalizer;
@@ -33,6 +33,7 @@ pub fn legalize_electro(
     _type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     unbind_movable_cells(ctx, idx_to_cell);
+    let bel_by_loc = build_bel_by_loc(ctx);
 
     let mut total_displacement = 0.0;
 
@@ -71,7 +72,7 @@ pub fn legalize_electro(
         }
 
         total_displacement += best_cost;
-        place_cluster_children(ctx, cell_id, bel)?;
+        place_cluster_children(ctx, &bel_by_loc, cell_id, bel)?;
     }
 
     Ok(total_displacement)

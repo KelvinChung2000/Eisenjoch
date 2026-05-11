@@ -9,7 +9,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
+    build_bel_by_loc, place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
 use rayon::prelude::*;
@@ -75,6 +75,7 @@ pub fn sorted_legalize(
 
     // Unbind all movable cells.
     unbind_movable_cells(ctx, idx_to_cell);
+    let bel_by_loc = build_bel_by_loc(ctx);
 
     // Pre-collect BEL data per cell type into plain data (BelId, x, y, z)
     // so we can share across rayon threads without lifetime issues.
@@ -322,7 +323,7 @@ pub fn sorted_legalize(
 
             // place_cluster_children binds each child to its constrained
             // slot. The child slots we resolved above must match exactly.
-            place_cluster_children(ctx, info.cell_idx, bel)?;
+            place_cluster_children(ctx, &bel_by_loc, info.cell_idx, bel)?;
             for &(child_id, _) in &child_bels {
                 let bound_bel = ctx
                     .design

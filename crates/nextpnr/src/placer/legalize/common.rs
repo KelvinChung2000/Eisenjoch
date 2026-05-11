@@ -44,6 +44,7 @@ pub(crate) fn unbind_movable_cells(ctx: &mut Context, idx_to_cell: &[CellId]) {
 /// stomped on.)
 pub(crate) fn place_cluster_children(
     ctx: &mut Context,
+    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     cell_id: CellId,
     root_bel: BelId,
 ) -> Result<(), PlacerError> {
@@ -73,22 +74,21 @@ pub(crate) fn place_cluster_children(
             root_loc.z + constr_z
         };
 
-        let exact_candidates: Vec<_> = ctx
-            .bels_for_bucket(child_type)
-            .filter(|b| {
-                b.is_available()
-                    && b.loc().x == want_x
-                    && b.loc().y == want_y
-                    && b.loc().z == want_z
-            })
-            .map(|b| b.id())
-            .collect();
+        // O(1) lookup against the caller-built (bucket, x, y, z) -> BelId
+        // index. The previous code did `ctx.bels_for_bucket(child_type).collect()`
+        // matching the slot, which on FPGA01 (~1 M LUT BELs) was ~1 M ops per
+        // child × thousands of cluster roots, dominating the post-rejection
+        // bind cost.
+        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
+        let candidate = bel_by_loc
+            .get(&key)
+            .copied()
+            .filter(|&b| ctx.bel(b).is_available());
 
         let mut placed = false;
-        for bel_id in exact_candidates {
+        if let Some(bel_id) = candidate {
             if ctx.bind_bel(bel_id, child_id, PlaceStrength::Placer) {
                 placed = true;
-                break;
             }
         }
 
@@ -308,6 +308,247 @@ impl DriverNodeRegistry {
             });
         }
     }
+
+    /// Same as `is_legal`, but takes a precomputed `CellPinTemplate` so the
+    /// per-call cost is only the `bel.pin_wire(name)` lookups + node peer
+    /// scans, skipping the per-call cell-port enumeration that was ~30-40%
+    /// of `is_legal` cost on FPGA01.
+    pub fn is_legal_template(
+        &self,
+        ctx: &Context,
+        template: &CellPinTemplate,
+        bel: BelId,
+    ) -> bool {
+        let bel_view = ctx.bel(bel);
+        for (port_name, net) in &template.pin_ports {
+            let net = *net;
+            let Some(w) = bel_view.pin_wire(*port_name) else {
+                continue;
+            };
+            let w = w.id();
+            if let Some(&existing) = self.claimed.get(&w) {
+                if existing != net {
+                    return false;
+                }
+            }
+            let mut conflict = false;
+            let mut peers = 0usize;
+            ctx.chipdb().node_wires_cb(w, |nw| {
+                if conflict || peers >= NODE_PEER_CAP {
+                    peers += 1;
+                    return;
+                }
+                peers += 1;
+                if let Some(&existing) = self.claimed.get(&nw) {
+                    if existing != net {
+                        conflict = true;
+                    }
+                }
+            });
+            if conflict {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Cached cell-side pin info: filtered list of `(port_name, net_id)` for all
+/// driver/user ports of a cell that contribute to shared-mux legality.
+/// Build once per cell via `build_cell_pin_template`; reuse for every BEL
+/// candidate the cell is tested against.
+pub(crate) struct CellPinTemplate {
+    pub pin_ports: Vec<(IdString, NetId)>,
+}
+
+pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPinTemplate {
+    let cell = ctx.design.cell(cell_id);
+    let mut pin_ports: Vec<(IdString, NetId)> = Vec::with_capacity(8);
+    for (name, data) in cell.ports.iter() {
+        let port_type = data.port_type();
+        let Some(net_id) = data.net() else { continue };
+        let net = ctx.net(net_id);
+        if !net.is_alive() {
+            continue;
+        }
+        match port_type {
+            PortType::Out => {
+                if net.num_users() == 0 {
+                    continue;
+                }
+                if net.driver_cell_port().map(|p| p.cell) != Some(cell_id) {
+                    continue;
+                }
+                pin_ports.push((*name, net_id));
+            }
+            PortType::InOut => {
+                let is_driver =
+                    net.driver_cell_port().map(|p| p.cell) == Some(cell_id);
+                if is_driver && net.num_users() == 0 {
+                    continue;
+                }
+                pin_ports.push((*name, net_id));
+            }
+            PortType::In => {
+                pin_ports.push((*name, net_id));
+            }
+            _ => {}
+        }
+    }
+    CellPinTemplate { pin_ports }
+}
+
+/// Dry-run check: would binding `root_id` at `root_bel` plus every cluster
+/// child at its `root_loc + constr_offset` slot keep the shared-mux registry
+/// consistent? Resolves child BELs the same way `place_cluster_children` will
+/// later, so a `true` here means `place_cluster_children` won't bind anything
+/// that conflicts with previously-placed cells.
+///
+/// Caller responsibility: only call when `root_bel` is itself available. The
+/// registry is **not** mutated; on success the caller still needs to bind and
+/// then `register.record(...)` for root and each child.
+///
+/// Background: `ring.rs` previously only checked `is_legal` for the cluster
+/// root, leaving cluster children to be bound blindly by `place_cluster_children`
+/// at their constraint-offset BELs. When two clusters' z=1 children landed on
+/// BELs whose pin wires shared a routing node, the runtime check passed but
+/// the post-legalization `verify_shared_mux_legality` fired. This helper
+/// closes that gap so the ring search keeps looking when a cluster's
+/// children would conflict.
+/// Cached per-cell legality data: pin-port templates for the root and every
+/// constrained cluster child, plus child constraint offsets resolved once.
+/// One cache per movable cell, built before the ring search begins.
+pub(crate) struct CellLegalityCache {
+    pub root_template: CellPinTemplate,
+    /// `(child_id, child_cell_type, constr_x, constr_y, constr_z, constr_abs_z, template)`
+    pub children: Vec<(CellId, IdString, i32, i32, i32, bool, CellPinTemplate)>,
+}
+
+pub(crate) fn build_cell_legality_cache(ctx: &Context, root_id: CellId) -> CellLegalityCache {
+    let root_template = build_cell_pin_template(ctx, root_id);
+    let mut children: Vec<(CellId, IdString, i32, i32, i32, bool, CellPinTemplate)> = Vec::new();
+    if let Some(cluster) = ctx.design.clusters.get(&root_id) {
+        for &child_id in &cluster.constr_children {
+            let child = ctx.design.cell(child_id);
+            children.push((
+                child_id,
+                child.cell_type,
+                child.constr_x,
+                child.constr_y,
+                child.constr_z,
+                child.constr_abs_z,
+                build_cell_pin_template(ctx, child_id),
+            ));
+        }
+    }
+    CellLegalityCache {
+        root_template,
+        children,
+    }
+}
+
+/// Templated variant of `cluster_is_legal`: uses `CellLegalityCache` to skip
+/// per-call cell-port enumeration. Logically identical; ~2-3× faster on
+/// FPGA01 because is_legal is the hot loop and 30-40% of its cost was the
+/// repeated `cell_pin_wires` builds.
+pub(crate) fn cluster_is_legal_cached(
+    ctx: &Context,
+    registry: &DriverNodeRegistry,
+    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
+    cache: &CellLegalityCache,
+    root_bel: BelId,
+) -> bool {
+    if !registry.is_legal_template(ctx, &cache.root_template, root_bel) {
+        return false;
+    }
+    if cache.children.is_empty() {
+        return true;
+    }
+    let root_loc = ctx.bel(root_bel).loc();
+    for (_, child_type, cx, cy, cz, abs_z, child_template) in &cache.children {
+        let want_x = root_loc.x + cx;
+        let want_y = root_loc.y + cy;
+        let want_z = if *abs_z { *cz } else { root_loc.z + cz };
+        let key = (ctx.resolve_bucket(*child_type), want_x, want_y, want_z);
+        let Some(&child_bel) = bel_by_loc.get(&key) else {
+            return false;
+        };
+        if !ctx.bel(child_bel).is_available() {
+            return false;
+        }
+        if !registry.is_legal_template(ctx, child_template, child_bel) {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn cluster_is_legal(
+    ctx: &Context,
+    registry: &DriverNodeRegistry,
+    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
+    root_id: CellId,
+    root_bel: BelId,
+) -> bool {
+    if !registry.is_legal(ctx, root_id, root_bel) {
+        return false;
+    }
+    let Some(cluster) = ctx.design.clusters.get(&root_id) else {
+        return true;
+    };
+    let root_loc = ctx.bel(root_bel).loc();
+    let children: Vec<CellId> = cluster.constr_children.clone();
+    for child_id in children {
+        let (child_type, constr_x, constr_y, constr_z, constr_abs_z) = {
+            let child = ctx.design.cell(child_id);
+            (
+                child.cell_type,
+                child.constr_x,
+                child.constr_y,
+                child.constr_z,
+                child.constr_abs_z,
+            )
+        };
+        let want_x = root_loc.x + constr_x;
+        let want_y = root_loc.y + constr_y;
+        let want_z = if constr_abs_z {
+            constr_z
+        } else {
+            root_loc.z + constr_z
+        };
+        // O(1) lookup against the caller-built (cell_type, x, y, z) -> BelId
+        // index. Replaces the per-call full `bels_for_bucket(child_type).find(...)`
+        // scan, which on FPGA01 was O(n_bels_for_bucket) ≈ 1M per cluster_is_legal
+        // call, dominating ring-legalize wall time at ~1 trillion ops total.
+        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
+        let Some(&child_bel) = bel_by_loc.get(&key) else {
+            return false;
+        };
+        if !ctx.bel(child_bel).is_available() {
+            return false;
+        }
+        if !registry.is_legal(ctx, child_id, child_bel) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Build a `(bucket, x, y, z) -> BelId` index over every bucket+location.
+/// Lets `cluster_is_legal` resolve a constraint-offset child slot in O(1)
+/// instead of O(n_bels_for_bucket). The caller passes `cell_type`; the lookup
+/// resolves to bucket via `ctx.resolve_bucket` so cell_type aliases work.
+pub(crate) fn build_bel_by_loc(
+    ctx: &Context,
+) -> FxHashMap<(IdString, i32, i32, i32), BelId> {
+    let mut idx: FxHashMap<(IdString, i32, i32, i32), BelId> = FxHashMap::default();
+    for bucket_id in ctx.bel_buckets() {
+        for bel in ctx.bels_for_bucket(bucket_id) {
+            let loc = bel.loc();
+            idx.insert((bucket_id, loc.x, loc.y, loc.z), bel.id());
+        }
+    }
+    idx
 }
 
 /// After legalization, verify no two placed cells claim the same routing

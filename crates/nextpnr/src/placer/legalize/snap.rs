@@ -11,7 +11,10 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
-use crate::placer::legalize::common::{place_cluster_children, unbind_movable_cells};
+use crate::placer::legalize::common::{
+    build_bel_by_loc, cluster_is_legal, place_cluster_children, unbind_movable_cells,
+    DriverNodeRegistry,
+};
 use crate::placer::PlacerError;
 
 use rustc_hash::FxHashMap;
@@ -66,75 +69,177 @@ impl Legalizer for SnapLegalizer {
         // 3. Unbind movable cells.
         unbind_movable_cells(ctx, idx_to_cell);
 
-        // 4. Assign BELs at snapped positions.
+        // (bucket, x, y, z) -> BelId index for cluster_is_legal child slot
+        // resolution.
+        let bel_by_loc = build_bel_by_loc(ctx);
+
+        // Seed shared-mux registry from cells still bound (packer-fixed
+        // BUFG/IO/clock buffers). Movable cells were just unbound so they
+        // don't contribute to seed claims.
+        let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
+        let mut rejected_for_shared_mux: u64 = 0;
+
+        // 4. Build a per-bucket index of available BELs grouped by tile.
+        // Walk every active bucket once instead of `bels_for_bucket()`-per-cell.
+        let mut active_buckets: rustc_hash::FxHashSet<IdString> = rustc_hash::FxHashSet::default();
+        for &b in &cell_buckets {
+            active_buckets.insert(b);
+        }
+        let mut bels_by_tile: FxHashMap<(IdString, i32, i32), Vec<BelId>> = FxHashMap::default();
+        for &bucket in &active_buckets {
+            for bel in ctx.bels_for_bucket(bucket).filter(|b| b.is_available()) {
+                let loc = bel.loc();
+                bels_by_tile
+                    .entry((bucket, loc.x, loc.y))
+                    .or_default()
+                    .push(bel.id());
+            }
+        }
+
+        // 5. Assign BELs at snapped positions.
+        // Pass A: cluster roots — pick a tile/z where all constrained child
+        // slots are also free, otherwise the post-bind `place_cluster_children`
+        // call cannot satisfy the offset constraint.
+        // Pass B: non-cluster cells — pop any available BEL at the snapped tile.
         let mut total_displacement = 0.0f64;
         let mut assigned = 0usize;
+        let max_radius: i32 = 200;
 
-        for i in 0..n {
+        let order: Vec<usize> = {
+            let mut roots: Vec<usize> = Vec::new();
+            let mut leaves: Vec<usize> = Vec::new();
+            for i in 0..n {
+                let cid = idx_to_cell[i];
+                let cell = ctx.design.cell(cid);
+                // Cluster child: bound later by `place_cluster_children`
+                // when its root is processed. Skip here.
+                if let Some(root_id) = cell.cluster {
+                    if root_id != cid {
+                        continue;
+                    }
+                }
+                if ctx
+                    .design
+                    .clusters
+                    .get(&cid)
+                    .map_or(false, |c| !c.constr_children.is_empty())
+                {
+                    roots.push(i);
+                } else {
+                    leaves.push(i);
+                }
+            }
+            roots.extend(leaves);
+            roots
+        };
+
+        for i in order {
             let cell_id = idx_to_cell[i];
             let bucket = cell_buckets[i];
             let tx = snapped_x[i].round() as i32;
             let ty = snapped_y[i].round() as i32;
 
-            // Find an available BEL of the right type at or near (tx, ty).
-            let bel = find_nearest_bel(ctx, bucket, tx, ty);
-            match bel {
-                Some(bel_id) => {
-                    let loc = ctx.bel(bel_id).loc();
-                    let dx = loc.x as f64 - cell_x[i];
-                    let dy = loc.y as f64 - cell_y[i];
+            let has_cluster_children = ctx
+                .design
+                .clusters
+                .get(&cell_id)
+                .map_or(false, |c| !c.constr_children.is_empty());
+
+            // Pop the first available BEL on the smallest Manhattan ring,
+            // honoring cluster-child slot reservation when applicable.
+            let mut found: Option<(BelId, i32, i32)> = None;
+            'r: for radius in 0..=max_radius {
+                for dx in -radius..=radius {
+                    let dy_abs = radius - dx.abs();
+                    for &dy in &[dy_abs, -dy_abs] {
+                        let bx = tx + dx;
+                        let by = ty + dy;
+                        if let Some(list) = bels_by_tile.get_mut(&(bucket, bx, by)) {
+                            // Scan the BEL list at this tile for a candidate
+                            // that is (a) still available, (b) shared-mux legal
+                            // against already-placed cells, and (c) for cluster
+                            // roots, has every child slot available and legal.
+                            let mut pick_idx: Option<usize> = None;
+                            for (idx, &bid) in list.iter().enumerate() {
+                                if !ctx.bel(bid).is_available() {
+                                    continue;
+                                }
+                                if has_cluster_children {
+                                    if !cluster_is_legal(ctx, &registry, &bel_by_loc, cell_id, bid)
+                                    {
+                                        rejected_for_shared_mux += 1;
+                                        continue;
+                                    }
+                                } else {
+                                    if !registry.is_legal(ctx, cell_id, bid) {
+                                        rejected_for_shared_mux += 1;
+                                        continue;
+                                    }
+                                }
+                                pick_idx = Some(idx);
+                                break;
+                            }
+                            if let Some(idx) = pick_idx {
+                                let bid = list.swap_remove(idx);
+                                found = Some((bid, bx, by));
+                                break 'r;
+                            }
+                        }
+                        if dy_abs == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            match found {
+                Some((bel_id, bx, by)) => {
+                    let dx = bx as f64 - cell_x[i];
+                    let dy = by as f64 - cell_y[i];
                     total_displacement += dx * dx + dy * dy;
 
-                    ctx.bind_bel(bel_id, cell_id, PlaceStrength::Placer);
-                    place_cluster_children(ctx, cell_id, bel_id)?;
+                    if !ctx.bind_bel(bel_id, cell_id, PlaceStrength::Placer) {
+                        let cell_name = ctx.design.cell(cell_id).name;
+                        return Err(PlacerError::PlacementFailed(format!(
+                            "Failed to bind cell {} during snap legalization",
+                            ctx.name_of(cell_name),
+                        )));
+                    }
+                    registry.record(ctx, cell_id, bel_id);
+                    place_cluster_children(ctx, &bel_by_loc, cell_id, bel_id)?;
+                    // Record cluster children that were just bound so that
+                    // later cells see their pin-wire claims.
+                    if let Some(cluster) = ctx.design.clusters.get(&cell_id) {
+                        let children: Vec<CellId> = cluster.constr_children.clone();
+                        for child_id in children {
+                            if let Some(child_bel) = ctx.design.cell(child_id).bel {
+                                registry.record(ctx, child_id, child_bel);
+                            }
+                        }
+                    }
                     assigned += 1;
                 }
                 None => {
                     return Err(PlacerError::NoBelsAvailable(format!(
-                        "{} at ({}, {})",
+                        "{} at ({}, {}) (shared-mux rejections: {})",
                         ctx.name_of(bucket),
                         tx,
                         ty,
+                        rejected_for_shared_mux,
                     )));
                 }
             }
         }
 
         let elapsed = t_start.elapsed().as_millis();
+        let rms_disp = (total_displacement / n.max(1) as f64).sqrt();
         eprintln!(
-            "Snap legalize: {} cells, snap avg={:.1} max={:.1}, spread={}, assign={}, {}ms",
-            n, snap_avg, snap_max_disp, spread_count, assigned, elapsed,
+            "Snap legalize: {} cells, snap avg={:.1} max={:.1}, spread={}, assign={}, rms_disp={:.1}, shared_mux_rejects={}, {}ms",
+            n, snap_avg, snap_max_disp, spread_count, assigned, rms_disp, rejected_for_shared_mux, elapsed,
         );
 
         Ok(total_displacement)
     }
-}
-
-/// Find the nearest available BEL of the given type, expanding Manhattan rings from (tx, ty).
-fn find_nearest_bel(ctx: &Context, bucket: IdString, tx: i32, ty: i32) -> Option<BelId> {
-    // Collect all available BELs for this type, grouped by (x, y).
-    // This is O(n_bels) per call — for small designs it's fine.
-    // For large designs, TypeAwarePlacement could cache BEL lists per tile.
-    let max_radius: i32 = 20;
-    for radius in 0..=max_radius {
-        for dx in -radius..=radius {
-            for dy in -radius..=radius {
-                if dx.abs() + dy.abs() != radius {
-                    continue;
-                } // Manhattan ring
-                let bx = tx + dx;
-                let by = ty + dy;
-                // Check BELs at this tile.
-                for bel in ctx.bels_for_bucket(bucket) {
-                    let loc = bel.loc();
-                    if loc.x == bx && loc.y == by && bel.is_available() {
-                        return Some(bel.id());
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Spread overcrowded tiles. Returns number of cells moved.
@@ -164,6 +269,8 @@ fn spread_overcrowded(
     }
 
     let mut spread_count = 0usize;
+    let mut spread_dist_sum = 0i64;
+    let mut spread_dist_max = 0i32;
 
     let mut groups: Vec<_> = type_tile_cells.into_iter().collect();
     groups.sort_by_key(|(_, cells)| std::cmp::Reverse(cells.len()));
@@ -193,26 +300,54 @@ fn spread_overcrowded(
 
         remaining_cap.insert((*bucket, *tx, *ty), 0);
 
+        // Walk Manhattan rings outward from (tx, ty) until we find a tile
+        // with remaining capacity in this bucket. The previous code linearly
+        // scanned every tile in `remaining_cap` per overflowing cell, which
+        // is O(N_tiles × N_overflow) — billions of ops on FPGA01-scale.
+        const MAX_SPREAD_RADIUS: i32 = 200;
         for &(ci, _) in cell_dists.iter().skip(cap) {
-            let mut best: Option<(i32, i32, f64)> = None;
-            for (&(bt, bx, by), &cap_left) in &remaining_cap {
-                if bt != *bucket || cap_left == 0 {
-                    continue;
-                }
-                let dx = (bx - tx) as f64;
-                let dy = (by - ty) as f64;
-                let d = dx * dx + dy * dy;
-                if best.is_none() || d < best.unwrap().2 {
-                    best = Some((bx, by, d));
+            let mut placed = false;
+            'r: for radius in 1..=MAX_SPREAD_RADIUS {
+                for dx in -radius..=radius {
+                    let dy_abs = radius - dx.abs();
+                    for &dy in &[dy_abs, -dy_abs] {
+                        let bx = *tx + dx;
+                        let by = *ty + dy;
+                        if let Some(c) = remaining_cap.get_mut(&(*bucket, bx, by)) {
+                            if *c > 0 {
+                                *c -= 1;
+                                cell_x[ci] = bx as f64;
+                                cell_y[ci] = by as f64;
+                                spread_count += 1;
+                                let d = dx.abs() + dy.abs();
+                                spread_dist_sum += d as i64;
+                                if d > spread_dist_max {
+                                    spread_dist_max = d;
+                                }
+                                placed = true;
+                                break 'r;
+                            }
+                        }
+                        if dy_abs == 0 {
+                            break;
+                        }
+                    }
                 }
             }
-            if let Some((bx, by, _)) = best {
-                cell_x[ci] = bx as f64;
-                cell_y[ci] = by as f64;
-                *remaining_cap.get_mut(&(*bucket, bx, by)).unwrap() -= 1;
-                spread_count += 1;
-            }
+            // If no capacity within the ring budget, leave the cell at its
+            // snapped tile; the BEL-assignment pass below will ring-search
+            // again with a fresh BEL pool.
+            let _ = placed;
         }
+    }
+
+    if spread_count > 0 {
+        eprintln!(
+            "  spread stats: moved={} avg_manhattan={:.1} max_manhattan={}",
+            spread_count,
+            spread_dist_sum as f64 / spread_count as f64,
+            spread_dist_max,
+        );
     }
 
     spread_count
