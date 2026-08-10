@@ -469,7 +469,11 @@ impl PyContext {
     ///   - hot_regions: count of regions above 50% density
     ///   - grid: list of (x, y, density) for regions above 50%
     #[pyo3(signature = (window=10))]
-    fn placement_density(&self, py: Python<'_>, window: i32) -> PyResult<PyObject> {
+    fn placement_density<'py>(
+        &self,
+        py: Python<'py>,
+        window: i32,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let report = self.ctx.placement_density(window);
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("max_density", report.max_density)?;
@@ -477,7 +481,7 @@ impl PyContext {
         dict.set_item("hotspot", report.hotspot)?;
         dict.set_item("hot_regions", report.hot_regions)?;
         dict.set_item("grid", report.grid)?;
-        Ok(dict.into())
+        Ok(dict)
     }
 
     /// Estimate routing congestion.
@@ -485,7 +489,11 @@ impl PyContext {
     /// Returns a dict with max_congestion, avg_congestion, hotspot, hotspot_axis,
     /// and hot_edges above the given threshold.
     #[pyo3(signature = (threshold=0.5))]
-    fn congestion_estimate(&self, py: Python<'_>, threshold: f64) -> PyResult<PyObject> {
+    fn congestion_estimate<'py>(
+        &self,
+        py: Python<'py>,
+        threshold: f64,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         let report = self.ctx.estimate_congestion(threshold);
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("max_congestion", report.max_congestion)?;
@@ -498,7 +506,7 @@ impl PyContext {
             .map(|(x, y, axis, c)| (*x, *y, format!("{:?}", axis), *c))
             .collect();
         dict.set_item("hot_edges", hot_edges)?;
-        Ok(dict.into())
+        Ok(dict)
     }
 
     fn total_hpwl(&self) -> f64 {

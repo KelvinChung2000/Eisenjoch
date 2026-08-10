@@ -22,3 +22,10 @@ nextpnr-ispd-benchmarks = "nextpnr.benchmarks.ispd_benchmarks:main"
 [project.optional-dependencies]
 cli = ["typer>=0.9"]
 benchmark = ["matplotlib", "numpy"]
+
+[tool.pytest.ini_options]
+# The `test_*.py` files under these directories are benchmark drivers, not
+# unit tests: they load a chipdb and run place-and-route at module import, so
+# collecting them turns `pytest` into a benchmark run that dies on the first
+# missing chipdb. Exclude them so `uv run pytest` reports honestly.
+norecursedirs = ["python/nextpnr/benchmarks", "chip_database", "target", ".venv"]

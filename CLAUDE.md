@@ -14,17 +14,24 @@ uv run python <script>
 ```
 Never invoke the system Python directly (e.g., `/usr/bin/python3.12`).
 
+The project requires Python >= 3.14, which needs PyO3 >= 0.26 (0.24 refuses
+to build against anything newer than 3.13).
+
 ### Building the Rust Extension
 
-Set `PYO3_PYTHON` to the venv interpreter before building:
+`uv run` builds the extension through maturin and rebuilds it whenever the
+Rust sources change, so no manual step is normally needed:
 ```
-PYO3_PYTHON=/home/kelvin/side-project/eisenjoch/.venv/bin/python3 cargo build --release
+uv run python <script>
 ```
 
-After `cargo build`, manually copy the shared object into the Python package:
+To build the extension on its own, point PyO3 at the venv interpreter:
 ```
-cp target/release/libnextpnr.so python/nextpnr/nextpnr.cpython-313-x86_64-linux-gnu.so
+PYO3_PYTHON=/home/kelvin/side-project/eisenjoch/.venv/bin/python3 cargo build --release -p npnr-python
 ```
+maturin installs the result as `python/nextpnr/nextpnr.cpython-<tag>.so`.
+Extensions built for an older interpreter are simply ignored: CPython only
+loads the `.so` whose tag matches the running interpreter.
 
 ### Running Benchmarks
 
@@ -41,7 +48,16 @@ uv run python python/nextpnr/benchmarks/<benchmark_script>.py
 
 ## Testing
 
+The Rust suite is the real one:
+```
+cargo test --workspace --release --no-fail-fast
+```
+
 Use `pytest` for Python tests and `pytest-mock` for mocking. Run via:
 ```
 uv run pytest
 ```
+There are currently no Python unit tests. The `test_*.py` files under
+`python/nextpnr/benchmarks/` and `chip_database/test/` are benchmark drivers,
+not tests: they load a chipdb and run place-and-route at import time, so
+pytest is configured not to collect them.
