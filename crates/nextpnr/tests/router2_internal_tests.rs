@@ -199,8 +199,17 @@ fn update_history_accumulates() {
     let wire = WireId::new(0, 0);
     state.wire_usage.insert(wire, 2);
     state.update_history();
+    let after_one = state.wire_history[&wire];
     state.update_history();
-    assert!((state.wire_history[&wire] - 2.0).abs() < f64::EPSILON);
+    let after_two = state.wire_history[&wire];
+
+    // `update_history` is PathFinder-style: existing history decays by 0.9
+    // before the fresh excess (usage - 1 = 1) is added, so repeated overuse
+    // accumulates towards a bounded limit instead of growing without end.
+    // Two passes therefore give 0.9 * 1.0 + 1.0, not a plain 2.0.
+    assert!((after_one - 1.0).abs() < 1e-12);
+    assert!((after_two - 1.9).abs() < 1e-12);
+    assert!(after_two > after_one, "repeated overuse must accumulate");
 }
 
 #[test]

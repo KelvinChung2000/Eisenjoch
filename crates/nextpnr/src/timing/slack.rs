@@ -108,9 +108,18 @@ impl TimingAnalyser {
         segments
     }
 
+    /// Criticality is measured against the timing *constraint*, not against
+    /// the spread of slacks in the design: an endpoint that meets timing is
+    /// not critical, however close it sits to the worst endpoint.
+    ///
+    /// The previous formula normalised slack onto `[min_slack, max_slack]`,
+    /// which had two consequences that contradict that definition. The
+    /// worst endpoint always scored 1.0 even with nanoseconds of positive
+    /// slack, and when every endpoint shared the same slack the
+    /// `(max - min).max(1)` span guard made the numerator zero and handed
+    /// *every* net a criticality of 1.0.
     pub(super) fn compute_criticality(&mut self, design: &Design) {
         let mut min_slack = DelayT::MAX;
-        let mut max_slack = DelayT::MIN;
 
         for (_, net) in design.iter_alive_nets() {
             for user in &net.users {
@@ -120,9 +129,7 @@ impl TimingAnalyser {
                 let user_pin = CellPin::new(user.cell, user.port);
                 let arrival = self.arrival_times.get(&user_pin).copied().unwrap_or(0);
                 let required = self.required_times.get(&user_pin).copied().unwrap_or(0);
-                let slack = required - arrival;
-                min_slack = min_slack.min(slack);
-                max_slack = max_slack.max(slack);
+                min_slack = min_slack.min(required - arrival);
             }
         }
 
@@ -130,20 +137,32 @@ impl TimingAnalyser {
             return;
         }
 
-        let slack_span = (max_slack - min_slack).max(1) as f64;
+        // Timing is met everywhere: nothing is critical.
+        if min_slack >= 0 {
+            for (net_idx, _) in design.iter_alive_nets() {
+                self.net_criticality.insert(net_idx, 0.0);
+            }
+            return;
+        }
 
+        // Failing design: ramp 0 -> 1 as an endpoint's slack goes from 0
+        // (just meeting) to `min_slack` (the worst endpoint, which is 1.0).
+        // Endpoints that still meet timing stay at 0.
+        let worst = min_slack as f64;
         for (net_idx, net) in design.iter_alive_nets() {
             let mut max_crit: f32 = 0.0;
             for user in &net.users {
                 if !user.is_valid() {
                     continue;
                 }
-                let user_cell = user.cell;
-                let user_pin = CellPin::new(user_cell, user.port);
+                let user_pin = CellPin::new(user.cell, user.port);
                 let arrival = self.arrival_times.get(&user_pin).copied().unwrap_or(0);
                 let required = self.required_times.get(&user_pin).copied().unwrap_or(0);
                 let slack = required - arrival;
-                let crit = (1.0 - ((slack - min_slack) as f64 / slack_span)).clamp(0.0, 1.0) as f32;
+                if slack >= 0 {
+                    continue;
+                }
+                let crit = ((slack as f64) / worst).clamp(0.0, 1.0) as f32;
                 if crit > max_crit {
                     max_crit = crit;
                 }
