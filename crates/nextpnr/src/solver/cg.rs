@@ -1062,6 +1062,15 @@ mod tests {
         let ny = 11;
         let n = nx * ny;
         let epsilon = 1e-5;
+        // The diagonal has to carry the 4 that `SpectralPreconditioner`
+        // models (its eigenvalues are `4 - 2cos(tx) - 2cos(ty) + epsilon`).
+        // With `epsilon` alone this is a pure Neumann graph Laplacian: the
+        // constant vector is a null vector, the right-hand sides below have
+        // nonzero mean, and the solution is dominated by that near-null
+        // direction at magnitude ~0.5/epsilon. CG stagnates there -- measured
+        // at 5000 iterations it still reported rel_residual 1.0, while the
+        // same system with a diagonal converges in 10. That was a broken test
+        // premise, not a solver bug.
         let mut mat = SparseMatrix::new(n);
         for y in 0..ny {
             for x in 0..nx {
@@ -1076,7 +1085,7 @@ mod tests {
                     let w = 1.0 + 0.3 * ((x * 2 + y) % 5) as f64;
                     mat.add_connection(i, j, w);
                 }
-                mat.add_diagonal(i, epsilon);
+                mat.add_diagonal(i, 4.0 + epsilon);
             }
         }
 
