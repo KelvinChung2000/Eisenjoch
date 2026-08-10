@@ -22,7 +22,7 @@ use super::config::{GraphModel, OptTransPlacerCfg, PathModel};
 use super::demand;
 use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat};
 use super::network::PipeNetwork;
-use super::path_solver::{self, PathSolverWorkspace, PathStats};
+use super::path_solver::{self, PathSolverWorkspace, PathStats, WorkspacePool};
 use super::region_min::{self, RegionMinPyramid};
 use super::resistance::ResistanceModel;
 
@@ -614,32 +614,12 @@ fn source_node(info: &NetInfo) -> Option<usize> {
         .map(|pin| pin.node)
 }
 
-fn solve_all_nets(
-    network: &PipeNetwork,
-    net_infos: &[NetInfo],
-    cfg: &OptTransPlacerCfg,
-    solve_pool: &rayon::ThreadPool,
-    dist_cache: &mut DistCache,
-    collect_usage: bool,
-    skip_mask: Option<&[bool]>,
-) -> SolveAccum {
-    solve_all_nets_with_displacement(
-        network,
-        net_infos,
-        cfg,
-        solve_pool,
-        dist_cache,
-        collect_usage,
-        skip_mask,
-        None,
-    )
-}
-
 fn solve_all_nets_with_displacement(
     network: &PipeNetwork,
     net_infos: &[NetInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
+    ws_pool: &WorkspacePool,
     dist_cache: &mut DistCache,
     collect_usage: bool,
     skip_mask: Option<&[bool]>,
@@ -656,7 +636,6 @@ fn solve_all_nets_with_displacement(
         );
     }
 
-    let n_nodes = network.num_nodes();
     let n_pipes = network.num_pipes();
     let batch_size =
         path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
@@ -683,7 +662,7 @@ fn solve_all_nets_with_displacement(
             .map_init(
                 || {
                     init_count.fetch_add(1, AtomicOrdering::Relaxed);
-                    PathSolverWorkspace::new(n_nodes, n_pipes)
+                    ws_pool.checkout()
                 },
                 |ws, (chunk_idx, (chunk, dist_chunk))| {
                     let mut out = ChunkUsage::default();
@@ -1472,6 +1451,7 @@ fn solve_distance_cache(
     net_infos: &[NetInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
+    ws_pool: &WorkspacePool,
     dist_cache: &mut DistCache,
     skip_mask: Option<&[bool]>,
     displacement: Option<&super::displacement::DisplacementTable>,
@@ -1481,6 +1461,7 @@ fn solve_distance_cache(
         net_infos,
         cfg,
         solve_pool,
+        ws_pool,
         dist_cache,
         false,
         skip_mask,
@@ -1493,6 +1474,7 @@ fn solve_usage_and_energy(
     net_infos: &[NetInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
+    ws_pool: &WorkspacePool,
     dist_cache: &mut DistCache,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
@@ -1501,6 +1483,7 @@ fn solve_usage_and_energy(
         net_infos,
         cfg,
         solve_pool,
+        ws_pool,
         dist_cache,
         true,
         None,
@@ -3832,6 +3815,9 @@ pub fn run_inner_outer(
     let n = cell_x.len();
     let n_nodes = network.num_nodes();
     let mut dist_cache = DistCache::new(0, n_nodes);
+    // One pool for the whole placement: solver workspaces are chip-sized and
+    // were previously rebuilt for every rayon task on every outer iteration.
+    let ws_pool = WorkspacePool::new(n_nodes, network.num_pipes());
     let max_iter = cfg.max_outer_iters.max(1);
     let mut diag_ctx = DiagCtx::from_env();
 
@@ -3998,6 +3984,7 @@ pub fn run_inner_outer(
             &net_infos,
             cfg,
             solve_pool,
+            &ws_pool,
             &mut dist_cache,
             skip_mask.as_deref(),
             displacement_table.as_ref(),
@@ -4784,6 +4771,7 @@ pub fn run_inner_outer(
                 &post_net_infos,
                 cfg,
                 solve_pool,
+                &ws_pool,
                 &mut dist_cache,
                 displacement_table.as_ref(),
             );

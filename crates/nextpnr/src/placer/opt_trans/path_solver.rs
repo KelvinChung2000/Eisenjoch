@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use log::warn;
 use rayon::prelude::*;
@@ -221,6 +221,78 @@ pub struct PathSolverWorkspace {
     /// Binary heap for the public `dijkstra_single_source` fallback path;
     /// never used by the hot `dijkstra_all_labels` (which uses buckets).
     pub heap: BinaryHeap<HeapEntry>,
+}
+
+/// Pool of reusable `PathSolverWorkspace`s.
+///
+/// A workspace owns an `edge_load` array with one slot per pipe -- 20.5 MB on
+/// xc7_large -- so building a fresh one per rayon task per outer iteration was
+/// the placer's largest remaining source of memset traffic (init_count=70 per
+/// iteration on stereovision3). Only as many workspaces as there are
+/// concurrently running tasks are ever live, so pooling turns ~70 allocations
+/// per iteration into a handful for the whole run.
+pub(crate) struct WorkspacePool {
+    free: Mutex<Vec<PathSolverWorkspace>>,
+    n_nodes: usize,
+    n_pipes: usize,
+}
+
+impl WorkspacePool {
+    pub(crate) fn new(n_nodes: usize, n_pipes: usize) -> Self {
+        Self {
+            free: Mutex::new(Vec::new()),
+            n_nodes,
+            n_pipes,
+        }
+    }
+
+    /// Take a workspace out of the pool, growing it if every one is in use.
+    /// The guard puts it back when dropped.
+    pub(crate) fn checkout(&self) -> WorkspaceGuard<'_> {
+        let pooled = self
+            .free
+            .lock()
+            .expect("workspace pool mutex poisoned")
+            .pop();
+        let ws = match pooled {
+            Some(ws) => ws,
+            None => PathSolverWorkspace::new(self.n_nodes, self.n_pipes),
+        };
+        WorkspaceGuard {
+            pool: self,
+            ws: Some(ws),
+        }
+    }
+}
+
+pub(crate) struct WorkspaceGuard<'a> {
+    pool: &'a WorkspacePool,
+    ws: Option<PathSolverWorkspace>,
+}
+
+impl std::ops::Deref for WorkspaceGuard<'_> {
+    type Target = PathSolverWorkspace;
+    fn deref(&self) -> &PathSolverWorkspace {
+        self.ws.as_ref().expect("workspace taken")
+    }
+}
+
+impl std::ops::DerefMut for WorkspaceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut PathSolverWorkspace {
+        self.ws.as_mut().expect("workspace taken")
+    }
+}
+
+impl Drop for WorkspaceGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(ws) = self.ws.take() {
+            self.pool
+                .free
+                .lock()
+                .expect("workspace pool mutex poisoned")
+                .push(ws);
+        }
+    }
 }
 
 impl PathSolverWorkspace {
