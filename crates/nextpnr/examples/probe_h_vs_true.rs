@@ -62,7 +62,7 @@ fn measure(
         return;
     };
 
-    let h = la.estimate_delay(db, src, dst);
+    let h = la.estimate_delay(db, src, dst, nextpnr::router::lookahead::UNKNOWN_CLASS);
     let manhattan = (dx - sx).abs() + (dy - sy).abs();
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();

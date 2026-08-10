@@ -29,6 +29,7 @@ fn astar_same_wire_returns_empty_path() {
     let penalty = FxHashMap::default();
     let path = astar_route(
         &ctx,
+        NetId::NONE,
         &wire_set(&[wire]),
         wire,
         &penalty,
@@ -47,7 +48,7 @@ fn astar_single_pip_path() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
+    let path = astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
 }
 
@@ -57,7 +58,7 @@ fn astar_verifies_pip_connectivity() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
+    let path = astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
     let pip = path[0];
     assert_eq!(ctx.pip(pip).src_wire().id(), src);
     assert_eq!(ctx.pip(pip).dst_wire().id(), dst);
@@ -68,6 +69,7 @@ fn astar_no_path_returns_none() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
+        NetId::NONE,
         &wire_set(&[WireId::new(0, 1)]),
         WireId::new(0, 0),
         &FxHashMap::default(),
@@ -84,6 +86,7 @@ fn astar_cross_tile_no_path() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
+        NetId::NONE,
         &wire_set(&[WireId::new(0, 0)]),
         WireId::new(1, 0),
         &FxHashMap::default(),
@@ -103,7 +106,7 @@ fn astar_with_penalty_still_finds_path() {
     let mut penalty = FxHashMap::default();
     penalty.insert(dst, 1000);
     assert_eq!(
-        astar_route(&ctx, &wire_set(&[src]), dst, &penalty, None, 50, None, None)
+        astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None)
             .unwrap()
             .len(),
         1
@@ -115,6 +118,7 @@ fn astar_multi_source_picks_closest() {
     let ctx = common::make_context();
     let path = astar_route(
         &ctx,
+        NetId::NONE,
         &wire_set(&[WireId::new(0, 0), WireId::new(1, 0)]),
         WireId::new(0, 1),
         &FxHashMap::default(),
@@ -132,6 +136,7 @@ fn astar_empty_sources_returns_none() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
+        NetId::NONE,
         &wire_set(&[]),
         WireId::new(0, 1),
         &FxHashMap::default(),

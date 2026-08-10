@@ -49,7 +49,7 @@ fn main() {
         let ty = (sy + dy).clamp(0, cdb.height() - 1);
         let dst_tile = ty * cdb.width() + tx;
         let dst = WireId::new(dst_tile, 0);
-        let h = la.estimate_delay(cdb, src, dst);
+        let h = la.estimate_delay(cdb, src, dst, nextpnr::router::lookahead::UNKNOWN_CLASS);
         println!("  (dx={dx:>4}, dy={dy:>3}): h_lookahead={h:>6}");
     }
 

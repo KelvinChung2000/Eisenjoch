@@ -20,7 +20,7 @@ impl<'a> PathCostModel for LookaheadModel<'a> {
         default_pip_cost(ctx, pip)
     }
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
-        self.la.estimate_delay(ctx.chipdb(), wire, dst)
+        self.la.estimate_delay(ctx.chipdb(), wire, dst, nextpnr::router::lookahead::UNKNOWN_CLASS)
     }
 }
 
@@ -99,7 +99,7 @@ fn main() {
     println!("\n=== $signal$257: M3_CLBLM_M_D@(260,113) -> M3_CLBLM_M_CX@(262,112) ===");
     let src = find_wire_by_name(chipdb, chipdb.tile_by_xy(260, 113), "M3_CLBLM_M_D").expect("src");
     let dst = find_wire_by_name(chipdb, chipdb.tile_by_xy(262, 112), "M3_CLBLM_M_CX").expect("dst");
-    let h = lookahead.estimate_delay(chipdb, src, dst);
+    let h = lookahead.estimate_delay(chipdb, src, dst, nextpnr::router::lookahead::UNKNOWN_CLASS);
     println!("  heuristic(src, dst) = {}", h);
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();

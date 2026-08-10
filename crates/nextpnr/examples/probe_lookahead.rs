@@ -146,7 +146,7 @@ fn main() {
                 // if present, else wire 0 as a stand-in.
                 let dst = find_wire_by_name(chipdb, target_tile, name)
                     .unwrap_or(WireId::new(target_tile, 0));
-                let est = lookahead.estimate_delay(chipdb, wire, dst);
+                let est = lookahead.estimate_delay(chipdb, wire, dst, nextpnr::router::lookahead::UNKNOWN_CLASS);
                 let manh = dx;
                 let ratio = if manh > 0 {
                     est as f64 / manh as f64
@@ -174,7 +174,7 @@ fn main() {
     println!("  IO0_O found: {src:?}");
     println!("  BUFG0_I found: {dst:?}");
     if let (Some(s), Some(d)) = (src, dst) {
-        let est = lookahead.estimate_delay(chipdb, s, d);
+        let est = lookahead.estimate_delay(chipdb, s, d, nextpnr::router::lookahead::UNKNOWN_CLASS);
         println!("  estimate_delay = {est}  (manhattan=323)");
     }
 
@@ -182,7 +182,7 @@ fn main() {
     // what A* will pop first after expanding IO0_O's pips_downhill.
     if let Some(relay_src) = find_wire_by_name(chipdb, src_tile, "CLK_RELAY_IN_0_E") {
         if let Some(d) = dst {
-            let est = lookahead.estimate_delay(chipdb, relay_src, d);
+            let est = lookahead.estimate_delay(chipdb, relay_src, d, nextpnr::router::lookahead::UNKNOWN_CLASS);
             println!("  from CLK_RELAY_IN_0_E@(0,98) → BUFG0_I: est={est}");
         }
     }
