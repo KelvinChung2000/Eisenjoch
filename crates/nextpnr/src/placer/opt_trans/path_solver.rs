@@ -314,10 +314,17 @@ impl PathSolverWorkspace {
         // Materialise the corridor-local long-pipe subset so FSM's
         // `long_pipe_relax` step iterates O(|in-corridor-longs|) instead of
         // scanning every long pipe on the chip each round.
-        for &pipe_idx in &network.tile_grid.long_pipes {
-            let pipe = &network.pipes[pipe_idx as usize];
-            if self.in_corridor[pipe.from] && self.in_corridor[pipe.to] {
-                self.corridor_long_pipes.push(pipe_idx);
+        //
+        // `corridor_long_pipes` has exactly one reader, `fsm::long_pipe_relax`,
+        // so building it when the FSM solver is off is pure waste: the scan is
+        // O(all long pipes on the chip) and runs once per net per outer
+        // iteration, independent of design size.
+        if use_fsm() {
+            for &pipe_idx in &network.tile_grid.long_pipes {
+                let pipe = &network.pipes[pipe_idx as usize];
+                if self.in_corridor[pipe.from] && self.in_corridor[pipe.to] {
+                    self.corridor_long_pipes.push(pipe_idx);
+                }
             }
         }
     }
