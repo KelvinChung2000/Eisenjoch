@@ -14,7 +14,6 @@ import csv
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -119,7 +118,7 @@ def main() -> None:
     for r in rows:
         print(f"  {r['label']:24s}  {r['place_s']:>6s}s  {r['hpwl']:>6s}  {r['line']:>6s}  "
               f"{r['route_s']:>6s}s  {r['routed_wl']:>10s}"
-              + (f"  ERR" if r['route_err'] else ""))
+              + ("  ERR" if r['route_err'] else ""))
     print(f"\nCSV: {out}")
 
 

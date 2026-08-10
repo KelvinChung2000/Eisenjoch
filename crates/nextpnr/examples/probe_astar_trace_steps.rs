@@ -101,7 +101,7 @@ fn main() {
             None => true,
         };
 
-        if step <= 50 || (step <= 200 && step % 10 == 0) {
+        if step <= 50 || (step <= 200 && step.is_multiple_of(10)) {
             println!("step {}: pop {} cost={} f={} nid={:?} new_node={} heap_len={}",
                 step, wname(db, e.wire), e.cost, e.estimate, nid, new_node, heap.len());
         }
@@ -148,7 +148,7 @@ fn main() {
             });
         }
 
-        if step <= 50 || (step <= 200 && step % 10 == 0) {
+        if step <= 50 || (step <= 200 && step.is_multiple_of(10)) {
             println!("  -> expanded, pushed={}", p);
         }
     }

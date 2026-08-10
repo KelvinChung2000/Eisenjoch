@@ -50,7 +50,7 @@ fn main() {
     let cdb = ctx.chipdb();
 
     // Source: IO0_O at (0, 183)
-    let src_tile = 183 * cdb.width() + 0;
+    let src_tile = 183 * cdb.width();
     let src = find_wire(cdb, src_tile, "IO0_O").expect("IO0_O");
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);

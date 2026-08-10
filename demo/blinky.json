@@ -1,0 +1,190 @@
+{
+  "creator": "Yosys 0.54+29 (git sha1 7b0c1fe49, clang++ 18.1.8 -fPIC -O3)",
+  "modules": {
+    "top": {
+      "attributes": {
+        "top": "00000000000000000000000000000001",
+        "src": "blinky.v:4.1-16.10"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [ 2 ]
+        },
+        "led": {
+          "direction": "output",
+          "bits": [ 3 ]
+        }
+      },
+      "cells": {
+        "clk_DFF_CLK": {
+          "hide_name": 0,
+          "type": "DFF",
+          "parameters": {
+          },
+          "attributes": {
+            "src": "blinky.v:11.5-12.35"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 4 ],
+            "Q": [ 5 ]
+          }
+        },
+        "clk_DFF_CLK_1": {
+          "hide_name": 0,
+          "type": "DFF",
+          "parameters": {
+          },
+          "attributes": {
+            "src": "blinky.v:11.5-12.35"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 6 ],
+            "Q": [ 7 ]
+          }
+        },
+        "clk_DFF_CLK_2": {
+          "hide_name": 0,
+          "type": "DFF",
+          "parameters": {
+          },
+          "attributes": {
+            "src": "blinky.v:11.5-12.35"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 8 ],
+            "Q": [ 9 ]
+          }
+        },
+        "clk_DFF_CLK_2_D_LUT4_F": {
+          "hide_name": 0,
+          "type": "LUT4",
+          "parameters": {
+            "INIT": "0101010101010101"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "cells_map.v:13.42-15.14"
+          },
+          "connections": {
+            "F": [ 8 ],
+            "I[0]": [ 9 ],
+            "I[1]": [ "0" ],
+            "I[2]": [ "0" ],
+            "I[3]": [ "0" ]
+          }
+        },
+        "counter_LUT4_I[0]": {
+          "hide_name": 0,
+          "type": "LUT4",
+          "parameters": {
+            "INIT": "0110011001100110"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "cells_map.v:17.42-19.14"
+          },
+          "connections": {
+            "F": [ 6 ],
+            "I[0]": [ 7 ],
+            "I[1]": [ 9 ],
+            "I[2]": [ "0" ],
+            "I[3]": [ "0" ]
+          }
+        },
+        "counter_LUT4_I[0]_1": {
+          "hide_name": 0,
+          "type": "LUT4",
+          "parameters": {
+            "INIT": "0111100001111000"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "cells_map.v:21.42-23.14"
+          },
+          "connections": {
+            "F": [ 4 ],
+            "I[0]": [ 7 ],
+            "I[1]": [ 9 ],
+            "I[2]": [ 5 ],
+            "I[3]": [ "0" ]
+          }
+        },
+        "led_DFF_Q": {
+          "hide_name": 0,
+          "type": "DFF",
+          "parameters": {
+          },
+          "attributes": {
+            "src": "blinky.v:11.5-12.35"
+          },
+          "connections": {
+            "CLK": [ 2 ],
+            "D": [ 10 ],
+            "Q": [ 3 ]
+          }
+        },
+        "led_LUT4_I[3]": {
+          "hide_name": 0,
+          "type": "LUT4",
+          "parameters": {
+            "INIT": "0111111110000000"
+          },
+          "attributes": {
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "cells_map.v:25.38-27.14"
+          },
+          "connections": {
+            "F": [ 10 ],
+            "I[0]": [ 7 ],
+            "I[1]": [ 9 ],
+            "I[2]": [ 5 ],
+            "I[3]": [ 3 ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [ 2 ],
+          "attributes": {
+            "src": "blinky.v:5.17-5.20"
+          }
+        },
+        "clk_DFF_CLK_2_D": {
+          "hide_name": 0,
+          "bits": [ 8, 7, 5, 3 ],
+          "attributes": {
+            "force_downto": "00000000000000000000000000000001",
+            "src": "blinky.v:12.20-12.34|/opt/oss-cad-suite/lib/../share/yosys/techmap.v:270.23-270.24"
+          }
+        },
+        "counter": {
+          "hide_name": 0,
+          "bits": [ 9, 7, 5, 3 ],
+          "attributes": {
+            "src": "blinky.v:9.15-9.22"
+          }
+        },
+        "led": {
+          "hide_name": 0,
+          "bits": [ 3 ],
+          "attributes": {
+            "src": "blinky.v:6.17-6.20"
+          }
+        },
+        "led_DFF_Q_D": {
+          "hide_name": 0,
+          "bits": [ 8, 6, 4, 10 ],
+          "attributes": {
+            "force_downto": "00000000000000000000000000000001",
+            "src": "blinky.v:12.20-12.34|/opt/oss-cad-suite/lib/../share/yosys/techmap.v:270.26-270.27"
+          }
+        }
+      }
+    }
+  }
+}

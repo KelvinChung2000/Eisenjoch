@@ -81,7 +81,7 @@ fn downhill_dest_names(chipdb: &ChipDb, tt: &TileTypePod, wire_idx: usize) -> Ve
 fn find_constid(chipdb: &ChipDb, name: &str) -> i32 {
     let total = chipdb.extra_constids().len() as i32;
     (0..total)
-        .find(|&i| chipdb.constid_str(i).map_or(false, |s| s == name))
+        .find(|&i| chipdb.constid_str(i) == Some(name))
         .unwrap_or_else(|| panic!("{name} constid should exist"))
 }
 
@@ -467,7 +467,7 @@ fn pip_timing_data_exists() {
     // At least some PIPs should have timing data
     let mut with_timing = 0;
     for pip in chipdb.pips().take(200) {
-        if chipdb.pip_timing(&sg, pip).is_some() {
+        if chipdb.pip_timing(sg, pip).is_some() {
             with_timing += 1;
         }
     }
@@ -780,7 +780,7 @@ fn lut6_combinational_delays() {
     let lut6_id = find_constid(chipdb, "LUT6");
     let f_id = find_constid(chipdb, "F");
     let type_idx = chipdb
-        .cell_timing_index(&sg, lut6_id)
+        .cell_timing_index(sg, lut6_id)
         .expect("LUT6 should have timing data");
 
     let expected_delays = [
@@ -794,7 +794,7 @@ fn lut6_combinational_delays() {
     for (expected_ps, pin_name) in &expected_delays {
         let pin_id = find_constid(chipdb, pin_name);
         let delay = chipdb
-            .cell_delay(&sg, type_idx, pin_id, f_id)
+            .cell_delay(sg, type_idx, pin_id, f_id)
             .unwrap_or_else(|| panic!("LUT6 should have {pin_name}->F delay"));
 
         assert_eq!(
@@ -817,12 +817,12 @@ fn dff_register_timing() {
     let q_id = find_constid(chipdb, "Q");
 
     let type_idx = chipdb
-        .cell_timing_index(&sg, dff_id)
+        .cell_timing_index(sg, dff_id)
         .expect("DFF should have timing data");
 
     // Check D pin has register arcs (setup/hold)
     let d_arcs = chipdb
-        .cell_reg_arcs(&sg, type_idx, d_id)
+        .cell_reg_arcs(sg, type_idx, d_id)
         .expect("DFF D pin should have register arcs");
     assert!(!d_arcs.is_empty(), "DFF D should have setup/hold arcs");
 
@@ -839,7 +839,7 @@ fn dff_register_timing() {
 
     // Check Q pin has register arcs (clock-to-Q)
     let q_arcs = chipdb
-        .cell_reg_arcs(&sg, type_idx, q_id)
+        .cell_reg_arcs(sg, type_idx, q_id)
         .expect("DFF Q pin should have register arcs");
     assert!(!q_arcs.is_empty(), "DFF Q should have clk-to-Q arcs");
 
@@ -866,7 +866,7 @@ fn pip_timing_values_match_generator() {
     let mut seen_delays = std::collections::HashSet::new();
     for (pip_idx, _pip) in tt.pips.get().iter().enumerate() {
         let pip_id = nextpnr::chipdb::PipId::new(logic_tile, pip_idx as i32);
-        if let Some(pip_tmg) = chipdb.pip_timing(&sg, pip_id) {
+        if let Some(pip_tmg) = chipdb.pip_timing(sg, pip_id) {
             let int_delay = unsafe { read_packed!(*pip_tmg, int_delay) };
             seen_delays.insert(int_delay.slow_max);
         }

@@ -43,7 +43,7 @@ fn main() {
     while let Some((w, depth)) = frontier.pop_front() {
         if depth >= max_layers { continue; }
         let info = db.wire_info(w);
-        let up_pips = info.pips_uphill.get().iter().copied().collect::<Vec<_>>();
+        let up_pips = info.pips_uphill.get().to_vec();
 
         // Also expand node peers (free hops).
         let mut peers = Vec::new();

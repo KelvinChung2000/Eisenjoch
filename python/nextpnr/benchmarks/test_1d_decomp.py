@@ -31,7 +31,7 @@ line_1d = ctx.total_line_estimate()
 print(f'1D: HPWL={hpwl_1d:.0f} line={line_1d:.0f} time={t_1d:.1f}s')
 
 # --- Summary ---
-print(f'\n=== Summary ===')
+print('\n=== Summary ===')
 print(f'HeAP: HPWL={hpwl_heap:.0f} line={line_heap:.0f} time={t_heap:.1f}s')
 print(f'1D:   HPWL={hpwl_1d:.0f} line={line_1d:.0f} time={t_1d:.1f}s')
 ratio = hpwl_1d / hpwl_heap if hpwl_heap > 0 else float('inf')

@@ -14,7 +14,7 @@ fn main() {
     let db = ChipDb::load(Path::new(p)).expect("load");
 
     // Find IOB at (0, 183).
-    let src_tile = 183 * db.width() + 0;
+    let src_tile = 183 * db.width();
     println!(
         "src tile @ (0,183) = {}, tt = {}",
         src_tile,
@@ -159,7 +159,7 @@ fn main() {
         let mut max_dy: i32 = 0;
         let mut max_manhattan: i32 = 0;
         let (sx, sy) = db.tile_xy(src.tile());
-        let mut update_dist = |w: WireId, max_dx: &mut i32, max_dy: &mut i32, max_manhattan: &mut i32| {
+        let update_dist = |w: WireId, max_dx: &mut i32, max_dy: &mut i32, max_manhattan: &mut i32| {
             let (tx, ty) = db.tile_xy(w.tile());
             let dx = (tx - sx).abs();
             let dy = (ty - sy).abs();

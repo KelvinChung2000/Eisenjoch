@@ -4,7 +4,7 @@
 //! been built yet the tests skip themselves.
 
 use nextpnr::chipdb::{ChipDb, PipId, WireId};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 

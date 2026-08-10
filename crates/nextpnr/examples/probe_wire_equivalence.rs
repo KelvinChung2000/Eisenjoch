@@ -68,8 +68,8 @@ fn main() {
     }
 
     println!(
-        "{:<4}  {:<28}  {:>7}  {:>6}  {:>5}  {}",
-        "tt", "type_name", "n_wires", "n_strc", "iters", "class_size_histogram"
+        "{:<4}  {:<28}  {:>7}  {:>6}  {:>5}  class_size_histogram",
+        "tt", "type_name", "n_wires", "n_strc", "iters"
     );
 
     let mut total_wires = 0usize;

@@ -83,7 +83,7 @@ def print_results(results, design_name):
     # Relative to HeAP
     heap = next((r for r in results if r["placer"] == "heap"), None)
     if heap and heap["routed_wl"] > 0:
-        print(f"\n  Relative to HeAP:")
+        print("\n  Relative to HeAP:")
         print(f"  {'Config':<20} {'HPWL':>8} {'LineEst':>8} {'RoutedWL':>9} {'TileCong':>9}")
         print(f"  {'-'*20} {'-'*8} {'-'*8} {'-'*9} {'-'*9}")
         for r in results:

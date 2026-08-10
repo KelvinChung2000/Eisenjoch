@@ -6,7 +6,6 @@ Usage:
 
 import argparse
 import os
-import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))

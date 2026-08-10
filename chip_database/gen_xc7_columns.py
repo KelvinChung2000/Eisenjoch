@@ -8,17 +8,13 @@ import math
 from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
-from os import path
 
 from chip_database.gen_xc7_hybrid import (
     BRAM_SITE_TYPES,
     BUFG_SITE_TYPES,
     DSP_SITE_TYPES,
     IMPORTANT_SITE_TYPES,
-    K,
     PinType,
-    _infer_pin_dir,
-    _logical_pin_names,
     _pip_timing_class,
     _site_bel_types,
     _wire_type_from_xray_name,

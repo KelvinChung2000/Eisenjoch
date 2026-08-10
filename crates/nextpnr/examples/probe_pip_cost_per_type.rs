@@ -29,8 +29,8 @@ fn main() {
     }
 
     println!(
-        "{:>4}  {:>8}  {:>5}  {:>5}  {:>5}  {:>5}  {:>5}  {}",
-        "tt", "n_pips", "min", "p25", "p50", "p75", "max", "example_tile"
+        "{:>4}  {:>8}  {:>5}  {:>5}  {:>5}  {:>5}  {:>5}  example_tile",
+        "tt", "n_pips", "min", "p25", "p50", "p75", "max"
     );
     let mut by_tt: Vec<(usize, usize, u64, i32, i32, i32, i32, i32, i32)> = Vec::new();
     for tt in 0..num_tt {

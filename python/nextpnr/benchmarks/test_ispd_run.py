@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from nextpnr.benchmarks import run_ispd_benchmarks as rib

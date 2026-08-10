@@ -203,7 +203,7 @@ fn diagnose_net(ctx: &Context, net_name: &str) {
             "    sink {:?} tile=({},{})  manhattan={}  up={}  down={}",
             sw, sx, sy, d, sw_up, sw_down
         );
-        if worst.map_or(true, |(_, _, _, wd)| d > wd) {
+        if worst.is_none_or(|(_, _, _, wd)| d > wd) {
             worst = Some((sw, sx, sy, d));
         }
     }

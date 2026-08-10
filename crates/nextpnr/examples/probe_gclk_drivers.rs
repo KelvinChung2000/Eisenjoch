@@ -45,7 +45,7 @@ fn main() {
         let nm = wire_name(wi);
         if !nm.starts_with("M1_GCLK") && !nm.starts_with("M2_GCLK") { continue; }
         let mut srcs = Vec::new();
-        for (_pip_idx, pip) in pips.iter().enumerate() {
+        for pip in pips.iter() {
             let dst: i32 = unsafe { read_packed!(*pip, dst_wire) };
             if dst as usize == wi {
                 let src: i32 = unsafe { read_packed!(*pip, src_wire) };

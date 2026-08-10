@@ -22,7 +22,6 @@ import argparse
 import sys
 from collections import defaultdict
 from os import path
-from pathlib import Path
 
 CPP_NEXTPNR = "/home/kelvin/nextpnr"
 sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))

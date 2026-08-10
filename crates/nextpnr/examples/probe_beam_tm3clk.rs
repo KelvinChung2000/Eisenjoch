@@ -13,7 +13,7 @@
 use nextpnr::chipdb::{ChipDb, PipId, WireId};
 use nextpnr::context::Context;
 use nextpnr::router::astar::{
-    astar_search, default_pip_cost, AStarExit, AStarOptions, PathCostModel,
+    astar_search, default_pip_cost, AStarOptions, PathCostModel,
 };
 use nextpnr::timing::DelayT;
 use rustc_hash::FxHashSet;

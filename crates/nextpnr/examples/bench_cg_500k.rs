@@ -110,7 +110,7 @@ fn main() {
         out.as_mut(),
         rhs.as_ref(),
         par,
-        &mut MemStack::new(&mut buf),
+        MemStack::new(&mut buf),
     );
 
     let n_spmv = 100;
@@ -120,7 +120,7 @@ fn main() {
             out.as_mut(),
             rhs.as_ref(),
             par,
-            &mut MemStack::new(&mut buf),
+            MemStack::new(&mut buf),
         );
     }
     let spmv_time = t1.elapsed();
@@ -137,7 +137,7 @@ fn main() {
         out.as_mut(),
         rhs.as_ref(),
         par_p,
-        &mut MemStack::new(&mut buf),
+        MemStack::new(&mut buf),
     );
     let t1p = Instant::now();
     for _ in 0..n_spmv {
@@ -145,7 +145,7 @@ fn main() {
             out.as_mut(),
             rhs.as_ref(),
             par_p,
-            &mut MemStack::new(&mut buf),
+            MemStack::new(&mut buf),
         );
     }
     let spmv_time_par = t1p.elapsed();
@@ -175,7 +175,7 @@ fn main() {
         let rhs = faer::MatRef::from_column_major_slice(&rhs_vec, n, 1);
         let mut out_vec2 = vec![0.0; n];
         let out = faer::MatMut::from_column_major_slice_mut(&mut out_vec2, n, 1);
-        csc_op.apply(out, rhs, par, &mut MemStack::new(&mut csc_buf));
+        csc_op.apply(out, rhs, par, MemStack::new(&mut csc_buf));
     }
 
     let t_csc = Instant::now();
@@ -183,7 +183,7 @@ fn main() {
         let rhs = faer::MatRef::from_column_major_slice(&rhs_vec, n, 1);
         let mut out_vec2 = vec![0.0; n];
         let out = faer::MatMut::from_column_major_slice_mut(&mut out_vec2, n, 1);
-        csc_op.apply(out, rhs, par, &mut MemStack::new(&mut csc_buf));
+        csc_op.apply(out, rhs, par, MemStack::new(&mut csc_buf));
     }
     let csc_time = t_csc.elapsed();
     println!(
@@ -198,7 +198,7 @@ fn main() {
         let rhs = faer::MatRef::from_column_major_slice(&rhs_vec, n, 1);
         let mut out_vec2 = vec![0.0; n];
         let out = faer::MatMut::from_column_major_slice_mut(&mut out_vec2, n, 1);
-        csc_op.apply(out, rhs, par_p, &mut MemStack::new(&mut csc_buf));
+        csc_op.apply(out, rhs, par_p, MemStack::new(&mut csc_buf));
     }
     let csc_time_p = t_csc_p.elapsed();
     println!(
@@ -377,7 +377,7 @@ fn main() {
     println!("\n--- Summary ---");
     println!(
         "IC0 vs Jacobi: {:.1}x fewer iters, {:.1}x faster per solve",
-        avg_iters as f64 / avg_iters_ic0.max(1.0),
+        avg_iters / avg_iters_ic0.max(1.0),
         (cg_time.as_secs_f64() / n_solves as f64)
             / (ic0_time.as_secs_f64() / n_solves as f64).max(1e-12)
     );

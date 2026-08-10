@@ -688,7 +688,7 @@ fn test_criticality_failing() {
             has_nonzero_crit = true;
         }
         assert!(
-            crit >= 0.0 && crit <= 1.0,
+            (0.0..=1.0).contains(&crit),
             "Criticality must be in [0,1], got {}",
             crit
         );
