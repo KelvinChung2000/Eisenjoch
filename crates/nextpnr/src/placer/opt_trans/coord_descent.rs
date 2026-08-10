@@ -3989,6 +3989,34 @@ pub fn run_inner_outer(
             skip_mask.as_deref(),
             displacement_table.as_ref(),
         );
+        if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
+            let mut h_dist: u64 = 0;
+            for row in dist_cache.rows.iter() {
+                // Order-independent per row so hashmap traversal order cannot
+                // colour the result.
+                let mut r: u64 = 0;
+                for (k, v) in row.iter() {
+                    r = r.wrapping_add(
+                        (*k as u64)
+                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                            ^ (v.to_bits() as u64),
+                    );
+                }
+                h_dist = h_dist.rotate_left(5).wrapping_add(r);
+            }
+            let mut h_pos0: u64 = 0;
+            for (x, y) in cell_x.iter().zip(cell_y.iter()) {
+                h_pos0 = h_pos0
+                    .rotate_left(5)
+                    .wrapping_add(x.to_bits())
+                    .rotate_left(7)
+                    .wrapping_add(y.to_bits());
+            }
+            eprintln!(
+                "    determinism_pre[outer={}]: pos_in={:016x} dist={:016x} energy={:.17e}",
+                outer, h_pos0, h_dist, pre_solve.energy,
+            );
+        }
         let pre_refresh_ms = t_refresh.elapsed().as_millis();
         let (entries_pre, capacity_pre, est_pre) = dist_cache.memory_stats();
         eprintln!(
@@ -4545,6 +4573,16 @@ pub fn run_inner_outer(
             diag_ctx.dump_fixed_cells(&fixed_rows);
         }
 
+        if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
+            let mut h: u64 = 0;
+            for (x, y) in cell_x.iter().zip(cell_y.iter()) {
+                h = h.rotate_left(5)
+                    .wrapping_add(x.to_bits())
+                    .rotate_left(7)
+                    .wrapping_add(y.to_bits());
+            }
+            eprintln!("    det_presweep[outer={}]: pos={:016x}", outer, h);
+        }
         diag_ctx.sweep_begin(n, outer);
         let t_dcd = std::time::Instant::now();
         let moved = match cfg.sweep_mode {
@@ -4738,6 +4776,16 @@ pub fn run_inner_outer(
                 )
             }
         };
+        if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
+            let mut h: u64 = 0;
+            for (x, y) in cell_x.iter().zip(cell_y.iter()) {
+                h = h.rotate_left(5)
+                    .wrapping_add(x.to_bits())
+                    .rotate_left(7)
+                    .wrapping_add(y.to_bits());
+            }
+            eprintln!("    det_postsweep[outer={}]: pos={:016x} moved={}", outer, h, moved);
+        }
         let dcd_ms = t_dcd.elapsed().as_millis();
 
         common::clamp_positions(cell_x, cell_y, phys_max_x, phys_max_y);
@@ -4786,6 +4834,30 @@ pub fn run_inner_outer(
                 process_rss_kb() as f64 / 1024.0,
             );
 
+            if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
+                let mut h_pos: u64 = 0;
+                for (x, y) in cell_x.iter().zip(cell_y.iter()) {
+                    h_pos = h_pos
+                        .rotate_left(5)
+                        .wrapping_add(x.to_bits())
+                        .rotate_left(7)
+                        .wrapping_add(y.to_bits());
+                }
+                let mut h_usage: u64 = 0;
+                for u in &post_solve.edge_usage {
+                    h_usage = h_usage.rotate_left(5).wrapping_add(u.to_bits());
+                }
+                let mut h_cost: u64 = 0;
+                for pipe_idx in 0..network.num_pipes() {
+                    h_cost = h_cost
+                        .rotate_left(5)
+                        .wrapping_add(network.pipe_cost(pipe_idx).to_bits());
+                }
+                eprintln!(
+                    "    determinism[outer={}]: pos={:016x} usage={:016x} cost={:016x} energy={:.17e}",
+                    outer, h_pos, h_usage, h_cost, post_solve.energy,
+                );
+            }
             let mut solve_stats = pre_solve.stats;
             solve_stats.total_solves += post_solve.stats.total_solves;
             solve_stats.total_heap_pops += post_solve.stats.total_heap_pops;

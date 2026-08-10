@@ -175,10 +175,19 @@ pub struct PathSolverWorkspace {
     pub(crate) edge_touched: Vec<usize>,
 
     /// Dijkstra settle order (nodes pushed as they are popped with a fresh
-    /// min). Already in dist order. Also doubles as the reset list for
-    /// `dist` / `dist_int` / `path_weight` / `node_load` since every relaxed
-    /// node eventually settles.
+    /// min). Already in dist order.
     pub(crate) settle_order: Vec<usize>,
+
+    /// Every node whose `dist_int` this net wrote, settled or not.
+    ///
+    /// `settle_order` is NOT sufficient as a reset list. Sink-bounded
+    /// termination breaks out of the pop loop while relaxed nodes are still
+    /// sitting in the heap, and those nodes keep the `dist_int` this net gave
+    /// them. Since a workspace is reused across nets, resetting only settled
+    /// nodes leaves stale distances that the next net reads as if they were
+    /// its own -- which also made results depend on how rayon happened to
+    /// group nets into chunks.
+    pub(crate) touched_nodes: Vec<usize>,
 
     /// Per-node bitmap: true if the node is inside the current corridor.
     /// Populated once per net by `mark_corridor`; reset via `corridor_marked`.
@@ -305,6 +314,7 @@ impl PathSolverWorkspace {
             edge_load: vec![0.0; n_pipes],
             edge_touched: Vec::with_capacity(1024),
             settle_order: Vec::with_capacity(1024),
+            touched_nodes: Vec::with_capacity(1024),
             in_corridor: vec![false; n_nodes],
             corridor_marked: Vec::with_capacity(1024),
             corridor_bbox: None,
@@ -321,7 +331,10 @@ impl PathSolverWorkspace {
     /// Sparse reset: clears state written in the previous solve.
     /// `settle_order` is the authoritative list of updated nodes.
     pub(crate) fn begin_net(&mut self) {
-        for &node in &self.settle_order {
+        // `touched_nodes` covers the Dijkstra path; `settle_order` covers the
+        // displacement fast path, which settles without relaxing. Resetting a
+        // node twice is harmless.
+        for &node in self.touched_nodes.iter().chain(self.settle_order.iter()) {
             self.dist[node] = f64::INFINITY;
             self.dist_int[node] = u32::MAX;
             self.path_weight[node] = 0.0;
@@ -343,6 +356,7 @@ impl PathSolverWorkspace {
         }
         self.max_bucket = 0;
         self.settle_order.clear();
+        self.touched_nodes.clear();
         self.edge_touched.clear();
         self.corridor_marked.clear();
         self.corridor_bbox = None;
@@ -911,8 +925,12 @@ fn dijkstra_and_forward(
     let adj_cost_int = adj.cost_int.as_slice();
     let adj_offsets = adj.offsets.as_slice();
     let heap = &mut ws.heap;
+    let touched = &mut ws.touched_nodes;
     heap.clear();
 
+    if dist_int[source_node] == u32::MAX {
+        touched.push(source_node);
+    }
     dist_int[source_node] = 0;
     path_weight[source_node] = 1.0;
     heap.push(HeapEntry {
@@ -999,6 +1017,11 @@ fn dijkstra_and_forward(
                 // Not yet settled (or equal dist tie): standard Dijkstra relax.
                 let candidate = cur.saturating_add(cost_int);
                 if candidate < neigh_dist_int {
+                    if neigh_dist_int == u32::MAX {
+                        // First write for this net: remember it so `begin_net`
+                        // resets it even if we break before it settles.
+                        touched.push(neighbour);
+                    }
                     dist_int[neighbour] = candidate;
                     heap.push(HeapEntry {
                         dist: candidate as f64,
