@@ -50,9 +50,7 @@ fn is_dead_net(ctx: &Context, net_idx: NetId) -> bool {
     let name = ctx.name_of(net.name_id()).to_lowercase();
     // Match opt_trans default filter (skip_constants=true).
     // Constants are either named gnd/vcc/0/1 or have no user bel positions.
-    if name == "$false" || name == "$true" || name == "$undef"
-        || name == "gnd" || name == "vcc"
-    {
+    if name == "$false" || name == "$true" || name == "$undef" || name == "gnd" || name == "vcc" {
         return true;
     }
     false
@@ -195,10 +193,8 @@ fn main() {
 
     // Build a lookup of HeAP's net_idx -> NetDiag, then iterate by the
     // SAME net_idx in opt_trans. This keeps the net identity stable.
-    let heap_by_idx: std::collections::HashMap<NetId, NetDiag> = heap_diags
-        .iter()
-        .map(|d| (d.net_idx, d.clone()))
-        .collect();
+    let heap_by_idx: std::collections::HashMap<NetId, NetDiag> =
+        heap_diags.iter().map(|d| (d.net_idx, d.clone())).collect();
 
     println!("\n\n========= PER-NET DIAGNOSTIC (top-20 fanout) =========");
     println!(
@@ -230,7 +226,13 @@ fn main() {
         );
         println!(
             "{:<36}  {:>5}  {:>9}  {:>6}  {:>7.1}  {:>7.1}  {:>6}",
-            "", "", "opt_trans", d_ot.hpwl, d_ot.drv_displace, d_ot.sink_rms_spread, d_ot.drv_is_pure
+            "",
+            "",
+            "opt_trans",
+            d_ot.hpwl,
+            d_ot.drv_displace,
+            d_ot.sink_rms_spread,
+            d_ot.drv_is_pure
         );
         total_heap_hpwl += d_heap.hpwl as i64;
         total_ot_hpwl += d_ot.hpwl as i64;
@@ -239,13 +241,23 @@ fn main() {
     }
 
     println!("\n========= TOTALS OVER TOP-20 FANOUT NETS =========");
-    println!("  HeAP   sum(hpwl) = {}    sum(drv_displace) = {:.1}", total_heap_hpwl, total_heap_disp);
-    println!("  opt_T  sum(hpwl) = {}    sum(drv_displace) = {:.1}", total_ot_hpwl, total_ot_disp);
+    println!(
+        "  HeAP   sum(hpwl) = {}    sum(drv_displace) = {:.1}",
+        total_heap_hpwl, total_heap_disp
+    );
+    println!(
+        "  opt_T  sum(hpwl) = {}    sum(drv_displace) = {:.1}",
+        total_ot_hpwl, total_ot_disp
+    );
     if total_heap_hpwl > 0 {
         println!(
             "  ratio  hpwl ot/heap = {:.3}   drv_displace ot/heap = {:.3}",
             total_ot_hpwl as f64 / total_heap_hpwl as f64,
-            if total_heap_disp > 0.0 { total_ot_disp / total_heap_disp } else { f64::NAN }
+            if total_heap_disp > 0.0 {
+                total_ot_disp / total_heap_disp
+            } else {
+                f64::NAN
+            }
         );
     }
 
@@ -253,7 +265,11 @@ fn main() {
     // solve filter set — it's a static property of the netlist so it should
     // match between placers, but we print both to double-check).
     let pure_count: usize = heap_diags.iter().filter(|d| d.drv_is_pure).count();
-    println!("\n  top-20 nets with pure-driver cells: {}/{}", pure_count, heap_diags.len());
+    println!(
+        "\n  top-20 nets with pure-driver cells: {}/{}",
+        pure_count,
+        heap_diags.len()
+    );
     if pure_count > 0 {
         println!("  (pure-driver hypothesis predicts opt_trans WORSE on these nets specifically)");
     }

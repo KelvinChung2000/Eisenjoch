@@ -42,12 +42,22 @@ struct QE {
     cost: DelayT,
     estimate: DelayT,
 }
-impl PartialEq for QE { fn eq(&self, o: &Self) -> bool { self.estimate == o.estimate } }
+impl PartialEq for QE {
+    fn eq(&self, o: &Self) -> bool {
+        self.estimate == o.estimate
+    }
+}
 impl Eq for QE {}
-impl PartialOrd for QE { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) } }
+impl PartialOrd for QE {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
 impl Ord for QE {
     fn cmp(&self, o: &Self) -> Ordering {
-        o.estimate.cmp(&self.estimate).then_with(|| o.cost.cmp(&self.cost))
+        o.estimate
+            .cmp(&self.estimate)
+            .then_with(|| o.cost.cmp(&self.cost))
     }
 }
 
@@ -84,14 +94,24 @@ fn main() {
         let prev_score = visited.get(&e.wire).copied().unwrap_or(DelayT::MAX);
         if e.cost > prev_score {
             if step <= 100 {
-                println!("step {}: STALE pop {} cost={} prev_score={}",
-                    step, wname(db, e.wire), e.cost, prev_score);
+                println!(
+                    "step {}: STALE pop {} cost={} prev_score={}",
+                    step,
+                    wname(db, e.wire),
+                    e.cost,
+                    prev_score
+                );
             }
             continue;
         }
 
         if e.wire == dst {
-            println!("step {}: REACHED dst {} at cost={}", step, wname(db, e.wire), e.cost);
+            println!(
+                "step {}: REACHED dst {} at cost={}",
+                step,
+                wname(db, e.wire),
+                e.cost
+            );
             return;
         }
 
@@ -102,15 +122,26 @@ fn main() {
         };
 
         if step <= 50 || (step <= 200 && step.is_multiple_of(10)) {
-            println!("step {}: pop {} cost={} f={} nid={:?} new_node={} heap_len={}",
-                step, wname(db, e.wire), e.cost, e.estimate, nid, new_node, heap.len());
+            println!(
+                "step {}: pop {} cost={} f={} nid={:?} new_node={} heap_len={}",
+                step,
+                wname(db, e.wire),
+                e.cost,
+                e.estimate,
+                nid,
+                new_node,
+                heap.len()
+            );
         }
 
         if !new_node {
             continue;
         }
 
-        let expand = |member: WireId, visited: &mut FxHashMap<WireId, DelayT>, heap: &mut BinaryHeap<QE>| -> usize {
+        let expand = |member: WireId,
+                      visited: &mut FxHashMap<WireId, DelayT>,
+                      heap: &mut BinaryHeap<QE>|
+         -> usize {
             let mut pushed = 0;
             if member != e.wire {
                 match visited.entry(member) {
@@ -131,10 +162,16 @@ fn main() {
                 let new_cost = e.cost + 1;
                 let score = new_cost;
                 let prev = visited.get(&next).copied().unwrap_or(DelayT::MAX);
-                if prev <= score { continue; }
+                if prev <= score {
+                    continue;
+                }
                 visited.insert(next, score);
                 let h = heuristic(db, next, dst);
-                heap.push(QE { wire: next, cost: new_cost, estimate: score + h });
+                heap.push(QE {
+                    wire: next,
+                    cost: new_cost,
+                    estimate: score + h,
+                });
                 pushed += 1;
             }
             pushed

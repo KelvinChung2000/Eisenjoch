@@ -10,8 +10,8 @@ pub mod traits;
 
 pub use common::{NegotiationCfg, NegotiationState};
 pub use maze::Router1;
-pub use router2::Router2;
 pub use raster::RasterRouter;
+pub use router2::Router2;
 pub use traits::Router;
 
 // ---------------------------------------------------------------------------

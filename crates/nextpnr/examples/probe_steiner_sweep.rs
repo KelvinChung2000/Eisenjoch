@@ -202,7 +202,16 @@ fn main() {
     println!("\n\n================== STEINER SWEEP (sv3, opt_trans 50 iters 8 threads) ==================");
     println!(
         "{:<10} {:>8} {:>8} {:>9} {:>5} {:>12} {:>10} {:>5} {:>5} {:>5}",
-        "lambda", "place(s)", "hpwl", "route(s)", "ok", "fully/alive", "wl_total", "p50", "p99", "max"
+        "lambda",
+        "place(s)",
+        "hpwl",
+        "route(s)",
+        "ok",
+        "fully/alive",
+        "wl_total",
+        "p50",
+        "p99",
+        "max"
     );
     for r in &reports {
         println!(

@@ -36,13 +36,18 @@ impl PathCostModel for DijkstraModel {
 fn describe_wire(chipdb: &ChipDb, wire: WireId) -> String {
     let info = chipdb.wire_info(wire);
     let name_id: i32 = unsafe { nextpnr::read_packed!(*info, name) };
-    let wname = chipdb
-        .constid_str(name_id)
-        .unwrap_or("<anon>")
-        .to_string();
+    let wname = chipdb.constid_str(name_id).unwrap_or("<anon>").to_string();
     let wtype = chipdb.wire_type(wire).to_string();
     let (x, y) = chipdb.tile_xy(wire.tile());
-    format!("{}({}:{}) [{},{}] type={}", wname, wire.tile(), wire.index(), x, y, wtype)
+    format!(
+        "{}({}:{}) [{},{}] type={}",
+        wname,
+        wire.tile(),
+        wire.index(),
+        x,
+        y,
+        wtype
+    )
 }
 
 fn count_node_peers(chipdb: &ChipDb, wire: WireId) -> usize {
@@ -73,9 +78,9 @@ fn dijkstra_reach(
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let design_path = std::env::args().nth(2).unwrap_or_else(|| {
         "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into()
     });

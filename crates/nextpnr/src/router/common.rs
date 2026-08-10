@@ -322,7 +322,10 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
 
     impl Bucket {
         fn new() -> Self {
-            Self { total: 0, examples: Vec::new() }
+            Self {
+                total: 0,
+                examples: Vec::new(),
+            }
         }
 
         fn add(&mut self, msg: impl FnOnce() -> String) {
@@ -383,17 +386,21 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 Some((owner, _)) => {
                     let other = ctx.name_of(ctx.net(owner).name_id()).to_owned();
                     let wn = chipdb.wire_name(wire).to_owned();
-                    wire_binding_mismatch.add(|| format!(
-                        "net '{}' lists wire {} ({}) but wire is bound to net '{}'",
-                        net_name, wn, wire, other,
-                    ));
+                    wire_binding_mismatch.add(|| {
+                        format!(
+                            "net '{}' lists wire {} ({}) but wire is bound to net '{}'",
+                            net_name, wn, wire, other,
+                        )
+                    });
                 }
                 None => {
                     let wn = chipdb.wire_name(wire).to_owned();
-                    wire_binding_mismatch.add(|| format!(
-                        "net '{}' lists wire {} ({}) but wire is unbound",
-                        net_name, wn, wire,
-                    ));
+                    wire_binding_mismatch.add(|| {
+                        format!(
+                            "net '{}' lists wire {} ({}) but wire is unbound",
+                            net_name, wn, wire,
+                        )
+                    });
                 }
             }
             if let Some(pip) = pm.pip {
@@ -402,16 +409,17 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                     Some((owner, _)) if owner == net_idx => {}
                     Some((owner, _)) => {
                         let other = ctx.name_of(ctx.net(owner).name_id()).to_owned();
-                        pip_binding_mismatch.add(|| format!(
-                            "net '{}' lists pip {} but pip is bound to net '{}'",
-                            net_name, pip, other,
-                        ));
+                        pip_binding_mismatch.add(|| {
+                            format!(
+                                "net '{}' lists pip {} but pip is bound to net '{}'",
+                                net_name, pip, other,
+                            )
+                        });
                     }
                     None => {
-                        pip_binding_mismatch.add(|| format!(
-                            "net '{}' lists pip {} but pip is unbound",
-                            net_name, pip,
-                        ));
+                        pip_binding_mismatch.add(|| {
+                            format!("net '{}' lists pip {} but pip is unbound", net_name, pip,)
+                        });
                     }
                 }
             }
@@ -427,10 +435,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             None => {
                 let cell_name = driver_cell.name().to_owned();
                 let port_name = ctx.name_of(driver.port).to_owned();
-                unplaced_driver.add(|| format!(
-                    "net '{}': driver cell '{}' pin '{}' is not placed",
-                    net_name, cell_name, port_name,
-                ));
+                unplaced_driver.add(|| {
+                    format!(
+                        "net '{}': driver cell '{}' pin '{}' is not placed",
+                        net_name, cell_name, port_name,
+                    )
+                });
                 continue;
             }
         };
@@ -439,10 +449,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             None => {
                 let bel_name = driver_bel.name().to_owned();
                 let port_name = ctx.name_of(driver.port).to_owned();
-                missing_source_wire.add(|| format!(
-                    "net '{}': driver BEL '{}' has no wire for pin '{}'",
-                    net_name, bel_name, port_name,
-                ));
+                missing_source_wire.add(|| {
+                    format!(
+                        "net '{}': driver BEL '{}' has no wire for pin '{}'",
+                        net_name, bel_name, port_name,
+                    )
+                });
                 continue;
             }
         };
@@ -460,10 +472,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
         if !source_in_tree {
             let sn = chipdb.wire_name(source_wire).to_owned();
             let wires_len = net.wires().len();
-            source_not_in_tree.add(|| format!(
-                "net '{}': source wire {} ({}) not present in routing tree (tree has {} wires)",
-                net_name, sn, source_wire, wires_len,
-            ));
+            source_not_in_tree.add(|| {
+                format!(
+                    "net '{}': source wire {} ({}) not present in routing tree (tree has {} wires)",
+                    net_name, sn, source_wire, wires_len,
+                )
+            });
         }
 
         // Check every user.
@@ -477,10 +491,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 None => {
                     let cell_name = user_cell.name().to_owned();
                     let port_name = ctx.name_of(user.port).to_owned();
-                    unplaced_user.add(|| format!(
-                        "net '{}': user cell '{}' pin '{}' is not placed",
-                        net_name, cell_name, port_name,
-                    ));
+                    unplaced_user.add(|| {
+                        format!(
+                            "net '{}': user cell '{}' pin '{}' is not placed",
+                            net_name, cell_name, port_name,
+                        )
+                    });
                     continue;
                 }
             };
@@ -489,10 +505,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 None => {
                     let bel_name = user_bel.name().to_owned();
                     let port_name = ctx.name_of(user.port).to_owned();
-                    missing_sink_wire.add(|| format!(
-                        "net '{}': user BEL '{}' has no wire for pin '{}'",
-                        net_name, bel_name, port_name,
-                    ));
+                    missing_sink_wire.add(|| {
+                        format!(
+                            "net '{}': user BEL '{}' has no wire for pin '{}'",
+                            net_name, bel_name, port_name,
+                        )
+                    });
                     continue;
                 }
             };
@@ -517,10 +535,12 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 let sn = chipdb.wire_name(sink_wire).to_owned();
                 let cell_name = user_cell.name().to_owned();
                 let port_name = ctx.name_of(user.port).to_owned();
-                sink_not_in_tree.add(|| format!(
-                    "net '{}': sink wire {} ({}) for cell '{}' pin '{}' not in routing tree",
-                    net_name, sn, sink_wire, cell_name, port_name,
-                ));
+                sink_not_in_tree.add(|| {
+                    format!(
+                        "net '{}': sink wire {} ({}) for cell '{}' pin '{}' not in routing tree",
+                        net_name, sn, sink_wire, cell_name, port_name,
+                    )
+                });
                 continue;
             }
 
@@ -615,11 +635,21 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             .take(3)
             .map(|&n| ctx.name_of(ctx.net(n).name_id()).to_owned())
             .collect();
-        let more = if owners.len() > sample.len() { ", ..." } else { "" };
-        wire_conflict.add(|| format!(
-            "wire {} ({}) claimed by {} nets: {}{}",
-            wn, wire, owners.len(), sample.join(", "), more,
-        ));
+        let more = if owners.len() > sample.len() {
+            ", ..."
+        } else {
+            ""
+        };
+        wire_conflict.add(|| {
+            format!(
+                "wire {} ({}) claimed by {} nets: {}{}",
+                wn,
+                wire,
+                owners.len(),
+                sample.join(", "),
+                more,
+            )
+        });
     }
     for (&pip, owners) in &pip_claims {
         if owners.len() <= 1 {
@@ -630,11 +660,20 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             .take(3)
             .map(|&n| ctx.name_of(ctx.net(n).name_id()).to_owned())
             .collect();
-        let more = if owners.len() > sample.len() { ", ..." } else { "" };
-        pip_conflict.add(|| format!(
-            "pip {} claimed by {} nets: {}{}",
-            pip, owners.len(), sample.join(", "), more,
-        ));
+        let more = if owners.len() > sample.len() {
+            ", ..."
+        } else {
+            ""
+        };
+        pip_conflict.add(|| {
+            format!(
+                "pip {} claimed by {} nets: {}{}",
+                pip,
+                owners.len(),
+                sample.join(", "),
+                more,
+            )
+        });
     }
 
     let total = source_not_in_tree.total
@@ -657,15 +696,22 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
     unplaced_user.append(&mut out, "nets with unplaced user cell");
     missing_source_wire.append(&mut out, "driver BEL pins with no wire");
     missing_sink_wire.append(&mut out, "user BEL pins with no wire");
-    source_not_in_tree.append(&mut out, "nets whose source wire is not in the routing tree");
+    source_not_in_tree.append(
+        &mut out,
+        "nets whose source wire is not in the routing tree",
+    );
     sink_not_in_tree.append(&mut out, "sink wires missing from the routing tree");
     disconnected_sink.append(&mut out, "sinks not connected back to the source");
     wire_conflict.append(&mut out, "wires claimed by more than one net");
     pip_conflict.append(&mut out, "pips claimed by more than one net");
-    wire_binding_mismatch
-        .append(&mut out, "wires listed in a net but not bound to it in the context");
-    pip_binding_mismatch
-        .append(&mut out, "pips listed in a net but not bound to it in the context");
+    wire_binding_mismatch.append(
+        &mut out,
+        "wires listed in a net but not bound to it in the context",
+    );
+    pip_binding_mismatch.append(
+        &mut out,
+        "pips listed in a net but not bound to it in the context",
+    );
 
     Err(super::RouterError::ValidationFailed(out))
 }
@@ -739,7 +785,11 @@ pub fn diagnose_unroutable_net(
         }
         let user_cell = ctx.cell(user.cell);
         let Some(user_bel) = user_cell.bel() else {
-            eprintln!("  user[{}]: cell '{}' unplaced; skipping", ui, user_cell.name());
+            eprintln!(
+                "  user[{}]: cell '{}' unplaced; skipping",
+                ui,
+                user_cell.name()
+            );
             failed += 1;
             continue;
         };

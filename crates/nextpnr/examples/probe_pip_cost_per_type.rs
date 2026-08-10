@@ -9,9 +9,9 @@ use nextpnr::router::astar::default_pip_cost;
 use std::path::Path;
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
     let db = ctx.chipdb();
@@ -81,7 +81,11 @@ fn main() {
             let name: i32 = unsafe { nextpnr::read_packed!(*info, name) };
             if let Some(s) = db.constid_str(name) {
                 let sl = s.to_ascii_uppercase();
-                if sl.contains("CLK") || sl.contains("GCLK") || sl.contains("BUFG") || sl.contains("HCLK") {
+                if sl.contains("CLK")
+                    || sl.contains("GCLK")
+                    || sl.contains("BUFG")
+                    || sl.contains("HCLK")
+                {
                     has_clk += 1;
                 }
             }

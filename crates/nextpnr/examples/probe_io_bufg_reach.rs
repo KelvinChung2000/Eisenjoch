@@ -31,9 +31,9 @@ fn find_wire_by_name(db: &ChipDb, tile: i32, target: &str) -> Option<WireId> {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
     let db = ctx.chipdb();
@@ -41,12 +41,24 @@ fn main() {
     // Source: IO0_O at (0, 98)
     let src_tile = db.tile_by_xy(0, 98);
     let src = find_wire_by_name(db, src_tile, "IO0_O").expect("IO0_O");
-    println!("src: IO0_O @ tile({},{}) = {}:{}", 0, 98, src.tile(), src.index());
+    println!(
+        "src: IO0_O @ tile({},{}) = {}:{}",
+        0,
+        98,
+        src.tile(),
+        src.index()
+    );
 
     // Destination: BUFG0_I at (310, 111)
     let dst_tile = db.tile_by_xy(310, 111);
     let dst = find_wire_by_name(db, dst_tile, "BUFG0_I").expect("BUFG0_I");
-    println!("dst: BUFG0_I @ tile({},{}) = {}:{}", 310, 111, dst.tile(), dst.index());
+    println!(
+        "dst: BUFG0_I @ tile({},{}) = {}:{}",
+        310,
+        111,
+        dst.tile(),
+        dst.index()
+    );
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
@@ -76,7 +88,9 @@ fn main() {
             Some(path) => {
                 println!(
                     "REACHABLE in {} pips, limit={} ({:.1} ms)",
-                    path.len(), limit, dt_ms
+                    path.len(),
+                    limit,
+                    dt_ms
                 );
                 // Print first 10 and last 10 pips with wire names.
                 for (i, &pip) in path.iter().enumerate() {
@@ -88,7 +102,10 @@ fn main() {
                         let dname = db.wire_name(dw.id()).to_string();
                         let (sx, sy) = db.tile_xy(sw.id().tile());
                         let (dx, dy) = db.tile_xy(dw.id().tile());
-                        println!("  pip[{:3}]: {}@({},{}) -> {}@({},{})", i, sname, sx, sy, dname, dx, dy);
+                        println!(
+                            "  pip[{:3}]: {}@({},{}) -> {}@({},{})",
+                            i, sname, sx, sy, dname, dx, dy
+                        );
                     } else if i == 10 {
                         println!("  ...");
                     }
@@ -96,10 +113,7 @@ fn main() {
                 return;
             }
             None => {
-                println!(
-                    "UNREACHABLE at limit={} ({:.1} ms)",
-                    limit, dt_ms
-                );
+                println!("UNREACHABLE at limit={} ({:.1} ms)", limit, dt_ms);
             }
         }
     }

@@ -199,7 +199,12 @@ mod tests {
         let model = ResistanceModel;
         let r = model.effective_resistance(&pipe_with_span(1, 0, 10.0, 10.0));
         let expected = 1.0 + BPR_ALPHA * (1.0 / 1.25f64).powf(BPR_BETA);
-        assert!((r - expected).abs() < 1e-12, "got {}, expected {}", r, expected);
+        assert!(
+            (r - expected).abs() < 1e-12,
+            "got {}, expected {}",
+            r,
+            expected
+        );
         // And that's strictly less than the no-slack penalty at ratio=1:
         assert!(r < 1.0 + BPR_ALPHA);
     }

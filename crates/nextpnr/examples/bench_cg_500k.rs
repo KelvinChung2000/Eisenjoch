@@ -106,22 +106,12 @@ fn main() {
     let mut buf = MemBuffer::new(scratch);
 
     // Warmup
-    op.apply(
-        out.as_mut(),
-        rhs.as_ref(),
-        par,
-        MemStack::new(&mut buf),
-    );
+    op.apply(out.as_mut(), rhs.as_ref(), par, MemStack::new(&mut buf));
 
     let n_spmv = 100;
     let t1 = Instant::now();
     for _ in 0..n_spmv {
-        op.apply(
-            out.as_mut(),
-            rhs.as_ref(),
-            par,
-            MemStack::new(&mut buf),
-        );
+        op.apply(out.as_mut(), rhs.as_ref(), par, MemStack::new(&mut buf));
     }
     let spmv_time = t1.elapsed();
     println!(
@@ -133,20 +123,10 @@ fn main() {
 
     // SpMV with parallel
     let par_p = faer::Par::rayon(8);
-    op.apply(
-        out.as_mut(),
-        rhs.as_ref(),
-        par_p,
-        MemStack::new(&mut buf),
-    );
+    op.apply(out.as_mut(), rhs.as_ref(), par_p, MemStack::new(&mut buf));
     let t1p = Instant::now();
     for _ in 0..n_spmv {
-        op.apply(
-            out.as_mut(),
-            rhs.as_ref(),
-            par_p,
-            MemStack::new(&mut buf),
-        );
+        op.apply(out.as_mut(), rhs.as_ref(), par_p, MemStack::new(&mut buf));
     }
     let spmv_time_par = t1p.elapsed();
     println!(

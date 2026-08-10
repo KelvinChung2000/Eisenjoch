@@ -5,7 +5,9 @@
 //! lookahead heuristic is misleading A* past its visit budget.
 use nextpnr::chipdb::{ChipDb, PipId, WireId};
 use nextpnr::context::Context;
-use nextpnr::router::astar::{astar_search, default_pip_cost, AStarExit, AStarOptions, PathCostModel};
+use nextpnr::router::astar::{
+    astar_search, default_pip_cost, AStarExit, AStarOptions, PathCostModel,
+};
 use nextpnr::router::lookahead::Lookahead;
 use nextpnr::timing::DelayT;
 use rustc_hash::FxHashSet;
@@ -20,7 +22,12 @@ impl<'a> PathCostModel for LookaheadModel<'a> {
         default_pip_cost(ctx, pip)
     }
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
-        self.la.estimate_delay(ctx.chipdb(), wire, dst, nextpnr::router::lookahead::UNKNOWN_CLASS)
+        self.la.estimate_delay(
+            ctx.chipdb(),
+            wire,
+            dst,
+            nextpnr::router::lookahead::UNKNOWN_CLASS,
+        )
     }
 }
 
@@ -104,11 +111,27 @@ fn main() {
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
-    chipdb.node_wires_cb(src, |nw| { src_set.insert(nw); });
+    chipdb.node_wires_cb(src, |nw| {
+        src_set.insert(nw);
+    });
     println!("  src_set.len={}", src_set.len());
 
     for &limit in &[500_000usize, 5_000_000, 50_000_000] {
-        try_with_model(&format!("lookahead limit={}", limit), &ctx, &LookaheadModel { la: &lookahead }, &src_set, dst, limit);
+        try_with_model(
+            &format!("lookahead limit={}", limit),
+            &ctx,
+            &LookaheadModel { la: &lookahead },
+            &src_set,
+            dst,
+            limit,
+        );
     }
-    try_with_model("no_heuristic limit=50M", &ctx, &NoHeuristic, &src_set, dst, 50_000_000);
+    try_with_model(
+        "no_heuristic limit=50M",
+        &ctx,
+        &NoHeuristic,
+        &src_set,
+        dst,
+        50_000_000,
+    );
 }

@@ -17,11 +17,7 @@ pub(crate) const LOGIT_THETA: f64 = 0.25;
 /// large designs the default `cfg.net_parallel_batch_size = 4` produced
 /// hundreds of inits per pre_solve. Floor at the configured minimum so
 /// small designs keep their tuning.
-pub(crate) fn auto_batch_size(
-    cfg_min: usize,
-    n_items: usize,
-    pool: &rayon::ThreadPool,
-) -> usize {
+pub(crate) fn auto_batch_size(cfg_min: usize, n_items: usize, pool: &rayon::ThreadPool) -> usize {
     let cfg_min = cfg_min.max(1);
     let threads = pool.current_num_threads().max(1);
     (n_items / (threads * 8)).max(cfg_min)
@@ -267,7 +263,9 @@ impl PathSolverWorkspace {
         }
         // Buckets are drained by the dial loop; nothing to clear unless we
         // broke early. Trim back to something reasonable to cap memory.
-        let keep = (self.max_bucket as usize).saturating_add(1).min(self.buckets.len());
+        let keep = (self.max_bucket as usize)
+            .saturating_add(1)
+            .min(self.buckets.len());
         for bucket in &mut self.buckets[..keep] {
             bucket.clear();
         }
@@ -428,8 +426,7 @@ fn build_corridor(
         max_x = max_x.max(sink.tile_x);
         min_y = min_y.min(sink.tile_y);
         max_y = max_y.max(sink.tile_y);
-        let direct =
-            manhattan_xy(source.tile_x, source.tile_y, sink.tile_x, sink.tile_y).max(1);
+        let direct = manhattan_xy(source.tile_x, source.tile_y, sink.tile_x, sink.tile_y).max(1);
         max_direct = max_direct.max(direct);
         sinks_out.push(CorridorSink {
             x: sink.tile_x,
@@ -833,7 +830,10 @@ fn dijkstra_and_forward(
 
     dist_int[source_node] = 0;
     path_weight[source_node] = 1.0;
-    heap.push(HeapEntry { dist: 0.0, node: source_node });
+    heap.push(HeapEntry {
+        dist: 0.0,
+        node: source_node,
+    });
 
     // Sink-bounded termination: stop popping once every sink has been
     // settled and the slack budget around the farthest sink is exhausted.
@@ -905,8 +905,7 @@ fn dijkstra_and_forward(
                 // Upstream settled predecessor: forward-pass contribution.
                 let neigh_weight = path_weight[neighbour];
                 if neigh_weight > 0.0 && neigh_weight.is_finite() {
-                    let likelihood =
-                        link_likelihood_from_ints(neigh_dist_int, cur, cost_int);
+                    let likelihood = link_likelihood_from_ints(neigh_dist_int, cur, cost_int);
                     if likelihood > 0.0 {
                         acc_weight += neigh_weight * likelihood;
                     }
@@ -952,7 +951,9 @@ pub(crate) fn link_likelihood_from_ints(
     dist_to_int: u32,
     cost_int: u32,
 ) -> f64 {
-    let slack = dist_from_int.saturating_add(cost_int).saturating_sub(dist_to_int);
+    let slack = dist_from_int
+        .saturating_add(cost_int)
+        .saturating_sub(dist_to_int);
     let idx = slack as usize;
     if idx < LIKELIHOOD_LUT_SIZE {
         LIKELIHOOD_LUT[idx] as f64
@@ -965,15 +966,15 @@ pub(crate) fn link_likelihood_from_ints(
 /// computation over the network and returns `dist_int`. Used by `fsm.rs` tests
 /// to validate equivalence with the hot path.
 #[cfg(test)]
-pub(crate) fn dijkstra_single_source_for_test(
-    network: &PipeNetwork,
-    source: usize,
-) -> Vec<u32> {
+pub(crate) fn dijkstra_single_source_for_test(network: &PipeNetwork, source: usize) -> Vec<u32> {
     let n = network.num_nodes();
     let mut dist = vec![u32::MAX; n];
     dist[source] = 0;
     let mut heap = BinaryHeap::new();
-    heap.push(HeapEntry { dist: 0.0, node: source });
+    heap.push(HeapEntry {
+        dist: 0.0,
+        node: source,
+    });
     while let Some(HeapEntry { dist: d_f, node }) = heap.pop() {
         let cur = dist[node];
         let cur_f = cur as f64;
@@ -987,7 +988,10 @@ pub(crate) fn dijkstra_single_source_for_test(
             let cand = cur.saturating_add(cost);
             if cand < dist[other] {
                 dist[other] = cand;
-                heap.push(HeapEntry { dist: cand as f64, node: other });
+                heap.push(HeapEntry {
+                    dist: cand as f64,
+                    node: other,
+                });
             }
         }
     }
@@ -1009,8 +1013,7 @@ pub(crate) fn dial_logit_load(
     // surface that as `missing_demand`/`failures` so the caller (and
     // pre_solve_diag) sees the gap; affected nodes simply have no entry in
     // `dist_cache` and downstream cost lookups return INFINITY.
-    let Some(corridor) =
-        build_corridor(network, source_node, sink_demands, &mut ws.corridor_sinks)
+    let Some(corridor) = build_corridor(network, source_node, sink_demands, &mut ws.corridor_sinks)
     else {
         return DialLogitResult {
             heap_pops: 0,
@@ -1496,12 +1499,8 @@ mod tests {
             .iter()
             .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
             .collect();
-        let tile_grid = crate::placer::opt_trans::network::TileGrid::build(
-            &pipes,
-            &nodes,
-            n_nodes as i32,
-            1,
-        );
+        let tile_grid =
+            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, n_nodes as i32, 1);
         let flat_adjacency =
             crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
         let tile_templates = std::sync::Arc::new(Vec::new());

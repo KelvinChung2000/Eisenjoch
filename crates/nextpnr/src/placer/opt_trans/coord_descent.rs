@@ -233,11 +233,7 @@ fn compute_steiner_centroids(
 /// approximation that distributes pull across pin-pair edges instead of a
 /// single centroid attractor. Called per outer iter when
 /// `cfg.mst_edge_weight > 0.0`.
-fn compute_mst_neighbors(
-    dist_cache: &mut DistCache,
-    net_infos: &[NetInfo],
-    network: &PipeNetwork,
-) {
+fn compute_mst_neighbors(dist_cache: &mut DistCache, net_infos: &[NetInfo], network: &PipeNetwork) {
     let width = network.width as usize;
     dist_cache.mst_neighbors.clear();
     dist_cache.mst_neighbors.resize(net_infos.len(), Vec::new());
@@ -660,11 +656,8 @@ fn solve_all_nets_with_displacement(
 
     let n_nodes = network.num_nodes();
     let n_pipes = network.num_pipes();
-    let batch_size = path_solver::auto_batch_size(
-        cfg.net_parallel_batch_size,
-        net_infos.len(),
-        solve_pool,
-    );
+    let batch_size =
+        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
 
     assert_eq!(
         dist_cache.rows.len(),
@@ -789,10 +782,8 @@ fn solve_all_nets_with_displacement(
                         ws.pin_xy_scratch.clear();
                         ws.pin_xy_scratch.reserve(info.pins.len());
                         for pin in &info.pins {
-                            ws.pin_xy_scratch.push((
-                                (pin.node % width_n) as i32,
-                                (pin.node / width_n) as i32,
-                            ));
+                            ws.pin_xy_scratch
+                                .push(((pin.node % width_n) as i32, (pin.node / width_n) as i32));
                         }
 
                         let dist_out = &mut dist_chunk[local_idx];
@@ -875,11 +866,8 @@ fn solve_all_nets_bresenham_logit(
     collect_usage: bool,
 ) -> SolveAccum {
     let n_pipes = network.num_pipes();
-    let batch_size = path_solver::auto_batch_size(
-        cfg.net_parallel_batch_size,
-        net_infos.len(),
-        solve_pool,
-    );
+    let batch_size =
+        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
     assert_eq!(
         dist_cache.rows.len(),
         net_infos.len(),
@@ -967,11 +955,8 @@ fn solve_bresenham_usage_only(
     solve_pool: &rayon::ThreadPool,
 ) -> SolveAccum {
     let n_pipes = network.num_pipes();
-    let batch_size = path_solver::auto_batch_size(
-        cfg.net_parallel_batch_size,
-        net_infos.len(),
-        solve_pool,
-    );
+    let batch_size =
+        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
 
     solve_pool
         .install(|| {
@@ -1360,7 +1345,11 @@ fn append_adjacent_pipe(
 /// Dump percentiles of `R_eff / base` across the pipe graph for the current
 /// iteration. Gated on `NEXTPNR_DIAG=1` so it only runs during sweeps. Keeps
 /// everything on one line so the CSV harness can parse it with a grep.
-fn report_reff_distribution(network: &PipeNetwork, resistance_model: &ResistanceModel, iter: usize) {
+fn report_reff_distribution(
+    network: &PipeNetwork,
+    resistance_model: &ResistanceModel,
+    iter: usize,
+) {
     if std::env::var("NEXTPNR_DIAG").ok().as_deref() != Some("1") {
         return;
     }
@@ -1397,12 +1386,12 @@ fn update_effective_conductance(
     graph_model: GraphModel,
 ) {
     use super::network::DIST_SCALE;
-    if matches!(graph_model, GraphModel::TwoLevelSpan | GraphModel::TwoLevelPip) {
+    if matches!(
+        graph_model,
+        GraphModel::TwoLevelSpan | GraphModel::TwoLevelPip
+    ) {
         if graph_model == GraphModel::TwoLevelPip {
-            let stats = super::tile_cache::rebuild_span_cost_table_pip(
-                network,
-                resistance_model,
-            );
+            let stats = super::tile_cache::rebuild_span_cost_table_pip(network, resistance_model);
             let avg_us = if stats.dijkstra_calls > 0 {
                 stats.dijkstra_total_us as f64 / stats.dijkstra_calls as f64
             } else {
@@ -2357,26 +2346,23 @@ fn place_dcd_sweep(
             // Each candidate is damped against `old` and tried via an
             // atomic `try_commit`; first success wins. Cells stay put only
             // if every candidate fails.
-            let try_candidate =
-                |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
-                    if cand_gx == old_gx && cand_gy == old_gy {
-                        return None;
-                    }
-                    let new_gx_f =
-                        alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64;
-                    let new_gy_f =
-                        alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64;
-                    let new_gx = new_gx_f.round() as i32;
-                    let new_gy = new_gy_f.round() as i32;
-                    if new_gx == old_gx && new_gy == old_gy {
-                        return None;
-                    }
-                    if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
-                        Some((new_gx, new_gy))
-                    } else {
-                        None
-                    }
-                };
+            let try_candidate = |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
+                if cand_gx == old_gx && cand_gy == old_gy {
+                    return None;
+                }
+                let new_gx_f = alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64;
+                let new_gy_f = alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64;
+                let new_gx = new_gx_f.round() as i32;
+                let new_gy = new_gy_f.round() as i32;
+                if new_gx == old_gx && new_gy == old_gy {
+                    return None;
+                }
+                if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
+                    Some((new_gx, new_gy))
+                } else {
+                    None
+                }
+            };
             if let Some((new_gx, new_gy)) = try_candidate(primary_gx, primary_gy) {
                 return (new_gx, new_gy, true, stats);
             }
@@ -3590,7 +3576,11 @@ fn place_dcd_sweep_jacobi_bb(
             // Candidate occupants of the desired tile (clone to drop the borrow
             // on `occ` before any mutation below).
             let cand: Vec<usize> = match occ.get(&(tx, ty)) {
-                Some(v) => v.iter().copied().filter(|&j| j != ci && !swapped[j]).collect(),
+                Some(v) => v
+                    .iter()
+                    .copied()
+                    .filter(|&j| j != ci && !swapped[j])
+                    .collect(),
                 None => continue,
             };
             for j in cand {
@@ -3932,9 +3922,8 @@ pub fn run_inner_outer(
         }
         let prev_dist_cache_shape = (dist_cache.n_nets, dist_cache.n_nodes);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
-        let dist_cache_was_realloced = prev_dist_cache_shape
-            != (dist_cache.n_nets, dist_cache.n_nodes)
-            || outer == 0;
+        let dist_cache_was_realloced =
+            prev_dist_cache_shape != (dist_cache.n_nets, dist_cache.n_nodes) || outer == 0;
 
         // Refresh per-net 1-Steiner centroids before the Jacobi sweep so
         // every `evaluate_cell_at` call in this iter uses a hub consistent
@@ -5275,12 +5264,8 @@ mod softmin_tests {
     fn running_anchor_stays_stable_under_descending_costs() {
         // Feed probes in descending cost order; the anchor rescale must keep
         // the weighted mean exact.
-        let probes: Vec<(i32, i32, f64)> = vec![
-            (0, 0, 20.0),
-            (10, 0, 5.0),
-            (10, 10, 2.0),
-            (0, 10, 2.0),
-        ];
+        let probes: Vec<(i32, i32, f64)> =
+            vec![(0, 0, 20.0), (10, 0, 5.0), (10, 10, 2.0), (0, 10, 2.0)];
         // Reference: recompute softmin with the standard two-pass LSE.
         let theta = 0.3;
         let c_min = probes

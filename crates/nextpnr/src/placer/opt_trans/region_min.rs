@@ -109,12 +109,20 @@ impl RegionMinPyramid {
                     data[(cy * w_next + cx) as usize] = m;
                 }
             }
-            levels.push(PyrLevel { w: w_next, h: h_next, data });
+            levels.push(PyrLevel {
+                w: w_next,
+                h: h_next,
+                data,
+            });
             cur_w = w_next;
             cur_h = h_next;
         }
 
-        Self { width, height, levels }
+        Self {
+            width,
+            height,
+            levels,
+        }
     }
 
     /// Total stored bytes (for diagnostics).

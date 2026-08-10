@@ -219,7 +219,10 @@ impl<'a> SearchRegion<'a> {
     }
 }
 
-fn build_search_region<'a>(chipdb: &ChipDb, bboxes: &'a [BoundingBox]) -> (SearchRegion<'a>, Option<usize>) {
+fn build_search_region<'a>(
+    chipdb: &ChipDb,
+    bboxes: &'a [BoundingBox],
+) -> (SearchRegion<'a>, Option<usize>) {
     match bboxes {
         [] => (SearchRegion::Unbounded, None),
         [bb] => (SearchRegion::Single(bb), Some(bbox_area(bb))),
@@ -270,7 +273,9 @@ impl VisitState {
     #[inline]
     fn score(&self, wire: WireId) -> Option<DelayT> {
         match self {
-            Self::Trace(visited) => visited.get(&wire).map(|&(cost, penalty, _, _)| cost + penalty),
+            Self::Trace(visited) => visited
+                .get(&wire)
+                .map(|&(cost, penalty, _, _)| cost + penalty),
             Self::Fast { scores, .. } => scores.get(&wire).copied(),
         }
     }
@@ -465,10 +470,8 @@ pub fn astar_search<M: PathCostModel>(
     let init_cap = src_wires.len().saturating_mul(8).max(16);
     let mut heap: BinaryHeap<QueueEntry> = BinaryHeap::with_capacity(init_cap);
     let mut visited = VisitState::with_capacity(init_cap, opts.retain_trace);
-    let mut nodes_expanded: FxHashSet<u64> = FxHashSet::with_capacity_and_hasher(
-        init_cap,
-        Default::default(),
-    );
+    let mut nodes_expanded: FxHashSet<u64> =
+        FxHashSet::with_capacity_and_hasher(init_cap, Default::default());
 
     let grid_area = (chipdb.width() as usize) * (chipdb.height() as usize);
     let bboxes = model.bboxes();
@@ -482,9 +485,9 @@ pub fn astar_search<M: PathCostModel>(
         })
         .min()
         .unwrap_or(0);
-    let max_visits = opts.visit_limit.unwrap_or_else(|| {
-        default_visit_limit_for_search(grid_area, min_manhattan, region_tiles)
-    });
+    let max_visits = opts
+        .visit_limit
+        .unwrap_or_else(|| default_visit_limit_for_search(grid_area, min_manhattan, region_tiles));
 
     // Whether dst is ever a peer of the node currently being expanded.
     let dst_node_id = chipdb.node_id(dst_wire);

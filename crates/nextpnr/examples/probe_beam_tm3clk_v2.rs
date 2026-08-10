@@ -20,8 +20,12 @@ struct BeamModel<'a> {
 }
 
 impl<'a> PathCostModel for BeamModel<'a> {
-    fn pip_cost(&self, _: &Context, _: PipId) -> DelayT { 1 }
-    fn wire_penalty(&self, _: &Context, _: WireId) -> DelayT { 0 }
+    fn pip_cost(&self, _: &Context, _: PipId) -> DelayT {
+        1
+    }
+    fn wire_penalty(&self, _: &Context, _: WireId) -> DelayT {
+        0
+    }
     fn heuristic(&self, _: &Context, w: WireId, dst: WireId) -> DelayT {
         let (wx, wy) = self.chipdb.tile_xy(w.tile());
         let (dx, dy) = self.chipdb.tile_xy(dst.tile());
@@ -54,8 +58,13 @@ fn main() {
     let src = find_wire(cdb, src_tile, "IO0_O").expect("IO0_O");
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
-    cdb.node_wires_cb(src, |nw| { src_set.insert(nw); });
-    println!("src tile @ (0,183), IO0_O, src_set size = {}", src_set.len());
+    cdb.node_wires_cb(src, |nw| {
+        src_set.insert(nw);
+    });
+    println!(
+        "src tile @ (0,183), IO0_O, src_set size = {}",
+        src_set.len()
+    );
 
     // Try a CLOSE sink: (2, 95). Pick its first M1_LOGIC_OUTS_L0 wire as dst.
     // (the actual tm3_vidin_cref sink wire would be a SLICE input — we'll
@@ -91,7 +100,10 @@ fn main() {
     let (dst, dst_up) = best_dst.expect("dst");
     let info = cdb.wire_info(dst);
     let nid: i32 = unsafe { read_packed!(*info, name) };
-    println!("  picked dst wire: {} pips_uphill={dst_up}", cdb.constid_str(nid).unwrap_or("?"));
+    println!(
+        "  picked dst wire: {} pips_uphill={dst_up}",
+        cdb.constid_str(nid).unwrap_or("?")
+    );
 
     // Run beam-style A*.
     let model = BeamModel { chipdb: cdb };
@@ -105,8 +117,12 @@ fn main() {
     {
         struct Dij;
         impl PathCostModel for Dij {
-            fn pip_cost(&self, _: &Context, _: PipId) -> DelayT { 1 }
-            fn heuristic(&self, _: &Context, _: WireId, _: WireId) -> DelayT { 0 }
+            fn pip_cost(&self, _: &Context, _: PipId) -> DelayT {
+                1
+            }
+            fn heuristic(&self, _: &Context, _: WireId, _: WireId) -> DelayT {
+                0
+            }
         }
         let opts_d = AStarOptions {
             visit_limit: Some(2_000_000),
@@ -123,9 +139,16 @@ fn main() {
     }
 
     let r = astar_search(&ctx, &model, &src_set, dst, &opts);
-    println!("\nastar result: path = {:?} pips, visits = {}", r.path.as_ref().map(|p| p.len()), r.trace.visit_count);
+    println!(
+        "\nastar result: path = {:?} pips, visits = {}",
+        r.path.as_ref().map(|p| p.len()),
+        r.trace.visit_count
+    );
     if let Some(path) = &r.path {
-        let total_cost: i64 = path.iter().map(|&pip| default_pip_cost(&ctx, pip) as i64).sum();
+        let total_cost: i64 = path
+            .iter()
+            .map(|&pip| default_pip_cost(&ctx, pip) as i64)
+            .sum();
         println!("  total cost = {total_cost}");
         for (i, &pip) in path.iter().take(8).enumerate() {
             let s = cdb.pip_src_wire(pip);
@@ -144,7 +167,9 @@ fn main() {
             let (dx, dy) = cdb.tile_xy(d.tile());
             println!("  [{i:>2}] ({sx},{sy}){sn} -> ({dx},{dy}){dn}");
         }
-        if path.len() > 8 { println!("  ... +{} more", path.len() - 8); }
+        if path.len() > 8 {
+            println!("  ... +{} more", path.len() - 8);
+        }
     } else {
         // Diagnose: what's in the trace.visited frontier? How far did we get?
         let v = &r.trace.visited;
@@ -158,12 +183,22 @@ fn main() {
             let (wx, wy) = cdb.tile_xy(w.tile());
             let dx = (wx - sx).abs();
             let dy = (wy - sy).abs();
-            if dx > max_dx { max_dx = dx; }
-            if dy > max_dy { max_dy = dy; }
+            if dx > max_dx {
+                max_dx = dx;
+            }
+            if dy > max_dy {
+                max_dy = dy;
+            }
             tile_set.insert(w.tile());
-            if w.tile() == dst_t { visited_dst_tile += 1; }
+            if w.tile() == dst_t {
+                visited_dst_tile += 1;
+            }
         }
-        println!("  visited entries: {} wires across {} tiles, max_dx={max_dx}, max_dy={max_dy}", v.len(), tile_set.len());
+        println!(
+            "  visited entries: {} wires across {} tiles, max_dx={max_dx}, max_dy={max_dy}",
+            v.len(),
+            tile_set.len()
+        );
         println!("  wires visited inside dst tile (2,95) = {visited_dst_tile}");
         let dst_present = v.contains_key(&dst);
         println!("  M1_IMUX_L0 itself in visited = {dst_present}");
@@ -175,8 +210,13 @@ fn main() {
         for &pip in pips_up {
             let pid = PipId::new(dst.tile(), pip);
             let upstream = cdb.pip_src_wire(pid);
-            if v.contains_key(&upstream) { up_in_visited += 1; }
+            if v.contains_key(&upstream) {
+                up_in_visited += 1;
+            }
         }
-        println!("  pips uphill of dst = {}, with src wire in visited = {up_in_visited}", pips_up.len());
+        println!(
+            "  pips uphill of dst = {}, with src wire in visited = {up_in_visited}",
+            pips_up.len()
+        );
     }
 }

@@ -36,26 +36,44 @@ fn try_route(ctx: &Context, src_name: &str, sx: i32, sy: i32, dst_name: &str, dx
     let db = ctx.chipdb();
     let src_tile = db.tile_by_xy(sx, sy);
     let Some(src) = find_wire_by_name(db, src_tile, src_name) else {
-        println!("  !! src {}@({},{}) NOT FOUND (tile_type={})",
-            src_name, sx, sy, db.tile_type_name(src_tile));
+        println!(
+            "  !! src {}@({},{}) NOT FOUND (tile_type={})",
+            src_name,
+            sx,
+            sy,
+            db.tile_type_name(src_tile)
+        );
         return;
     };
     let dst_tile = db.tile_by_xy(dx, dy);
     let Some(dst) = find_wire_by_name(db, dst_tile, dst_name) else {
-        println!("  !! dst {}@({},{}) NOT FOUND (tile_type={})",
-            dst_name, dx, dy, db.tile_type_name(dst_tile));
+        println!(
+            "  !! dst {}@({},{}) NOT FOUND (tile_type={})",
+            dst_name,
+            dx,
+            dy,
+            db.tile_type_name(dst_tile)
+        );
         return;
     };
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
-    db.node_wires_cb(src, |nw| { src_set.insert(nw); });
+    db.node_wires_cb(src, |nw| {
+        src_set.insert(nw);
+    });
 
     let mut dst_set: FxHashSet<WireId> = FxHashSet::default();
     dst_set.insert(dst);
-    db.node_wires_cb(dst, |nw| { dst_set.insert(nw); });
-    println!("  src_node={} dst_node={} manhattan={}",
-        src_set.len(), dst_set.len(), (dx - sx).abs() + (dy - sy).abs());
+    db.node_wires_cb(dst, |nw| {
+        dst_set.insert(nw);
+    });
+    println!(
+        "  src_node={} dst_node={} manhattan={}",
+        src_set.len(),
+        dst_set.len(),
+        (dx - sx).abs() + (dy - sy).abs()
+    );
 
     for &limit in &[10_000_000usize, 50_000_000, 200_000_000] {
         let opts = AStarOptions {
@@ -69,7 +87,12 @@ fn try_route(ctx: &Context, src_name: &str, sx: i32, sy: i32, dst_name: &str, dx
         let dt_ms = t.elapsed().as_secs_f64() * 1000.0;
         match r.path {
             Some(path) => {
-                println!("  REACHABLE in {} pips at limit={} ({:.1} ms)", path.len(), limit, dt_ms);
+                println!(
+                    "  REACHABLE in {} pips at limit={} ({:.1} ms)",
+                    path.len(),
+                    limit,
+                    dt_ms
+                );
                 return;
             }
             None => {
@@ -80,9 +103,9 @@ fn try_route(ctx: &Context, src_name: &str, sx: i32, sy: i32, dst_name: &str, dx
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
 

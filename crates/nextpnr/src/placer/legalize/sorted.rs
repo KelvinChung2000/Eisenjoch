@@ -78,8 +78,7 @@ pub fn sorted_legalize(
 
     // Pre-collect BEL data per cell type into plain data (BelId, x, y, z)
     // so we can share across rayon threads without lifetime issues.
-    let mut bel_data_cache: FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>> =
-        FxHashMap::default();
+    let mut bel_data_cache: FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>> = FxHashMap::default();
     for &cell_idx in idx_to_cell {
         let cell_type_id = ctx.cell(cell_idx).cell_type_id();
         bel_data_cache.entry(cell_type_id).or_insert_with(|| {
@@ -281,8 +280,7 @@ pub fn sorted_legalize(
                 let want_x = root_loc.x + cx_off;
                 let want_y = root_loc.y + cy_off;
                 let want_z = if abs_z { cz_off } else { root_loc.z + cz_off };
-                let Some(&child_bel) = bel_by_loc.get(&(child_type, want_x, want_y, want_z))
-                else {
+                let Some(&child_bel) = bel_by_loc.get(&(child_type, want_x, want_y, want_z)) else {
                     cluster_footprint_rejects += 1;
                     continue 'outer;
                 };

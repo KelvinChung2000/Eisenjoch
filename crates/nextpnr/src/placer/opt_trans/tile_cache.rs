@@ -78,9 +78,7 @@ fn quantize_capacity(capacity: f64) -> u16 {
 
 #[inline]
 fn quantize_base(base: f64) -> u16 {
-    (base.max(0.0) * DIST_SCALE)
-        .round()
-        .min(u16::MAX as f64) as u16
+    (base.max(0.0) * DIST_SCALE).round().min(u16::MAX as f64) as u16
 }
 
 #[inline]
@@ -168,10 +166,7 @@ pub fn rebuild_span_cost_table_pip(
             let wire_cost = resistance_model.effective_resistance(pipe).max(1e-12);
 
             // Switch-matrix lookup via per-(tile_type, tile_usage_q) cache.
-            let tile_usage_q = tile_usage
-                .get(pipe.from)
-                .copied()
-                .unwrap_or(0);
+            let tile_usage_q = tile_usage.get(pipe.from).copied().unwrap_or(0);
             let cache_key = (tile_type, tile_usage_q);
             stats.switch_lookups += 1;
             let port_map = if let Some(existing) = sm_cache.get(&cache_key) {

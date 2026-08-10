@@ -42,7 +42,14 @@ fn load_fresh(chipdb_path: &str, design_path: &str) -> Context {
     ctx
 }
 
-fn collect_route_stats(ctx: &Context, route_ok: bool, place_secs: f64, hpwl: f64, route_secs: f64, label: &'static str) -> Report {
+fn collect_route_stats(
+    ctx: &Context,
+    route_ok: bool,
+    place_secs: f64,
+    hpwl: f64,
+    route_secs: f64,
+    label: &'static str,
+) -> Report {
     let mut alive = 0usize;
     let mut fully_routed = 0usize;
     let mut partial = 0usize;
@@ -68,9 +75,15 @@ fn collect_route_stats(ctx: &Context, route_ok: bool, place_secs: f64, hpwl: f64
         let tree_touches_all_sinks = {
             let mut touched = 0;
             for user in net.users() {
-                if !user.is_valid() { continue; }
-                let Some(ubel) = ctx.cell(user.cell).bel() else { continue; };
-                let Some(uw) = ubel.pin_wire(user.port) else { continue; };
+                if !user.is_valid() {
+                    continue;
+                }
+                let Some(ubel) = ctx.cell(user.cell).bel() else {
+                    continue;
+                };
+                let Some(uw) = ubel.pin_wire(user.port) else {
+                    continue;
+                };
                 let uwid = uw.id();
                 if net.wires().contains_key(&uwid) {
                     touched += 1;
@@ -78,9 +91,13 @@ fn collect_route_stats(ctx: &Context, route_ok: bool, place_secs: f64, hpwl: f64
                 }
                 let mut hit = false;
                 ctx.chipdb().node_wires_cb(uwid, |nw| {
-                    if !hit && net.wires().contains_key(&nw) { hit = true; }
+                    if !hit && net.wires().contains_key(&nw) {
+                        hit = true;
+                    }
                 });
-                if hit { touched += 1; }
+                if hit {
+                    touched += 1;
+                }
             }
             touched == expected_sinks
         };
@@ -97,7 +114,9 @@ fn collect_route_stats(ctx: &Context, route_ok: bool, place_secs: f64, hpwl: f64
 
     wls.sort_unstable();
     let pct = |p: f64| -> u64 {
-        if wls.is_empty() { return 0; }
+        if wls.is_empty() {
+            return 0;
+        }
         let idx = ((wls.len() - 1) as f64 * p).round() as usize;
         wls[idx]
     };
@@ -129,7 +148,11 @@ fn run_one(
 ) -> Report {
     println!("\n========== {} ==========", label);
     let mut ctx = load_fresh(chipdb_path, design_path);
-    println!("packed: {} cells, {} nets", ctx.design.num_cells(), ctx.design.num_nets());
+    println!(
+        "packed: {} cells, {} nets",
+        ctx.design.num_cells(),
+        ctx.design.num_nets()
+    );
 
     let t = Instant::now();
     let place_secs = match place_fn(&mut ctx) {
@@ -142,8 +165,15 @@ fn run_one(
                 hpwl: f64::NAN,
                 route_secs: 0.0,
                 route_ok: false,
-                alive: 0, fully_routed: 0, partial: 0, empty_tree: 0,
-                total_wl: 0, wl_p50: 0, wl_p90: 0, wl_p99: 0, wl_max: 0,
+                alive: 0,
+                fully_routed: 0,
+                partial: 0,
+                empty_tree: 0,
+                total_wl: 0,
+                wl_p50: 0,
+                wl_p90: 0,
+                wl_p99: 0,
+                wl_max: 0,
                 validate_ok: false,
             };
         }
@@ -210,10 +240,12 @@ fn run_one(
 }
 
 fn main() {
-    let chipdb_path = std::env::args().nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
-    let design_path = std::env::args().nth(2)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
+    let design_path = std::env::args().nth(2).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into()
+    });
 
     let r_heap = run_one("HeAP", &chipdb_path, &design_path, |ctx| {
         let cfg = PlacerHeapCfg::default();
@@ -236,19 +268,38 @@ fn main() {
     });
 
     println!("\n\n================================= COMPARISON =================================");
-    println!("{:<14}  {:>10}  {:>10}  {:>10}  {:>6}  {:>16}  {:>10}  {:>8}  {:>6}",
-        "placer", "place (s)", "hpwl", "route (s)", "ok?", "fully/alive", "wl total", "wl p99", "valid");
+    println!(
+        "{:<14}  {:>10}  {:>10}  {:>10}  {:>6}  {:>16}  {:>10}  {:>8}  {:>6}",
+        "placer",
+        "place (s)",
+        "hpwl",
+        "route (s)",
+        "ok?",
+        "fully/alive",
+        "wl total",
+        "wl p99",
+        "valid"
+    );
     for r in [&r_heap, &r_ot] {
-        println!("{:<14}  {:>10.1}  {:>10.0}  {:>10.1}  {:>6}  {:>10}/{:<4}  {:>10}  {:>8}  {:>6}",
-            r.label, r.place_secs, r.hpwl, r.route_secs,
+        println!(
+            "{:<14}  {:>10.1}  {:>10.0}  {:>10.1}  {:>6}  {:>10}/{:<4}  {:>10}  {:>8}  {:>6}",
+            r.label,
+            r.place_secs,
+            r.hpwl,
+            r.route_secs,
             if r.route_ok { "Ok" } else { "Err" },
-            r.fully_routed, r.alive, r.total_wl, r.wl_p99,
-            if r.validate_ok { "Ok" } else { "Err" });
+            r.fully_routed,
+            r.alive,
+            r.total_wl,
+            r.wl_p99,
+            if r.validate_ok { "Ok" } else { "Err" }
+        );
     }
     println!("\nDetails:");
     for r in [&r_heap, &r_ot] {
-        println!("  {:<10}  partial={}  empty_tree={}  wl(p50/p90/p99/max)={}/{}/{}/{}",
-            r.label, r.partial, r.empty_tree,
-            r.wl_p50, r.wl_p90, r.wl_p99, r.wl_max);
+        println!(
+            "  {:<10}  partial={}  empty_tree={}  wl(p50/p90/p99/max)={}/{}/{}/{}",
+            r.label, r.partial, r.empty_tree, r.wl_p50, r.wl_p90, r.wl_p99, r.wl_max
+        );
     }
 }

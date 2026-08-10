@@ -14,7 +14,9 @@ impl PathCostModel for Dij {
     fn pip_cost(&self, ctx: &Context, p: nextpnr::chipdb::PipId) -> DelayT {
         default_pip_cost(ctx, p)
     }
-    fn heuristic(&self, _: &Context, _: WireId, _: WireId) -> DelayT { 0 }
+    fn heuristic(&self, _: &Context, _: WireId, _: WireId) -> DelayT {
+        0
+    }
 }
 
 fn find_wire(db: &ChipDb, tile: i32, target: &str) -> Option<WireId> {
@@ -41,10 +43,21 @@ fn main() {
     let src_tile = 119 * cdb.width() + 309;
     let src = find_wire(cdb, src_tile, "IO0_O").expect("IO0_O");
     let (sx, sy) = cdb.tile_xy(src.tile());
-    println!("src @ ({sx},{sy}) tt={} name=IO0_O", cdb.tile_type_name(src.tile()));
+    println!(
+        "src @ ({sx},{sy}) tt={} name=IO0_O",
+        cdb.tile_type_name(src.tile())
+    );
 
     println!("h(src, dst) for varying dst at offset (dx, dy) from src:");
-    for &(dx, dy) in &[(-1, 0), (-12, 0), (-24, 0), (-60, 0), (-120, 0), (0, -2), (-120, -2)] {
+    for &(dx, dy) in &[
+        (-1, 0),
+        (-12, 0),
+        (-24, 0),
+        (-60, 0),
+        (-120, 0),
+        (0, -2),
+        (-120, -2),
+    ] {
         let tx = (sx + dx).clamp(0, cdb.width() - 1);
         let ty = (sy + dy).clamp(0, cdb.height() - 1);
         let dst_tile = ty * cdb.width() + tx;
@@ -59,7 +72,9 @@ fn main() {
     let dst_tile = 117 * cdb.width() + 189;
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
-    cdb.node_wires_cb(src, |nw| { src_set.insert(nw); });
+    cdb.node_wires_cb(src, |nw| {
+        src_set.insert(nw);
+    });
     // Pick one dst wire (needs to be a real wire in dst_tile).
     let dst = find_wire(cdb, dst_tile, "M3_CLBLM_M_D1").expect("dst");
     let opts = AStarOptions {
@@ -70,7 +85,10 @@ fn main() {
     };
     let r = astar_search(&ctx, &Dij, &src_set, dst, &opts);
     if let Some(path) = r.path {
-        let g: i64 = path.iter().map(|&pip| default_pip_cost(&ctx, pip) as i64).sum();
+        let g: i64 = path
+            .iter()
+            .map(|&pip| default_pip_cost(&ctx, pip) as i64)
+            .sum();
         println!("  true_cost = {g}, pips = {}", path.len());
     } else {
         println!("  Dijkstra exhausted budget without reaching dst");

@@ -172,7 +172,13 @@ impl FlatAdjacency {
         }
         let cost_int = vec![0u32; total];
         let cost_f = vec![0.0f32; total];
-        Self { offsets, neighbors, pipe_idx, cost_int, cost_f }
+        Self {
+            offsets,
+            neighbors,
+            pipe_idx,
+            cost_int,
+            cost_f,
+        }
     }
 
     pub fn empty(n_nodes: usize) -> Self {
@@ -244,7 +250,11 @@ impl TileGrid {
             }
         }
 
-        Self { pipe_e, pipe_s, long_pipes }
+        Self {
+            pipe_e,
+            pipe_s,
+            long_pipes,
+        }
     }
 }
 
@@ -816,10 +826,8 @@ impl PipeNetwork {
             let cap_sum: f64 = v.iter().map(|(_, c)| *c).sum();
             let use_sum: f64 = v.iter().map(|(u, _)| *u).sum();
             let slack = borrow_slack(s);
-            let mut raw_ratios: Vec<f64> =
-                v.iter().map(|(u, c)| u / c).collect();
-            let mut eff_ratios: Vec<f64> =
-                v.iter().map(|(u, c)| u / (c * slack)).collect();
+            let mut raw_ratios: Vec<f64> = v.iter().map(|(u, c)| u / c).collect();
+            let mut eff_ratios: Vec<f64> = v.iter().map(|(u, c)| u / (c * slack)).collect();
             raw_ratios.sort_by(|a, b| a.total_cmp(b));
             eff_ratios.sort_by(|a, b| a.total_cmp(b));
             let pct = |v: &[f64], q: f64| -> f64 {
@@ -830,13 +838,16 @@ impl PipeNetwork {
                     v[idx]
                 }
             };
-            let raw_avg = if cap_sum > 0.0 { use_sum / cap_sum } else { 0.0 };
+            let raw_avg = if cap_sum > 0.0 {
+                use_sum / cap_sum
+            } else {
+                0.0
+            };
             let raw_p99 = pct(&raw_ratios, 0.99);
             let raw_max = *raw_ratios.last().unwrap_or(&0.0);
             let eff_p99 = pct(&eff_ratios, 0.99);
             let eff_max = *eff_ratios.last().unwrap_or(&0.0);
-            let n_over =
-                eff_ratios.iter().filter(|&&r| r > 1.0).count() as f64 * 100.0 / n as f64;
+            let n_over = eff_ratios.iter().filter(|&&r| r > 1.0).count() as f64 * 100.0 / n as f64;
             eprintln!(
                 "  {:>3}   {:>5}  {:>7.0}  {:>7.0}  {:>6.3}   {:>6.3}   {:>6.3}   {:>6.3}   {:>6.3}   {:>5.1}%",
                 s, n, cap_sum, use_sum, raw_avg, raw_p99, raw_max, eff_p99, eff_max, n_over

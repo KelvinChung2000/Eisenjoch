@@ -9,9 +9,9 @@ use nextpnr::placer::pipeline::PlacerPipeline;
 use std::path::Path;
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let design_path = std::env::args().nth(2).unwrap_or_else(|| {
         "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into()
     });
@@ -73,17 +73,21 @@ fn main() {
             (false, false) => "?  ",
         };
         // We won't actually use ct except for spotting clk buffers.
-        let kind: &'static str = if ct.contains("BUFG") || ct.contains("BUFR") || ct.contains("BUFH") {
-            "CLK"
-        } else {
-            "PIN"
-        };
+        let kind: &'static str =
+            if ct.contains("BUFG") || ct.contains("BUFR") || ct.contains("BUFH") {
+                "CLK"
+            } else {
+                "PIN"
+            };
         entries.push((loc.x, loc.y, name, dir, kind));
     }
 
     entries.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
-    println!("{:<6} {:<6} {:<40} {:<4} {:<4}", "x", "y", "name", "dir", "kind");
+    println!(
+        "{:<6} {:<6} {:<40} {:<4} {:<4}",
+        "x", "y", "name", "dir", "kind"
+    );
     for (x, y, name, dir, kind) in &entries {
         println!("{:<6} {:<6} {:<40} {:<4} {:<4}", x, y, name, dir, kind);
     }

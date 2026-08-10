@@ -161,8 +161,7 @@ fn sparse_sweep(
         (true, true) => {
             let nodes: Vec<usize> = marked.clone();
             for node in nodes {
-                let (did_relax, nd) =
-                    relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
+                let (did_relax, nd) = relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
                 if did_relax {
                     count += 1;
                     if nd > max_d {
@@ -174,8 +173,7 @@ fn sparse_sweep(
         (false, false) => {
             let nodes: Vec<usize> = marked.iter().rev().copied().collect();
             for node in nodes {
-                let (did_relax, nd) =
-                    relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
+                let (did_relax, nd) = relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
                 if did_relax {
                     count += 1;
                     if nd > max_d {
@@ -187,8 +185,7 @@ fn sparse_sweep(
         (false, true) => {
             let nodes = per_row_reversed(marked, w_us);
             for node in nodes {
-                let (did_relax, nd) =
-                    relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
+                let (did_relax, nd) = relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
                 if did_relax {
                     count += 1;
                     if nd > max_d {
@@ -200,8 +197,7 @@ fn sparse_sweep(
         (true, false) => {
             let nodes = rows_reversed(marked, w_us);
             for node in nodes {
-                let (did_relax, nd) =
-                    relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
+                let (did_relax, nd) = relax_tile(network, ws, node, x_fwd, y_fwd, w_us);
                 if did_relax {
                     count += 1;
                     if nd > max_d {
@@ -487,7 +483,11 @@ mod tests {
         let mut nodes = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
             for x in 0..w {
-                nodes.push(Node { tile_x: x, tile_y: y, pressure: 0.0 });
+                nodes.push(Node {
+                    tile_x: x,
+                    tile_y: y,
+                    pressure: 0.0,
+                });
             }
         }
         let mut pipes = Vec::new();

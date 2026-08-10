@@ -41,7 +41,9 @@ pub(super) fn driver_class_for_net(
     net: NetId,
     lookahead: Option<&Lookahead>,
 ) -> LookaheadClass {
-    let Some(la) = lookahead else { return UNKNOWN_CLASS };
+    let Some(la) = lookahead else {
+        return UNKNOWN_CLASS;
+    };
     let Some(driver_pin) = ctx.net(net).driver_cell_port() else {
         return UNKNOWN_CLASS;
     };

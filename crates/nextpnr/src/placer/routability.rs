@@ -38,9 +38,7 @@ use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::{CellPin, NetId};
-use crate::router::astar::{
-    astar_search, AStarExit, AStarOptions, PathCostModel,
-};
+use crate::router::astar::{astar_search, AStarExit, AStarOptions, PathCostModel};
 use crate::timing::DelayT;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -165,21 +163,14 @@ impl PinOwnership {
             .filter_map(|(cid, cell)| cell.bel.map(|b| (cid, b)))
             .collect();
         for (cid, bel) in bound {
-            for (w, net) in
-                crate::placer::legalize::common::cell_pin_wires_pub(ctx, cid, bel)
-            {
+            for (w, net) in crate::placer::legalize::common::cell_pin_wires_pub(ctx, cid, bel) {
                 Self::insert_with_peers(ctx, w, net, &mut map);
             }
         }
         Self { map }
     }
 
-    fn insert_with_peers(
-        ctx: &Context,
-        w: WireId,
-        net: NetId,
-        map: &mut FxHashMap<WireId, NetId>,
-    ) {
+    fn insert_with_peers(ctx: &Context, w: WireId, net: NetId, map: &mut FxHashMap<WireId, NetId>) {
         map.insert(w, net);
         let mut peers = 0usize;
         ctx.chipdb().node_wires_cb(w, |nw| {
@@ -241,12 +232,19 @@ impl<'a> PathCostModel for ReachabilityModel<'a> {
 
 #[inline]
 fn bbox_visit_limit(
-    xmin: i32, xmax: i32, ymin: i32, ymax: i32,
-    per_tile: usize, floor: usize,
+    xmin: i32,
+    xmax: i32,
+    ymin: i32,
+    ymax: i32,
+    per_tile: usize,
+    floor: usize,
 ) -> usize {
     let bbox_w = (xmax - xmin + 1).max(1) as usize;
     let bbox_h = (ymax - ymin + 1).max(1) as usize;
-    bbox_w.saturating_mul(bbox_h).saturating_mul(per_tile).max(floor)
+    bbox_w
+        .saturating_mul(bbox_h)
+        .saturating_mul(per_tile)
+        .max(floor)
 }
 
 fn collect_checkable_nets(ctx: &Context) -> (Vec<NetId>, usize) {
@@ -285,7 +283,13 @@ pub fn check_routability(ctx: &Context) -> RoutabilityReport {
     let infeasible: Vec<InfeasibleNet> = net_ids
         .par_iter()
         .filter_map(|&net_id| {
-            check_net_perpair(ctx, net_id, &ownership, &pair_counter, &inconclusive_counter)
+            check_net_perpair(
+                ctx,
+                net_id,
+                &ownership,
+                &pair_counter,
+                &inconclusive_counter,
+            )
         })
         .collect();
 
@@ -392,13 +396,23 @@ fn check_net_perpair(
         let ymin = sy.min(ty) - halo;
         let ymax = sy.max(ty) + halo;
         let visit_limit = bbox_visit_limit(
-            xmin, xmax, ymin, ymax, VISIT_PER_TILE_PERPAIR, PERPAIR_VISIT_FLOOR,
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            VISIT_PER_TILE_PERPAIR,
+            PERPAIR_VISIT_FLOOR,
         );
 
         let model = ReachabilityModel {
             ownership,
             own_net: net_id,
-            bbox: [BoundingBox { x0: xmin, y0: ymin, x1: xmax, y1: ymax }],
+            bbox: [BoundingBox {
+                x0: xmin,
+                y0: ymin,
+                x1: xmax,
+                y1: ymax,
+            }],
             use_heuristic: true,
         };
 
@@ -483,19 +497,31 @@ fn check_net_global(
     }
 
     let visit_limit = bbox_visit_limit(
-        xmin, xmax, ymin, ymax, VISIT_PER_TILE_GLOBAL, GLOBAL_VISIT_FLOOR,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        VISIT_PER_TILE_GLOBAL,
+        GLOBAL_VISIT_FLOOR,
     );
-    let bbox = BoundingBox { x0: xmin, y0: ymin, x1: xmax, y1: ymax };
+    let bbox = BoundingBox {
+        x0: xmin,
+        y0: ymin,
+        x1: xmax,
+        y1: ymax,
+    };
 
-    let result = multi_target_search(
-        ctx, src_wire, &sinks, &bbox, ownership, net_id, visit_limit,
-    );
+    let result = multi_target_search(ctx, src_wire, &sinks, &bbox, ownership, net_id, visit_limit);
 
     if std::env::var("NPNR_OT_GLOBAL_BBOX_HIST").ok().as_deref() == Some("1") {
         eprintln!(
             "global-result: net={:?} area={} reached={}/{} visited={} drained={}",
-            net_id, bbox_area, result.reached_count, sinks.len(),
-            result.visit_count, result.drained,
+            net_id,
+            bbox_area,
+            result.reached_count,
+            sinks.len(),
+            result.visit_count,
+            result.drained,
         );
     }
 
@@ -591,18 +617,21 @@ fn multi_target_search(
 
     // Mark `src` as reached if it's also a sink (some BEL pin wires can be
     // shared between driver and sink positions on the same node).
-    let mut mark_reached = |wire: WireId,
-                            remaining: &mut FxHashSet<WireId>,
-                            reached: &mut FxHashSet<WireId>| {
-        if remaining.remove(&wire) {
-            reached.insert(wire);
-        }
-    };
+    let mut mark_reached =
+        |wire: WireId, remaining: &mut FxHashSet<WireId>, reached: &mut FxHashSet<WireId>| {
+            if remaining.remove(&wire) {
+                reached.insert(wire);
+            }
+        };
 
     best_cost.insert(src, 0);
     mark_reached(src, &mut remaining, &mut reached);
     let h0 = heuristic(src, &remaining);
-    heap.push(GlobalEntry { wire: src, cost: 0, estimate: h0 });
+    heap.push(GlobalEntry {
+        wire: src,
+        cost: 0,
+        estimate: h0,
+    });
 
     let mut visit_count = 0usize;
     let mut drained = true;
@@ -683,11 +712,20 @@ fn multi_target_search(
                 }
                 best_cost.insert(next, new_cost);
                 let h = heuristic(next, &remaining);
-                heap.push(GlobalEntry { wire: next, cost: new_cost, estimate: new_cost + h });
+                heap.push(GlobalEntry {
+                    wire: next,
+                    cost: new_cost,
+                    estimate: new_cost + h,
+                });
             }
         }
     }
 
     let reached_count = reached.len();
-    MultiSearchResult { reached, reached_count, visit_count, drained }
+    MultiSearchResult {
+        reached,
+        reached_count,
+        visit_count,
+        drained,
+    }
 }

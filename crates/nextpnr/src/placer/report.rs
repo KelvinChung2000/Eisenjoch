@@ -10,7 +10,10 @@ use crate::netlist::CellId;
 pub fn report_post_legalization(ctx: &Context) -> (f64, f64) {
     let post_hpwl = total_hpwl(ctx);
     let post_line = total_line_estimate(ctx);
-    eprintln!("Post-legalization: HPWL={:.0}, line={:.0}", post_hpwl, post_line);
+    eprintln!(
+        "Post-legalization: HPWL={:.0}, line={:.0}",
+        post_hpwl, post_line
+    );
     (post_hpwl, post_line)
 }
 

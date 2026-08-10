@@ -8,8 +8,8 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    build_bel_by_loc, build_cell_legality_cache, cluster_is_legal_cached,
-    place_cluster_children, unbind_movable_cells, CellLegalityCache, DriverNodeRegistry,
+    build_bel_by_loc, build_cell_legality_cache, cluster_is_legal_cached, place_cluster_children,
+    unbind_movable_cells, CellLegalityCache, DriverNodeRegistry,
 };
 use crate::placer::legalize::snap::snap_to_clb_grid;
 use crate::placer::PlacerError;
@@ -167,7 +167,9 @@ pub fn legalize_ring(
             const GRID: i32 = 8;
             let mut grid: FxHashMap<(i32, i32), Vec<(i32, i32)>> = FxHashMap::default();
             for &(bx, by) in &all_positions {
-                grid.entry((bx / GRID, by / GRID)).or_default().push((bx, by));
+                grid.entry((bx / GRID, by / GRID))
+                    .or_default()
+                    .push((bx, by));
             }
             cell_indices
                 .iter()
@@ -239,15 +241,22 @@ pub fn legalize_ring(
                                     if sample {
                                         let t = std::time::Instant::now();
                                         let r = cluster_is_legal_cached(
-                                            ctx, &registry, &bel_by_loc, cache, bid,
+                                            ctx,
+                                            &registry,
+                                            &bel_by_loc,
+                                            cache,
+                                            bid,
                                         );
-                                        probe_islegal_only_us +=
-                                            t.elapsed().as_nanos() as u128;
+                                        probe_islegal_only_us += t.elapsed().as_nanos() as u128;
                                         probe_islegal_sample_count += 1;
                                         r
                                     } else {
                                         cluster_is_legal_cached(
-                                            ctx, &registry, &bel_by_loc, cache, bid,
+                                            ctx,
+                                            &registry,
+                                            &bel_by_loc,
+                                            cache,
+                                            bid,
                                         )
                                     }
                                 } else {
@@ -355,7 +364,11 @@ pub fn legalize_ring(
         "  ring_probe: islegal_calls={} record_calls={} avg_sampled_islegal_ns={}",
         probe_islegal_calls,
         probe_record_calls,
-        if probe_islegal_sample_count == 0 { 0 } else { probe_islegal_only_us / probe_islegal_sample_count as u128 },
+        if probe_islegal_sample_count == 0 {
+            0
+        } else {
+            probe_islegal_only_us / probe_islegal_sample_count as u128
+        },
     );
     let _ = probe_ring_search_us;
     let _ = probe_islegal_us;

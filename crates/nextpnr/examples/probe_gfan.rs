@@ -10,15 +10,26 @@ fn describe(db: &ChipDb, w: WireId) -> String {
     let info = db.wire_info(w);
     let name_id: i32 = unsafe { nextpnr::read_packed!(*info, name) };
     let wname = db.constid_str(name_id).unwrap_or("<anon>").to_string();
-    format!("{}({}:{}) type={}", wname, w.tile(), w.index(), db.wire_type(w))
+    format!(
+        "{}({}:{}) type={}",
+        wname,
+        w.tile(),
+        w.index(),
+        db.wire_type(w)
+    )
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
-    let target_tile: i32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(35962);
-    let wire_name: String = std::env::args().nth(3).unwrap_or_else(|| "M1_GFAN0".to_string());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
+    let target_tile: i32 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(35962);
+    let wire_name: String = std::env::args()
+        .nth(3)
+        .unwrap_or_else(|| "M1_GFAN0".to_string());
 
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
 
@@ -29,7 +40,10 @@ fn main() {
     for (idx, w) in wires.iter().enumerate() {
         let nid: i32 = unsafe { nextpnr::read_packed!(*w, name) };
         let nm = db.constid_str(nid).unwrap_or("<anon>");
-        if nm == wire_name { target = Some(WireId::new(target_tile, idx as i32)); break; }
+        if nm == wire_name {
+            target = Some(WireId::new(target_tile, idx as i32));
+            break;
+        }
     }
     let w = target.expect("wire not found");
     println!("Wire: {}", describe(&db, w));

@@ -10,16 +10,28 @@ fn describe(db: &ChipDb, w: WireId) -> String {
     let info = db.wire_info(w);
     let name_id: i32 = unsafe { nextpnr::read_packed!(*info, name) };
     let wname = db.constid_str(name_id).unwrap_or("<anon>").to_string();
-    format!("{}({}:{}) type={}", wname, w.tile(), w.index(), db.wire_type(w))
+    format!(
+        "{}({}:{}) type={}",
+        wname,
+        w.tile(),
+        w.index(),
+        db.wire_type(w)
+    )
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     // M2_GCLK_B1 at [197,115] from earlier log: tile 35962, widx 1025
-    let src_tile: i32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(35962);
-    let src_idx: i32 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(1025);
+    let src_tile: i32 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(35962);
+    let src_idx: i32 = std::env::args()
+        .nth(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1025);
 
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let w = WireId::new(src_tile, src_idx);
@@ -55,7 +67,8 @@ fn main() {
             let dnid: i32 = unsafe { nextpnr::read_packed!(*dinfo, name) };
             let dname = db.constid_str(dnid).unwrap_or("<anon>").to_string();
             let dtype = db.wire_type(dst).to_string();
-            *agg.entry((format!("{}/{}", src_wname, dtype), dname)).or_insert(0) += 1;
+            *agg.entry((format!("{}/{}", src_wname, dtype), dname))
+                .or_insert(0) += 1;
             total += 1;
         }
     });

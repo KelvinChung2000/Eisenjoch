@@ -397,12 +397,16 @@ fn spread_overcrowded(
         let total_overflow: usize = groups.iter().map(|(_, c)| c.len()).sum();
         let n_groups = groups.len();
         let big_groups = groups.iter().take(5);
-        let top: Vec<(i32, i32, usize)> = big_groups
-            .map(|((_, x, y), c)| (*x, *y, c.len()))
-            .collect();
+        let top: Vec<(i32, i32, usize)> =
+            big_groups.map(|((_, x, y), c)| (*x, *y, c.len())).collect();
         eprintln!(
             "  pile distribution: groups={} total_cells={} biggest=({},{}, size={}) top5={:?}",
-            n_groups, total_overflow, tx, ty, cells.len(), top,
+            n_groups,
+            total_overflow,
+            tx,
+            ty,
+            cells.len(),
+            top,
         );
     }
 
@@ -484,10 +488,10 @@ fn spread_overcrowded(
                 let (best_bx, best_by) = *ring_candidates
                     .iter()
                     .min_by(|a, b| {
-                        let da = (a.0 as f64 - anchor_cx).powi(2)
-                            + (a.1 as f64 - anchor_cy).powi(2);
-                        let db = (b.0 as f64 - anchor_cx).powi(2)
-                            + (b.1 as f64 - anchor_cy).powi(2);
+                        let da =
+                            (a.0 as f64 - anchor_cx).powi(2) + (a.1 as f64 - anchor_cy).powi(2);
+                        let db =
+                            (b.0 as f64 - anchor_cx).powi(2) + (b.1 as f64 - anchor_cy).powi(2);
                         da.partial_cmp(&db).unwrap()
                     })
                     .unwrap();

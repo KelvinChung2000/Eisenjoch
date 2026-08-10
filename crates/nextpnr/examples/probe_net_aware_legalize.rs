@@ -11,16 +11,17 @@
 use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
+use nextpnr::netlist::CellId;
 use nextpnr::packer;
 use nextpnr::placer::common::TypeAwarePlacement;
-use nextpnr::netlist::CellId;
-use nextpnr::placer::legalize::SnapLegalizer;
 use nextpnr::placer::legalize::Legalizer;
+use nextpnr::placer::legalize::SnapLegalizer;
 use std::path::Path;
 
 fn main() {
     let chipdb = "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin";
-    let design = "/home/kelvin/side-project/eisenjoch/benchmark/ispd/generated/2016/FPGA01/FPGA01.json";
+    let design =
+        "/home/kelvin/side-project/eisenjoch/benchmark/ispd/generated/2016/FPGA01/FPGA01.json";
 
     eprintln!("loading chipdb {}", chipdb);
     let db = ChipDb::load(Path::new(chipdb)).expect("load chipdb");
@@ -44,11 +45,20 @@ fn main() {
         .filter_map(|(cid, cell)| {
             let strong = cell
                 .bel
-                .map(|_| matches!(cell.bel_strength, nextpnr::common::PlaceStrength::Locked
-                    | nextpnr::common::PlaceStrength::Fixed
-                    | nextpnr::common::PlaceStrength::User))
+                .map(|_| {
+                    matches!(
+                        cell.bel_strength,
+                        nextpnr::common::PlaceStrength::Locked
+                            | nextpnr::common::PlaceStrength::Fixed
+                            | nextpnr::common::PlaceStrength::User
+                    )
+                })
                 .unwrap_or(false);
-            if strong { None } else { Some(cid) }
+            if strong {
+                None
+            } else {
+                Some(cid)
+            }
         })
         .collect();
     let n = idx_to_cell.len();

@@ -23,9 +23,9 @@ fn wname(db: &ChipDb, w: WireId) -> String {
 }
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&path)).expect("load");
 
     let tile = db.tile_by_xy(260, 113);
@@ -42,22 +42,37 @@ fn main() {
     // BFS 3 hops downhill.
     let mut visited: FxHashSet<WireId> = FxHashSet::default();
     let mut q: VecDeque<(WireId, usize)> = VecDeque::new();
-    for &n in &ns { visited.insert(n); q.push_back((n, 0)); }
+    for &n in &ns {
+        visited.insert(n);
+        q.push_back((n, 0));
+    }
     while let Some((cur, depth)) = q.pop_front() {
-        if depth >= 4 { continue; }
+        if depth >= 4 {
+            continue;
+        }
         let info = db.wire_info(cur);
         for &pip_idx in info.pips_downhill.get() {
             let pip = PipId::new(cur.tile(), pip_idx);
             let nx = db.pip_dst_wire(pip);
-            if !visited.insert(nx) { continue; }
+            if !visited.insert(nx) {
+                continue;
+            }
             let peers_empty = {
                 let mut any = false;
                 db.node_wires_cb(nx, |_| any = true);
                 !any
             };
-            println!("    depth={} {} -> {} (peers_empty={})", depth, wname(&db, cur), wname(&db, nx), peers_empty);
+            println!(
+                "    depth={} {} -> {} (peers_empty={})",
+                depth,
+                wname(&db, cur),
+                wname(&db, nx),
+                peers_empty
+            );
             q.push_back((nx, depth + 1));
-            if visited.len() > 200 { return; }
+            if visited.len() > 200 {
+                return;
+            }
         }
     }
     println!("reachable within 4 hops: {}", visited.len());

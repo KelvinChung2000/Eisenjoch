@@ -122,7 +122,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
             // Re-shuffle the BEL bindings under a per-warmup seed to give
             // each candidate a different initial layout. Cells stay within
             // their valid bucket; only WHICH valid BEL is picked changes.
-            let warmup_seed = cfg.seed.wrapping_add(k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let warmup_seed = cfg
+                .seed
+                .wrapping_add(k as u64)
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15);
             ctx.reseed_rng(warmup_seed);
             // Unbind movable cells, rebind randomly via prepare_discrete's
             // helper, then re-read positions.
@@ -294,10 +297,18 @@ fn report_distribution(stage: &str, x: &[f64], y: &[f64], max_x: f64, max_y: f64
     let mut min_y = f64::INFINITY;
     let mut max_yv = f64::NEG_INFINITY;
     for i in 0..n {
-        if x[i] < min_x { min_x = x[i]; }
-        if x[i] > max_xv { max_xv = x[i]; }
-        if y[i] < min_y { min_y = y[i]; }
-        if y[i] > max_yv { max_yv = y[i]; }
+        if x[i] < min_x {
+            min_x = x[i];
+        }
+        if x[i] > max_xv {
+            max_xv = x[i];
+        }
+        if y[i] < min_y {
+            min_y = y[i];
+        }
+        if y[i] > max_yv {
+            max_yv = y[i];
+        }
     }
     // 8x8 coarse occupancy
     let bw = (max_x + 1.0) / 8.0;

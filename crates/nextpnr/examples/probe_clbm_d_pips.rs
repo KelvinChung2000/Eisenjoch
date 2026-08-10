@@ -22,16 +22,22 @@ fn wname(db: &ChipDb, w: WireId) -> String {
 }
 
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&path)).expect("load");
 
     let src_tile = db.tile_by_xy(260, 113);
     let src = find_wire_by_name(&db, src_tile, "M3_CLBLM_M_D").expect("src");
     let src_info = db.wire_info(src);
-    println!("SRC: M3_CLBLM_M_D@(260,113) tile_type={}", db.tile_type_name(src_tile));
-    println!("  pips_downhill ({} total):", src_info.pips_downhill.get().len());
+    println!(
+        "SRC: M3_CLBLM_M_D@(260,113) tile_type={}",
+        db.tile_type_name(src_tile)
+    );
+    println!(
+        "  pips_downhill ({} total):",
+        src_info.pips_downhill.get().len()
+    );
     for &pip_idx in src_info.pips_downhill.get() {
         let pip = PipId::new(src.tile(), pip_idx);
         let dst = db.pip_dst_wire(pip);
@@ -50,8 +56,14 @@ fn main() {
     let dst_tile = db.tile_by_xy(262, 112);
     let dst = find_wire_by_name(&db, dst_tile, "M3_CLBLM_M_CX").expect("dst");
     let dst_info = db.wire_info(dst);
-    println!("DST: M3_CLBLM_M_CX@(262,112) tile_type={}", db.tile_type_name(dst_tile));
-    println!("  pips_uphill ({} total):", dst_info.pips_uphill.get().len());
+    println!(
+        "DST: M3_CLBLM_M_CX@(262,112) tile_type={}",
+        db.tile_type_name(dst_tile)
+    );
+    println!(
+        "  pips_uphill ({} total):",
+        dst_info.pips_uphill.get().len()
+    );
     for &pip_idx in dst_info.pips_uphill.get() {
         let pip = PipId::new(dst.tile(), pip_idx);
         let src_w = db.pip_src_wire(pip);

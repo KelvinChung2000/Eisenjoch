@@ -43,9 +43,7 @@ impl NetFilter {
     /// and from HPWL reported for acceptance decisions.
     pub fn should_skip(&self, ctx: &Context, net_id: NetId) -> bool {
         let net_name = ctx.name_of(ctx.design.net(net_id).name);
-        if self.skip_constants
-            && (net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET")
-        {
+        if self.skip_constants && (net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET") {
             return true;
         }
         if self.skip_clocks {
@@ -332,10 +330,7 @@ pub(crate) fn centroid_place_boundary_cells_with_lookup(
     }
 
     if moved > 0 {
-        eprintln!(
-            "Centroid-relocated {} boundary cells before locking",
-            moved
-        );
+        eprintln!("Centroid-relocated {} boundary cells before locking", moved);
     }
 }
 
@@ -1747,7 +1742,8 @@ impl CellValidityMask {
 
         let min_set = per_cell_counts.iter().copied().min().unwrap_or(0);
         let max_set = per_cell_counts.iter().copied().max().unwrap_or(0);
-        let avg_set: f64 = per_cell_counts.iter().copied().sum::<usize>() as f64 / n_cells.max(1) as f64;
+        let avg_set: f64 =
+            per_cell_counts.iter().copied().sum::<usize>() as f64 / n_cells.max(1) as f64;
         eprintln!(
             "CellValidityMask: {} cells, {}x{} grid, per-cell valid positions: min={} avg={:.1} max={}, unmapped cells={}",
             n_cells, width, height, min_set, avg_set, max_set, n_unmapped,
@@ -1771,9 +1767,7 @@ impl CellValidityMask {
             return false;
         }
         let stride = (self.width as u64) * (self.height as u64);
-        let bit = (cell_idx as u64) * stride
-            + (gy as u64) * (self.width as u64)
-            + (gx as u64);
+        let bit = (cell_idx as u64) * stride + (gy as u64) * (self.width as u64) + (gx as u64);
         let word = self.bits[(bit >> 6) as usize];
         ((word >> (bit & 63)) & 1) == 1
     }

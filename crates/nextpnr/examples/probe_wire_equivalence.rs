@@ -40,9 +40,9 @@ fn histogram(class: &[u32]) -> Vec<(u32, u32)> {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db_owned = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db_owned);
     let db = ctx.chipdb();
@@ -221,7 +221,10 @@ fn main() {
             total_wires as f64 / total_struct_classes as f64,
         );
     }
-    println!("Max struct classes in any tile type: {}", max_classes_per_tt);
+    println!(
+        "Max struct classes in any tile type: {}",
+        max_classes_per_tt
+    );
 
     // Rough class-pair storage estimate at 4 bytes/entry, dense per
     // (tt, side_in, side_out) using each type's own class count.

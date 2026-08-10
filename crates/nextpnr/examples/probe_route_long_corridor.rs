@@ -124,7 +124,15 @@ fn run_one(
         "unbounded".to_string()
     } else {
         let b = &bboxes[0];
-        format!("[{}..{}, {}..{}] ({}x{})", b.x0, b.x1, b.y0, b.y1, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1)
+        format!(
+            "[{}..{}, {}..{}] ({}x{})",
+            b.x0,
+            b.x1,
+            b.y0,
+            b.y1,
+            b.x1 - b.x0 + 1,
+            b.y1 - b.y0 + 1
+        )
     };
     println!(
         "  {:<22}  bbox={:<30}  budget={:>7}  exit={:<12}  visits={:>7}  path_pips={:>4}  score={}",
@@ -220,12 +228,20 @@ fn diagnose_net(ctx: &Context, net_name: &str) {
     let line_bb_2 = line_bbox(chipdb, src_x, src_y, wx, wy, 2);
     let line_bb_5 = line_bbox(chipdb, src_x, src_y, wx, wy, 5);
     let line_bb_11 = line_bbox(chipdb, src_x, src_y, wx, wy, 11);
-    let in_bb = |bb: &BoundingBox, x: i32, y: i32| {
-        x >= bb.x0 && x <= bb.x1 && y >= bb.y0 && y <= bb.y1
-    };
-    let fh_in2 = first_hop_tiles.iter().filter(|(x, y)| in_bb(&line_bb_2, *x, *y)).count();
-    let fh_in5 = first_hop_tiles.iter().filter(|(x, y)| in_bb(&line_bb_5, *x, *y)).count();
-    let fh_in11 = first_hop_tiles.iter().filter(|(x, y)| in_bb(&line_bb_11, *x, *y)).count();
+    let in_bb =
+        |bb: &BoundingBox, x: i32, y: i32| x >= bb.x0 && x <= bb.x1 && y >= bb.y0 && y <= bb.y1;
+    let fh_in2 = first_hop_tiles
+        .iter()
+        .filter(|(x, y)| in_bb(&line_bb_2, *x, *y))
+        .count();
+    let fh_in5 = first_hop_tiles
+        .iter()
+        .filter(|(x, y)| in_bb(&line_bb_5, *x, *y))
+        .count();
+    let fh_in11 = first_hop_tiles
+        .iter()
+        .filter(|(x, y)| in_bb(&line_bb_11, *x, *y))
+        .count();
     println!(
         "  driver first-hop tiles inside line bbox: margin=2 → {}/{}   margin=5 → {}/{}   margin=11 → {}/{}",
         fh_in2,
@@ -374,7 +390,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.05);
 
-    println!("========== Placing sv3 with opt_trans Steiner λ={} ==========", lambda);
+    println!(
+        "========== Placing sv3 with opt_trans Steiner λ={} ==========",
+        lambda
+    );
     let mut ctx = load_fresh(&chipdb_path, &design_path);
     let mut cfg = OptTransPlacerCfg::default();
     cfg.max_outer_iters = 50;

@@ -12,9 +12,7 @@
 
 use nextpnr::chipdb::{ChipDb, PipId, WireId};
 use nextpnr::context::Context;
-use nextpnr::router::astar::{
-    astar_search, default_pip_cost, AStarOptions, PathCostModel,
-};
+use nextpnr::router::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 use nextpnr::timing::DelayT;
 use rustc_hash::FxHashSet;
 use std::path::Path;
@@ -102,11 +100,7 @@ fn run<M: PathCostModel>(
         None => {
             println!(
                 "  [{}] FAIL visits={} visited_wires={} exit={:?} ({:.1} ms)",
-                label,
-                visits,
-                visited_len,
-                exit,
-                dt_ms
+                label, visits, visited_len, exit, dt_ms
             );
             // Also report: what was the best f-value the search saw for dst?
             if let Some(&(cost, pen, _, _)) = r.trace.visited.get(&dst) {
@@ -150,7 +144,14 @@ fn run<M: PathCostModel>(
                     let (fx, fy) = chipdb.tile_xy(from.tile());
                     println!(
                         "          {} (idx={}) cost={} pen={} pip={:?} from={}@({},{})",
-                        name, w.index(), cost, pen, pip.is_some(), from_name, fx, fy
+                        name,
+                        w.index(),
+                        cost,
+                        pen,
+                        pip.is_some(),
+                        from_name,
+                        fx,
+                        fy
                     );
                 }
             }
@@ -162,7 +163,14 @@ fn run<M: PathCostModel>(
                     let (fx, fy) = chipdb.tile_xy(from.tile());
                     println!(
                         "          {} (idx={}) cost={} pen={} pip={:?} from={}@({},{})",
-                        name, w.index(), cost, pen, pip.is_some(), from_name, fx, fy
+                        name,
+                        w.index(),
+                        cost,
+                        pen,
+                        pip.is_some(),
+                        from_name,
+                        fx,
+                        fy
                     );
                 }
             }
@@ -208,7 +216,10 @@ fn run<M: PathCostModel>(
                     }
                 }
             }
-            println!("        max x at y=98 with CLK_RELAY_IN_0_E visited: {}", max_x_with_relay);
+            println!(
+                "        max x at y=98 with CLK_RELAY_IN_0_E visited: {}",
+                max_x_with_relay
+            );
             // Also check CLK_RELAY_IN_0_W, _N, _S
             for wname in &["CLK_RELAY_IN_0_W", "CLK_RELAY_IN_0_N", "CLK_RELAY_IN_0_S"] {
                 let mut max_x = -1;
@@ -235,11 +246,9 @@ fn run<M: PathCostModel>(
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
-        });
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
     let db = ctx.chipdb();
@@ -251,7 +260,14 @@ fn main() {
 
     println!(
         "src: IO0_O @ ({},{}) = {}:{}; dst: BUFG0_I @ ({},{}) = {}:{}",
-        0, 98, src.tile(), src.index(), 310, 111, dst.tile(), dst.index()
+        0,
+        98,
+        src.tile(),
+        src.index(),
+        310,
+        111,
+        dst.tile(),
+        dst.index()
     );
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
@@ -275,21 +291,75 @@ fn main() {
         chipdb: db,
         h_weight: BEAM_H_WEIGHT,
     };
-    run("A beam 100k stop-on-touch", &ctx, &beam_model, &src_set, dst, 100_000, true);
-    run("B cleanup 500k stop-on-touch", &ctx, &beam_model, &src_set, dst, 500_000, true);
-    run("C big 5M stop-on-touch", &ctx, &beam_model, &src_set, dst, 5_000_000, true);
-    run("A-nostop 100k", &ctx, &beam_model, &src_set, dst, 100_000, false);
-    run("B-nostop 500k", &ctx, &beam_model, &src_set, dst, 500_000, false);
-    run("C-nostop 5M", &ctx, &beam_model, &src_set, dst, 5_000_000, false);
+    run(
+        "A beam 100k stop-on-touch",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        100_000,
+        true,
+    );
+    run(
+        "B cleanup 500k stop-on-touch",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        500_000,
+        true,
+    );
+    run(
+        "C big 5M stop-on-touch",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        5_000_000,
+        true,
+    );
+    run(
+        "A-nostop 100k",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        100_000,
+        false,
+    );
+    run(
+        "B-nostop 500k",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        500_000,
+        false,
+    );
+    run(
+        "C-nostop 5M",
+        &ctx,
+        &beam_model,
+        &src_set,
+        dst,
+        5_000_000,
+        false,
+    );
 
     println!();
     println!("=== admissible: pip_cost=default, h = manhattan*1 ===");
-    let adm = DefaultPipCostModel { chipdb: db, h_weight: 1 };
+    let adm = DefaultPipCostModel {
+        chipdb: db,
+        h_weight: 1,
+    };
     run("D1 500k", &ctx, &adm, &src_set, dst, 500_000, false);
     run("D2 5M", &ctx, &adm, &src_set, dst, 5_000_000, false);
 
     println!();
     println!("=== dijkstra: pip_cost=default, h = 0 ===");
-    let dij = DefaultPipCostModel { chipdb: db, h_weight: 0 };
+    let dij = DefaultPipCostModel {
+        chipdb: db,
+        h_weight: 0,
+    };
     run("E 5M", &ctx, &dij, &src_set, dst, 5_000_000, false);
 }

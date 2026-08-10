@@ -41,9 +41,9 @@ fn tile_at(chipdb: &ChipDb, x: i32, y: i32) -> i32 {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
 
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
@@ -81,10 +81,7 @@ fn main() {
         *span_hist.entry(max_span).or_insert(0) += 1;
     }
     let elapsed = t0.elapsed();
-    println!(
-        "  scanned {} wires in {:?}",
-        wires_scanned, elapsed,
-    );
+    println!("  scanned {} wires in {:?}", wires_scanned, elapsed,);
     println!("  max-node-span histogram:");
     for (span, count) in &span_hist {
         let pct = *count as f64 * 100.0 / wires_scanned as f64;
@@ -146,16 +143,19 @@ fn main() {
                 // if present, else wire 0 as a stand-in.
                 let dst = find_wire_by_name(chipdb, target_tile, name)
                     .unwrap_or(WireId::new(target_tile, 0));
-                let est = lookahead.estimate_delay(chipdb, wire, dst, nextpnr::router::lookahead::UNKNOWN_CLASS);
+                let est = lookahead.estimate_delay(
+                    chipdb,
+                    wire,
+                    dst,
+                    nextpnr::router::lookahead::UNKNOWN_CLASS,
+                );
                 let manh = dx;
                 let ratio = if manh > 0 {
                     est as f64 / manh as f64
                 } else {
                     0.0
                 };
-                println!(
-                    "    dx={dx:>3}  est={est:>6}   (est/manh = {ratio:.2})"
-                );
+                println!("    dx={dx:>3}  est={est:>6}   (est/manh = {ratio:.2})");
             }
         }
     }
@@ -182,7 +182,12 @@ fn main() {
     // what A* will pop first after expanding IO0_O's pips_downhill.
     if let Some(relay_src) = find_wire_by_name(chipdb, src_tile, "CLK_RELAY_IN_0_E") {
         if let Some(d) = dst {
-            let est = lookahead.estimate_delay(chipdb, relay_src, d, nextpnr::router::lookahead::UNKNOWN_CLASS);
+            let est = lookahead.estimate_delay(
+                chipdb,
+                relay_src,
+                d,
+                nextpnr::router::lookahead::UNKNOWN_CLASS,
+            );
             println!("  from CLK_RELAY_IN_0_E@(0,98) → BUFG0_I: est={est}");
         }
     }

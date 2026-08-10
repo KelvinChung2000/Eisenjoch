@@ -19,9 +19,9 @@ fn find_wire_by_name(db: &ChipDb, tile: i32, target: &str) -> Option<WireId> {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let y: i32 = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())

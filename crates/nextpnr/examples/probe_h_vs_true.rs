@@ -54,11 +54,17 @@ fn measure(
     let st = db.tile_by_xy(sx, sy);
     let dt = db.tile_by_xy(dx, dy);
     let Some(src) = find_wire_by_name(db, st, src_name) else {
-        println!("  !! {}: src {} not found at ({},{})", label, src_name, sx, sy);
+        println!(
+            "  !! {}: src {} not found at ({},{})",
+            label, src_name, sx, sy
+        );
         return;
     };
     let Some(dst) = find_wire_by_name(db, dt, dst_name) else {
-        println!("  !! {}: dst {} not found at ({},{})", label, dst_name, dx, dy);
+        println!(
+            "  !! {}: dst {} not found at ({},{})",
+            label, dst_name, dx, dy
+        );
         return;
     };
 
@@ -91,7 +97,11 @@ fn measure(
             for &pip in &path {
                 g += default_pip_cost(ctx, pip) as i64;
             }
-            let ratio = if h > 0 { g as f64 / h as f64 } else { f64::INFINITY };
+            let ratio = if h > 0 {
+                g as f64 / h as f64
+            } else {
+                f64::INFINITY
+            };
             println!(
                 "{:<26}  manhattan={:>4}  h_lookahead={:>6}  true_cost={:>6}  ratio={:>5.2}  pips={:>4}  dijkstra_ms={:.0}",
                 label, manhattan, h, g, ratio, path.len(), dt_ms
@@ -107,9 +117,9 @@ fn measure(
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
     println!("Building lookahead...");
@@ -125,17 +135,107 @@ fn main() {
 
     // IO-pad-driven failing nets observed in the per-edge sv3 log. These
     // are the routes that exit=VisitLimit at 500k pops.
-    measure(&ctx, &la, "tm3_vidin_cref ->130,118", "IO0_O", 0, 183, "M3_CLBLM_M_D1", 130, 118);
-    measure(&ctx, &la, "tm3_vidin_cref ->148,102", "IO0_O", 0, 183, "M3_CLBLM_M_D1", 148, 102);
-    measure(&ctx, &la, "tm3_vidin_cref ->199,90",  "IO0_O", 0, 183, "M3_CLBLM_M_D1", 199, 90);
-    measure(&ctx, &la, "tm3_vidin_vs   ->104,105", "IO1_O", 0, 152, "M3_CLBLM_M_D1", 104, 105);
-    measure(&ctx, &la, "tm3_vidin_vs   ->148,113", "IO1_O", 0, 152, "M3_CLBLM_M_D1", 148, 113);
-    measure(&ctx, &la, "tm3_vidin_href ->189,117", "IO0_O", 309, 119, "M3_CLBLM_M_D1", 189, 117);
-    measure(&ctx, &la, "tm3_vidin_href ->131,106", "IO0_O", 309, 119, "M3_CLBLM_M_D1", 131, 106);
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_cref ->130,118",
+        "IO0_O",
+        0,
+        183,
+        "M3_CLBLM_M_D1",
+        130,
+        118,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_cref ->148,102",
+        "IO0_O",
+        0,
+        183,
+        "M3_CLBLM_M_D1",
+        148,
+        102,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_cref ->199,90",
+        "IO0_O",
+        0,
+        183,
+        "M3_CLBLM_M_D1",
+        199,
+        90,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_vs   ->104,105",
+        "IO1_O",
+        0,
+        152,
+        "M3_CLBLM_M_D1",
+        104,
+        105,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_vs   ->148,113",
+        "IO1_O",
+        0,
+        152,
+        "M3_CLBLM_M_D1",
+        148,
+        113,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_href ->189,117",
+        "IO0_O",
+        309,
+        119,
+        "M3_CLBLM_M_D1",
+        189,
+        117,
+    );
+    measure(
+        &ctx,
+        &la,
+        "tm3_vidin_href ->131,106",
+        "IO0_O",
+        309,
+        119,
+        "M3_CLBLM_M_D1",
+        131,
+        106,
+    );
 
     // Reference: a successful nearby CLB->CLB hop. Should have ratio ~ 1.
     println!();
     println!("Reference (successful short routes):");
-    measure(&ctx, &la, "M3 short hop 1",        "M3_CLBLM_M_D", 100, 100, "M3_CLBLM_M_CX", 102, 99);
-    measure(&ctx, &la, "M3 short hop 2",        "M3_CLBLM_M_A", 145, 108, "M3_CLBLM_M_DX", 144, 108);
+    measure(
+        &ctx,
+        &la,
+        "M3 short hop 1",
+        "M3_CLBLM_M_D",
+        100,
+        100,
+        "M3_CLBLM_M_CX",
+        102,
+        99,
+    );
+    measure(
+        &ctx,
+        &la,
+        "M3 short hop 2",
+        "M3_CLBLM_M_A",
+        145,
+        108,
+        "M3_CLBLM_M_DX",
+        144,
+        108,
+    );
 }

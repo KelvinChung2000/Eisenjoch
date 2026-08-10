@@ -137,9 +137,7 @@ impl InitStrategy {
         ctx: &mut crate::context::Context,
     ) -> Result<(), super::super::PlacerError> {
         match self {
-            Self::RandomBel | Self::Uniform => {
-                super::super::common::initial_placement(ctx)
-            }
+            Self::RandomBel | Self::Uniform => super::super::common::initial_placement(ctx),
             Self::Centroid => {
                 super::super::common::initial_placement(ctx)?;
                 super::super::common::centroid_place_boundary_cells(ctx);

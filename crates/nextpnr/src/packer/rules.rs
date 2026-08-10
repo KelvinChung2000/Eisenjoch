@@ -257,9 +257,7 @@ pub fn derive_rules_from_pips(ctx: &Context) -> Vec<PackingRule> {
             r.rel_z,
         )
     });
-    rules.dedup_by(|a, b| {
-        a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z
-    });
+    rules.dedup_by(|a, b| a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z);
     rules
 }
 
@@ -281,8 +279,6 @@ pub fn get_packing_rules(ctx: &Context) -> Vec<PackingRule> {
             r.rel_z,
         )
     });
-    rules.dedup_by(|a, b| {
-        a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z
-    });
+    rules.dedup_by(|a, b| a.driver == b.driver && a.user == b.user && a.rel_z == b.rel_z);
     rules
 }

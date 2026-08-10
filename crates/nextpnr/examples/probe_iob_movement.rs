@@ -41,9 +41,9 @@ fn dump_targets(ctx: &Context, label: &str) {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let design_path = std::env::args().nth(2).unwrap_or_else(|| {
         "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into()
     });
@@ -56,7 +56,10 @@ fn main() {
     // Run prepare_discrete only — this does initial_placement + centroid IOB rebind + (optional pin).
     // NPNR_PIN_BOUNDARY env knob applies.
     PlacerPipeline::prepare_discrete(&mut ctx, 1).expect("prepare_discrete");
-    dump_targets(&ctx, "after prepare_discrete (initial + maybe centroid + maybe lock)");
+    dump_targets(
+        &ctx,
+        "after prepare_discrete (initial + maybe centroid + maybe lock)",
+    );
 
     // Run the full opt_trans + legalize.
     let mut pcfg = OptTransPlacerCfg::default();

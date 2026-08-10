@@ -65,12 +65,24 @@ fn position_histogram(ctx: &Context, label: &str) {
     println!("  X histogram (20-tile bins, non-empty only):");
     for (k, c) in &xbin {
         let bar = "#".repeat((*c).min(60));
-        println!("    x=[{:>3},{:>3}]  {:>3}  {}", k * 20, k * 20 + 19, c, bar);
+        println!(
+            "    x=[{:>3},{:>3}]  {:>3}  {}",
+            k * 20,
+            k * 20 + 19,
+            c,
+            bar
+        );
     }
     println!("  Y histogram (20-tile bins, non-empty only):");
     for (k, c) in &ybin {
         let bar = "#".repeat((*c).min(60));
-        println!("    y=[{:>3},{:>3}]  {:>3}  {}", k * 20, k * 20 + 19, c, bar);
+        println!(
+            "    y=[{:>3},{:>3}]  {:>3}  {}",
+            k * 20,
+            k * 20 + 19,
+            c,
+            bar
+        );
     }
     println!();
 }
@@ -103,10 +115,26 @@ fn hpwl_breakdown(ctx: &Context, label: &str) {
     println!("{}", label);
     println!("  total alive nets:       {}", n_nets);
     println!("  TOTAL HPWL:             {:>10.0}", total);
-    println!("  GND contribution:       {:>10.0}  ({:.1}%)", gnd, 100.0 * gnd / total.max(1.0));
-    println!("  VCC contribution:       {:>10.0}  ({:.1}%)", vcc, 100.0 * vcc / total.max(1.0));
-    println!("  clock contribution:     {:>10.0}  ({:.1}%)", clocks, 100.0 * clocks / total.max(1.0));
-    println!("  regular nets:           {:>10.0}  ({:.1}%)", regular, 100.0 * regular / total.max(1.0));
+    println!(
+        "  GND contribution:       {:>10.0}  ({:.1}%)",
+        gnd,
+        100.0 * gnd / total.max(1.0)
+    );
+    println!(
+        "  VCC contribution:       {:>10.0}  ({:.1}%)",
+        vcc,
+        100.0 * vcc / total.max(1.0)
+    );
+    println!(
+        "  clock contribution:     {:>10.0}  ({:.1}%)",
+        clocks,
+        100.0 * clocks / total.max(1.0)
+    );
+    println!(
+        "  regular nets:           {:>10.0}  ({:.1}%)",
+        regular,
+        100.0 * regular / total.max(1.0)
+    );
     println!("  HPWL excluding GND/VCC: {:>10.0}", without_const);
     println!("  HPWL regular only:      {:>10.0}", without_const_clocks);
     println!();

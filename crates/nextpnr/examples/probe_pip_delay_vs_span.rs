@@ -55,9 +55,9 @@ fn percentile(sorted: &[i32], p: f64) -> i32 {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db_owned = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db_owned);
     let db = ctx.chipdb();
@@ -145,7 +145,15 @@ fn main() {
             let max = *v.last().unwrap();
             println!(
                 "{:<4}  {:<22}  {}  {:>5}  {:>5}  {:>5}  {:>5}  {:>5}  {:>6}",
-                tt_idx, tt_name, bucket_label(b as u8), n, min, p25, p50, p75, max,
+                tt_idx,
+                tt_name,
+                bucket_label(b as u8),
+                n,
+                min,
+                p25,
+                p50,
+                p75,
+                max,
             );
         }
     }

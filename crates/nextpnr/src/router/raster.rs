@@ -14,13 +14,15 @@ use crate::netlist::NetId;
 use crate::timing::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::astar::{astar_search, default_pip_cost, reconstruct_path_to, AStarOptions, PathCostModel};
+use super::astar::AStarExit;
+use super::astar::{
+    astar_search, default_pip_cost, reconstruct_path_to, AStarOptions, PathCostModel,
+};
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
-    is_global_clock_wire, resolve_source_wire, source_wire_const_value,
-    unroute_net, validate_all_routed, RoutePlan, SinkRoute,
+    is_global_clock_wire, resolve_source_wire, source_wire_const_value, unroute_net,
+    validate_all_routed, RoutePlan, SinkRoute,
 };
-use super::astar::AStarExit;
 use super::maze::{astar_route, astar_route_explore, astar_route_multihop, astar_route_with_trace};
 use super::RouterError;
 
@@ -410,10 +412,7 @@ fn scoped_ripup_route(
     // Snapshot every blocker before unrouting. Order matters only for
     // restoration symmetry; a Vec<NetSnapshot> preserves insertion order.
     let blocker_list: Vec<NetId> = blockers.iter().copied().collect();
-    let snapshots: Vec<NetSnapshot> = blocker_list
-        .iter()
-        .map(|&b| snapshot_net(ctx, b))
-        .collect();
+    let snapshots: Vec<NetSnapshot> = blocker_list.iter().map(|&b| snapshot_net(ctx, b)).collect();
 
     for &b in &blocker_list {
         ripup_net_with_equivs(ctx, b);
@@ -456,8 +455,7 @@ fn scoped_ripup_route(
         let blocker_span = (blocker_span_bbox.x1 - blocker_span_bbox.x0)
             .max(blocker_span_bbox.y1 - blocker_span_bbox.y0)
             .max(0);
-        let blocker_margin =
-            EXPLORE_BBOX_MARGIN_MIN.max(blocker_span * EXPLORE_BBOX_SPAN_MULT);
+        let blocker_margin = EXPLORE_BBOX_MARGIN_MIN.max(blocker_span * EXPLORE_BBOX_SPAN_MULT);
         let blocker_bbox = crate::metrics::compute_bbox(ctx, b, blocker_margin);
         if !reroute_from_scratch(
             ctx,
@@ -744,7 +742,9 @@ struct RasterCostModel<'a> {
 }
 
 impl<'a> PathCostModel for RasterCostModel<'a> {
-    fn pip_cost(&self, _ctx: &Context, _pip: PipId) -> DelayT { 1 }
+    fn pip_cost(&self, _ctx: &Context, _pip: PipId) -> DelayT {
+        1
+    }
 
     fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
         if let Some((owner, _)) = ctx.wire_binding(wire) {
@@ -780,7 +780,12 @@ fn route_sink_astar(
     cong: &CongestionMap,
     cong_weight: f32,
 ) -> Option<Vec<PipId>> {
-    let model = RasterCostModel { net, bbox, cong, cong_weight };
+    let model = RasterCostModel {
+        net,
+        bbox,
+        cong,
+        cong_weight,
+    };
     let opts = AStarOptions {
         visit_limit: None,
         exhaustive: false,
@@ -1573,7 +1578,10 @@ impl super::Router for RasterRouter {
                 to_retry.sort_unstable();
                 to_retry.dedup();
                 if to_retry.is_empty() && sticky_skipped == 0 {
-                    eprintln!("RasterRouter: no wire congestion at pass {}, validating", iter);
+                    eprintln!(
+                        "RasterRouter: no wire congestion at pass {}, validating",
+                        iter
+                    );
                     return validate_all_routed(ctx);
                 }
                 cong.update_history();
@@ -1735,7 +1743,6 @@ impl super::Router for RasterRouter {
                 })
                 .collect();
             if !failed_nets.is_empty() {
-
                 // Route const nets first: their per-sink lookup is O(1) and
                 // deterministic, so we never lose a const net to the wall-clock
                 // budget getting burned by a slow non-const A*.
@@ -1860,9 +1867,7 @@ impl super::Router for RasterRouter {
                             // and avoids the multi-source A* heap blow-up that
                             // a chip-wide const pool would cause.
                             if src_const != 0 {
-                                if let Some(pip) =
-                                    find_local_const_pip(ctx, sink_wire, src_const)
-                                {
+                                if let Some(pip) = find_local_const_pip(ctx, sink_wire, src_const) {
                                     let anchor = ctx.chipdb().pip_src_wire(pip);
                                     const_anchors.insert(anchor);
                                     // Let subsequent sinks see this anchor as
@@ -1898,8 +1903,7 @@ impl super::Router for RasterRouter {
                             // heuristic see past the IOB wall.
                             let (sink_tx_early, sink_ty_early) =
                                 ctx.chipdb().tile_xy(sink_wire.tile());
-                            let manhattan =
-                                (sink_tx_early - sx).abs() + (sink_ty_early - sy).abs();
+                            let manhattan = (sink_tx_early - sx).abs() + (sink_ty_early - sy).abs();
 
                             // Spatial bound: a bbox enclosing all of this net's
                             // BEL locations plus a margin scaled by the net's
@@ -2002,10 +2006,7 @@ impl super::Router for RasterRouter {
                                             ctx.chipdb().tile_type(tile).wires.get().len();
                                         for wi in 0..num_wires {
                                             let w = WireId::new(tile, wi as i32);
-                                            *neg_state
-                                                .wire_history
-                                                .entry(w)
-                                                .or_insert(0.0) += 0.5;
+                                            *neg_state.wire_history.entry(w).or_insert(0.0) += 0.5;
                                         }
                                     }
                                     continue;
@@ -2045,9 +2046,7 @@ impl super::Router for RasterRouter {
                                 for sink in &sink_routes {
                                     if let Some(&first_pip) = sink.pips.first() {
                                         let anchor = ctx.chipdb().pip_src_wire(first_pip);
-                                        if ctx.chipdb().wire_info(anchor).const_value
-                                            == src_const
-                                        {
+                                        if ctx.chipdb().wire_info(anchor).const_value == src_const {
                                             const_anchors.insert(anchor);
                                         }
                                     }

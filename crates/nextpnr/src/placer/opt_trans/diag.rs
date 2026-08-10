@@ -577,9 +577,7 @@ impl DiagCtx {
             let _ = writeln!(
                 w,
                 "accept_friction_only={}\nreject={}\npipe_gini={:.4}",
-                self.total_accept_friction_only,
-                self.total_reject,
-                gini
+                self.total_accept_friction_only, self.total_reject, gini
             );
         }
 

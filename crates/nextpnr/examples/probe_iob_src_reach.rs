@@ -28,11 +28,17 @@ fn main() {
     let mut iob_out_wires: Vec<WireId> = Vec::new();
     for bel in bels {
         let bt: i32 = bel.bel_type();
-        let Some(name) = db.constid_str(bt) else { continue };
+        let Some(name) = db.constid_str(bt) else {
+            continue;
+        };
         for pin in bel.pins.get() {
-            if pin.dir() != 1 { continue; }
+            if pin.dir() != 1 {
+                continue;
+            }
             let wi = pin.wire();
-            if wi < 0 { continue; }
+            if wi < 0 {
+                continue;
+            }
             let w = WireId::new(src_tile, wi);
             let info = db.wire_info(w);
             let nid: i32 = unsafe { read_packed!(*info, name) };
@@ -52,7 +58,10 @@ fn main() {
     // List the 52 downhill destinations from IO0_O.
     let io0 = iob_out_wires[0];
     let io0_info = db.wire_info(io0);
-    println!("\nIO0_O downhill destinations (first 20 of {}):", io0_info.pips_downhill.get().len());
+    println!(
+        "\nIO0_O downhill destinations (first 20 of {}):",
+        io0_info.pips_downhill.get().len()
+    );
     for (i, &pip) in io0_info.pips_downhill.get().iter().take(20).enumerate() {
         let pid = nextpnr::chipdb::PipId::new(io0.tile(), pip);
         let dst = db.pip_dst_wire(pid);
@@ -63,7 +72,9 @@ fn main() {
         let n_peers_other_tile = {
             let mut c = 0;
             db.node_wires_cb(dst, |nw| {
-                if nw.tile() != dst.tile() { c += 1; }
+                if nw.tile() != dst.tile() {
+                    c += 1;
+                }
             });
             c
         };
@@ -81,7 +92,12 @@ fn main() {
         db.tile_type_name(neigh_tile),
     );
     let nt = db.tile_type(neigh_tile);
-    println!("  bels = {}, wires = {}, pips = {}", nt.bels.get().len(), nt.wires.get().len(), nt.pips.get().len());
+    println!(
+        "  bels = {}, wires = {}, pips = {}",
+        nt.bels.get().len(),
+        nt.wires.get().len(),
+        nt.pips.get().len()
+    );
 
     // Trace 2-hop path: IO0_O -> LOGIC_OUTS_L_B0 -> ? and check tileconn peers.
     println!("\n=== 2-hop trace from INT_INTERFACE_LOGIC_OUTS_L_B0 ===");
@@ -91,8 +107,12 @@ fn main() {
     for (wi, w) in iob_tt.wires.get().iter().enumerate() {
         let nid: i32 = unsafe { read_packed!(*w, name) };
         let n = db.constid_str(nid).unwrap_or("");
-        if n == "INT_INTERFACE_LOGIC_OUTS_L_B0" { log_outs_b0_wi = wi as i32; }
-        if n == "INT_INTERFACE_LOGIC_OUTS_L0" { log_outs_l0_wi = wi as i32; }
+        if n == "INT_INTERFACE_LOGIC_OUTS_L_B0" {
+            log_outs_b0_wi = wi as i32;
+        }
+        if n == "INT_INTERFACE_LOGIC_OUTS_L0" {
+            log_outs_l0_wi = wi as i32;
+        }
     }
     println!("  LOGIC_OUTS_L_B0 wi = {log_outs_b0_wi}");
     println!("  LOGIC_OUTS_L0   wi = {log_outs_l0_wi}");
@@ -105,7 +125,11 @@ fn main() {
             info.pips_downhill.get().len(),
             {
                 let mut c = 0;
-                db.node_wires_cb(w, |nw| { if nw.tile() != w.tile() { c += 1; } });
+                db.node_wires_cb(w, |nw| {
+                    if nw.tile() != w.tile() {
+                        c += 1;
+                    }
+                });
                 c
             },
         );
@@ -114,7 +138,11 @@ fn main() {
             let dst = db.pip_dst_wire(pid);
             let dinfo = db.wire_info(dst);
             let dnid: i32 = unsafe { read_packed!(*dinfo, name) };
-            println!("    -> {} (downhill {})", db.constid_str(dnid).unwrap_or("?"), dinfo.pips_downhill.get().len());
+            println!(
+                "    -> {} (downhill {})",
+                db.constid_str(dnid).unwrap_or("?"),
+                dinfo.pips_downhill.get().len()
+            );
         }
     }
     if log_outs_l0_wi >= 0 {
@@ -122,7 +150,11 @@ fn main() {
         let info = db.wire_info(w);
         let peers_other: usize = {
             let mut c = 0;
-            db.node_wires_cb(w, |nw| { if nw.tile() != w.tile() { c += 1; } });
+            db.node_wires_cb(w, |nw| {
+                if nw.tile() != w.tile() {
+                    c += 1;
+                }
+            });
             c
         };
         println!(
@@ -136,7 +168,11 @@ fn main() {
                     let (px, py) = db.tile_xy(nw.tile());
                     let pinfo = db.wire_info(nw);
                     let pnid: i32 = unsafe { read_packed!(*pinfo, name) };
-                    println!("    peer: ({px},{py}) tt={} {}", db.tile_type_name(nw.tile()), db.constid_str(pnid).unwrap_or("?"));
+                    println!(
+                        "    peer: ({px},{py}) tt={} {}",
+                        db.tile_type_name(nw.tile()),
+                        db.constid_str(pnid).unwrap_or("?")
+                    );
                 }
             });
         }
@@ -153,22 +189,33 @@ fn main() {
         queue.push_back((*src, 0));
         // Also seed peers of src.
         db.node_wires_cb(*src, |nw| {
-            if visited.insert(nw) { queue.push_back((nw, 0)); }
+            if visited.insert(nw) {
+                queue.push_back((nw, 0));
+            }
         });
         let mut max_dx: i32 = 0;
         let mut max_dy: i32 = 0;
         let mut max_manhattan: i32 = 0;
         let (sx, sy) = db.tile_xy(src.tile());
-        let update_dist = |w: WireId, max_dx: &mut i32, max_dy: &mut i32, max_manhattan: &mut i32| {
-            let (tx, ty) = db.tile_xy(w.tile());
-            let dx = (tx - sx).abs();
-            let dy = (ty - sy).abs();
-            if dx > *max_dx { *max_dx = dx; }
-            if dy > *max_dy { *max_dy = dy; }
-            if dx + dy > *max_manhattan { *max_manhattan = dx + dy; }
-        };
+        let update_dist =
+            |w: WireId, max_dx: &mut i32, max_dy: &mut i32, max_manhattan: &mut i32| {
+                let (tx, ty) = db.tile_xy(w.tile());
+                let dx = (tx - sx).abs();
+                let dy = (ty - sy).abs();
+                if dx > *max_dx {
+                    *max_dx = dx;
+                }
+                if dy > *max_dy {
+                    *max_dy = dy;
+                }
+                if dx + dy > *max_manhattan {
+                    *max_manhattan = dx + dy;
+                }
+            };
         while let Some((w, hop)) = queue.pop_front() {
-            if hop >= HOP_LIMIT { continue; }
+            if hop >= HOP_LIMIT {
+                continue;
+            }
             update_dist(w, &mut max_dx, &mut max_dy, &mut max_manhattan);
             let info = db.wire_info(w);
             // Expand through downhill pips.

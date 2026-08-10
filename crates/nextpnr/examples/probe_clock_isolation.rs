@@ -8,22 +8,40 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::Path;
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     // BUFG1_O from earlier probe = tile 34831, wire 3.
-    let src_tile: i32 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(34831);
-    let src_idx: i32 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(3);
-    let max_depth: usize = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(6);
+    let src_tile: i32 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(34831);
+    let src_idx: i32 = std::env::args()
+        .nth(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let max_depth: usize = std::env::args()
+        .nth(4)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
 
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let src = WireId::new(src_tile, src_idx);
-    println!("Source wire: {}:{} type={}", src.tile(), src.index(), db.wire_type(src));
+    println!(
+        "Source wire: {}:{} type={}",
+        src.tile(),
+        src.index(),
+        db.wire_type(src)
+    );
 
     let mut visited: FxHashSet<WireId> = FxHashSet::default();
     let mut frontier: Vec<WireId> = vec![src];
     visited.insert(src);
-    db.node_wires_cb(src, |p| { if visited.insert(p) { frontier.push(p); } });
+    db.node_wires_cb(src, |p| {
+        if visited.insert(p) {
+            frontier.push(p);
+        }
+    });
     println!("Cost 0: {} wires (src + node peers)", frontier.len());
 
     for depth in 1..=max_depth {
@@ -34,7 +52,9 @@ fn main() {
             for &pip_idx in info.pips_downhill.get() {
                 let pip = PipId::new(w.tile(), pip_idx);
                 let dst = db.pip_dst_wire(pip);
-                if !visited.insert(dst) { continue; }
+                if !visited.insert(dst) {
+                    continue;
+                }
                 *type_count.entry(db.wire_type(dst).to_string()).or_insert(0) += 1;
                 next.push(dst);
                 db.node_wires_cb(dst, |p| {
@@ -45,13 +65,20 @@ fn main() {
                 });
             }
         }
-        println!("Cost {}: {} new wires; visited total {}", depth, next.len(), visited.len());
+        println!(
+            "Cost {}: {} new wires; visited total {}",
+            depth,
+            next.len(),
+            visited.len()
+        );
         let mut items: Vec<_> = type_count.iter().collect();
         items.sort_by_key(|(_, v)| std::cmp::Reverse(**v));
         for (t, c) in items.iter().take(8) {
             println!("    {:<18} {}", t, c);
         }
-        if next.is_empty() { break; }
+        if next.is_empty() {
+            break;
+        }
         frontier = next;
     }
     println!("\nTotal reachable: {}", visited.len());

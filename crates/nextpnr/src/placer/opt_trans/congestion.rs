@@ -98,8 +98,7 @@ mod tests {
             .iter()
             .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
             .collect();
-        let tile_grid =
-            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, 2, 2);
+        let tile_grid = crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, 2, 2);
         let flat_adjacency =
             crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
         let tile_templates = std::sync::Arc::new(Vec::new());
@@ -111,9 +110,7 @@ mod tests {
             node_pipes,
             pipe_costs,
             pipe_costs_int,
-            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
-                n_pipes,
-            ),
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(n_pipes),
             flat_adjacency,
             tile_templates,
             tile_grid,
@@ -159,8 +156,16 @@ mod tests {
         //   R_eff = base · (1 + 0.05 · 0.4^4)
         //   R_excess = 0.05 · 0.4^4 · base
         let nodes = vec![
-            Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
-            Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
+            Node {
+                tile_x: 0,
+                tile_y: 0,
+                pressure: 0.0,
+            },
+            Node {
+                tile_x: 1,
+                tile_y: 0,
+                pressure: 0.0,
+            },
         ];
         let pipes = vec![make_pipe(0, 1, 1.0, 10.0, 5.0)];
         let network = make_network(nodes, pipes);
@@ -177,9 +182,21 @@ mod tests {
         // span-1 pipe (excess = 0.05 · (5/12.5)^4). Mean = half of that.
         // Node 2 only touches the half-saturated pipe.
         let nodes = vec![
-            Node { tile_x: 0, tile_y: 0, pressure: 0.0 },
-            Node { tile_x: 1, tile_y: 0, pressure: 0.0 },
-            Node { tile_x: 2, tile_y: 0, pressure: 0.0 },
+            Node {
+                tile_x: 0,
+                tile_y: 0,
+                pressure: 0.0,
+            },
+            Node {
+                tile_x: 1,
+                tile_y: 0,
+                pressure: 0.0,
+            },
+            Node {
+                tile_x: 2,
+                tile_y: 0,
+                pressure: 0.0,
+            },
         ];
         let pipes = vec![
             make_pipe(0, 1, 1.0, 10.0, 0.0),
@@ -190,7 +207,15 @@ mod tests {
         let pressure = compute_congestion_pressure(&network, &model);
         let per_pipe_excess = 0.05 * (5.0f64 / 12.5).powi(4);
         assert!(pressure[0].abs() < 1e-12);
-        assert!((pressure[1] - per_pipe_excess / 2.0).abs() < 1e-9, "got {}", pressure[1]);
-        assert!((pressure[2] - per_pipe_excess).abs() < 1e-9, "got {}", pressure[2]);
+        assert!(
+            (pressure[1] - per_pipe_excess / 2.0).abs() < 1e-9,
+            "got {}",
+            pressure[1]
+        );
+        assert!(
+            (pressure[2] - per_pipe_excess).abs() < 1e-9,
+            "got {}",
+            pressure[2]
+        );
     }
 }

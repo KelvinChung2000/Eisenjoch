@@ -48,7 +48,18 @@ fn astar_single_pip_path() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
+    let path = astar_route(
+        &ctx,
+        NetId::NONE,
+        &wire_set(&[src]),
+        dst,
+        &penalty,
+        None,
+        50,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
 }
 
@@ -58,7 +69,18 @@ fn astar_verifies_pip_connectivity() {
     let src = WireId::new(0, 0);
     let dst = WireId::new(0, 1);
     let penalty = FxHashMap::default();
-    let path = astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None).unwrap();
+    let path = astar_route(
+        &ctx,
+        NetId::NONE,
+        &wire_set(&[src]),
+        dst,
+        &penalty,
+        None,
+        50,
+        None,
+        None,
+    )
+    .unwrap();
     let pip = path[0];
     assert_eq!(ctx.pip(pip).src_wire().id(), src);
     assert_eq!(ctx.pip(pip).dst_wire().id(), dst);
@@ -106,9 +128,19 @@ fn astar_with_penalty_still_finds_path() {
     let mut penalty = FxHashMap::default();
     penalty.insert(dst, 1000);
     assert_eq!(
-        astar_route(&ctx, NetId::NONE, &wire_set(&[src]), dst, &penalty, None, 50, None, None)
-            .unwrap()
-            .len(),
+        astar_route(
+            &ctx,
+            NetId::NONE,
+            &wire_set(&[src]),
+            dst,
+            &penalty,
+            None,
+            50,
+            None,
+            None
+        )
+        .unwrap()
+        .len(),
         1
     );
 }

@@ -161,11 +161,7 @@ pub(crate) fn cell_driver_wires(
 /// the placer can reject a placement whose BEL input-pin wire lands on the
 /// same routing node as another net's already-claimed pin wire — the
 /// shared-input-mux case in xc7 slices that the driver-only check misses.
-pub(crate) fn cell_user_wires(
-    ctx: &Context,
-    cell_id: CellId,
-    bel: BelId,
-) -> Vec<(WireId, NetId)> {
+pub(crate) fn cell_user_wires(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(WireId, NetId)> {
     let cell = ctx.design.cell(cell_id);
     let ports: Vec<(IdString, PortType, Option<NetId>)> = cell
         .ports
@@ -199,22 +195,14 @@ pub(crate) fn cell_user_wires(
 /// Union of `cell_driver_wires` and `cell_user_wires`: every BEL-pin wire
 /// that `cell_id` would claim if bound to `bel`, paired with the net each
 /// pin belongs to.
-pub(crate) fn cell_pin_wires(
-    ctx: &Context,
-    cell_id: CellId,
-    bel: BelId,
-) -> Vec<(WireId, NetId)> {
+pub(crate) fn cell_pin_wires(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(WireId, NetId)> {
     let mut out = cell_driver_wires(ctx, cell_id, bel);
     out.extend(cell_user_wires(ctx, cell_id, bel));
     out
 }
 
 /// Public re-export of `cell_pin_wires` for the routability module.
-pub fn cell_pin_wires_pub(
-    ctx: &Context,
-    cell_id: CellId,
-    bel: BelId,
-) -> Vec<(WireId, NetId)> {
+pub fn cell_pin_wires_pub(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(WireId, NetId)> {
     cell_pin_wires(ctx, cell_id, bel)
 }
 
@@ -308,12 +296,7 @@ impl DriverNodeRegistry {
     /// Same as `is_legal`, but takes a precomputed `CellPinTemplate` so the
     /// per-call cost is only the `bel.pin_wire(name)` lookups + a single
     /// `node_id` resolution per pin, skipping per-call cell-port walks.
-    pub fn is_legal_template(
-        &self,
-        ctx: &Context,
-        template: &CellPinTemplate,
-        bel: BelId,
-    ) -> bool {
+    pub fn is_legal_template(&self, ctx: &Context, template: &CellPinTemplate, bel: BelId) -> bool {
         let bel_view = ctx.bel(bel);
         for (port_name, net) in &template.pin_ports {
             let net = *net;
@@ -360,8 +343,7 @@ pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPin
                 pin_ports.push((*name, net_id));
             }
             PortType::InOut => {
-                let is_driver =
-                    net.driver_cell_port().map(|p| p.cell) == Some(cell_id);
+                let is_driver = net.driver_cell_port().map(|p| p.cell) == Some(cell_id);
                 if is_driver && net.num_users() == 0 {
                     continue;
                 }
@@ -369,10 +351,9 @@ pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPin
             }
             PortType::In => {
                 pin_ports.push((*name, net_id));
-            }
-            // No catch-all arm: Out/InOut/In are exhaustive today, and keeping
-            // the match exhaustive means a new PortType variant becomes a
-            // compile error here instead of being silently dropped.
+            } // No catch-all arm: Out/InOut/In are exhaustive today, and keeping
+              // the match exhaustive means a new PortType variant becomes a
+              // compile error here instead of being silently dropped.
         }
     }
     CellPinTemplate { pin_ports }
@@ -518,9 +499,7 @@ pub(crate) fn cluster_is_legal(
 /// Lets `cluster_is_legal` resolve a constraint-offset child slot in O(1)
 /// instead of O(n_bels_for_bucket). The caller passes `cell_type`; the lookup
 /// resolves to bucket via `ctx.resolve_bucket` so cell_type aliases work.
-pub(crate) fn build_bel_by_loc(
-    ctx: &Context,
-) -> FxHashMap<(IdString, i32, i32, i32), BelId> {
+pub(crate) fn build_bel_by_loc(ctx: &Context) -> FxHashMap<(IdString, i32, i32, i32), BelId> {
     let mut idx: FxHashMap<(IdString, i32, i32, i32), BelId> = FxHashMap::default();
     for bucket_id in ctx.bel_buckets() {
         for bel in ctx.bels_for_bucket(bucket_id) {
@@ -534,9 +513,7 @@ pub(crate) fn build_bel_by_loc(
 /// After legalization, verify no two placed cells claim the same routing
 /// node via their BEL pin wires (driver *or* user). Returns the first
 /// offending cell pair as a `PlacerError`.
-pub(crate) fn verify_shared_mux_legality(
-    ctx: &Context,
-) -> Result<(), PlacerError> {
+pub(crate) fn verify_shared_mux_legality(ctx: &Context) -> Result<(), PlacerError> {
     let mut seen: FxHashMap<WireId, (CellId, NetId)> = FxHashMap::default();
     let bound: Vec<(CellId, BelId)> = ctx
         .design

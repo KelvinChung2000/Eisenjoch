@@ -77,7 +77,9 @@ fn main() {
     // Node-share peer map across rep tiles: (tt, wi) -> [(tt, wi)]
     let mut node_share: FxHashMap<(usize, i32), Vec<(usize, i32)>> = FxHashMap::default();
     for tt_idx in 0..num_tt {
-        let Some(rep) = rep_of_tt[tt_idx] else { continue };
+        let Some(rep) = rep_of_tt[tt_idx] else {
+            continue;
+        };
         let tt = cdb.tile_type_by_index(tt_idx as i32);
         for wi in 0..tt.wires.get().len() {
             let wid = WireId::new(rep, wi as i32);
@@ -106,17 +108,27 @@ fn main() {
         .collect();
     let mut q: VecDeque<(usize, i32)> = VecDeque::new();
     for tt_idx in 0..num_tt {
-        let Some(rep) = rep_of_tt[tt_idx] else { continue };
+        let Some(rep) = rep_of_tt[tt_idx] else {
+            continue;
+        };
         let tt = cdb.tile_type_by_index(tt_idx as i32);
         for bel in tt.bels.get().iter() {
             let bt: i32 = unsafe { read_packed!(*bel, bel_type) };
-            let Some(name) = cdb.constid_str(bt) else { continue };
-            if name != target_bel { continue; }
+            let Some(name) = cdb.constid_str(bt) else {
+                continue;
+            };
+            if name != target_bel {
+                continue;
+            }
             for pin in bel.pins.get().iter() {
                 let dir: i32 = unsafe { read_packed!(*pin, dir) };
-                if dir != 1 { continue; }
+                if dir != 1 {
+                    continue;
+                }
                 let wi: i32 = unsafe { read_packed!(*pin, wire) };
-                if wi < 0 { continue; }
+                if wi < 0 {
+                    continue;
+                }
                 if !reach[tt_idx][wi as usize] {
                     reach[tt_idx][wi as usize] = true;
                     q.push_back((tt_idx, wi));
@@ -150,9 +162,13 @@ fn main() {
     let mut min_overall: Option<(f64, i64, i64)> = None;
     for tt in 0..num_tt {
         for &(cost, span, src) in &pip_data[tt] {
-            if src < 0 { continue; }
+            if src < 0 {
+                continue;
+            }
             let su = src as usize;
-            if su >= reach[tt].len() || !reach[tt][su] { continue; }
+            if su >= reach[tt].len() || !reach[tt][su] {
+                continue;
+            }
             let rate = cost as f64 / span as f64;
             by_span.entry(span).or_default().push((cost, rate));
             all.push((rate, cost, span, tt, "LUT6"));
@@ -164,14 +180,19 @@ fn main() {
         }
     }
 
-    println!("=== LUT6-reachable pips: span -> (count, min_cost, min_rate, max_span_within_bucket) ===");
+    println!(
+        "=== LUT6-reachable pips: span -> (count, min_cost, min_rate, max_span_within_bucket) ==="
+    );
     let mut spans: Vec<i64> = by_span.keys().copied().collect();
     spans.sort();
     for s in spans {
         let v = &by_span[&s];
         let mn_c = v.iter().map(|x| x.0).min().unwrap();
         let mn_r = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
-        println!("  span={s:>3}: n={:<6} min_cost={mn_c:>4} min_rate={mn_r:.3}", v.len());
+        println!(
+            "  span={s:>3}: n={:<6} min_cost={mn_c:>4} min_rate={mn_r:.3}",
+            v.len()
+        );
     }
     if let Some((r, c, s)) = min_overall {
         println!("\nGLOBAL MIN: rate={r:.3} cost={c} span={s}");
@@ -186,16 +207,26 @@ fn main() {
         for (pidx, pip) in pips.iter().enumerate() {
             let s: i32 = unsafe { read_packed!(*pip, src_wire) };
             let d: i32 = unsafe { read_packed!(*pip, dst_wire) };
-            if s < 0 || d < 0 { continue; }
+            if s < 0 || d < 0 {
+                continue;
+            }
             let su = s as usize;
-            if su >= reach[tt].len() || !reach[tt][su] { continue; }
+            if su >= reach[tt].len() || !reach[tt][su] {
+                continue;
+            }
             let (cost, span, _) = pip_data[tt][pidx];
-            if span != 18 && span != 12 && span != 13 { continue; }
+            if span != 18 && span != 12 && span != 13 {
+                continue;
+            }
             let nm = |wi: i32| -> String {
                 let wu = wi as usize;
-                if wu >= wires.len() { return "?".into(); }
+                if wu >= wires.len() {
+                    return "?".into();
+                }
                 let nid: i32 = unsafe { read_packed!(wires[wu], name) };
-                cdb.constid_str(nid).map(|x| x.to_string()).unwrap_or_default()
+                cdb.constid_str(nid)
+                    .map(|x| x.to_string())
+                    .unwrap_or_default()
             };
             println!(
                 "  span={span:>2} cost={cost:>3} tt={:<10} {:<28} -> {}",
@@ -213,7 +244,9 @@ fn main() {
     let mut cheaper: Vec<(f64, i64, i64, usize, i32)> = Vec::new();
     for tt in 0..num_tt {
         for (idx, &(cost, span, src)) in pip_data[tt].iter().enumerate() {
-            if src < 0 { continue; }
+            if src < 0 {
+                continue;
+            }
             let rate = cost as f64 / span as f64;
             if rate < lut6_min {
                 cheaper.push((rate, cost, span, tt, idx as i32));

@@ -130,10 +130,7 @@ fn run_one(
         };
     }
     let hpwl = nextpnr::metrics::total_hpwl(&ctx);
-    println!(
-        "{} placed in {:.1}s, hpwl={:.0}",
-        label, place_secs, hpwl
-    );
+    println!("{} placed in {:.1}s, hpwl={:.0}", label, place_secs, hpwl);
 
     let mut rcfg = RasterRouterCfg::default();
     rcfg.max_iterations = 5;
@@ -180,7 +177,13 @@ fn main() {
     ];
     let mut reports = Vec::new();
     for (label, iters, softmin) in configs {
-        reports.push(run_one(label.into(), iters, softmin, &chipdb_path, &design_path));
+        reports.push(run_one(
+            label.into(),
+            iters,
+            softmin,
+            &chipdb_path,
+            &design_path,
+        ));
     }
 
     println!("\n\n================== CLUMPING ABLATION ==================");
@@ -203,9 +206,7 @@ fn main() {
             r.total_wl
         );
     }
-    println!(
-        "\nTarget HeAP baseline from prior run: hpwl=12986, routed 293/298, wall ~3s place"
-    );
+    println!("\nTarget HeAP baseline from prior run: hpwl=12986, routed 293/298, wall ~3s place");
     println!("Empty-tree counts:");
     for r in &reports {
         println!(

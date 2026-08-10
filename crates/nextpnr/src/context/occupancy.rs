@@ -86,16 +86,24 @@ impl Context {
     ) {
         let wire = wire.into();
         let net_idx = net_idx.into();
-        let Ok(tile) = u32::try_from(wire.tile()) else { return };
-        let Ok(index) = u32::try_from(wire.index()) else { return };
+        let Ok(tile) = u32::try_from(wire.tile()) else {
+            return;
+        };
+        let Ok(index) = u32::try_from(wire.index()) else {
+            return;
+        };
         self.wire_to_net.insert((tile, index), (net_idx, strength));
     }
 
     /// Unbind a wire. O(1) hash-map removal; no-op if not bound.
     pub fn unbind_wire(&mut self, wire: impl Into<WireId>) {
         let wire = wire.into();
-        let Ok(tile) = u32::try_from(wire.tile()) else { return };
-        let Ok(index) = u32::try_from(wire.index()) else { return };
+        let Ok(tile) = u32::try_from(wire.tile()) else {
+            return;
+        };
+        let Ok(index) = u32::try_from(wire.index()) else {
+            return;
+        };
         self.wire_to_net.remove(&(tile, index));
     }
 
@@ -129,8 +137,12 @@ impl Context {
 
         // Phase 2: apply all bindings.
         for &w in &wires {
-            let Ok(tile) = u32::try_from(w.tile()) else { continue };
-            let Ok(index) = u32::try_from(w.index()) else { continue };
+            let Ok(tile) = u32::try_from(w.tile()) else {
+                continue;
+            };
+            let Ok(index) = u32::try_from(w.index()) else {
+                continue;
+            };
             self.wire_to_net.insert((tile, index), (net_idx, strength));
         }
 
@@ -146,16 +158,24 @@ impl Context {
     ) {
         let pip = pip.into();
         let net_idx = net_idx.into();
-        let Ok(tile) = u32::try_from(pip.tile()) else { return };
-        let Ok(index) = u32::try_from(pip.index()) else { return };
+        let Ok(tile) = u32::try_from(pip.tile()) else {
+            return;
+        };
+        let Ok(index) = u32::try_from(pip.index()) else {
+            return;
+        };
         self.pip_to_net.insert((tile, index), (net_idx, strength));
     }
 
     /// Unbind a PIP. O(1) hash-map removal; no-op if not bound.
     pub fn unbind_pip(&mut self, pip: impl Into<PipId>) {
         let pip = pip.into();
-        let Ok(tile) = u32::try_from(pip.tile()) else { return };
-        let Ok(index) = u32::try_from(pip.index()) else { return };
+        let Ok(tile) = u32::try_from(pip.tile()) else {
+            return;
+        };
+        let Ok(index) = u32::try_from(pip.index()) else {
+            return;
+        };
         self.pip_to_net.remove(&(tile, index));
     }
 }

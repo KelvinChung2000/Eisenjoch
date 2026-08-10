@@ -115,8 +115,7 @@ impl Lookahead {
             adj_per_tt.push(adj);
         }
 
-        let mut node_share: FxHashMap<(usize, i32), Vec<(usize, i32)>> =
-            FxHashMap::default();
+        let mut node_share: FxHashMap<(usize, i32), Vec<(usize, i32)>> = FxHashMap::default();
         for tt in 0..num_tile_types {
             let Some(rep) = rep_of_type[tt] else { continue };
             for wi in 0..wires_per_tt[tt] {
@@ -155,10 +154,7 @@ impl Lookahead {
                     if wi < 0 || (wi as usize) >= wires_per_tt[tt] {
                         continue;
                     }
-                    class_seeds
-                        .entry(bel_type_id)
-                        .or_default()
-                        .push((tt, wi));
+                    class_seeds.entry(bel_type_id).or_default().push((tt, wi));
                     had_output = true;
                 }
                 if had_output {
@@ -177,8 +173,7 @@ impl Lookahead {
         // Precompute once, used by every class's rate scan: per-(tt,
         // pip_idx) the (orig_cost, span, src_wire) needed to score a pip.
         // src_wire = -1 marks "skip" (invalid pip).
-        let mut pip_raw: Vec<Vec<(i64, i64, i32)>> =
-            Vec::with_capacity(num_tile_types);
+        let mut pip_raw: Vec<Vec<(i64, i64, i32)>> = Vec::with_capacity(num_tile_types);
         for tt in 0..num_tile_types {
             let Some(rep_tile) = rep_of_type[tt] else {
                 pip_raw.push(Vec::new());
@@ -238,8 +233,7 @@ impl Lookahead {
         );
 
         let mut pip_costs: Vec<Vec<i64>> = Vec::with_capacity(num_tile_types);
-        let mut pip_rate_data: Vec<Vec<(i64, i64, i32)>> =
-            Vec::with_capacity(num_tile_types);
+        let mut pip_rate_data: Vec<Vec<(i64, i64, i32)>> = Vec::with_capacity(num_tile_types);
         for tt in 0..num_tile_types {
             let raw = &pip_raw[tt];
             let mut costs: Vec<i64> = Vec::with_capacity(raw.len());
@@ -265,8 +259,7 @@ impl Lookahead {
         let mut rates: Vec<(i64, i64)> = Vec::with_capacity(bel_types.len());
         let mut class_of_bel_type: FxHashMap<i32, LookaheadClass> = FxHashMap::default();
         let mut class_names: Vec<String> = Vec::with_capacity(bel_types.len());
-        let mut reachable_per_class: Vec<Vec<Vec<bool>>> =
-            Vec::with_capacity(bel_types.len());
+        let mut reachable_per_class: Vec<Vec<Vec<bool>>> = Vec::with_capacity(bel_types.len());
 
         for (cls_idx, &bel_type) in bel_types.iter().enumerate() {
             let cls = cls_idx as LookaheadClass;
@@ -363,9 +356,11 @@ impl Lookahead {
             // with rate 1/1 and an empty reachable set.
             rates.push((1, 1));
             class_names.push("DEFAULT".into());
-            reachable_per_class.push((0..num_tile_types)
-                .map(|tt| vec![true; wires_per_tt[tt]])
-                .collect());
+            reachable_per_class.push(
+                (0..num_tile_types)
+                    .map(|tt| vec![true; wires_per_tt[tt]])
+                    .collect(),
+            );
         }
 
         eprintln!(
@@ -431,7 +426,9 @@ impl Lookahead {
             return true;
         };
         let tt = chipdb.tile_type_index(wire.tile()) as usize;
-        let Some(bits) = per_tt.get(tt) else { return true };
+        let Some(bits) = per_tt.get(tt) else {
+            return true;
+        };
         let wi = wire.index() as usize;
         bits.get(wi).copied().unwrap_or(false)
     }

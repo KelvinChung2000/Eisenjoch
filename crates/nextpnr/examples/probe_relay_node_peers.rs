@@ -30,7 +30,15 @@ fn dump(db: &ChipDb, name: &str, x: i32, y: i32) {
             return;
         }
     };
-    println!("\n== {}@({},{}) = {}:{} tile_type={} ==", name, x, y, w.tile(), w.index(), db.tile_type_name(tile));
+    println!(
+        "\n== {}@({},{}) = {}:{} tile_type={} ==",
+        name,
+        x,
+        y,
+        w.tile(),
+        w.index(),
+        db.tile_type_name(tile)
+    );
     let info = db.wire_info(w);
     println!("  node_id: {:?}", db.node_id(w));
     println!("  pips_downhill: {}", info.pips_downhill.get().len());

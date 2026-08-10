@@ -109,8 +109,9 @@ fn dijkstra_nodes_reached(
 }
 
 fn main() {
-    let chipdb = std::env::var("NPNR_AUDIT_CHIPDB")
-        .unwrap_or_else(|_| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".to_string());
+    let chipdb = std::env::var("NPNR_AUDIT_CHIPDB").unwrap_or_else(|_| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".to_string()
+    });
     let db = ChipDb::load(Path::new(&chipdb)).expect("load chipdb");
 
     // Prefer an interior representative tile so boundary wires on all four
@@ -247,7 +248,11 @@ fn main() {
             wt_by_side.get(&Side::East).copied().unwrap_or(0),
             wt_by_side.get(&Side::South).copied().unwrap_or(0),
             wt_by_side.get(&Side::West).copied().unwrap_or(0),
-            wt_spans.iter().map(|(s, sp)| format!("{:?}:{}", s, sp)).collect::<Vec<_>>().join("|"),
+            wt_spans
+                .iter()
+                .map(|(s, sp)| format!("{:?}:{}", s, sp))
+                .collect::<Vec<_>>()
+                .join("|"),
         );
     }
     println!("projected_total_span_keys={}", total_projected);
@@ -308,7 +313,12 @@ fn main() {
                 n_internal += 1;
             }
         }
-        println!("  total_wires={} boundary={} internal(no_shape_or_span0)={}", tt.wires.len(), n_boundary, n_internal);
+        println!(
+            "  total_wires={} boundary={} internal(no_shape_or_span0)={}",
+            tt.wires.len(),
+            n_boundary,
+            n_internal
+        );
         println!("  max_reach (dx,dy) -> wire_count:");
         let mut summary: Vec<_> = wire_summary.into_iter().collect();
         summary.sort_by_key(|&((dx, dy), _)| (dy, dx));
@@ -343,13 +353,15 @@ fn main() {
                 let wid = nextpnr::chipdb::WireId::new(clb_tile, wire_idx as i32);
                 let wname = db.wire_name(wid);
                 let wtype = db.wire_type(wid);
-                println!("    wire_idx={:4} name={:30} type={:15} max_reach=({:+4},{:+4}) n_tiles={}", wire_idx, wname, wtype, max_dx, max_dy, n_tiles);
+                println!(
+                    "    wire_idx={:4} name={:30} type={:15} max_reach=({:+4},{:+4}) n_tiles={}",
+                    wire_idx, wname, wtype, max_dx, max_dy, n_tiles
+                );
             }
         }
     }
 
-    let side_span_by_tt: FxHashMap<usize, usize> =
-        type_side_span.iter().copied().collect();
+    let side_span_by_tt: FxHashMap<usize, usize> = type_side_span.iter().copied().collect();
     let mut fabric_edges_total = 0usize;
     for tile in 0..db.num_tiles() {
         let tt = db.tile_type_index(tile) as usize;
@@ -365,7 +377,9 @@ fn main() {
     //      dep.
     let mut lcg: u64 = 0xDEADBEEF_CAFEBABE;
     let mut next_rand = || {
-        lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         lcg
     };
 
@@ -423,7 +437,12 @@ fn main() {
     }
     let n = samples.len().max(1);
     let mean_ms = total_ms / n as f64;
-    println!("  samples={} mean_ms={:.3} max_ms={:.3}", samples.len(), mean_ms, max_ms);
+    println!(
+        "  samples={} mean_ms={:.3} max_ms={:.3}",
+        samples.len(),
+        mean_ms,
+        max_ms
+    );
 
     // ---- Gate verdict ----
     let gate_mean_pass = mean_ms <= 1.0;

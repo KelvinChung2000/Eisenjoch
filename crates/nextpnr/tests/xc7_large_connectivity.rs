@@ -199,12 +199,8 @@ fn left_io_reaches_right_io() {
     // IO{N}_O is the pad-output wire (IOB → fabric); IO{N}_I is the
     // pad-input wire (fabric → IOB). We want a BFS path between them.
     let left_sources = collect_wires(min_iob_x, "IO0_O");
-    let right_sinks: FxHashSet<WireId> =
-        collect_wires(max_iob_x, "IO0_I").into_iter().collect();
-    assert!(
-        !left_sources.is_empty(),
-        "no left IO0_O source wires found"
-    );
+    let right_sinks: FxHashSet<WireId> = collect_wires(max_iob_x, "IO0_I").into_iter().collect();
+    assert!(!left_sources.is_empty(), "no left IO0_O source wires found");
     assert!(!right_sinks.is_empty(), "no right IO0_I sinks found");
 
     // Cap the BFS — the chipdb has ~60M wires so unconditional BFS is slow.

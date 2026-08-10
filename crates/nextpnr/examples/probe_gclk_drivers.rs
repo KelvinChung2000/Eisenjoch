@@ -25,7 +25,12 @@ fn main() {
     }
     assert!(clb_tile >= 0);
     let (cx, cy) = db.tile_xy(clb_tile);
-    println!("Sampling CLB tile @ ({},{}) tt_idx={}", cx, cy, db.tile_type_index(clb_tile));
+    println!(
+        "Sampling CLB tile @ ({},{}) tt_idx={}",
+        cx,
+        cy,
+        db.tile_type_index(clb_tile)
+    );
 
     let tt_idx = db.tile_type_index(clb_tile);
     let tt = db.tile_type_by_index(tt_idx);
@@ -34,16 +39,22 @@ fn main() {
 
     // Map wire idx -> name.
     let wire_name = |wi: usize| -> String {
-        if wi >= wires.len() { return "?".into(); }
+        if wi >= wires.len() {
+            return "?".into();
+        }
         let nid: i32 = unsafe { read_packed!(wires[wi], name) };
-        db.constid_str(nid).map(|s| s.to_string()).unwrap_or_default()
+        db.constid_str(nid)
+            .map(|s| s.to_string())
+            .unwrap_or_default()
     };
 
     // Collect pip drivers per dst wire matching M{1,2}_GCLK*.
     let mut by_dst: Vec<(String, Vec<String>)> = Vec::new();
     for (wi, _w) in wires.iter().enumerate() {
         let nm = wire_name(wi);
-        if !nm.starts_with("M1_GCLK") && !nm.starts_with("M2_GCLK") { continue; }
+        if !nm.starts_with("M1_GCLK") && !nm.starts_with("M2_GCLK") {
+            continue;
+        }
         let mut srcs = Vec::new();
         for pip in pips.iter() {
             let dst: i32 = unsafe { read_packed!(*pip, dst_wire) };
@@ -61,7 +72,9 @@ fn main() {
         for s in srcs.iter().take(8) {
             println!("    {}", s);
         }
-        if srcs.len() > 8 { println!("    ... +{} more", srcs.len() - 8); }
+        if srcs.len() > 8 {
+            println!("    ... +{} more", srcs.len() - 8);
+        }
     }
 
     // Now look at pips that drive *anything* from any BEL output (slice
@@ -80,5 +93,7 @@ fn main() {
     let mut pc: Vec<_> = prefix_counts.into_iter().collect();
     pc.sort_by(|a, b| b.1.cmp(&a.1));
     println!("\n=== driver-name prefix histogram across all M*_GCLK wires ===");
-    for (p, c) in pc { println!("  {}: {}", p, c); }
+    for (p, c) in pc {
+        println!("  {}: {}", p, c);
+    }
 }

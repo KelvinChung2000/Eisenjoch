@@ -19,9 +19,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let design_path = std::env::args().nth(2).unwrap_or_else(|| {
         "/home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json".into()
     });
@@ -31,7 +31,11 @@ fn main() {
     let json = std::fs::read_to_string(&design_path).expect("read design");
     ctx.design = parse_json(&json, &ctx.id_pool).expect("parse design");
     packer::pack(&mut ctx, None).expect("pack");
-    println!("packed: {} cells, {} nets", ctx.design.num_cells(), ctx.design.num_nets());
+    println!(
+        "packed: {} cells, {} nets",
+        ctx.design.num_cells(),
+        ctx.design.num_nets()
+    );
 
     let mut pcfg = OptTransPlacerCfg::default();
     pcfg.max_outer_iters = 50;
@@ -238,7 +242,10 @@ fn main() {
             .map(|(&k, &v)| (k, v))
             .collect();
         dense.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
-        println!("=== tiles with >=8 cells placed ({} total) ===", dense.len());
+        println!(
+            "=== tiles with >=8 cells placed ({} total) ===",
+            dense.len()
+        );
         for ((x, y), c) in dense.iter().take(40) {
             println!("  ({:3},{:3})  cells={}", x, y, c);
         }
@@ -251,10 +258,16 @@ fn main() {
     let mut rcfg = RasterRouterCfg::default();
     rcfg.max_iterations = max_iters;
     rcfg.verbose = false;
-    if let Ok(v) = std::env::var("NPNR_RASTER_MAX_BEAM_STEPS").and_then(|s| s.parse::<usize>().map_err(|_| std::env::VarError::NotPresent)) {
+    if let Ok(v) = std::env::var("NPNR_RASTER_MAX_BEAM_STEPS").and_then(|s| {
+        s.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         rcfg.max_beam_steps = v;
     }
-    if let Ok(v) = std::env::var("NPNR_RASTER_BEAM_WIDTH").and_then(|s| s.parse::<usize>().map_err(|_| std::env::VarError::NotPresent)) {
+    if let Ok(v) = std::env::var("NPNR_RASTER_BEAM_WIDTH").and_then(|s| {
+        s.parse::<usize>()
+            .map_err(|_| std::env::VarError::NotPresent)
+    }) {
         rcfg.beam_width = v;
     }
     let t = std::time::Instant::now();
@@ -525,8 +538,12 @@ fn main() {
             None => continue,
         };
         let driver_cell = ctx.cell(driver.cell);
-        let Some(driver_bel) = driver_cell.bel() else { continue };
-        let Some(src_w) = driver_bel.pin_wire(driver.port) else { continue };
+        let Some(driver_bel) = driver_cell.bel() else {
+            continue;
+        };
+        let Some(src_w) = driver_bel.pin_wire(driver.port) else {
+            continue;
+        };
         let src_wire = src_w.id();
         let loc = driver_bel.loc();
         let my_idx = net_idx;

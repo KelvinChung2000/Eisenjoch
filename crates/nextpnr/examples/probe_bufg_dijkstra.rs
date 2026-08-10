@@ -34,9 +34,9 @@ fn find_wire_by_name(db: &ChipDb, tile: i32, target: &str) -> Option<WireId> {
 }
 
 fn main() {
-    let chipdb_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into());
+    let chipdb_path = std::env::args().nth(1).unwrap_or_else(|| {
+        "/home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin".into()
+    });
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let ctx = Context::new(db);
     let db = ctx.chipdb();
@@ -44,7 +44,13 @@ fn main() {
     // Source: BUFG0_O at (310, 111)
     let src_tile = db.tile_by_xy(310, 111);
     let src = find_wire_by_name(db, src_tile, "BUFG0_O").expect("BUFG0_O");
-    println!("src: BUFG0_O @ tile({},{}) = {}:{}", 310, 111, src.tile(), src.index());
+    println!(
+        "src: BUFG0_O @ tile({},{}) = {}:{}",
+        310,
+        111,
+        src.tile(),
+        src.index()
+    );
 
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(src);
@@ -85,7 +91,12 @@ fn main() {
                 Some(path) => {
                     println!(
                         "TGT ({},{}) {}: REACHABLE in {} pips, limit={} ({:.1} ms)",
-                        tx, ty, tname, path.len(), limit, dt_ms
+                        tx,
+                        ty,
+                        tname,
+                        path.len(),
+                        limit,
+                        dt_ms
                     );
                     break;
                 }
