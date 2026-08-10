@@ -1,5 +1,7 @@
 *.bin
 *.bba
 *.hash
-*.bin.bak
-*.bin.mega
+# Named experiment snapshots (xc7_large.bin.MFF, .preclock, .preclockfix, ...).
+# `*.bin` does not match these, so they showed up as untracked multi-hundred-MB
+# files; `*.bin.*` covers every suffixed variant.
+*.bin.*

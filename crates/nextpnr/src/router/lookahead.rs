@@ -32,7 +32,7 @@ use crate::chipdb::{ChipDb, PipId, WireId};
 use crate::context::Context;
 use crate::read_packed;
 use crate::timing::DelayT;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use super::astar::default_pip_cost;
 

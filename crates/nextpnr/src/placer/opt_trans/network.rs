@@ -14,7 +14,6 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-use super::config::OptTransPlacerCfg;
 use super::tile_cache::SpanCostTable;
 
 /// Direction of an inter-tile pipe between two adjacent tiles.
@@ -313,7 +312,7 @@ impl PipeNetwork {
     /// For scale >= 1.0: one node per tile.
     ///
     /// Cell positions are always in tile coordinates.
-    pub fn from_context(ctx: &Context, scale: f64, cfg: &OptTransPlacerCfg) -> Self {
+    pub fn from_context(ctx: &Context, scale: f64) -> Self {
         let full_w = ctx.chipdb().width();
         let full_h = ctx.chipdb().height();
 

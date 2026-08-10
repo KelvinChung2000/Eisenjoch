@@ -9,7 +9,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    build_bel_by_loc, place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
+    place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
 use rayon::prelude::*;
@@ -75,7 +75,6 @@ pub fn sorted_legalize(
 
     // Unbind all movable cells.
     unbind_movable_cells(ctx, idx_to_cell);
-    let bel_by_loc = build_bel_by_loc(ctx);
 
     // Pre-collect BEL data per cell type into plain data (BelId, x, y, z)
     // so we can share across rayon threads without lifetime issues.

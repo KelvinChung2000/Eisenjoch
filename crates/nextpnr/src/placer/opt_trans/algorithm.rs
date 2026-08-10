@@ -48,7 +48,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .num_threads(cfg.num_threads.max(1))
         .build()
         .map_err(|e| PlacerError::PlacementFailed(format!("thread pool: {e}")))?;
-    let mut network = PipeNetwork::from_context(ctx, target_scale, &cfg);
+    let mut network = PipeNetwork::from_context(ctx, target_scale);
 
     match cfg.init_strategy {
         super::config::InitStrategy::Centroid => {

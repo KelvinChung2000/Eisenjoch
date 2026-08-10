@@ -370,7 +370,9 @@ pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPin
             PortType::In => {
                 pin_ports.push((*name, net_id));
             }
-            _ => {}
+            // No catch-all arm: Out/InOut/In are exhaustive today, and keeping
+            // the match exhaustive means a new PortType variant becomes a
+            // compile error here instead of being silently dropped.
         }
     }
     CellPinTemplate { pin_ports }

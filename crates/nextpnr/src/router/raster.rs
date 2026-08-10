@@ -1257,13 +1257,16 @@ fn route_net_greedy(
     })
 }
 
+/// Beam-search raster routing. This path deliberately takes no lookahead: it
+/// is a bbox-pruned raster expansion, not an A* with a cost-to-go heuristic.
+/// (The lookahead built in `route_raster` is for the A* cleanup path, which
+/// does consume it.) The parameter used to be threaded in here and ignored.
 fn route_net_raster(
     ctx: &Context,
     net: NetId,
     cong: &CongestionMap,
     cong_weight: f32,
     cfg: &RasterRouterCfg,
-    lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
         Some(w) => w,
@@ -1530,17 +1533,20 @@ impl super::Router for RasterRouter {
                     bumped_in_pass += 1;
                     to_retry.push(net);
                 }
-                // Collect retry candidates without mutating ctx, then rip up.
-                // `unroute_net` takes &mut Context, which conflicts with the
-                // immutable borrow held by `ctx.net(idx)` inside the same loop.
-                let mut to_unroute: Vec<NetId> = Vec::new();
+                // Collect retry candidates without mutating ctx. Nothing is
+                // unrouted at this gate: partial trees are deliberately
+                // preserved (see below) and empty ones have nothing to release,
+                // so the former `to_unroute` list was always empty and its
+                // `unroute_net` loop never ran.
                 for idx in ctx.design.iter_net_indices() {
                     let n = ctx.net(idx);
                     if !n.is_alive() || !n.has_driver() || n.num_users() == 0 {
                         continue;
                     }
+                    // `n` borrows ctx immutably and is not used past this point,
+                    // so NLL already releases it before `net_fully_routed`.
+                    // (An explicit `drop(n)` here was a no-op: `Net<'_>` is Copy.)
                     let empty = n.wires().is_empty();
-                    drop(n);
                     if empty || !net_fully_routed(ctx, idx) {
                         if !empty {
                             // Never rip up a partial tree at the gate. A
@@ -1559,9 +1565,6 @@ impl super::Router for RasterRouter {
                         // failed → empty plan → no source bind).
                         to_retry.push(idx);
                     }
-                }
-                for idx in to_unroute {
-                    unroute_net(ctx, idx);
                 }
                 eprintln!(
                     "  pass {} gate: bumped={} sticky_skipped={} (threshold={})",
@@ -1624,7 +1627,7 @@ impl super::Router for RasterRouter {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
                 } else {
-                    route_net_raster(ctx, net, &cong, cong_weight, cfg, Some(&lookahead))
+                    route_net_raster(ctx, net, &cong, cong_weight, cfg)
                 };
                 if let Ok(plan) = result {
                     if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() {
@@ -1664,7 +1667,7 @@ impl super::Router for RasterRouter {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
                 } else {
-                    route_net_raster(ctx, net, &cong, cong_weight, cfg, Some(&lookahead))
+                    route_net_raster(ctx, net, &cong, cong_weight, cfg)
                 };
                 match result {
                     Ok(plan) if plan.source_wire.is_valid() && !plan.sink_routes.is_empty() => {

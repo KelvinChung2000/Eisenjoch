@@ -28,7 +28,10 @@ benchmark/ispd/manifests/
 benchmark/ispd/index.json
 build
 **/__pycache__/**
+# NOTE: this blanket rule also hides real inputs, e.g. demo/blinky.json, which
+# the demo flow needs but a fresh clone does not get. Un-ignored explicitly
+# below; prefer narrowing this rule to the generated output dirs over time.
 *.json
+!demo/blinky.json
 *.so
-perf.data
-perf.data.old
+perf.data*
