@@ -1819,6 +1819,11 @@ pub struct MuxSlotTracker {
     /// capacity-positive tile. The map's key set is frozen after build, so
     /// concurrent readers/mutators only touch the inner atomics — no locking.
     used: FxHashMap<(i32, i32), AtomicU32>,
+    /// Per (gx, gy): rejection events accrued since the last drain. Used to
+    /// build the Lagrangian-multiplier pressure field that the placer reads
+    /// via `dist_cache.tile_pressure`. Same key set as `capacity`/`used`, so
+    /// no concurrent insertions — only atomic increments.
+    rejected_per_tile: FxHashMap<(i32, i32), AtomicU32>,
     /// Per cell index: does this cell drive at least one live, user-owned net?
     drives_external: Vec<bool>,
     /// Rejection counter for diagnostics.
@@ -1909,10 +1914,16 @@ impl MuxSlotTracker {
         for &key in capacity.keys() {
             used.insert(key, AtomicU32::new(0));
         }
+        let mut rejected_per_tile: FxHashMap<(i32, i32), AtomicU32> = FxHashMap::default();
+        rejected_per_tile.reserve(capacity.len());
+        for &key in capacity.keys() {
+            rejected_per_tile.insert(key, AtomicU32::new(0));
+        }
 
         Self {
             capacity,
             used,
+            rejected_per_tile,
             drives_external,
             rejected: AtomicU64::new(0),
             x0,
@@ -1997,12 +2008,18 @@ impl MuxSlotTracker {
         let cap = self.capacity.get(&(to_gx, to_gy)).copied().unwrap_or(0);
         let Some(to_entry) = self.used.get(&(to_gx, to_gy)) else {
             self.rejected.fetch_add(1, Ordering::Relaxed);
+            if let Some(rc) = self.rejected_per_tile.get(&(to_gx, to_gy)) {
+                rc.fetch_add(1, Ordering::Relaxed);
+            }
             return false;
         };
         let mut current = to_entry.load(Ordering::Relaxed);
         loop {
             if current >= cap {
                 self.rejected.fetch_add(1, Ordering::Relaxed);
+                if let Some(rc) = self.rejected_per_tile.get(&(to_gx, to_gy)) {
+                    rc.fetch_add(1, Ordering::Relaxed);
+                }
                 return false;
             }
             match to_entry.compare_exchange_weak(
@@ -2034,6 +2051,43 @@ impl MuxSlotTracker {
 
     pub fn rejected(&self) -> u64 {
         self.rejected.load(Ordering::Relaxed)
+    }
+
+    /// Read each tile's pending rejection count (atomically resetting it to 0)
+    /// and apply an EMA update to the provided per-node pressure vector:
+    ///
+    ///   `pressure[node] = decay * pressure[node] + step * rejected_this_iter[tile]`
+    ///
+    /// `tile_to_node` maps (gx, gy) → node index. Tiles whose node index is
+    /// outside `pressure.len()` (shouldn't happen given the network grid) are
+    /// silently skipped. Returns the total reject count drained.
+    pub fn drain_rejection_pressure(
+        &self,
+        decay: f64,
+        step: f64,
+        pressure: &mut [f64],
+        mut tile_to_node: impl FnMut(i32, i32) -> usize,
+    ) -> u64 {
+        if pressure.is_empty() {
+            return 0;
+        }
+        let decay = decay.clamp(0.0, 1.0);
+        for p in pressure.iter_mut() {
+            *p *= decay;
+        }
+        let mut total = 0u64;
+        for (&(gx, gy), counter) in &self.rejected_per_tile {
+            let n = counter.swap(0, Ordering::Relaxed);
+            if n == 0 {
+                continue;
+            }
+            total += n as u64;
+            let node = tile_to_node(gx, gy);
+            if node < pressure.len() {
+                pressure[node] += step * n as f64;
+            }
+        }
+        total
     }
 
     /// True iff every tile has `used <= capacity`. O(populated_tiles).

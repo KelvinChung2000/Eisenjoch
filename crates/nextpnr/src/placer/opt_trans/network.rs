@@ -412,6 +412,14 @@ impl PipeNetwork {
         let n_null_coarse: usize = (0..n_coarse).filter(|&ci| is_null_coarse(ci)).count();
 
         let coarsen_i = coarsen as i32;
+        // Pipe base-cost exponent: base = span^exp. exp=0.5 (sqrt) prices long
+        // lines as a delay/resistance proxy (current default). exp=1.0 makes the
+        // base cost linear in span, so the driver-star Dijkstra distance tracks
+        // routed wirelength (matches an HPWL/wirelength objective like elfPlace).
+        let pipe_cost_exp: f64 = std::env::var("NPNR_OT_PIPE_COST_EXP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5);
         let mut n_span1 = 0usize;
         let mut n_long_range = 0usize;
         let mut n_skipped_null_src = 0usize;
@@ -476,7 +484,7 @@ impl PipeNetwork {
                         continue;
                     }
                     let span = (cdx.abs() + cdy.abs()) as usize;
-                    let base = (span as f64).sqrt();
+                    let base = (span as f64).powf(pipe_cost_exp);
                     let cap = (wire_count as f64).max(1.0);
                     let pipe_type = if span == 1 {
                         n_span1 += 1;
@@ -606,11 +614,12 @@ impl PipeNetwork {
         // (span=N, base=sqrt(N)). Wire count is already baked into `capacity`;
         // congestion-dependent R_eff rides on top via `ResistanceModel`.
         eprintln!(
-            "  Pipe cost: sqrt model (r1=1), span-1={:.3}, span-12={:.3}, 2×span-6={:.3}, 12×span-1={:.3}",
-            1.0,
-            12.0_f64.sqrt(),
-            2.0 * 6.0_f64.sqrt(),
-            12.0,
+            "  Pipe cost: span^{:.2} model (r1=1), span-1={:.3}, span-12={:.3}, 2×span-6={:.3}, 12×span-1={:.3}",
+            pipe_cost_exp,
+            1.0_f64.powf(pipe_cost_exp),
+            12.0_f64.powf(pipe_cost_exp),
+            2.0 * 6.0_f64.powf(pipe_cost_exp),
+            12.0 * 1.0_f64.powf(pipe_cost_exp),
         );
 
         let pipe_lookup = build_pipe_lookup(&pipes);

@@ -22,6 +22,20 @@ pub enum SweepMode {
     /// exhaustive fullscan would find under the frozen `dist_cache`, typically
     /// touching far fewer nodes than fullscan.
     JacobiBB,
+    /// Colored Gauss-Seidel: cells are greedy-colored by net-adjacency (high-fanout
+    /// nets excluded); colors are processed in sequence and within each color all
+    /// cells argmin in parallel against a field that already includes earlier
+    /// colors' moves this sweep (fresh-field GS), then only the touched nets'
+    /// dist_cache rows are refreshed before the next color. v1 refresh is
+    /// sequential (safe); the parallel-refresh optimization is a follow-up.
+    ColoredGs,
+    /// DIAGNOSTIC: Jacobi median-of-connected-pins move. Each cell jumps to the
+    /// exact true-HPWL optimum (weighted median of its nets' other-pin bbox
+    /// bounds) against frozen positions, ignoring the Dijkstra/dist_cache star
+    /// objective entirely. Used to isolate whether the DCD quality cap is the
+    /// objective fidelity (this should beat the star sweep on HPWL if so) or the
+    /// convergence/local-CD paradigm (this should NOT beat it if so).
+    MedianDiag,
 }
 
 impl Default for SweepMode {
@@ -235,6 +249,21 @@ pub struct OptTransPlacerCfg {
     /// If true, both constants AND clock-like nets are excluded (convenience
     /// toggle that ORs into both filters above).
     pub exclude_globals: bool,
+
+    // --- Rejection-pressure (Lagrangian capacity) term ---
+    /// Multiplier on the per-tile rejection-pressure term inside
+    /// `evaluate_cell_at`. The `MuxSlotTracker` accumulates one reject event
+    /// per failed commit at a tile; that count becomes a Lagrangian
+    /// multiplier on the per-tile capacity constraint. Default 0.0 disables
+    /// the term entirely (legacy behaviour). Recommend 1.0 to 10.0.
+    pub tile_pressure_weight: f64,
+    /// Per-iter multiplicative decay of the pressure field (analogous to
+    /// `blend_alpha` for pipe usage). 1.0 keeps history forever; 0.0 forgets
+    /// instantly. Default 0.8.
+    pub tile_pressure_decay: f64,
+    /// Step size on the dual ascent — each rejected commit adds
+    /// `step * 1` to its tile's pressure. Default 0.1.
+    pub tile_pressure_step: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -267,6 +296,9 @@ impl Default for OptTransPlacerCfg {
             softmin_enabled: true,
             softmin_theta_start: 0.25,
             softmin_theta_end: 5.0,
+            tile_pressure_weight: 0.0,
+            tile_pressure_decay: 0.8,
+            tile_pressure_step: 0.1,
         }
     }
 }
@@ -325,6 +357,8 @@ impl OptTransPlacerCfg {
                 "seq" | "SequentialBisection" => SweepMode::SequentialBisection,
                 "jacobi_bb" | "JacobiBB" => SweepMode::JacobiBB,
                 "jacobi_bisect" | "JacobiBisection" => SweepMode::JacobiBisection,
+                "median" | "MedianDiag" => SweepMode::MedianDiag,
+                "colored_gs" | "colored" | "ColoredGs" => SweepMode::ColoredGs,
                 _ => self.sweep_mode,
             };
         }
@@ -386,6 +420,24 @@ impl OptTransPlacerCfg {
             .and_then(|s| s.parse::<f64>().ok())
         {
             self.softmin_theta_end = v.max(1e-6);
+        }
+        if let Some(v) = env::var("NPNR_OT_TPRESS_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.tile_pressure_weight = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_TPRESS_DECAY")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.tile_pressure_decay = v.clamp(0.0, 1.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_TPRESS_STEP")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.tile_pressure_step = v.max(0.0);
         }
     }
 }

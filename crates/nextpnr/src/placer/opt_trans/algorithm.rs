@@ -62,6 +62,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
     }
 
+    if std::env::var("NPNR_OT_DUMP_DIST").ok().as_deref() == Some("1") {
+        report_distribution("init", &cell_x, &cell_y, phys_max_x, phys_max_y);
+    }
+
     solve_pool.install(|| {
         cell_x.par_iter_mut().for_each(|v| *v -= network.x0 as f64);
         cell_y.par_iter_mut().for_each(|v| *v -= network.y0 as f64);
@@ -213,6 +217,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let pre_legal_hpwl = continuous_hpwl(ctx, &cell_to_idx, &phys_x, &phys_y);
     eprintln!("Pre-legalization: HPWL={:.0}", pre_legal_hpwl);
 
+    if std::env::var("NPNR_OT_DUMP_DIST").ok().as_deref() == Some("1") {
+        report_distribution("DCD-end", &phys_x, &phys_y, phys_max_x, phys_max_y);
+    }
+
     crate::placer::legalize::legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &cfg.legalization)?;
 
     if std::env::var("NPNR_OT_CHECK_ROUTABILITY").ok().as_deref() == Some("1") {
@@ -265,6 +273,61 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
 
     PlacerPipeline::validate(ctx)?;
     Ok(())
+}
+
+/// Dump distribution stats for continuous positions: centroid, std dev,
+/// bounding box, and a coarse occupancy histogram. Useful for tracing
+/// where cells actually end up at each pipeline stage.
+fn report_distribution(stage: &str, x: &[f64], y: &[f64], max_x: f64, max_y: f64) {
+    let n = x.len();
+    if n == 0 {
+        eprintln!("[dist {}] empty", stage);
+        return;
+    }
+    let nf = n as f64;
+    let mean_x: f64 = x.iter().sum::<f64>() / nf;
+    let mean_y: f64 = y.iter().sum::<f64>() / nf;
+    let var_x: f64 = x.iter().map(|v| (v - mean_x).powi(2)).sum::<f64>() / nf;
+    let var_y: f64 = y.iter().map(|v| (v - mean_y).powi(2)).sum::<f64>() / nf;
+    let mut min_x = f64::INFINITY;
+    let mut max_xv = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_yv = f64::NEG_INFINITY;
+    for i in 0..n {
+        if x[i] < min_x { min_x = x[i]; }
+        if x[i] > max_xv { max_xv = x[i]; }
+        if y[i] < min_y { min_y = y[i]; }
+        if y[i] > max_yv { max_yv = y[i]; }
+    }
+    // 8x8 coarse occupancy
+    let bw = (max_x + 1.0) / 8.0;
+    let bh = (max_y + 1.0) / 8.0;
+    let mut bins = [[0u32; 8]; 8];
+    for i in 0..n {
+        let bx = ((x[i] / bw).floor() as i32).clamp(0, 7) as usize;
+        let by = ((y[i] / bh).floor() as i32).clamp(0, 7) as usize;
+        bins[by][bx] += 1;
+    }
+    // Within-1-tile-of-centroid fraction
+    let mut piled = 0u32;
+    for i in 0..n {
+        let dx = (x[i] - mean_x).abs();
+        let dy = (y[i] - mean_y).abs();
+        if dx <= 1.0 && dy <= 1.0 {
+            piled += 1;
+        }
+    }
+    eprintln!(
+        "[dist {}] n={} centroid=({:.1},{:.1}) std=({:.2},{:.2}) bbox=({:.0},{:.0})-({:.0},{:.0}) piled<=1tile={:.1}%",
+        stage, n, mean_x, mean_y, var_x.sqrt(), var_y.sqrt(),
+        min_x, min_y, max_xv, max_yv,
+        100.0 * piled as f64 / nf,
+    );
+    eprintln!("[dist {}] 8x8 occupancy (row top->bottom):", stage);
+    for row in (0..8).rev() {
+        let line: Vec<String> = bins[row].iter().map(|c| format!("{:>6}", c)).collect();
+        eprintln!("  {}", line.join(" "));
+    }
 }
 
 /// Compute HPWL from continuous (physical) cell positions, mirroring

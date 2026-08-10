@@ -72,6 +72,14 @@ struct DistCache {
     /// gradient pulls toward each MST neighbor (no central attractor).
     /// Empty when `mst_edge_weight == 0.0`. Refreshed per outer iter.
     mst_neighbors: Vec<Vec<Vec<u16>>>,
+    /// Per-node Lagrangian multiplier for the per-tile capacity constraint.
+    /// Updated between outer iters by `MuxSlotTracker::drain_rejection_pressure`
+    /// — each rejected commit pushes pressure on the destination tile up by
+    /// `cfg.tile_pressure_step`, decaying multiplicatively by
+    /// `cfg.tile_pressure_decay` each iter. Read in `evaluate_cell_at` as an
+    /// additive cost term scaled by `cfg.tile_pressure_weight`. Zero everywhere
+    /// when the term is disabled (`tile_pressure_weight == 0.0`).
+    tile_pressure: Vec<f64>,
 }
 
 impl DistCache {
@@ -83,6 +91,7 @@ impl DistCache {
             steiner_cx: vec![0.0; n_nets],
             steiner_cy: vec![0.0; n_nets],
             mst_neighbors: Vec::new(),
+            tile_pressure: vec![0.0; n_nodes],
         }
     }
 
@@ -1596,6 +1605,16 @@ fn evaluate_cell_at(
         }
     }
 
+    // Lagrangian capacity term: pile on a per-tile pressure that grew
+    // each iter from the count of rejected commits at this node. This is
+    // a cell-density signal (not routing demand), so it bites tiles that
+    // are full even when no net actually passes through them — the failure
+    // mode that pure BPR misses.
+    let tp_w = cfg.tile_pressure_weight;
+    if tp_w > 0.0 && node < dist_cache.tile_pressure.len() {
+        cost += tp_w * dist_cache.tile_pressure[node];
+    }
+
     cost
 }
 
@@ -2601,6 +2620,22 @@ fn refresh_net_dist_cache(
     _cfg: &OptTransPlacerCfg,
     ws: &mut PathSolverWorkspace,
 ) {
+    refresh_dist_row(dist_cache.row_mut(net_idx), info, network, ws);
+}
+
+/// Recompute one net's dist_cache row (driver-anchored corridor Dijkstra labels)
+/// in place. It touches only the passed-in `row` (plus the per-thread `ws`), so
+/// it is safe to call in parallel across DISJOINT rows via `rows.par_iter_mut()`
+/// — this is what the colored-GS per-color refresh relies on (no unsafe needed,
+/// unlike `solve_all_nets` which must also write shared edge_usage). A
+/// driver-less or sink-less net leaves its row unchanged (matches the prior
+/// single-net refresh semantics).
+fn refresh_dist_row(
+    row: &mut FxHashMap<u32, f32>,
+    info: &NetInfo,
+    network: &PipeNetwork,
+    ws: &mut PathSolverWorkspace,
+) {
     let Some(source) = source_node(info) else {
         return;
     };
@@ -2619,15 +2654,397 @@ fn refresh_net_dist_cache(
     ws.begin_net();
     path_solver::dial_logit_load(network, source, &sink_demands, ws, None);
 
-    let dist_out = dist_cache.row_mut(net_idx);
-    dist_out.clear();
-    dist_out.reserve(ws.settle_order.len());
+    row.clear();
+    row.reserve(ws.settle_order.len());
     for &node in &ws.settle_order {
-        dist_out.insert(node as u32, ws.dist[node] as f32);
+        row.insert(node as u32, ws.dist[node] as f32);
     }
-    if dist_out.capacity() > 4 * dist_out.len().max(8) {
-        dist_out.shrink_to_fit();
+    if row.capacity() > 4 * row.len().max(8) {
+        row.shrink_to_fit();
     }
+}
+
+/// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): measure the cell net-adjacency coloring
+/// that colored Gauss-Seidel would use, then exit. High-fanout nets form huge
+/// cliques that blow up the chromatic number, so nets with more than
+/// `NPNR_OT_COLOR_FANOUT` (default 16) movable cells are excluded from the
+/// conflict graph. If the resulting color count C is small (tens), colored-GS is
+/// viable (C incremental refreshes per sweep); if large, a spatial decomposition
+/// is needed instead.
+/// Greedy net-adjacency coloring of cells for colored Gauss-Seidel. Two cells
+/// receive distinct colors iff they share a net with at most `fanout_threshold`
+/// movable cells. High-fanout nets (clocks) are EXCLUDED from the conflict graph
+/// — they form huge cliques that would explode the color count; same-color cells
+/// may share a high-fanout net and update with mild staleness, which is
+/// acceptable since their per-pin pull is small and averaged.
+struct CellColoring {
+    /// Per-cell color id in `0..num_colors`. Cells with no low-fanout net still
+    /// get a valid color (0) — they are trivially independent.
+    colors: Vec<u32>,
+    num_colors: u32,
+    n_low_fanout_nets: usize,
+    n_high_fanout_excluded: usize,
+    max_degree: u32,
+}
+
+fn build_cell_coloring(
+    net_infos: &[NetInfo],
+    cell_net_map: &CellNetMap,
+    n: usize,
+    fanout_threshold: usize,
+) -> CellColoring {
+    let n_nets = net_infos.len();
+    let mut net_cells: Vec<Vec<usize>> = vec![Vec::new(); n_nets];
+    for (ni, info) in net_infos.iter().enumerate() {
+        for pin in &info.pins {
+            if let Some(ci) = pin.cell_idx {
+                if !pin.is_fixed && ci < n {
+                    net_cells[ni].push(ci);
+                }
+            }
+        }
+    }
+    let mut n_high = 0usize;
+    let mut n_low = 0usize;
+    for cells in net_cells.iter_mut() {
+        if cells.len() > fanout_threshold {
+            cells.clear(); // exclude high-fanout net from the conflict graph
+            n_high += 1;
+        } else if cells.len() >= 2 {
+            n_low += 1;
+        }
+    }
+
+    // Approx degree = sum over low-fanout nets of (net_size - 1). Used only to
+    // order cells largest-first (Welsh-Powell) for a tighter color count.
+    let mut degree: Vec<u32> = vec![0; n];
+    for cells in net_cells.iter() {
+        let k = cells.len();
+        if k >= 2 {
+            for &ci in cells {
+                degree[ci] += (k - 1) as u32;
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_unstable_by(|&a, &b| degree[b].cmp(&degree[a]));
+
+    // Greedy coloring with a stamp-based forbidden set (no per-cell allocation).
+    let mut colors: Vec<u32> = vec![u32::MAX; n];
+    let mut stamp: Vec<u32> = vec![0u32; 1];
+    let mut cur_stamp = 0u32;
+    let mut num_colors = 0u32;
+    for &c in &order {
+        cur_stamp += 1;
+        for &(ni, _) in &cell_net_map.map[c] {
+            for &other in &net_cells[ni] {
+                if other == c {
+                    continue;
+                }
+                let col = colors[other];
+                if col != u32::MAX {
+                    let cu = col as usize;
+                    if cu >= stamp.len() {
+                        stamp.resize(cu + 1, 0);
+                    }
+                    stamp[cu] = cur_stamp;
+                }
+            }
+        }
+        let mut chosen = 0u32;
+        while (chosen as usize) < stamp.len() && stamp[chosen as usize] == cur_stamp {
+            chosen += 1;
+        }
+        colors[c] = chosen;
+        if chosen + 1 > num_colors {
+            num_colors = chosen + 1;
+        }
+    }
+    // Cells touched by no low-fanout net never entered the loop body's forbidden
+    // path but still got a color (the loop colors every cell). num_colors >= 1
+    // whenever n > 0.
+    if num_colors == 0 {
+        num_colors = 1;
+    }
+
+    CellColoring {
+        colors,
+        num_colors,
+        n_low_fanout_nets: n_low,
+        n_high_fanout_excluded: n_high,
+        max_degree: degree.iter().copied().max().unwrap_or(0),
+    }
+}
+
+/// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): print the coloring stats and exit.
+fn measure_cell_coloring(net_infos: &[NetInfo], cell_net_map: &CellNetMap, n: usize) {
+    let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16);
+    let col = build_cell_coloring(net_infos, cell_net_map, n, threshold);
+    let mut sizes: Vec<usize> = vec![0; col.num_colors as usize];
+    for &c in &col.colors {
+        if c != u32::MAX {
+            sizes[c as usize] += 1;
+        }
+    }
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    let top: Vec<usize> = sizes.iter().take(8).copied().collect();
+    eprintln!(
+        "  COLOR_DIAG: cells={} fanout_threshold={} nets_total={} low_fanout_nets={} high_fanout_excluded={} => C={} max_degree={} top_color_sizes={:?}",
+        n, threshold, net_infos.len(), col.n_low_fanout_nets, col.n_high_fanout_excluded, col.num_colors, col.max_degree, top,
+    );
+    eprintln!(
+        "  COLOR_DIAG: colored-GS would need ~C={} incremental refreshes/sweep; viable if C is small (tens). Exiting.",
+        col.num_colors,
+    );
+    std::process::exit(0);
+}
+
+/// DIAGNOSTIC sweep: move each cell to its true-HPWL optimum (the median of its
+/// connected nets' other-pin bbox bounds) against frozen positions, then commit
+/// with the capacity gate. Bypasses the dist_cache/Dijkstra star objective
+/// entirely. Compare its HPWL trajectory against the star sweeps: if median wins
+/// big, objective fidelity is the cap; if it ties, the convergence/local-CD
+/// paradigm is the cap.
+fn place_dcd_sweep_median(
+    net_infos: &mut [NetInfo],
+    cell_net_map: &CellNetMap,
+    cell_x: &mut [f64],
+    cell_y: &mut [f64],
+    network: &PipeNetwork,
+    validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
+    diag: &mut DiagCtx,
+) -> usize {
+    let n = cell_x.len();
+    let width = network.width as usize;
+
+    // Phase 1: parallel — each cell computes its median target against frozen
+    // positions. The cell's HPWL contribution is piecewise-linear convex in x
+    // (and y); the minimizer is the median of the per-net {lo, hi} breakpoints.
+    let best: Vec<(i32, i32)> = (0..n)
+        .into_par_iter()
+        .map(|ci| {
+            let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
+            let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+            let cell_nets = &cell_net_map.map[ci];
+            if cell_nets.is_empty() {
+                return (old_gx, old_gy);
+            }
+            let mut xs: Vec<f32> = Vec::with_capacity(cell_nets.len() * 2);
+            let mut ys: Vec<f32> = Vec::with_capacity(cell_nets.len() * 2);
+            for &(net_idx, pin_idx) in cell_nets {
+                let pins = &net_infos[net_idx].pins;
+                let mut lo_x = f32::INFINITY;
+                let mut hi_x = f32::NEG_INFINITY;
+                let mut lo_y = f32::INFINITY;
+                let mut hi_y = f32::NEG_INFINITY;
+                let mut any = false;
+                for (pi, pin) in pins.iter().enumerate() {
+                    if pi == pin_idx {
+                        continue;
+                    }
+                    let nx = (pin.node % width) as f32;
+                    let ny = (pin.node / width) as f32;
+                    lo_x = lo_x.min(nx);
+                    hi_x = hi_x.max(nx);
+                    lo_y = lo_y.min(ny);
+                    hi_y = hi_y.max(ny);
+                    any = true;
+                }
+                if any {
+                    xs.push(lo_x);
+                    xs.push(hi_x);
+                    ys.push(lo_y);
+                    ys.push(hi_y);
+                }
+            }
+            if xs.is_empty() {
+                return (old_gx, old_gy);
+            }
+            xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            ys.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let tx = xs[xs.len() / 2].round() as i32;
+            let ty = ys[ys.len() / 2].round() as i32;
+            if validity.is_valid(ci, tx, ty) {
+                (tx, ty)
+            } else {
+                (old_gx, old_gy)
+            }
+        })
+        .collect();
+
+    // Phase 2: serial commit with capacity gate (no dist_cache refresh — the
+    // median objective never reads it).
+    let mut moved = 0usize;
+    for (ci, &(new_gx, new_gy)) in best.iter().enumerate() {
+        let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
+        let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+        if new_gx == old_gx && new_gy == old_gy {
+            continue;
+        }
+        if !mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
+            continue;
+        }
+        cell_x[ci] = network.net_to_tile(new_gx as f64);
+        cell_y[ci] = network.net_to_tile(new_gy as f64);
+        let new_node = coord_to_node(network, new_gx, new_gy);
+        for &(net_idx, pin_idx) in &cell_net_map.map[ci] {
+            net_infos[net_idx].pins[pin_idx].node = new_node;
+        }
+        if diag.enabled {
+            diag.record_move(MoveRecord {
+                cell_idx: ci,
+                old_gx,
+                old_gy,
+                new_gx,
+                new_gy,
+            });
+        }
+        moved += 1;
+    }
+    moved
+}
+
+/// Colored Gauss-Seidel sweep (v1, sequential incremental refresh).
+///
+/// Cells are greedy-colored by net-adjacency (high-fanout nets excluded). Colors
+/// are processed in sequence; within a color all cells argmin in PARALLEL via
+/// bisection against the CURRENT dist_cache, which already reflects earlier
+/// colors' moves this sweep (the Gauss-Seidel freshness that damped Jacobi
+/// lacks). After committing a color, only the touched nets' dist_cache rows are
+/// refreshed before the next color. The objective and spreading are unchanged
+/// (existing star/corridor + BPR; no density). The v1 per-color refresh is
+/// SEQUENTIAL (safe Rust) — fine for small designs (sv3) to validate the
+/// fresh-field hypothesis; parallelizing it (for FPGA01 scale) is a follow-up.
+#[allow(clippy::too_many_arguments)]
+fn place_dcd_sweep_colored_gs(
+    net_infos: &mut [NetInfo],
+    cell_net_map: &CellNetMap,
+    dist_cache: &mut DistCache,
+    coloring: &CellColoring,
+    cell_x: &mut [f64],
+    cell_y: &mut [f64],
+    network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
+    validity: &CellValidityMask,
+    mux_tracker: &MuxSlotTracker,
+    diag: &mut DiagCtx,
+) -> usize {
+    let n = cell_x.len();
+    // Per-sweep displacement cap (damping): limit each cell's move to within
+    // `move_cap` tiles of its current position. Counteracts the over-compaction
+    // cascade caused by the half-fresh field (fresh distances, stale congestion):
+    // small per-sweep steps let the outer congestion refresh keep pace. Default
+    // = unlimited (i32::MAX) so behaviour is unchanged unless NPNR_OT_COLOR_MOVE_CAP
+    // is set.
+    let move_cap: i32 = std::env::var("NPNR_OT_COLOR_MOVE_CAP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(i32::MAX);
+
+    let mut by_color: Vec<Vec<usize>> = vec![Vec::new(); coloring.num_colors as usize];
+    for ci in 0..n {
+        let c = coloring.colors[ci] as usize;
+        if c < by_color.len() {
+            by_color[c].push(ci);
+        }
+    }
+
+    let mut moved = 0usize;
+
+    for color_cells in &by_color {
+        if color_cells.is_empty() {
+            continue;
+        }
+        // Phase 1: parallel argmin against the CURRENT (fresh) dist_cache.
+        let best: Vec<(usize, i32, i32)> = {
+            let ni: &[NetInfo] = net_infos;
+            let dc: &DistCache = dist_cache;
+            let cx: &[f64] = cell_x;
+            let cy: &[f64] = cell_y;
+            color_cells
+                .par_iter()
+                .map(|&ci| {
+                    let cell_nets = &cell_net_map.map[ci];
+                    let ogx = network.tile_to_net(cx[ci]).round() as i32;
+                    let ogy = network.tile_to_net(cy[ci]).round() as i32;
+                    if cell_nets.is_empty() {
+                        return (ci, ogx, ogy);
+                    }
+                    let cur =
+                        evaluate_cell_at(ci, ogx, ogy, cell_nets, ni, dc, network, cfg, validity);
+                    let (bx, by, _bc, _a, _b, _c) =
+                        bisect_2d(ci, cell_nets, ni, dc, network, cfg, validity, ogx, ogy, cur);
+                    if move_cap != i32::MAX {
+                        let cbx = bx.clamp(ogx - move_cap, ogx + move_cap);
+                        let cby = by.clamp(ogy - move_cap, ogy + move_cap);
+                        if (cbx, cby) != (bx, by) && !validity.is_valid(ci, cbx, cby) {
+                            return (ci, ogx, ogy); // capped target invalid -> hold
+                        }
+                        return (ci, cbx, cby);
+                    }
+                    (ci, bx, by)
+                })
+                .collect()
+        };
+
+        // Phase 2: serial commit (capacity gate) + collect touched nets.
+        let mut touched: Vec<usize> = Vec::new();
+        for (ci, ngx, ngy) in best {
+            let ogx = network.tile_to_net(cell_x[ci]).round() as i32;
+            let ogy = network.tile_to_net(cell_y[ci]).round() as i32;
+            if ngx == ogx && ngy == ogy {
+                continue;
+            }
+            if !mux_tracker.try_commit(ci, ogx, ogy, ngx, ngy) {
+                continue;
+            }
+            cell_x[ci] = network.net_to_tile(ngx as f64);
+            cell_y[ci] = network.net_to_tile(ngy as f64);
+            let new_node = coord_to_node(network, ngx, ngy);
+            for &(net_idx, pin_idx) in &cell_net_map.map[ci] {
+                net_infos[net_idx].pins[pin_idx].node = new_node;
+                touched.push(net_idx);
+            }
+            if diag.enabled {
+                diag.record_move(MoveRecord {
+                    cell_idx: ci,
+                    old_gx: ogx,
+                    old_gy: ogy,
+                    new_gx: ngx,
+                    new_gy: ngy,
+                });
+            }
+            moved += 1;
+        }
+
+        // Phase 3: incremental refresh of only the touched nets so the next color
+        // sees the fresh field. Parallel over DISJOINT dist_cache rows — safe (no
+        // unsafe): each row is independent and gets a per-thread workspace via
+        // for_each_init. solve_all_nets needs unsafe only because it also writes
+        // shared edge_usage; a pure dist-row refresh does not.
+        touched.sort_unstable();
+        touched.dedup();
+        let mut touched_mask = vec![false; net_infos.len()];
+        for &net_idx in &touched {
+            touched_mask[net_idx] = true;
+        }
+        let ni: &[NetInfo] = net_infos;
+        let n_nodes = network.num_nodes();
+        let n_pipes = network.num_pipes();
+        dist_cache.rows.par_iter_mut().enumerate().for_each_init(
+            || PathSolverWorkspace::new(n_nodes, n_pipes),
+            |tls, (net_idx, row)| {
+                if touched_mask[net_idx] {
+                    refresh_dist_row(row, &ni[net_idx], network, tls);
+                }
+            },
+        );
+    }
+    moved
 }
 
 /// Jacobi DCD sweep using parallel 2D bisection.
@@ -3127,6 +3544,138 @@ fn place_dcd_sweep_jacobi_bb(
         }
     }
 
+    // Swap-move pass: escape coupled-move local minima. When a cell's
+    // frozen-field argmin tile is occupied (so the cell could not move there in
+    // Phase B), try swapping it with an occupant of that tile. A swap is
+    // capacity-neutral (each tile loses one cell and gains one), so the
+    // MuxSlotTracker counts stay correct without any update — provided both
+    // cells have the same external-fanout status (only such cells are counted).
+    // The only other requirements are mutual validity and a strict cost
+    // decrease under the frozen dist_cache. Gated behind NPNR_OT_SWAP_MOVES=1.
+    if std::env::var("NPNR_OT_SWAP_MOVES").ok().as_deref() == Some("1") {
+        // Tile -> occupant cell indices, from post-Phase-B positions.
+        let mut occ: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
+        for ci in 0..cell_x.len() {
+            if cell_net_map.map[ci].is_empty() {
+                continue;
+            }
+            let gx = network.tile_to_net(cell_x[ci]).round() as i32;
+            let gy = network.tile_to_net(cell_y[ci]).round() as i32;
+            occ.entry((gx, gy)).or_default().push(ci);
+        }
+
+        let mut swapped = vec![false; cell_x.len()];
+        let mut swaps_applied = 0usize;
+        let mut swaps_attempted = 0usize;
+
+        for (order_idx, &ci) in iter_order.iter().enumerate() {
+            if swapped[ci] {
+                continue;
+            }
+            let nets_i = &cell_net_map.map[ci];
+            if nets_i.is_empty() {
+                continue;
+            }
+            let (tied, _) = &tied_per_cell[order_idx];
+            if tied.is_empty() {
+                continue;
+            }
+            let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
+            let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+            // If the cell already sits on one of its argmin tiles it is not
+            // blocked — there is nothing to swap for.
+            if tied.iter().any(|&(x, y)| x == old_gx && y == old_gy) {
+                continue;
+            }
+            let (tx, ty) = tied.iter().copied().min().unwrap();
+            if !validity.is_valid(ci, tx, ty) {
+                continue;
+            }
+            let cur_i = evaluate_cell_at(
+                ci, old_gx, old_gy, nets_i, net_infos, dist_cache, network, cfg, validity,
+            );
+            let want_i = evaluate_cell_at(
+                ci, tx, ty, nets_i, net_infos, dist_cache, network, cfg, validity,
+            );
+            if !cur_i.is_finite() || !want_i.is_finite() {
+                continue;
+            }
+            // Candidate occupants of the desired tile (clone to drop the borrow
+            // on `occ` before any mutation below).
+            let cand: Vec<usize> = match occ.get(&(tx, ty)) {
+                Some(v) => v.iter().copied().filter(|&j| j != ci && !swapped[j]).collect(),
+                None => continue,
+            };
+            for j in cand {
+                let nets_j = &cell_net_map.map[j];
+                if nets_j.is_empty() {
+                    continue;
+                }
+                // Capacity-neutrality holds only when both cells are counted
+                // the same way by the tracker.
+                if mux_tracker.drives_external(ci) != mux_tracker.drives_external(j) {
+                    continue;
+                }
+                // Skip pairs sharing a net so the independent delta is exact.
+                let shares = nets_i
+                    .iter()
+                    .any(|&(ni, _)| nets_j.iter().any(|&(nj, _)| nj == ni));
+                if shares {
+                    continue;
+                }
+                if !validity.is_valid(j, old_gx, old_gy) {
+                    continue;
+                }
+                let cur_j = evaluate_cell_at(
+                    j, tx, ty, nets_j, net_infos, dist_cache, network, cfg, validity,
+                );
+                let want_j = evaluate_cell_at(
+                    j, old_gx, old_gy, nets_j, net_infos, dist_cache, network, cfg, validity,
+                );
+                if !cur_j.is_finite() || !want_j.is_finite() {
+                    continue;
+                }
+                swaps_attempted += 1;
+                let delta = (want_i + want_j) - (cur_i + cur_j);
+                if delta < -1e-9 {
+                    cell_x[ci] = network.net_to_tile(tx as f64);
+                    cell_y[ci] = network.net_to_tile(ty as f64);
+                    cell_x[j] = network.net_to_tile(old_gx as f64);
+                    cell_y[j] = network.net_to_tile(old_gy as f64);
+                    let node_i = coord_to_node(network, tx, ty);
+                    let node_j = coord_to_node(network, old_gx, old_gy);
+                    for &(net_idx, pin_idx) in nets_i {
+                        net_infos[net_idx].pins[pin_idx].node = node_i;
+                    }
+                    for &(net_idx, pin_idx) in nets_j {
+                        net_infos[net_idx].pins[pin_idx].node = node_j;
+                    }
+                    swapped[ci] = true;
+                    swapped[j] = true;
+                    // Maintain the occupancy index: ci now at (tx,ty), j at old.
+                    if let Some(v) = occ.get_mut(&(tx, ty)) {
+                        if let Some(pos) = v.iter().position(|&c| c == j) {
+                            v[pos] = ci;
+                        }
+                    }
+                    if let Some(v) = occ.get_mut(&(old_gx, old_gy)) {
+                        if let Some(pos) = v.iter().position(|&c| c == ci) {
+                            v[pos] = j;
+                        }
+                    }
+                    swaps_applied += 1;
+                    break;
+                }
+            }
+        }
+
+        moved += swaps_applied;
+        eprintln!(
+            "    swap_moves: applied={} attempted={}",
+            swaps_applied, swaps_attempted,
+        );
+    }
+
     if want_perf {
         eprintln!(
             "    bb: moved={} total_evals={} cells_with_ties={}",
@@ -3366,6 +3915,7 @@ pub fn run_inner_outer(
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
+
         // Exponential θ anneal: `theta_start → theta_end` over `max_iter`
         // outer iterations. `theta_iter = theta_start · (end/start)^(i/(N-1))`.
         // At iter 0 → theta_start (broad, exploratory); at last iter →
@@ -3390,6 +3940,9 @@ pub fn run_inner_outer(
             cfg,
         );
         let cell_net_map = CellNetMap::build(&net_infos, n);
+        if outer == 0 && std::env::var("NPNR_OT_COLOR_DIAG").ok().as_deref() == Some("1") {
+            measure_cell_coloring(&net_infos, &cell_net_map, n);
+        }
         let prev_dist_cache_shape = (dist_cache.n_nets, dist_cache.n_nodes);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
         let dist_cache_was_realloced = prev_dist_cache_shape
@@ -3641,10 +4194,12 @@ pub fn run_inner_outer(
             }
         }
 
-        // Debug: compare DCD bisection vs full scan on iter 0. When
-        // NPNR_OT_BIS_FS_DIAG is set, dump a per-cell CSV.
-        if outer == 0 {
-            let want_csv = std::env::var("NPNR_OT_BIS_FS_DIAG").ok().as_deref() == Some("1");
+        // Debug: compare DCD bisection vs full scan on iter 0. Gated on
+        // NPNR_OT_BIS_FS_DIAG=1 — the fullscan_find_best_position call inside
+        // this loop runs O(grid_area * n_nets_per_cell) per cell and dominates
+        // iter 0 wall time on FPGA-scale designs.
+        if outer == 0 && std::env::var("NPNR_OT_BIS_FS_DIAG").ok().as_deref() == Some("1") {
+            let want_csv = true;
             let mut rows: Vec<String> = Vec::new();
             if want_csv {
                 rows.push("ci,cur_x,cur_y,cur_cost,fs_x,fs_y,fs_cost,bis_x,bis_y,bis_cost,d_bis_fs,d_cur_fs,d_cur_bis,cost_gap_bis_fs,cost_gap_cur_fs,n_nets,n_finite_positions,pct_finite_positions,n_finite_per_net_min,n_finite_per_net_max,cur_finite,bis_finite,fs_finite,n_probes,n_probes_inf,n_improve_steps".to_string());
@@ -4170,6 +4725,42 @@ pub fn run_inner_outer(
                     &cell_net_map.topo_order,
                 )
             }
+            super::config::SweepMode::MedianDiag => place_dcd_sweep_median(
+                &mut net_infos,
+                &cell_net_map,
+                cell_x,
+                cell_y,
+                network,
+                validity,
+                &mux_tracker,
+                &mut diag_ctx,
+            ),
+            super::config::SweepMode::ColoredGs => {
+                let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(16);
+                let coloring = build_cell_coloring(&net_infos, &cell_net_map, n, threshold);
+                if outer == 0 {
+                    eprintln!(
+                        "    ColoredGS: C={} colors (fanout_threshold={}, {} high-fanout nets excluded)",
+                        coloring.num_colors, threshold, coloring.n_high_fanout_excluded,
+                    );
+                }
+                place_dcd_sweep_colored_gs(
+                    &mut net_infos,
+                    &cell_net_map,
+                    &mut dist_cache,
+                    &coloring,
+                    cell_x,
+                    cell_y,
+                    network,
+                    cfg,
+                    validity,
+                    &mux_tracker,
+                    &mut diag_ctx,
+                )
+            }
         };
         let dcd_ms = t_dcd.elapsed().as_millis();
 
@@ -4267,6 +4858,42 @@ pub fn run_inner_outer(
         if !mux_tracker.is_legal() {
             mux_tracker.report(&format!("sweep {} LEAK", outer));
         }
+
+        // Drain this iter's per-tile reject counts into the Lagrangian
+        // pressure field. Next iter's `evaluate_cell_at` will see the
+        // updated `dist_cache.tile_pressure`. We resize defensively in
+        // case `n_nodes` changed under `ensure_shape` (shouldn't, but
+        // guards against future net_count refreshes that may shrink/grow
+        // the grid).
+        if cfg.tile_pressure_weight > 0.0 {
+            if dist_cache.tile_pressure.len() != n_nodes {
+                dist_cache.tile_pressure.resize(n_nodes, 0.0);
+            }
+            let width = network.width;
+            let drained = mux_tracker.drain_rejection_pressure(
+                cfg.tile_pressure_decay,
+                cfg.tile_pressure_step,
+                &mut dist_cache.tile_pressure,
+                |gx, gy| (gy as usize) * (width as usize) + (gx as usize),
+            );
+            let (mut sum, mut maxp, mut nonzero) = (0.0f64, 0.0f64, 0usize);
+            for &p in &dist_cache.tile_pressure {
+                if p > 0.0 {
+                    sum += p;
+                    nonzero += 1;
+                    if p > maxp {
+                        maxp = p;
+                    }
+                }
+            }
+            eprintln!(
+                "    tile_pressure[outer={}]: drained_rejects={} nonzero_tiles={} max={:.3} mean_nz={:.3} weight={:.3} decay={:.3} step={:.3}",
+                outer, drained, nonzero, maxp,
+                if nonzero > 0 { sum / nonzero as f64 } else { 0.0 },
+                cfg.tile_pressure_weight, cfg.tile_pressure_decay, cfg.tile_pressure_step,
+            );
+        }
+
         // Average per-cell Manhattan displacement vs the previous iter's
         // committed positions. At a fixed point cells stop moving (or only
         // jitter sub-tile via softmin). Threshold-stalling on this is the

@@ -221,9 +221,9 @@ impl PyContext {
     ///     max_iters: Maximum iterations (default varies by placer).
     ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 1.0.
     ///     timing_weight: Timing-driven weight (opt_trans). Default 0.0.
-    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform"). Default "centroid".
+    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform", "topological"). Default "topological" — centroid is degenerate on designs with few/colocated fixed cells.
     ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, timing_weight=0.0, init_strategy="centroid", num_threads=8, legalization="ring"))]
+    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, timing_weight=0.0, init_strategy="topological", num_threads=8, legalization="ring"))]
     fn place(
         &mut self,
         placer: &str,
@@ -261,9 +261,10 @@ impl PyContext {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
                     "random_bel" => InitStrategy::RandomBel,
+                    "topological" | "topo" => InitStrategy::Topological,
                     other => {
                         return Err(PyValueError::new_err(format!(
-                            "Unknown init_strategy: {}. Available: centroid, uniform, random_bel",
+                            "Unknown init_strategy: {}. Available: centroid, uniform, random_bel, topological",
                             other
                         )))
                     }
