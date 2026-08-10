@@ -6,6 +6,8 @@
 //! moves update the cached distance fields. Pipe usage and effective
 //! conductance are refreshed between sweeps.
 
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -665,29 +667,26 @@ fn solve_all_nets_with_displacement(
         "DistCache must hold exactly one row per net being solved"
     );
     let dist_rows = &mut dist_cache.rows;
-    solve_pool.install(|| {
+
+    // Each chunk reports only the pipes its own nets touched. Results come
+    // back in chunk order and are summed serially, so the floating-point
+    // association order no longer depends on how rayon happened to schedule
+    // the work. The previous shape -- a pairwise `reduce` over per-task
+    // `vec![0.0; n_pipes]` arrays -- was both O(chip) per merge and a source
+    // of run-to-run nondeterminism.
+    let init_count = AtomicU32::new(0);
+    let chunk_outs: Vec<ChunkUsage> = solve_pool.install(|| {
         net_infos
             .par_chunks(batch_size)
             .zip(dist_rows.par_chunks_mut(batch_size))
             .enumerate()
-            .fold(
+            .map_init(
                 || {
-                    (
-                        SolveAccum {
-                            edge_usage: vec![0.0; n_pipes],
-                            energy: 0.0,
-                            stats: PathStats::default(),
-                            diag_corridor_fallback: 0,
-                            diag_cap_armed: 0,
-                            diag_solves: 0,
-                            diag_settle_sum: 0,
-                            diag_settle_max: 0,
-                            diag_init_count: 1,
-                        },
-                        PathSolverWorkspace::new(n_nodes, n_pipes),
-                    )
+                    init_count.fetch_add(1, AtomicOrdering::Relaxed);
+                    PathSolverWorkspace::new(n_nodes, n_pipes)
                 },
-                |(mut accum, mut ws), (chunk_idx, (chunk, dist_chunk))| {
+                |ws, (chunk_idx, (chunk, dist_chunk))| {
+                    let mut out = ChunkUsage::default();
                     let base_net_idx = chunk_idx * batch_size;
                     for (local_idx, info) in chunk.iter().enumerate() {
                         let net_idx = base_net_idx + local_idx;
@@ -701,7 +700,7 @@ fn solve_all_nets_with_displacement(
                             continue;
                         }
                         let Some(source) = source_node(info) else {
-                            accum.stats.failures += 1;
+                            out.stats.failures += 1;
                             continue;
                         };
                         // Demand normalization: each NET represents ONE physical
@@ -713,7 +712,7 @@ fn solve_all_nets_with_displacement(
                         // physical wire count.
                         let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
                         if n_sinks == 0 {
-                            accum.stats.failures += 1;
+                            out.stats.failures += 1;
                             continue;
                         }
                         let per_sink = 1.0 / n_sinks as f64;
@@ -725,46 +724,37 @@ fn solve_all_nets_with_displacement(
                             .collect();
 
                         ws.begin_net();
-                        let result = if collect_usage {
-                            path_solver::dial_logit_load_dispatch(
-                                network,
-                                source,
-                                &sink_demands,
-                                &mut ws,
-                                Some(&mut accum.edge_usage),
-                                displacement,
-                                cfg.graph_model,
-                            )
-                        } else {
-                            path_solver::dial_logit_load_dispatch(
-                                network,
-                                source,
-                                &sink_demands,
-                                &mut ws,
-                                None,
-                                displacement,
-                                cfg.graph_model,
-                            )
-                        };
+                        let result = path_solver::dial_logit_load_dispatch(
+                            network,
+                            source,
+                            &sink_demands,
+                            ws,
+                            collect_usage,
+                            displacement,
+                            cfg.graph_model,
+                        );
 
-                        accum.stats.total_solves += 1;
-                        accum.stats.total_heap_pops += result.heap_pops;
-                        accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(result.heap_pops);
+                        out.stats.total_solves += 1;
+                        out.stats.total_heap_pops += result.heap_pops;
+                        out.stats.max_heap_pops = out.stats.max_heap_pops.max(result.heap_pops);
                         if result.missing_demand > 0.0 {
-                            accum.stats.failures += 1;
+                            out.stats.failures += 1;
                         }
 
                         let settle_len = ws.settle_order.len() as u64;
-                        accum.diag_solves += 1;
-                        accum.diag_settle_sum += settle_len;
-                        if settle_len as u32 > accum.diag_settle_max {
-                            accum.diag_settle_max = settle_len as u32;
+                        out.diag_solves += 1;
+                        out.diag_settle_sum += settle_len;
+                        if settle_len as u32 > out.diag_settle_max {
+                            out.diag_settle_max = settle_len as u32;
                         }
                         if result.corridor_fallback {
-                            accum.diag_corridor_fallback += 1;
+                            out.diag_corridor_fallback += 1;
                         }
                         if result.cap_armed {
-                            accum.diag_cap_armed += 1;
+                            out.diag_cap_armed += 1;
+                        }
+                        if collect_usage {
+                            ws.drain_edge_usage(&mut out.usage);
                         }
 
                         // Filter cache writes by "within R Manhattan tiles of
@@ -811,43 +801,66 @@ fn solve_all_nets_with_displacement(
                         if dist_out.capacity() > 4 * dist_out.len().max(8) {
                             dist_out.shrink_to_fit();
                         }
-                        accum.energy += net_path_weight(info, cfg) * result.energy;
+                        out.energy += net_path_weight(info, cfg) * result.energy;
                     }
-                    (accum, ws)
+                    out
                 },
             )
-            .map(|(accum, _)| accum)
-            .reduce(
-                || SolveAccum {
-                    edge_usage: vec![0.0; n_pipes],
-                    energy: 0.0,
-                    stats: PathStats::default(),
-                    diag_corridor_fallback: 0,
-                    diag_cap_armed: 0,
-                    diag_solves: 0,
-                    diag_settle_sum: 0,
-                    diag_settle_max: 0,
-                    diag_init_count: 0,
-                },
-                |mut a, b| {
-                    for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
-                        *dst += src;
-                    }
-                    a.energy += b.energy;
-                    a.stats.total_solves += b.stats.total_solves;
-                    a.stats.total_heap_pops += b.stats.total_heap_pops;
-                    a.stats.max_heap_pops = a.stats.max_heap_pops.max(b.stats.max_heap_pops);
-                    a.stats.failures += b.stats.failures;
-                    a.diag_corridor_fallback += b.diag_corridor_fallback;
-                    a.diag_cap_armed += b.diag_cap_armed;
-                    a.diag_solves += b.diag_solves;
-                    a.diag_settle_sum += b.diag_settle_sum;
-                    a.diag_settle_max = a.diag_settle_max.max(b.diag_settle_max);
-                    a.diag_init_count += b.diag_init_count;
-                    a
-                },
-            )
-    })
+            .collect()
+    });
+
+    merge_chunk_usage(
+        n_pipes,
+        chunk_outs,
+        init_count.load(AtomicOrdering::Relaxed),
+    )
+}
+
+/// One chunk's contribution to a solve pass.
+///
+/// `usage` carries `(pipe, flow)` pairs for the pipes this chunk's nets
+/// actually touched; duplicates are fine because the merge just adds them.
+#[derive(Default)]
+struct ChunkUsage {
+    usage: Vec<(u32, f64)>,
+    energy: f64,
+    stats: PathStats,
+    diag_corridor_fallback: u64,
+    diag_cap_armed: u64,
+    diag_solves: u64,
+    diag_settle_sum: u64,
+    diag_settle_max: u32,
+}
+
+/// Sum per-chunk contributions in chunk order into one dense usage array.
+fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -> SolveAccum {
+    let mut accum = SolveAccum {
+        edge_usage: vec![0.0; n_pipes],
+        energy: 0.0,
+        stats: PathStats::default(),
+        diag_corridor_fallback: 0,
+        diag_cap_armed: 0,
+        diag_solves: 0,
+        diag_settle_sum: 0,
+        diag_settle_max: 0,
+        diag_init_count: init_count,
+    };
+    for chunk in chunks {
+        for (pipe, flow) in chunk.usage {
+            accum.edge_usage[pipe as usize] += flow;
+        }
+        accum.energy += chunk.energy;
+        accum.stats.total_solves += chunk.stats.total_solves;
+        accum.stats.total_heap_pops += chunk.stats.total_heap_pops;
+        accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(chunk.stats.max_heap_pops);
+        accum.stats.failures += chunk.stats.failures;
+        accum.diag_corridor_fallback += chunk.diag_corridor_fallback;
+        accum.diag_cap_armed += chunk.diag_cap_armed;
+        accum.diag_solves += chunk.diag_solves;
+        accum.diag_settle_sum += chunk.diag_settle_sum;
+        accum.diag_settle_max = accum.diag_settle_max.max(chunk.diag_settle_max);
+    }
+    accum
 }
 
 #[derive(Default)]
@@ -2623,7 +2636,7 @@ fn refresh_dist_row(
         .collect();
 
     ws.begin_net();
-    path_solver::dial_logit_load(network, source, &sink_demands, ws, None);
+    path_solver::dial_logit_load(network, source, &sink_demands, ws, false);
 
     row.clear();
     row.reserve(ws.settle_order.len());

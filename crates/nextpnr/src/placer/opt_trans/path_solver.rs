@@ -329,20 +329,29 @@ impl PathSolverWorkspace {
         }
     }
 
-    fn record_edge_usage(&mut self, pipe_idx: usize, flow: f64, edge_usage: &mut [f64]) {
+    /// Accumulate this net's flow on `pipe_idx`. Usage lands only in the
+    /// workspace's own sparse pair (`edge_load` + `edge_touched`); the caller
+    /// drains it once the net is solved. Writing straight into a chip-sized
+    /// dense array here is what forced every rayon task to carry its own
+    /// `vec![0.0; n_pipes]`.
+    fn record_edge_usage(&mut self, pipe_idx: usize, flow: f64) {
         if self.edge_load[pipe_idx] == 0.0 {
             self.edge_touched.push(pipe_idx);
         }
         self.edge_load[pipe_idx] += flow;
-        edge_usage[pipe_idx] += flow;
     }
 
-    fn rollback_edge_usage(&mut self, edge_usage: &mut [f64]) {
+    /// Drain the current net's edge usage as `(pipe, flow)` pairs.
+    ///
+    /// Only the pipes this net actually touched are emitted, so the cost is
+    /// proportional to the net's corridor rather than to the chip. Abandoned
+    /// attempts need no rollback: nothing has been published yet, and
+    /// `begin_net` clears `edge_load` / `edge_touched` before the retry.
+    pub(crate) fn drain_edge_usage(&self, out: &mut Vec<(u32, f64)>) {
+        out.reserve(self.edge_touched.len());
         for &pipe in &self.edge_touched {
-            edge_usage[pipe] -= self.edge_load[pipe];
-            self.edge_load[pipe] = 0.0;
+            out.push((pipe as u32, self.edge_load[pipe]));
         }
-        self.edge_touched.clear();
     }
 }
 
@@ -733,13 +742,10 @@ fn evaluate_net_path(
     }
 
     ws.begin_net();
-    let result = dial_logit_load(
-        network,
-        source_node,
-        &sink_demands,
-        ws,
-        Some(&mut local.edge_usage),
-    );
+    let result = dial_logit_load(network, source_node, &sink_demands, ws, true);
+    for &pipe in &ws.edge_touched {
+        local.edge_usage[pipe] += ws.edge_load[pipe];
+    }
 
     local.stats.total_solves += 1;
     local.stats.total_heap_pops += result.heap_pops;
@@ -1010,7 +1016,7 @@ pub(crate) fn dial_logit_load(
     source_node: usize,
     sink_demands: &[(usize, f64)],
     ws: &mut PathSolverWorkspace,
-    edge_usage: Option<&mut [f64]>,
+    collect_usage: bool,
 ) -> DialLogitResult {
     // Bounded-corridor solve only. The historical "fall back to full-graph
     // Dijkstra when the corridor fails" branch was removed: per CLAUDE.md
@@ -1031,7 +1037,7 @@ pub(crate) fn dial_logit_load(
         };
     };
     ws.mark_corridor(network, &corridor);
-    dial_logit_load_inner(network, source_node, sink_demands, ws, edge_usage, true)
+    dial_logit_load_inner(network, source_node, sink_demands, ws, collect_usage, true)
 }
 
 fn dial_logit_load_inner(
@@ -1039,7 +1045,7 @@ fn dial_logit_load_inner(
     source_node: usize,
     sink_demands: &[(usize, f64)],
     ws: &mut PathSolverWorkspace,
-    mut edge_usage: Option<&mut [f64]>,
+    collect_usage: bool,
     use_corridor: bool,
 ) -> DialLogitResult {
     // Dijkstra + Dial forward pass are fused: `path_weight` and `dist` are
@@ -1142,9 +1148,9 @@ fn dial_logit_load_inner(
             }
             let flow = load * share;
             ws.node_load[pred] += flow;
-            if let Some(usage) = edge_usage.as_deref_mut() {
+            if collect_usage {
                 let pipe_idx = adj_pipe_idx[e] as usize;
-                ws.record_edge_usage(pipe_idx, flow, usage);
+                ws.record_edge_usage(pipe_idx, flow);
             }
         }
     }
@@ -1173,7 +1179,7 @@ pub(crate) fn dial_logit_load_dispatch(
     source_node: usize,
     sink_demands: &[(usize, f64)],
     ws: &mut PathSolverWorkspace,
-    mut edge_usage: Option<&mut [f64]>,
+    collect_usage: bool,
     displacement: Option<&super::displacement::DisplacementTable>,
     graph_model: super::config::GraphModel,
 ) -> DialLogitResult {
@@ -1191,20 +1197,19 @@ pub(crate) fn dial_logit_load_dispatch(
                     source_node,
                     sink_demands,
                     ws,
-                    edge_usage.as_deref_mut(),
+                    collect_usage,
                     disp,
                     sparse,
                 ) {
                     return result;
                 }
-                if let Some(usage) = edge_usage.as_deref_mut() {
-                    ws.rollback_edge_usage(usage);
-                }
+                // The bailed attempt published nothing: its usage lives only
+                // in the workspace, which `begin_net` clears before the retry.
                 ws.begin_net();
             }
         }
     }
-    dial_logit_load(network, source_node, sink_demands, ws, edge_usage)
+    dial_logit_load(network, source_node, sink_demands, ws, collect_usage)
 }
 
 /// Fast path: populate `ws.dist / dist_int / path_weight / settle_order` for
@@ -1220,7 +1225,7 @@ fn dial_logit_displacement(
     source_node: usize,
     sink_demands: &[(usize, f64)],
     ws: &mut PathSolverWorkspace,
-    mut edge_usage: Option<&mut [f64]>,
+    collect_usage: bool,
     disp: &super::displacement::DisplacementTable,
     sparse_correction: bool,
 ) -> Option<DialLogitResult> {
@@ -1283,7 +1288,7 @@ fn dial_logit_displacement(
         energy += demand * label;
     }
 
-    if let Some(usage) = edge_usage.as_deref_mut() {
+    if collect_usage {
         for &(sink_node, demand) in sink_demands {
             if demand == 0.0 {
                 continue;
@@ -1293,7 +1298,7 @@ fn dial_logit_displacement(
             };
             let dx = sink.tile_x - src_x;
             let dy = sink.tile_y - src_y;
-            splat_l_path(network, src_x, src_y, dx, dy, demand, ws, usage);
+            splat_l_path(network, src_x, src_y, dx, dy, demand, ws);
         }
     }
 
@@ -1308,7 +1313,7 @@ fn dial_logit_displacement(
 
 /// Deterministic east-then-south L-path splat from (src_x, src_y) to
 /// (src_x + dx, src_y + dy). Pipes are looked up via `tile_grid.pipe_e /
-/// pipe_s` (O(1)) and `record_edge_usage` tracks them for rollback.
+/// pipe_s` (O(1)) and `record_edge_usage` accumulates them on the workspace.
 fn splat_l_path(
     network: &PipeNetwork,
     src_x: i32,
@@ -1317,7 +1322,6 @@ fn splat_l_path(
     dy: i32,
     demand: f64,
     ws: &mut PathSolverWorkspace,
-    usage: &mut [f64],
 ) {
     let width = network.width;
     let tile_grid = &network.tile_grid;
@@ -1332,7 +1336,7 @@ fn splat_l_path(
             if slot < tile_grid.pipe_e.len() {
                 let pipe_idx = tile_grid.pipe_e[slot];
                 if pipe_idx != u32::MAX {
-                    ws.record_edge_usage(pipe_idx as usize, demand, usage);
+                    ws.record_edge_usage(pipe_idx as usize, demand);
                 }
             }
         }
@@ -1347,7 +1351,7 @@ fn splat_l_path(
             if slot < tile_grid.pipe_s.len() {
                 let pipe_idx = tile_grid.pipe_s[slot];
                 if pipe_idx != u32::MAX {
-                    ws.record_edge_usage(pipe_idx as usize, demand, usage);
+                    ws.record_edge_usage(pipe_idx as usize, demand);
                 }
             }
         }
@@ -1613,13 +1617,25 @@ mod tests {
         net
     }
 
+    /// Materialise the workspace's sparse edge usage as a dense per-pipe
+    /// array so these tests can keep asserting on pipe indices.
+    fn dense_usage(ws: &PathSolverWorkspace, n_pipes: usize) -> Vec<f64> {
+        let mut pairs = Vec::new();
+        ws.drain_edge_usage(&mut pairs);
+        let mut usage = vec![0.0f64; n_pipes];
+        for (pipe, flow) in pairs {
+            usage[pipe as usize] += flow;
+        }
+        usage
+    }
+
     #[test]
     fn dial_single_path_loads_all_demand() {
         let network = test_network(3, &[(0, 1, 1.0), (1, 2, 1.0)]);
         let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
         ws.begin_net();
-        let mut usage = vec![0.0; network.num_pipes()];
-        let result = dial_logit_load(&network, 0, &[(2, 1.0)], &mut ws, Some(&mut usage));
+        let result = dial_logit_load(&network, 0, &[(2, 1.0)], &mut ws, true);
+        let usage = dense_usage(&ws, network.num_pipes());
 
         assert_eq!(result.missing_demand, 0.0);
         assert!((usage[0] - 1.0).abs() < 1e-12);
@@ -1632,8 +1648,8 @@ mod tests {
         let network = test_network(4, &[(0, 1, 1.0), (1, 3, 1.0), (0, 2, 1.0), (2, 3, 1.0)]);
         let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
         ws.begin_net();
-        let mut usage = vec![0.0; network.num_pipes()];
-        let result = dial_logit_load(&network, 0, &[(3, 1.0)], &mut ws, Some(&mut usage));
+        let result = dial_logit_load(&network, 0, &[(3, 1.0)], &mut ws, true);
+        let usage = dense_usage(&ws, network.num_pipes());
 
         assert_eq!(result.missing_demand, 0.0);
         for u in usage {
@@ -1650,8 +1666,8 @@ mod tests {
         let network = test_network(4, &[(0, 1, 1.0), (1, 3, 1.0), (0, 2, 1.0), (2, 3, 2.0)]);
         let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
         ws.begin_net();
-        let mut usage = vec![0.0; network.num_pipes()];
-        let result = dial_logit_load(&network, 0, &[(3, 1.0)], &mut ws, Some(&mut usage));
+        let result = dial_logit_load(&network, 0, &[(3, 1.0)], &mut ws, true);
+        let usage = dense_usage(&ws, network.num_pipes());
 
         assert_eq!(result.missing_demand, 0.0);
         assert!(usage[0] > usage[2]);
@@ -1665,8 +1681,8 @@ mod tests {
         let network = test_network(3, &[(0, 1, 1.0)]);
         let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
         ws.begin_net();
-        let mut usage = vec![0.0; network.num_pipes()];
-        let result = dial_logit_load(&network, 0, &[(2, 1.5)], &mut ws, Some(&mut usage));
+        let result = dial_logit_load(&network, 0, &[(2, 1.5)], &mut ws, true);
+        let usage = dense_usage(&ws, network.num_pipes());
 
         assert_eq!(result.missing_demand, 1.5);
         assert_eq!(usage[0], 0.0);
