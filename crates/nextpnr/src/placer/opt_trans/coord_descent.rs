@@ -616,23 +616,6 @@ fn source_node(info: &NetInfo) -> Option<usize> {
         .map(|pin| pin.node)
 }
 
-/// Unsafe wrapper for parallel mutable access to disjoint hashmap rows of
-/// the sparse `DistCache`. Each worker thread takes `&mut FxHashMap` for a
-/// distinct `net_idx`; rayon's `par_chunks` guarantees disjointness via
-/// `chunk_idx * batch_size + local_idx`, so the aliasing rule holds.
-struct DistMapPtr {
-    base: *mut FxHashMap<u32, f32>,
-    n_nets: usize,
-}
-unsafe impl Send for DistMapPtr {}
-unsafe impl Sync for DistMapPtr {}
-impl DistMapPtr {
-    fn row_mut(&self, idx: usize) -> &mut FxHashMap<u32, f32> {
-        assert!(idx < self.n_nets);
-        unsafe { &mut *self.base.add(idx) }
-    }
-}
-
 fn solve_all_nets(
     network: &PipeNetwork,
     net_infos: &[NetInfo],
@@ -683,13 +666,16 @@ fn solve_all_nets_with_displacement(
         solve_pool,
     );
 
-    let dist_access = DistMapPtr {
-        base: dist_cache.rows.as_mut_ptr(),
-        n_nets: dist_cache.n_nets,
-    };
+    assert_eq!(
+        dist_cache.rows.len(),
+        net_infos.len(),
+        "DistCache must hold exactly one row per net being solved"
+    );
+    let dist_rows = &mut dist_cache.rows;
     solve_pool.install(|| {
         net_infos
             .par_chunks(batch_size)
+            .zip(dist_rows.par_chunks_mut(batch_size))
             .enumerate()
             .fold(
                 || {
@@ -708,7 +694,7 @@ fn solve_all_nets_with_displacement(
                         PathSolverWorkspace::new(n_nodes, n_pipes),
                     )
                 },
-                |(mut accum, mut ws), (chunk_idx, chunk)| {
+                |(mut accum, mut ws), (chunk_idx, (chunk, dist_chunk))| {
                     let base_net_idx = chunk_idx * batch_size;
                     for (local_idx, info) in chunk.iter().enumerate() {
                         let net_idx = base_net_idx + local_idx;
@@ -809,7 +795,7 @@ fn solve_all_nets_with_displacement(
                             ));
                         }
 
-                        let dist_out = dist_access.row_mut(net_idx);
+                        let dist_out = &mut dist_chunk[local_idx];
                         dist_out.clear();
                         dist_out.reserve(ws.settle_order.len() / 4 + 8);
                         for &node in &ws.settle_order {
@@ -894,27 +880,26 @@ fn solve_all_nets_bresenham_logit(
         net_infos.len(),
         solve_pool,
     );
-    let dist_access = DistMapPtr {
-        base: dist_cache.rows.as_mut_ptr(),
-        n_nets: dist_cache.n_nets,
-    };
+    assert_eq!(
+        dist_cache.rows.len(),
+        net_infos.len(),
+        "DistCache must hold exactly one row per net being solved"
+    );
+    let dist_rows = &mut dist_cache.rows;
 
     solve_pool
         .install(|| {
             net_infos
                 .par_chunks(batch_size)
-                .enumerate()
+                .zip(dist_rows.par_chunks_mut(batch_size))
                 .fold(
                     || TemplateAccum {
                         edge_usage: vec![0.0; n_pipes],
                         energy: 0.0,
                         failures: 0,
                     },
-                    |mut accum, (chunk_idx, chunk)| {
-                        let base_net_idx = chunk_idx * batch_size;
-                        for (local_idx, info) in chunk.iter().enumerate() {
-                            let net_idx = base_net_idx + local_idx;
-                            let dist_out = dist_access.row_mut(net_idx);
+                    |mut accum, (chunk, dist_chunk)| {
+                        for (info, dist_out) in chunk.iter().zip(dist_chunk.iter_mut()) {
                             // Bresenham writes every node, so the hashmap
                             // ends up dense — no memory win vs the legacy
                             // flat layout. Default Dijkstra path stays
@@ -3024,8 +3009,10 @@ fn place_dcd_sweep_colored_gs(
         // Phase 3: incremental refresh of only the touched nets so the next color
         // sees the fresh field. Parallel over DISJOINT dist_cache rows — safe (no
         // unsafe): each row is independent and gets a per-thread workspace via
-        // for_each_init. solve_all_nets needs unsafe only because it also writes
-        // shared edge_usage; a pure dist-row refresh does not.
+        // for_each_init. `solve_all_nets` reaches its rows the same way, by
+        // zipping `par_chunks_mut` over the cache alongside the net list; the
+        // shared `edge_usage` write it also performs is handled by per-thread
+        // fold accumulators rather than shared mutable state.
         touched.sort_unstable();
         touched.dedup();
         let mut touched_mask = vec![false; net_infos.len()];
