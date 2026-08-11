@@ -237,8 +237,16 @@ fn main() {
     println!("\n\n============================= COMPARISON =============================");
     println!(
         "{:<11}  {:>9}  {:>10}  {:>9}  {:>5}  {:>13}  {:>9}  {:>6}  {:>7}  {:>6}",
-        "placer", "place(s)", "hpwl", "route(s)", "ok?", "fully/alive", "wl total", "valid",
-        "tiles", "max/t"
+        "placer",
+        "place(s)",
+        "hpwl",
+        "route(s)",
+        "ok?",
+        "fully/alive",
+        "wl total",
+        "valid",
+        "tiles",
+        "max/t"
     );
     for r in [&r_electro, &r_ot] {
         println!(

@@ -20,6 +20,27 @@ pub use sa::PlacerSa;
 use crate::context::Context;
 use crate::netlist::CellId;
 
+/// Resident set size of this process in KiB, or 0 if /proc is unreadable.
+///
+/// Used by the placer's memory diagnostics; peak RSS sampled from outside the
+/// process cannot say which phase allocated, so the phases report it directly.
+pub(crate) fn process_rss_kb() -> usize {
+    let Ok(s) = std::fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            return rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+        }
+    }
+    0
+}
+
 /// Errors that can occur during placement.
 #[derive(Debug, thiserror::Error)]
 pub enum PlacerError {

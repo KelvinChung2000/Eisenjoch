@@ -229,8 +229,7 @@ mod tests {
         }
         let pipe_costs: Vec<f64> = pipes.iter().map(|_| 1.0).collect();
         let pipe_costs_int: Vec<u32> = pipes.iter().map(|_| 1u32).collect();
-        let tile_grid =
-            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, w, h);
+        let tile_grid = crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, w, h);
         let flat_adjacency =
             crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
         let n_pipes = pipes.len();
@@ -240,8 +239,7 @@ mod tests {
             node_pipes,
             pipe_costs,
             pipe_costs_int,
-            span_cost_table:
-                crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(n_pipes),
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(n_pipes),
             flat_adjacency,
             tile_templates: std::sync::Arc::new(Vec::new()),
             tile_grid,

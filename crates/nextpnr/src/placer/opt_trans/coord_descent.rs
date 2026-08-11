@@ -199,22 +199,7 @@ fn cache_radius_tiles() -> i32 {
     })
 }
 
-fn process_rss_kb() -> usize {
-    let Ok(s) = std::fs::read_to_string("/proc/self/status") else {
-        return 0;
-    };
-    for line in s.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            return rest
-                .trim()
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse::<usize>().ok())
-                .unwrap_or(0);
-        }
-    }
-    0
-}
+use crate::placer::process_rss_kb;
 
 /// Recompute per-net Steiner pseudo-node centroids from current pin positions.
 /// The centroid is the arithmetic mean of all pin positions (driver + sinks)
@@ -4048,9 +4033,7 @@ pub fn run_inner_outer(
                 let mut r: u64 = 0;
                 for (k, v) in row.iter() {
                     r = r.wrapping_add(
-                        (*k as u64)
-                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                            ^ (v.to_bits() as u64),
+                        (*k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (v.to_bits() as u64),
                     );
                 }
                 h_dist = h_dist.rotate_left(5).wrapping_add(r);
@@ -4627,7 +4610,8 @@ pub fn run_inner_outer(
         if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
             let mut h: u64 = 0;
             for (x, y) in cell_x.iter().zip(cell_y.iter()) {
-                h = h.rotate_left(5)
+                h = h
+                    .rotate_left(5)
                     .wrapping_add(x.to_bits())
                     .rotate_left(7)
                     .wrapping_add(y.to_bits());
@@ -4830,12 +4814,16 @@ pub fn run_inner_outer(
         if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
             let mut h: u64 = 0;
             for (x, y) in cell_x.iter().zip(cell_y.iter()) {
-                h = h.rotate_left(5)
+                h = h
+                    .rotate_left(5)
                     .wrapping_add(x.to_bits())
                     .rotate_left(7)
                     .wrapping_add(y.to_bits());
             }
-            eprintln!("    det_postsweep[outer={}]: pos={:016x} moved={}", outer, h, moved);
+            eprintln!(
+                "    det_postsweep[outer={}]: pos={:016x} moved={}",
+                outer, h, moved
+            );
         }
         let dcd_ms = t_dcd.elapsed().as_millis();
 
