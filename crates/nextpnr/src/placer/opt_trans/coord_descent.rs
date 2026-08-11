@@ -2330,20 +2330,32 @@ fn place_dcd_sweep(
     let collect_stats = diag.enabled;
     let use_softmin = cfg.softmin_enabled && theta > 0.0;
 
-    // Single-phase Jacobi: probe against the live (concurrently-updated)
-    // tracker, apply damping, and atomically commit the move — all inside
-    // the parallel map. The cost landscape (`net_infos`) stays frozen for
-    // the sweep; only the mux-slot occupancy is live, so two threads can
-    // not both claim the last slot in a tile (CAS in `try_commit`).
-    // Each entry returns `(final_gx, final_gy, committed, stats)`.
-    let probes: Vec<(i32, i32, bool, Option<PlateauStat>)> = (0..n)
+    // Two-phase Jacobi. Phase 1 ranks candidates in parallel and commits
+    // NOTHING; phase 2 commits serially in cell-index order.
+    //
+    // The commit used to happen inside the parallel map, racing on the
+    // tracker's per-tile `AtomicU32` via CAS. That made the placement
+    // nondeterministic: when two cells wanted the last slot in a tile, the
+    // winner was whichever rayon worker reached the compare-exchange first, so
+    // identical inputs produced different placements run to run (measured
+    // ~1.6% HPWL spread on sv3). `fullscan_sweep_probe` also reads occupancy
+    // through `would_fit`, so concurrent commits perturbed the cost landscape
+    // itself, not just the tie-break.
+    //
+    // Splitting the phases fixes both at once. Nothing mutates the tracker
+    // during phase 1, so every cell scores against the same frozen occupancy
+    // snapshot, and contention is resolved by cell index instead of thread
+    // arrival. This is also the plain Jacobi semantics the sweep claims to
+    // implement, and it matches what the colored-GS and median sweeps already
+    // do. Each entry is that cell's damped candidate list, best first.
+    let probes: Vec<(Vec<(i32, i32)>, Option<PlateauStat>)> = (0..n)
         .into_par_iter()
         .map(|ci| {
             let cell_nets = &cell_net_map.map[ci];
             let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
             let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
             if cell_nets.is_empty() {
-                return (old_gx, old_gy, false, None);
+                return (Vec::new(), None);
             }
             let (acc, stats) = fullscan_sweep_probe(
                 ci,
@@ -2362,12 +2374,9 @@ fn place_dcd_sweep(
             } else {
                 acc.argmin()
             };
-            // Walk the ranked candidate list: first the primary (softmin
-            // tile or argmin), then the top-K fallbacks in order of cost.
-            // Each candidate is damped against `old` and tried via an
-            // atomic `try_commit`; first success wins. Cells stay put only
-            // if every candidate fails.
-            let try_candidate = |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
+            // Damp each candidate against the cell's current position, and
+            // drop the ones damping collapses back onto it.
+            let damp = |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
                 if cand_gx == old_gx && cand_gy == old_gy {
                     return None;
                 }
@@ -2378,50 +2387,61 @@ fn place_dcd_sweep(
                 if new_gx == old_gx && new_gy == old_gy {
                     return None;
                 }
-                if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
-                    Some((new_gx, new_gy))
-                } else {
-                    None
-                }
+                Some((new_gx, new_gy))
             };
-            if let Some((new_gx, new_gy)) = try_candidate(primary_gx, primary_gy) {
-                return (new_gx, new_gy, true, stats);
+
+            // Ranked: the primary (softmin tile or argmin) first, then the
+            // top-K fallbacks in cost order.
+            let mut cands = Vec::with_capacity(1 + acc.topk().len());
+            if let Some(c) = damp(primary_gx, primary_gy) {
+                cands.push(c);
             }
             for &(_, cand_gx, cand_gy) in acc.topk() {
                 if cand_gx == primary_gx && cand_gy == primary_gy {
                     continue;
                 }
-                if let Some((new_gx, new_gy)) = try_candidate(cand_gx, cand_gy) {
-                    return (new_gx, new_gy, true, stats);
+                if let Some(c) = damp(cand_gx, cand_gy) {
+                    cands.push(c);
                 }
             }
-            (old_gx, old_gy, false, stats)
+            (cands, stats)
         })
         .collect();
 
     // Record plateau stats serially after the parallel phase.
     if collect_stats {
-        for (ci, (_, _, _, stat)) in probes.iter().enumerate() {
+        for (ci, (_, stat)) in probes.iter().enumerate() {
             if let Some(s) = stat {
                 diag.record_plateau(ci, *s);
             }
         }
     }
 
-    // Apply the committed positions: update cell_x/cell_y and the pin nodes
-    // in net_infos. These writes are sequential but cheap compared to the
-    // parallel probe+commit pass.
+    // Phase 2 (serial): walk cells in index order, take the first candidate
+    // the capacity gate accepts, and apply it. Deterministic by construction.
+    // Cheap relative to the parallel probe — a hash lookup and a counter
+    // update per cell.
     let mut moved = 0usize;
     let mut final_positions: Vec<(i32, i32)> = Vec::with_capacity(n);
-    for (ci, &(new_gx, new_gy, committed, _)) in probes.iter().enumerate() {
+    for (ci, (cands, _)) in probes.iter().enumerate() {
         let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
         let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
-        if !committed {
+
+        let mut committed: Option<(i32, i32)> = None;
+        for &(cand_gx, cand_gy) in cands {
+            if mux_tracker.try_commit(ci, old_gx, old_gy, cand_gx, cand_gy) {
+                committed = Some((cand_gx, cand_gy));
+                break;
+            }
+        }
+
+        let Some((new_gx, new_gy)) = committed else {
             if collect_stats {
                 final_positions.push((old_gx, old_gy));
             }
             continue;
-        }
+        };
+
         cell_x[ci] = network.net_to_tile(new_gx as f64);
         cell_y[ci] = network.net_to_tile(new_gy as f64);
         let new_node = coord_to_node(network, new_gx, new_gy);
