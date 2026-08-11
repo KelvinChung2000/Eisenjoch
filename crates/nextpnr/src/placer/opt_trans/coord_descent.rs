@@ -733,7 +733,7 @@ fn solve_all_nets_with_displacement(
                             out.diag_cap_armed += 1;
                         }
                         if collect_usage {
-                            ws.drain_edge_usage(&mut out.usage);
+                            ws.accumulate_edge_usage();
                         }
 
                         // Filter cache writes by "within R Manhattan tiles of
@@ -788,20 +788,28 @@ fn solve_all_nets_with_displacement(
             .collect()
     });
 
-    merge_chunk_usage(
+    let mut accum = merge_chunk_usage(
         n_pipes,
         chunk_outs,
         init_count.load(AtomicOrdering::Relaxed),
-    )
+    );
+    // Every guard has been dropped by now (the parallel iterator finished and
+    // `chunk_outs` was collected), so all workspaces are back in the pool and
+    // their running totals are complete.
+    if collect_usage {
+        ws_pool.drain_usage_into(&mut accum.edge_usage);
+    }
+    accum
 }
 
 /// One chunk's contribution to a solve pass.
 ///
-/// `usage` carries `(pipe, flow)` pairs for the pipes this chunk's nets
-/// actually touched; duplicates are fine because the merge just adds them.
+/// Edge usage is NOT here: it accumulates directly into the solving
+/// workspace's dense `usage_accum` and is collected from the pool afterwards,
+/// which keeps peak memory proportional to concurrency instead of to the total
+/// number of pipe-touches across all nets.
 #[derive(Default)]
 struct ChunkUsage {
-    usage: Vec<(u32, f64)>,
     energy: f64,
     stats: PathStats,
     diag_corridor_fallback: u64,
@@ -811,7 +819,8 @@ struct ChunkUsage {
     diag_settle_max: u32,
 }
 
-/// Sum per-chunk contributions in chunk order into one dense usage array.
+/// Sum per-chunk scalar contributions in chunk order. Usage is merged
+/// separately, from the workspace pool.
 fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -> SolveAccum {
     let mut accum = SolveAccum {
         edge_usage: vec![0.0; n_pipes],
@@ -838,9 +847,6 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         );
     }
     for chunk in chunks {
-        for (pipe, flow) in chunk.usage {
-            accum.edge_usage[pipe as usize] += flow;
-        }
         accum.energy += chunk.energy;
         accum.stats.total_solves += chunk.stats.total_solves;
         accum.stats.total_heap_pops += chunk.stats.total_heap_pops;
