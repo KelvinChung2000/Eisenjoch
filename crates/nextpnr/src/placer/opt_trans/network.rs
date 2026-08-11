@@ -440,6 +440,8 @@ impl PipeNetwork {
             .unwrap_or(0.5);
         let mut n_span1 = 0usize;
         let mut n_long_range = 0usize;
+        let mut n_fallback_east = 0usize;
+        let mut n_fallback_south = 0usize;
         let mut n_skipped_null_src = 0usize;
         let mut n_skipped_null_dst = 0usize;
         for cy in 0..h {
@@ -449,7 +451,7 @@ impl PipeNetwork {
                     n_skipped_null_src += 1;
                     continue;
                 }
-                let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+                let mut coarse_agg: FxHashMap<(i32, i32), f64> = FxHashMap::default();
                 let mut fallback_east = 0usize;
                 let mut fallback_south = 0usize;
                 for fy in
@@ -467,7 +469,7 @@ impl PipeNetwork {
                                 if cdx == 0 && cdy == 0 {
                                     continue;
                                 }
-                                *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
+                                *coarse_agg.entry((cdx, cdy)).or_insert(0.0) += wire_count;
                             }
                         }
                         // Span-1 fallback: accumulate only for fine tiles that
@@ -483,11 +485,18 @@ impl PipeNetwork {
                         }
                     }
                 }
+                // Span-1 fallback. This is a guess (tile wire count / 4), not a
+                // modelled capacity, and it is what hid the star-node bug: east
+                // silently got a plausible ~262 while south was pinned at 2 by
+                // the clock ladder. It must stay visible — see the loud summary
+                // of `n_fallback_*` after this loop.
                 if cx + 1 < w && !coarse_agg.contains_key(&(1, 0)) && fallback_east > 0 {
-                    coarse_agg.insert((1, 0), fallback_east.max(1));
+                    coarse_agg.insert((1, 0), fallback_east.max(1) as f64);
+                    n_fallback_east += 1;
                 }
                 if cy + 1 < h && !coarse_agg.contains_key(&(0, 1)) && fallback_south > 0 {
-                    coarse_agg.insert((0, 1), fallback_south.max(1));
+                    coarse_agg.insert((0, 1), fallback_south.max(1) as f64);
+                    n_fallback_south += 1;
                 }
 
                 for ((cdx, cdy), wire_count) in coarse_agg {
@@ -503,7 +512,7 @@ impl PipeNetwork {
                     }
                     let span = (cdx.abs() + cdy.abs()) as usize;
                     let base = (span as f64).powf(pipe_cost_exp);
-                    let cap = (wire_count as f64).max(1.0);
+                    let cap = wire_count.max(1.0);
                     let pipe_type = if span == 1 {
                         n_span1 += 1;
                         let dir = if cdx.abs() >= cdy.abs() {
@@ -533,6 +542,16 @@ impl PipeNetwork {
             "  Skipped truly-null coarse cells: {} (of {} total); pruned pipes: src_null={} dst_null={}",
             n_null_coarse, n_coarse, n_skipped_null_src, n_skipped_null_dst,
         );
+        if n_fallback_east > 0 || n_fallback_south > 0 {
+            eprintln!(
+                "  WARNING: span-1 capacity GUESSED for {} east / {} south pipes \
+                 (no node-shape entry for that delta; using tile wire_count/4). \
+                 These capacities are not modelled from the device.",
+                n_fallback_east, n_fallback_south,
+            );
+        } else {
+            eprintln!("  Span-1 capacity fully modelled from node shapes (no fallback used).");
+        }
         log::debug!(
             "network: {}x{} (coarsen={}) = {} nodes ({} null), {} pipes ({} long-range)",
             w,
@@ -1061,11 +1080,9 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
 }
 
 /// Per tile-type histogram: maps composite-grid (dx, dy) -> wire_count.
-/// Exactly one entry is emitted per non-internal physical wire at its
-/// max-reach composite delta (Model A: hypergraph wire approximated by its
-/// longest physical end-to-end reach; short-span usage handled separately by
-/// the BPR congestion function's mild-overflow tolerance).
-type SpanHistogram = FxHashMap<(i32, i32), usize>;
+/// Fractional because a non-collinear node splits its single unit of capacity
+/// across the arms it can serve (see `build_span_histograms`).
+type SpanHistogram = FxHashMap<(i32, i32), f64>;
 
 /// Return true if the wire name is a global/clock network (GCLK, HCLK, VCC,
 /// GND) that should be excluded from span histograms. These wires can span
@@ -1078,6 +1095,19 @@ fn is_global_network_wire(name: &str) -> bool {
         || name.contains("VCC")
         || name.contains("CLK_HROW")
         || name.contains("CLK_BUFG")
+        || is_clock_ladder_wire(name)
+}
+
+/// Per-column clock ladder: wires named exactly `CLK<n>` or `CLK<n>_PREV`.
+/// These form the dedicated top-to-bottom clock distribution, not general
+/// routing. Matched exactly rather than by a bare "CLK" substring so that BEL
+/// pin wires (`F0_CLK`, `DSP_CLK`, `RAM_CLK`) are not swept up with them.
+fn is_clock_ladder_wire(name: &str) -> bool {
+    let body = name.strip_suffix("_PREV").unwrap_or(name);
+    let Some(digits) = body.strip_prefix("CLK") else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Analyze chipdb routing node shapes to build per-tile-type span histograms.
@@ -1088,13 +1118,24 @@ fn is_global_network_wire(name: &str) -> bool {
 /// `tile_wires` list therefore gives tap offsets DIRECTLY in composite-grid
 /// units relative to the home tile.
 ///
-/// Under Model A (one-wire-one-entry, max reach):
+/// Each wire contributes exactly ONE unit of routing capacity in total (a node
+/// is one electrical net and carries one signal); how that unit is booked
+/// against reach deltas depends on the node's geometry:
+///
 ///   * internal wires (all taps at dx=dy=0) are absorbed into the tile type
 ///     and contribute nothing to the fabric-level pipe graph.
-///   * non-internal wires emit exactly one histogram entry at their farthest
-///     composite tap (max Manhattan distance), canonicalized to the positive
-///     half-plane so that a wire and its mirror at the destination tile
-///     merge into the same key.
+///   * COLLINEAR nodes — every non-zero tap on one line through the origin —
+///     are real physical span wires (xc7 LH/LV/EE4/NN6...). They emit one
+///     entry at their farthest tap, which is the wire's actual length.
+///   * NON-COLLINEAR nodes ("stars") are not a single physical line but a
+///     local switch fan-out that can serve any ONE of its k neighbours. They
+///     emit 1/k at each distinct tap. Booking the full count at every arm
+///     would promise k times the wires that exist; booking only the
+///     max-Manhattan arm (the previous behaviour) filed a tile's entire local
+///     interconnect onto a diagonal and left the orthogonal pipes empty.
+///
+/// The 1/k split is decided on the RAW taps, before canonicalization, so a
+/// star with both (-1,0) and (1,0) arms cannot be double-counted.
 ///
 /// Short-span usage of long wires (hex wires serving span-3 nets, etc.) is
 /// NOT modelled here; the BPR congestion function is tuned to accept mild
@@ -1113,38 +1154,58 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     let num_tiles = chipdb.num_tiles();
     let mut histograms = vec![SpanHistogram::default(); num_tt];
 
-    // Helper: compute a wire's canonical max-reach composite delta, or None if
-    // the wire is a global-network wire, has no node shape, or is fully
-    // internal to the home composite tile (absorbed, not exposed to fabric).
-    let wire_reach = |tile: i32, wire_idx: usize| -> Option<(i32, i32)> {
+    // Helper: how a wire books its single unit of capacity against canonical
+    // reach deltas. Empty if the wire is a global-network wire, has no node
+    // shape, or is fully internal to the home tile (absorbed, not fabric).
+    let wire_reach = |tile: i32, wire_idx: usize| -> Vec<((i32, i32), f64)> {
         let wid = crate::chipdb::WireId::new(tile, wire_idx as i32);
         if is_global_network_wire(chipdb.wire_name(wid)) {
-            return None;
+            return Vec::new();
         }
-        let ns = chipdb.wire_node_shape(tile, wire_idx)?;
-        let mut best: Option<(i32, i32, i32)> = None; // (|dx|+|dy|, dx, dy)
+        let Some(ns) = chipdb.wire_node_shape(tile, wire_idx) else {
+            return Vec::new();
+        };
+
+        // Distinct non-zero raw taps. Distinctness and the 1/k weight are
+        // both decided here, on raw deltas, before any canonicalization.
+        let mut taps: Vec<(i32, i32)> = Vec::new();
         for tw in ns.tile_wires.get() {
             let dx: i16 = unsafe { read_packed!(*tw, dx) };
             let dy: i16 = unsafe { read_packed!(*tw, dy) };
-            let dx = dx as i32;
-            let dy = dy as i32;
-            let mag = dx.abs() + dy.abs();
-            match best {
-                None => best = Some((mag, dx, dy)),
-                Some((m, _, _)) if mag > m => best = Some((mag, dx, dy)),
-                _ => {}
+            let (dx, dy) = (dx as i32, dy as i32);
+            if (dx, dy) != (0, 0) && !taps.contains(&(dx, dy)) {
+                taps.push((dx, dy));
             }
         }
-        let (mag, dx, dy) = best?;
-        if mag == 0 {
-            return None; // fully internal → absorbed into the tile type
+        if taps.is_empty() {
+            return Vec::new(); // fully internal → absorbed into the tile type
         }
-        let (kdx, kdy) = if dx > 0 || (dx == 0 && dy > 0) {
-            (dx, dy)
-        } else {
-            (-dx, -dy)
+
+        let canonical = |(dx, dy): (i32, i32)| -> (i32, i32) {
+            if dx > 0 || (dx == 0 && dy > 0) {
+                (dx, dy)
+            } else {
+                (-dx, -dy)
+            }
         };
-        Some((kdx, kdy))
+
+        // Collinear ⇔ every tap is parallel to the first (zero cross product).
+        let (ax, ay) = taps[0];
+        let collinear = taps.iter().all(|&(bx, by)| ax * by - bx * ay == 0);
+
+        if collinear {
+            // A real physical span wire: one entry at its true length.
+            let far = taps
+                .iter()
+                .copied()
+                .max_by_key(|&(dx, dy)| dx.abs() + dy.abs())
+                .expect("taps is non-empty");
+            vec![(canonical(far), 1.0)]
+        } else {
+            // A local switch fan-out: one unit shared across the arms it serves.
+            let share = 1.0 / taps.len() as f64;
+            taps.iter().map(|&t| (canonical(t), share)).collect()
+        }
     };
 
     // Enumerate all unique (tile_type, tile_shape) combinations and pick the
@@ -1167,7 +1228,7 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
         let tt = chipdb.tile_type_by_index(*tt_idx);
         let mut distinct: FxHashMap<(i32, i32), ()> = FxHashMap::default();
         for wire_idx in 0..tt.wires.len() {
-            if let Some(key) = wire_reach(*tile, wire_idx) {
+            for (key, _) in wire_reach(*tile, wire_idx) {
                 distinct.insert(key, ());
             }
         }
@@ -1185,10 +1246,25 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
         };
         let tt = chipdb.tile_type_by_index(tt_idx as i32);
         for wire_idx in 0..tt.wires.len() {
-            if let Some(key) = wire_reach(*tile, wire_idx) {
-                *histograms[tt_idx].entry(key).or_insert(0) += 1;
+            for (key, share) in wire_reach(*tile, wire_idx) {
+                *histograms[tt_idx].entry(key).or_insert(0.0) += share;
             }
         }
+
+        // Conservation: a wire books exactly one unit in total, so the
+        // histogram must sum to the number of wires that reached the fabric.
+        // Catches any double-count introduced by canonicalization.
+        let booked: f64 = histograms[tt_idx].values().sum();
+        let contributing = (0..tt.wires.len())
+            .filter(|&w| !wire_reach(*tile, w).is_empty())
+            .count();
+        assert!(
+            (booked - contributing as f64).abs() < 1e-6,
+            "span histogram over/under-books tile type {}: booked {:.6} units from {} wires",
+            tt_idx,
+            booked,
+            contributing,
+        );
     }
 
     // Log summary.
@@ -1199,7 +1275,7 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
         .map(|(dx, dy)| dx.abs() + dy.abs())
         .max()
         .unwrap_or(0);
-    let total_wires: usize = histograms.iter().flat_map(|h| h.values()).sum();
+    let total_wires: f64 = histograms.iter().flat_map(|h| h.values()).sum();
     log::debug!(
         "span_histograms: {} tile types with long-range entries, {} unique (dx,dy) pairs, \
          max span={}, total long-range wires={}",

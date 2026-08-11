@@ -97,6 +97,18 @@ struct DistCache {
     /// recomputed in `evaluate_cell_at`, which runs per candidate position.
     /// Zero disables the term.
     spread_scale: f64,
+    /// Solved-distance units per tile of Manhattan separation, measured from
+    /// the current `rows` each outer iteration.
+    ///
+    /// The driver-side term has to be geometric — `rows` are anchored AT the
+    /// driver, so a driver move invalidates the whole row and the table
+    /// structurally cannot price it — while the sink side stays exact. Those
+    /// two live in different units, so adding raw tile counts to Dijkstra path
+    /// costs would silently weight the halves against each other by whatever
+    /// the resistance scale happens to be. This is the conversion that makes
+    /// them commensurate, and it is measured rather than guessed because the
+    /// scale moves with congestion as BPR inflates resistances.
+    driver_dist_per_tile: f64,
 }
 
 impl DistCache {
@@ -111,6 +123,7 @@ impl DistCache {
             tile_pressure: vec![0.0; n_nodes],
             spread_potential: vec![0.0; n_nodes],
             spread_scale: 0.0,
+            driver_dist_per_tile: 0.0,
         }
     }
 
@@ -1551,6 +1564,31 @@ fn evaluate_cell_at(
                 return f64::INFINITY;
             }
             cost += weight * d;
+        } else if cfg.driver_geom_weight > 0.0 {
+            // Driver side of the same star. Every driver->sink term depends on
+            // BOTH endpoints, but only the sink endpoint is priced above, so
+            // without this exactly half of the objective is invisible to the
+            // sweep -- measured at a 3.37 / 3.37 split of priced to unpriced
+            // neighbours on FPGA01, with 38-58% of cells whose move looks
+            // worse on the priced half actually better once both are counted.
+            //
+            // Geometric, not another Dijkstra: `rows` are anchored at the
+            // driver, so pricing a driver move exactly costs one solve per
+            // candidate position per driven net. `driver_dist_per_tile`
+            // converts to the sink side's units.
+            //
+            // Only the driver pin gets this. Adding a geometric pull to sinks
+            // as well (which is what `mst_edge_weight` does) double-counts the
+            // half that already has an exact cost and re-weights the objective
+            // instead of completing it.
+            let scale = cfg.driver_geom_weight * weight * dist_cache.driver_dist_per_tile;
+            if scale > 0.0 {
+                for sink in info.pins.iter().filter(|p| !p.is_driver) {
+                    let sx = (sink.node % width) as f64;
+                    let sy = (sink.node / width) as f64;
+                    cost += scale * ((cand_nx - sx).abs() + (cand_ny - sy).abs());
+                }
+            }
         }
 
         // 1-Steiner pseudo-node term: pull every pin (driver + sinks) toward
@@ -4066,6 +4104,41 @@ pub fn run_inner_outer(
             skip_mask.as_deref(),
             displacement_table.as_ref(),
         );
+        // Conversion factor for the driver-side geometric term, measured from
+        // the rows just solved: total solved distance over total Manhattan
+        // separation across every driver->sink pair with a finite label. A
+        // ratio of totals, not a mean of ratios, so short nets (where one tile
+        // of separation buys a whole switchbox hop) cannot dominate.
+        if cfg.driver_geom_weight > 0.0 {
+            let width = network.width as usize;
+            let mut sum_d = 0.0f64;
+            let mut sum_m = 0.0f64;
+            for (net_idx, info) in net_infos.iter().enumerate() {
+                let Some(driver) = info.pins.iter().find(|p| p.is_driver) else {
+                    continue;
+                };
+                let dx0 = (driver.node % width) as f64;
+                let dy0 = (driver.node / width) as f64;
+                for sink in info.pins.iter().filter(|p| !p.is_driver) {
+                    let d = dist_cache.get(net_idx, sink.node);
+                    if !d.is_finite() {
+                        continue;
+                    }
+                    let sx = (sink.node % width) as f64;
+                    let sy = (sink.node / width) as f64;
+                    sum_d += d;
+                    sum_m += (dx0 - sx).abs() + (dy0 - sy).abs();
+                }
+            }
+            // Coincident pins give zero separation and no information; leaving
+            // the factor at zero disables the term for that iteration rather
+            // than inventing a scale.
+            dist_cache.driver_dist_per_tile = if sum_m > 0.0 { sum_d / sum_m } else { 0.0 };
+            eprintln!(
+                "    driver_geom[outer={}]: dist_per_tile={:.4} weight={:.3} pairs_mdist={:.0}",
+                outer, dist_cache.driver_dist_per_tile, cfg.driver_geom_weight, sum_m,
+            );
+        }
         if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
             let mut h_dist: u64 = 0;
             for row in dist_cache.rows.iter() {
@@ -5016,7 +5089,16 @@ pub fn run_inner_outer(
             let mut slack_total = 0.0f64;
             let mut cap_total = 0.0f64;
             let mut n_capped = 0usize;
-            for pipe in network.pipes.iter_mut() {
+            // Preconditioned ascent drives lambda with the inverse-Laplacian
+            // smoothing of the residual, so pipes NEAR a hotspot get priced
+            // too and routes are steered around the whole region rather than
+            // off the single saturated pipe. Same fixed point either way.
+            let smoothed = if cfg.dual_precondition {
+                Some(super::spreading::smoothed_pipe_residual(network))
+            } else {
+                None
+            };
+            for (pipe_idx, pipe) in network.pipes.iter_mut().enumerate() {
                 if pipe.capacity <= 0.0 {
                     continue;
                 }
@@ -5028,7 +5110,10 @@ pub fn run_inner_outer(
                 }
                 cap_total += pipe.capacity;
                 n_capped += 1;
-                let violation = raw / pipe.capacity;
+                let violation = match &smoothed {
+                    Some(s) => s[pipe_idx],
+                    None => raw / pipe.capacity,
+                };
                 let next = decay * pipe.dual_lambda + step * violation;
                 pipe.dual_lambda = next.max(0.0);
                 if pipe.dual_lambda > 0.0 {
@@ -5040,7 +5125,7 @@ pub fn run_inner_outer(
                 }
             }
             eprintln!(
-                "    dual_ascent[outer={}]: active_pipes={}/{} max_lambda={:.4} mean_lambda={:.4} step={:.3} decay={:.3}",
+                "    dual_ascent[outer={}]: active_pipes={}/{} max_lambda={:.4} mean_lambda={:.4} step={:.3} decay={:.3} precond={}",
                 outer,
                 n_active,
                 n_capped,
@@ -5048,6 +5133,7 @@ pub fn run_inner_outer(
                 if n_active > 0 { sum_lambda / n_active as f64 } else { 0.0 },
                 step,
                 decay,
+                cfg.dual_precondition,
             );
             // net_balance > 0 means no redistribution can reach feasibility:
             // the chip needs less total demand, not a different arrangement.

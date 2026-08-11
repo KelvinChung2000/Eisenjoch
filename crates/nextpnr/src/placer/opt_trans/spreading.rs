@@ -83,6 +83,89 @@ pub(crate) struct SpreadField {
 ///
 /// The result is RMS-normalized so the caller's weight has a comparable
 /// meaning across designs of different size and utilization.
+/// Poisson-smoothed per-pipe capacity residual, in the same units as the raw
+/// relative residual `(usage - capacity) / capacity`.
+///
+/// This is a *preconditioner for dual ascent*, not a second objective. Plain
+/// subgradient ascent, `lambda += step * residual`, only raises the price on
+/// pipes that are themselves over capacity, so the signal diffuses outward one
+/// pipe per outer iteration and a net whose path could detour around a hotspot
+/// never learns the hotspot is there. Applying the inverse Laplacian first
+/// spreads that residual across the grid in a single solve.
+///
+/// The fixed point is unchanged, which is the whole reason to do it this way:
+/// `(-laplacian)^-1` is positive definite, so the smoothed residual is zero
+/// exactly when the raw one is, and the multiplier still stops growing exactly
+/// when the constraint stops being violated. Contrast the cell-side potential
+/// term in `evaluate_cell_at`, which adds a *different* objective whose own
+/// minimiser is a flat imbalance rather than a feasible one.
+///
+/// Relative residual, not raw: the dual update prices a 2-wire pipe and a
+/// 40-wire pipe on the same scale, and mixing raw wire counts into the charge
+/// grid would let wide pipes dominate the solve for no physical reason.
+///
+/// Rescaled to preserve mean |residual|. The elliptic solve changes WHERE the
+/// violation is felt, not HOW MUCH of it there is, and without the rescale the
+/// operator's length-squared units would silently rescale `dual_step` by a
+/// factor that grows with the die.
+pub(crate) fn smoothed_pipe_residual(network: &PipeNetwork) -> Vec<f64> {
+    let grid_w = network.width as usize;
+    let grid_h = network.height as usize;
+    let n_cells = grid_w * grid_h;
+
+    let mut charge = vec![0.0f64; n_cells];
+    let mut degree = vec![0u32; n_cells];
+    for pipe in &network.pipes {
+        if pipe.capacity <= 0.0 {
+            continue;
+        }
+        let rel = (pipe.net_count - pipe.capacity) / pipe.capacity;
+        if pipe.from < n_cells {
+            charge[pipe.from] += rel;
+            degree[pipe.from] += 1;
+        }
+        if pipe.to < n_cells {
+            charge[pipe.to] += rel;
+            degree[pipe.to] += 1;
+        }
+    }
+    // Mean, not sum: chip-edge nodes touch fewer pipes, and a raw sum would
+    // read a uniformly loaded grid as a bowl. Same reasoning as
+    // `compute_spread_field`.
+    for (c, &d) in charge.iter_mut().zip(degree.iter()) {
+        if d > 0 {
+            *c /= d as f64;
+        }
+    }
+
+    let raw_scale: f64 =
+        charge.iter().map(|c| c.abs()).sum::<f64>() / (n_cells.max(1) as f64);
+    if raw_scale <= 0.0 {
+        return vec![0.0; network.pipes.len()];
+    }
+
+    let potential = compute_potential_from_charge(charge, grid_w, grid_h);
+    let pot_scale: f64 =
+        potential.iter().map(|v| v.abs()).sum::<f64>() / (potential.len().max(1) as f64);
+    if pot_scale <= 0.0 {
+        return vec![0.0; network.pipes.len()];
+    }
+    let renorm = raw_scale / pot_scale;
+
+    network
+        .pipes
+        .iter()
+        .map(|pipe| {
+            if pipe.capacity <= 0.0 {
+                return 0.0;
+            }
+            let a = potential.get(pipe.from).copied().unwrap_or(0.0);
+            let b = potential.get(pipe.to).copied().unwrap_or(0.0);
+            0.5 * (a + b) * renorm
+        })
+        .collect()
+}
+
 pub(crate) fn compute_spread_field(network: &PipeNetwork) -> SpreadField {
     let n_nodes = network.num_nodes();
     let grid_w = network.width as usize;
@@ -253,6 +336,98 @@ mod tests {
             total_bels: 0,
             coarsen: 1,
         }
+    }
+
+    /// The property that makes this a preconditioner and not a second
+    /// objective: no violation anywhere => no price anywhere. If the smoothed
+    /// residual could be nonzero on a feasible network, dual ascent would keep
+    /// raising lambda after the constraint was satisfied and the fixed point
+    /// would move.
+    #[test]
+    fn feasible_network_gets_zero_smoothed_residual() {
+        let mut net = grid_network(16, 16, 10.0);
+        for pipe in net.pipes.iter_mut() {
+            pipe.net_count = 4.0; // uniformly under capacity
+        }
+        let r = smoothed_pipe_residual(&net);
+        assert_eq!(r.len(), net.pipes.len());
+        for (i, v) in r.iter().enumerate() {
+            assert!(
+                v.abs() < 1e-9,
+                "pipe {i} priced at {v} on a network with no violation"
+            );
+        }
+    }
+
+    /// The reason to precondition at all: a pipe that is itself WITHIN capacity
+    /// but sits next to an overloaded region must still be priced, so routes
+    /// are steered around the region instead of off one saturated pipe. Raw
+    /// subgradient ascent gives such a pipe exactly zero.
+    #[test]
+    fn smoothing_prices_pipes_that_are_not_themselves_over() {
+        let w = 32;
+        let mut net = grid_network(w, 32, 10.0);
+        let hot = (16 * w + 16) as usize;
+        for pipe in net.pipes.iter_mut() {
+            if pipe.from == hot || pipe.to == hot {
+                pipe.net_count = 500.0;
+            }
+        }
+        let r = smoothed_pipe_residual(&net);
+
+        // A pipe five tiles from the hotspot, well under capacity itself.
+        let near_from = (16 * w + 21) as usize;
+        let near = net
+            .pipes
+            .iter()
+            .position(|p| p.from == near_from && p.net_count < p.capacity)
+            .expect("a slack pipe near the hotspot");
+        let far_from = (16 * w + 30) as usize;
+        let far = net
+            .pipes
+            .iter()
+            .position(|p| p.from == far_from && p.net_count < p.capacity)
+            .expect("a slack pipe far from the hotspot");
+
+        assert!(
+            r[near] > 0.0,
+            "slack pipe next to a hotspot must still be priced, got {}",
+            r[near]
+        );
+        assert!(
+            r[near] > r[far],
+            "price must decay with distance: near={} far={}",
+            r[near],
+            r[far]
+        );
+    }
+
+    /// The rescale is what keeps `dual_step` meaning the same thing after the
+    /// solve; without it the inverse Laplacian's length-squared units would
+    /// scale the step by a factor that grows with the die.
+    #[test]
+    fn smoothing_preserves_residual_magnitude() {
+        let w = 24;
+        let mut net = grid_network(w, 24, 10.0);
+        for (i, pipe) in net.pipes.iter_mut().enumerate() {
+            if i % 7 == 0 {
+                pipe.net_count = 30.0;
+            }
+        }
+        let r = smoothed_pipe_residual(&net);
+        let raw_mean: f64 = net
+            .pipes
+            .iter()
+            .map(|p| ((p.net_count - p.capacity) / p.capacity).abs())
+            .sum::<f64>()
+            / net.pipes.len() as f64;
+        let sm_mean: f64 = r.iter().map(|v| v.abs()).sum::<f64>() / r.len() as f64;
+        // Node-mean charge and the pipe-midpoint read-back both average, so
+        // this is a same-order check, not an identity.
+        assert!(
+            sm_mean > 0.1 * raw_mean && sm_mean < 10.0 * raw_mean,
+            "smoothed magnitude {sm_mean} should stay within an order of magnitude of raw {raw_mean}"
+        );
     }
 
     #[test]

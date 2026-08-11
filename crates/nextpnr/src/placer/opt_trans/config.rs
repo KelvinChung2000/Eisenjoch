@@ -293,6 +293,33 @@ pub struct OptTransPlacerCfg {
     /// Per-outer-iteration decay on the dual multipliers, so a pipe that stops
     /// overflowing eventually stops being penalized. Default 1.0 (no decay).
     pub dual_decay: f64,
+    /// Precondition the dual update with the inverse Laplacian of the capacity
+    /// residual (`spreading::smoothed_pipe_residual`) instead of the raw
+    /// per-pipe residual.
+    ///
+    /// Raw ascent raises the price only on pipes that are themselves over
+    /// capacity, so the signal spreads one pipe per outer iteration and a net
+    /// that could detour around a hotspot never learns it is there. The
+    /// elliptic solve spreads it chip-wide in one step, giving the multiplier
+    /// the long range the pointwise penalty never had, while leaving the fixed
+    /// point untouched. Default false.
+    pub dual_precondition: bool,
+    /// Weight on the driver-side geometric term in `evaluate_cell_at`.
+    ///
+    /// `dist_cache` rows are Dijkstra labels anchored at each net's driver, so
+    /// a driver move invalidates the whole row and the table cannot price it.
+    /// The sweep therefore scores a cell only on the nets it SINKS on, leaving
+    /// exactly one endpoint of every driver->sink term unpriced. This term
+    /// restores the other half using a Manhattan star converted into the sink
+    /// side's units by the measured `driver_dist_per_tile`.
+    ///
+    /// 1.0 makes the driver half nominally as important as the sink half,
+    /// which is what the objective says it should be. Default 0.0 (disabled),
+    /// so the term is opt-in until measured.
+    ///
+    /// Distinct from `mst_edge_weight`, which adds a geometric pull to EVERY
+    /// pin: that double-counts sinks, which already carry an exact cost.
+    pub driver_geom_weight: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -332,6 +359,8 @@ impl Default for OptTransPlacerCfg {
             spread_growth: 1.0,
             dual_step: 0.0,
             dual_decay: 1.0,
+            dual_precondition: false,
+            driver_geom_weight: 0.0,
         }
     }
 }
@@ -477,6 +506,15 @@ impl OptTransPlacerCfg {
             .and_then(|s| s.parse::<f64>().ok())
         {
             self.dual_decay = v.clamp(0.0, 1.0);
+        }
+        if let Ok(v) = env::var("NPNR_OT_DUAL_PRECOND") {
+            self.dual_precondition = v == "1";
+        }
+        if let Some(v) = env::var("NPNR_OT_DRIVER_GEOM")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.driver_geom_weight = v.max(0.0);
         }
         if let Some(v) = env::var("NPNR_OT_TPRESS_WEIGHT")
             .ok()

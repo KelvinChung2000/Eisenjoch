@@ -37,6 +37,28 @@ fn main() {
 
     let db = ChipDb::load(Path::new(&chipdb_path)).expect("load chipdb");
     let mut ctx = Context::new(db);
+
+    // `import_ispd_raw.py` preserves the ISPD netlist's own cell types, which
+    // do not all name a BEL type in the xc_ultrascale chipdb: that device
+    // declares one `LUT6` BEL per LUT slot and one `IOB` per IO slot. The
+    // arity-N LUTs are drop-in on a LUT6 slot (gen_ultrascale.py registers
+    // LUT1..LUT6 timing variants for exactly this reason) and the buffer types
+    // all occupy IO slots.
+    //
+    // Opt-in rather than automatic: the xc7 designs use the lossy converter's
+    // DFF/LUT6 naming and already match their device, so applying this table
+    // there would silently retarget cells onto BEL types xc7 does not have.
+    if std::env::var("PROBE_ALIASES").as_deref() == Ok("ultrascale") {
+        for lut in ["LUT1", "LUT2", "LUT3", "LUT4", "LUT5"] {
+            ctx.add_cell_type_alias(lut, "LUT6");
+        }
+        for io in ["IBUF", "OBUF", "BUFGCE"] {
+            ctx.add_cell_type_alias(io, "IOB");
+        }
+        ctx.add_cell_type_alias("DFF", "FDRE");
+        ctx.add_cell_type_alias("DLATCH", "FDRE");
+    }
+
     let json = std::fs::read_to_string(&design_path).expect("read design");
     ctx.design = parse_json(&json, &ctx.id_pool).expect("parse design");
     packer::pack(&mut ctx, None).expect("pack");
