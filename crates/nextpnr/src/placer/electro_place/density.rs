@@ -96,16 +96,73 @@ pub fn compute_density_field(
     grid_h: usize,
     target_density: f64,
 ) -> (Vec<f64>, Vec<f64>) {
-    let n = grid_w * grid_h;
-
     // Compute charge density: rho = density - target
+    let n = grid_w * grid_h;
     let avg_density = density.iter().sum::<f64>() / n as f64;
     let target = target_density * avg_density.max(1e-30);
-    let mut rho: Vec<f64> = density.iter().map(|&d| d - target).collect();
+    let rho: Vec<f64> = density.iter().map(|&d| d - target).collect();
+
+    let mut planner = DctPlanner::new();
+    let spec = poisson_spectral(rho, grid_w, grid_h, &mut planner);
+
+    // Inverse transforms for Ex: IDST-rows, IDCT-cols
+    let mut ex = spec.ex;
+    idst_rows(&mut ex, grid_w, grid_h, &mut planner);
+    idct_cols(&mut ex, grid_w, grid_h, &mut planner);
+
+    // Inverse transforms for Ey: IDCT-rows, IDST-cols
+    let mut ey = spec.ey;
+    idct_rows(&mut ey, grid_w, grid_h, &mut planner);
+    idst_cols(&mut ey, grid_w, grid_h, &mut planner);
+
+    (ex, ey)
+}
+
+/// Solve the same spectral Poisson system but recover the scalar POTENTIAL
+/// instead of the field.
+///
+/// A gradient-descent placer wants the field, because it applies a force. A
+/// discrete argmin placer (opt_trans's DCD) wants the potential, because it
+/// scores candidate positions: for a unit test charge the potential at a tile
+/// *is* that cell's contribution to the electrostatic energy, so adding
+/// `phi[tile]` to a candidate's cost is the argmin-shaped equivalent of the
+/// force `-grad phi`.
+///
+/// `rho` is the charge grid in row-major `grid_h * grid_w` order and is
+/// consumed. It does NOT need to be mean-zero: the k=(0,0) mode is dropped by
+/// the solve, which is exactly the projection onto the mean-zero subspace that
+/// makes the Neumann problem well-posed.
+pub fn compute_potential_from_charge(rho: Vec<f64>, grid_w: usize, grid_h: usize) -> Vec<f64> {
+    let mut planner = DctPlanner::new();
+    let spec = poisson_spectral(rho, grid_w, grid_h, &mut planner);
+
+    // phi is even in both axes, so both inverses are IDCT.
+    let mut phi = spec.phi;
+    idct_rows(&mut phi, grid_w, grid_h, &mut planner);
+    idct_cols(&mut phi, grid_w, grid_h, &mut planner);
+    phi
+}
+
+/// Spectral-domain result of the Poisson solve, before any inverse transform.
+struct PoissonSpectral {
+    phi: Vec<f64>,
+    ex: Vec<f64>,
+    ey: Vec<f64>,
+}
+
+/// Forward DCT-II, spectral scaling, and the Poisson division. Shared by the
+/// field and potential entry points so both use one definition of the
+/// operator; each caller pays only for the inverse transforms it needs.
+fn poisson_spectral(
+    mut rho: Vec<f64>,
+    grid_w: usize,
+    grid_h: usize,
+    planner: &mut DctPlanner<f64>,
+) -> PoissonSpectral {
+    let n = grid_w * grid_h;
 
     // Forward DCT-II (rows then columns)
-    let mut planner = DctPlanner::new();
-    dct2_2d(&mut rho, grid_w, grid_h, &mut planner);
+    dct2_2d(&mut rho, grid_w, grid_h, planner);
 
     // Spectral scaling: first row/col by 0.5, all by 4/(m*m)
     let scale = 4.0 / (grid_w as f64 * grid_h as f64);
@@ -123,10 +180,9 @@ pub fn compute_density_field(
         }
     }
 
-    // Poisson solve and field computation in spectral domain
     let mut phi = vec![0.0; n];
-    let mut ex_spec = vec![0.0; n];
-    let mut ey_spec = vec![0.0; n];
+    let mut ex = vec![0.0; n];
+    let mut ey = vec![0.0; n];
 
     for ky in 0..grid_h {
         let wy = PI * ky as f64 / grid_h as f64;
@@ -137,29 +193,21 @@ pub fn compute_density_field(
             let wx2 = 2.0 * (1.0 - wx.cos());
             let denom = wx2 + wy2;
 
+            // denom == 0 only at k=(0,0), the constant mode. Zeroing it drops
+            // the arbitrary additive constant a Neumann Laplacian leaves free.
             if denom < 1e-30 {
                 phi[idx] = 0.0;
-                ex_spec[idx] = 0.0;
-                ey_spec[idx] = 0.0;
+                ex[idx] = 0.0;
+                ey[idx] = 0.0;
             } else {
                 phi[idx] = rho[idx] / denom;
-                ex_spec[idx] = phi[idx] * wx;
-                ey_spec[idx] = phi[idx] * wy;
+                ex[idx] = phi[idx] * wx;
+                ey[idx] = phi[idx] * wy;
             }
         }
     }
 
-    // Inverse transforms for Ex: IDST-rows, IDCT-cols
-    let mut ex = ex_spec;
-    idst_rows(&mut ex, grid_w, grid_h, &mut planner);
-    idct_cols(&mut ex, grid_w, grid_h, &mut planner);
-
-    // Inverse transforms for Ey: IDCT-rows, IDST-cols
-    let mut ey = ey_spec;
-    idct_rows(&mut ey, grid_w, grid_h, &mut planner);
-    idst_cols(&mut ey, grid_w, grid_h, &mut planner);
-
-    (ex, ey)
+    PoissonSpectral { phi, ex, ey }
 }
 
 /// Compute density gradient for each cell by interpolating the field at cell positions.
