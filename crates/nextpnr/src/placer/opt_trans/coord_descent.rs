@@ -82,6 +82,21 @@ struct DistCache {
     /// additive cost term scaled by `cfg.tile_pressure_weight`. Zero everywhere
     /// when the term is disabled (`tile_pressure_weight == 0.0`).
     tile_pressure: Vec<f64>,
+    /// Per-node global spreading potential, solved once per outer iteration by
+    /// `spreading::compute_spread_field` from the current pipe overflow. Read
+    /// in `evaluate_cell_at` scaled by the (possibly grown) spread weight.
+    ///
+    /// Unlike `tile_pressure`, which accumulates local rejection events, this
+    /// comes from an elliptic solve, so a cell sitting in an overfull region
+    /// sees a monotone downhill direction toward spare capacity even when
+    /// every pipe it touches is equally saturated. Zero everywhere when
+    /// `spread_weight == 0.0`.
+    spread_potential: Vec<f64>,
+    /// Effective spread weight for the current outer iteration, i.e.
+    /// `cfg.spread_weight * cfg.spread_growth^outer`. Held here rather than
+    /// recomputed in `evaluate_cell_at`, which runs per candidate position.
+    /// Zero disables the term.
+    spread_scale: f64,
 }
 
 impl DistCache {
@@ -94,6 +109,8 @@ impl DistCache {
             steiner_cy: vec![0.0; n_nets],
             mst_neighbors: Vec::new(),
             tile_pressure: vec![0.0; n_nodes],
+            spread_potential: vec![0.0; n_nodes],
+            spread_scale: 0.0,
         }
     }
 
@@ -1583,6 +1600,14 @@ fn evaluate_cell_at(
     let tp_w = cfg.tile_pressure_weight;
     if tp_w > 0.0 && node < dist_cache.tile_pressure.len() {
         cost += tp_w * dist_cache.tile_pressure[node];
+    }
+
+    // Global spreading potential. Added ONCE per candidate, not once per net:
+    // this is the cell's own electrostatic-style potential energy at the
+    // candidate tile, so scaling it by net count would make high-fanout cells
+    // spread harder than low-fanout ones for no physical reason.
+    if dist_cache.spread_scale > 0.0 && node < dist_cache.spread_potential.len() {
+        cost += dist_cache.spread_scale * dist_cache.spread_potential[node];
     }
 
     cost
@@ -4906,6 +4931,69 @@ pub fn run_inner_outer(
         let d_friction = prev_state.map_or(0.0, |prev| state.friction - prev.friction);
         if !mux_tracker.is_legal() {
             mux_tracker.report(&format!("sweep {} LEAK", outer));
+        }
+
+        // Dual ascent on the per-pipe capacity constraint. Runs here, after
+        // `apply_usage_for_next_iter` has refreshed `net_count` and before the
+        // next iteration's `update_effective_conductance` reads the
+        // multipliers back out through `effective_resistance`.
+        //
+        // The update is the standard augmented-Lagrangian one,
+        // `lambda <- max(0, decay*lambda + step * (usage - cap)/cap)`, with the
+        // violation measured relative to capacity so a 2-wire pipe and a
+        // 40-wire pipe are priced on the same scale.
+        if cfg.dual_step > 0.0 {
+            let step = cfg.dual_step;
+            let decay = cfg.dual_decay;
+            let mut n_active = 0usize;
+            let mut max_lambda = 0.0f64;
+            let mut sum_lambda = 0.0f64;
+            for pipe in network.pipes.iter_mut() {
+                if pipe.capacity <= 0.0 {
+                    continue;
+                }
+                let violation = (pipe.net_count - pipe.capacity) / pipe.capacity;
+                let next = decay * pipe.dual_lambda + step * violation;
+                pipe.dual_lambda = next.max(0.0);
+                if pipe.dual_lambda > 0.0 {
+                    n_active += 1;
+                    sum_lambda += pipe.dual_lambda;
+                    if pipe.dual_lambda > max_lambda {
+                        max_lambda = pipe.dual_lambda;
+                    }
+                }
+            }
+            eprintln!(
+                "    dual_ascent[outer={}]: active_pipes={} max_lambda={:.4} mean_lambda={:.4} step={:.3} decay={:.3}",
+                outer,
+                n_active,
+                max_lambda,
+                if n_active > 0 { sum_lambda / n_active as f64 } else { 0.0 },
+                step,
+                decay,
+            );
+        }
+
+        // Re-solve the global spreading potential from the refreshed pipe
+        // usage. One DCT pair over the tile grid, which is negligible next to
+        // the per-net Dijkstra refresh that dominates an outer iteration.
+        if cfg.spread_weight > 0.0 {
+            let field = super::spreading::compute_spread_field(network);
+            dist_cache.spread_potential = field.potential;
+            if dist_cache.spread_potential.len() < n_nodes {
+                dist_cache.spread_potential.resize(n_nodes, 0.0);
+            }
+            // Growing penalty, as electrostatic placers do: start
+            // wirelength-dominated, tighten feasibility over the run.
+            dist_cache.spread_scale = cfg.spread_weight * cfg.spread_growth.powi(outer as i32 + 1);
+            eprintln!(
+                "    spread[outer={}]: scale={:.4} overflow_pipes={} overflow_total={:.1} raw_rms={:.4e}",
+                outer,
+                dist_cache.spread_scale,
+                field.overflow_pipes,
+                field.overflow_total,
+                field.raw_rms,
+            );
         }
 
         // Drain this iter's per-tile reject counts into the Lagrangian

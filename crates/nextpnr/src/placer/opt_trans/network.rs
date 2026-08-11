@@ -63,6 +63,15 @@ pub struct Pipe {
     pub cell_density: f64,
     /// Effective conductance used in the current Laplacian (updated each iteration).
     pub eff_conductance: f64,
+    /// Augmented-Lagrangian multiplier on this pipe's capacity constraint.
+    ///
+    /// Adds to the global BPR alpha in `ResistanceModel::effective_resistance`.
+    /// The difference from raising alpha is that alpha is one guessed constant
+    /// applied to every pipe, while this is driven up by dual ascent only on
+    /// pipes that are actually over capacity, and relaxes when they clear.
+    /// Zero unless `cfg.dual_step > 0.0`, so the default behaviour is exactly
+    /// static BPR.
+    pub dual_lambda: f64,
     pub pipe_type: PipeType,
 }
 
@@ -1008,6 +1017,7 @@ fn add_pipe(
         raw_cell_density: 0.0,
         cell_density: 0.0,
         eff_conductance: 1.0 / base_resistance.max(1e-12),
+        dual_lambda: 0.0,
         pipe_type,
     });
     node_pipes[from].push(pipe_idx);
@@ -1217,6 +1227,7 @@ mod flat_adjacency_tests {
             raw_cell_density: 0.0,
             cell_density: 0.0,
             eff_conductance: 1.0,
+            dual_lambda: 0.0,
             pipe_type: PipeType::InterTile(Direction::East),
         }
     }

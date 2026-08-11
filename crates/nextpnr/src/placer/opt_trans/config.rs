@@ -262,6 +262,37 @@ pub struct OptTransPlacerCfg {
     /// Step size on the dual ascent — each rejected commit adds
     /// `step * 1` to its tile's pressure. Default 0.1.
     pub tile_pressure_step: f64,
+
+    // --- Global spreading potential (routing-overflow Poisson field) ---
+    /// Weight on the per-node spreading potential from `spreading.rs`, added
+    /// once per candidate position in `evaluate_cell_at`. The potential is
+    /// RMS-normalized, so this weight is in the same units as the star path
+    /// cost and is comparable across designs.
+    ///
+    /// Default 0.0, which disables the term and reproduces prior behaviour
+    /// exactly. This supplies what BPR structurally cannot: a long-range,
+    /// non-saturating signal pointing toward spare routing capacity.
+    pub spread_weight: f64,
+    /// Per-outer-iteration multiplier on `spread_weight`, mirroring the
+    /// growing density penalty electrostatic placers use to start from a
+    /// wirelength-dominated solution and tighten feasibility over time.
+    /// Default 1.0 (constant weight).
+    pub spread_growth: f64,
+
+    // --- Augmented-Lagrangian dual ascent on pipe overflow ---
+    /// Dual-ascent step size for the per-pipe capacity multiplier. Each outer
+    /// iteration performs `lambda_e <- max(0, lambda_e + step * (usage_e -
+    /// capacity_e) / capacity_e)`, and `lambda_e` then *adds* to the BPR alpha
+    /// for that pipe.
+    ///
+    /// The distinction from raising `NPNR_OT_BPR_ALPHA` is that alpha is a
+    /// guessed constant applied everywhere, whereas lambda is solved for per
+    /// pipe and keeps rising only where the constraint is actually violated.
+    /// Default 0.0 (disabled, pure static BPR).
+    pub dual_step: f64,
+    /// Per-outer-iteration decay on the dual multipliers, so a pipe that stops
+    /// overflowing eventually stops being penalized. Default 1.0 (no decay).
+    pub dual_decay: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -297,6 +328,10 @@ impl Default for OptTransPlacerCfg {
             tile_pressure_weight: 0.0,
             tile_pressure_decay: 0.8,
             tile_pressure_step: 0.1,
+            spread_weight: 0.0,
+            spread_growth: 1.0,
+            dual_step: 0.0,
+            dual_decay: 1.0,
         }
     }
 }
@@ -418,6 +453,30 @@ impl OptTransPlacerCfg {
             .and_then(|s| s.parse::<f64>().ok())
         {
             self.softmin_theta_end = v.max(1e-6);
+        }
+        if let Some(v) = env::var("NPNR_OT_SPREAD_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.spread_weight = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_SPREAD_GROWTH")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.spread_growth = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_DUAL_STEP")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.dual_step = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_DUAL_DECAY")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.dual_decay = v.clamp(0.0, 1.0);
         }
         if let Some(v) = env::var("NPNR_OT_TPRESS_WEIGHT")
             .ok()

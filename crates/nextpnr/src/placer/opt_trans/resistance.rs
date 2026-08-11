@@ -101,7 +101,13 @@ impl ResistanceModel {
         let eff_cap = cap * slack;
         let usage = pipe.net_count.max(0.0);
         let ratio = usage / eff_cap;
-        base * (1.0 + bpr_alpha() * ratio.powf(bpr_beta()))
+        // `dual_lambda` is the augmented-Lagrangian multiplier for this pipe's
+        // own capacity constraint; it is zero unless dual ascent is enabled,
+        // in which case the penalty stops being one guessed global constant
+        // and becomes a per-pipe price that keeps rising while the constraint
+        // is violated.
+        let alpha = bpr_alpha() + pipe.dual_lambda;
+        base * (1.0 + alpha * ratio.powf(bpr_beta()))
     }
 }
 
@@ -126,6 +132,7 @@ mod tests {
             raw_cell_density: 0.0,
             cell_density: 0.0,
             eff_conductance: 1.0,
+            dual_lambda: 0.0,
             pipe_type,
         }
     }

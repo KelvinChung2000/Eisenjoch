@@ -507,6 +507,7 @@ mod tests {
                     raw_cell_density: 0.0,
                     cell_density: 0.0,
                     eff_conductance: 1.0 / span1_cost,
+                    dual_lambda: 0.0,
                     pipe_type: PipeType::InterTile(Direction::East),
                 });
                 node_pipes[idx(x, y)].push(i);
@@ -526,6 +527,7 @@ mod tests {
                     raw_cell_density: 0.0,
                     cell_density: 0.0,
                     eff_conductance: 1.0 / span1_cost,
+                    dual_lambda: 0.0,
                     pipe_type: PipeType::InterTile(Direction::South),
                 });
                 node_pipes[idx(x, y)].push(i);
@@ -544,6 +546,7 @@ mod tests {
                 raw_cell_density: 0.0,
                 cell_density: 0.0,
                 eff_conductance: 1.0 / cost,
+                dual_lambda: 0.0,
                 pipe_type: PipeType::LongRange { dx, dy },
             });
             node_pipes[idx(sx, sy)].push(i);

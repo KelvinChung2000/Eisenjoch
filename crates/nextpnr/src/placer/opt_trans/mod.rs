@@ -15,6 +15,7 @@ pub(crate) mod network;
 pub mod path_solver;
 pub(crate) mod region_min;
 mod resistance;
+pub(crate) mod spreading;
 pub(crate) mod tile_cache;
 
 pub use algorithm::place_opt_trans;

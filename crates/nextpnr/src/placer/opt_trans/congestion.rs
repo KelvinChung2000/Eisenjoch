@@ -79,6 +79,7 @@ mod tests {
             raw_cell_density: 0.0,
             cell_density: 0.0,
             eff_conductance: 1.0,
+            dual_lambda: 0.0,
             pipe_type: PipeType::InterTile(Direction::East),
         }
     }
