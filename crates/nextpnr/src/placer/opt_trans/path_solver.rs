@@ -173,6 +173,17 @@ pub struct PathSolverWorkspace {
     /// full graph.
     pub(crate) edge_load: Vec<f64>,
     pub(crate) edge_touched: Vec<usize>,
+    /// Running total of every net this workspace has solved since the last
+    /// drain, one slot per pipe.
+    ///
+    /// Deliberately DENSE. Emitting each net's usage as sparse `(pipe, flow)`
+    /// pairs and collecting them all before merging costs
+    /// `O(sum over nets of touched pipes)`, which on FPGA01 (105k nets,
+    /// ~10k settled nodes per net) is tens of GB and gets the process
+    /// OOM-killed. Accumulating in place instead is `O(n_pipes)` per
+    /// workspace, and workspaces are pooled, so the whole solve is bounded by
+    /// concurrency rather than by total work.
+    pub(crate) usage_accum: Vec<f64>,
 
     /// Dijkstra settle order (nodes pushed as they are popped with a fresh
     /// min). Already in dist order.
@@ -255,6 +266,24 @@ impl WorkspacePool {
         }
     }
 
+    /// Sum every pooled workspace's accumulated edge usage into `out`, zeroing
+    /// the workspaces so the next solve starts clean.
+    ///
+    /// Call this only after the parallel section has finished: guards return
+    /// their workspace to the pool on drop, so until then some totals are
+    /// still checked out and would be missed.
+    pub(crate) fn drain_usage_into(&self, out: &mut [f64]) {
+        let mut free = self.free.lock().expect("workspace pool mutex poisoned");
+        for ws in free.iter_mut() {
+            for (slot, total) in out.iter_mut().zip(ws.usage_accum.iter_mut()) {
+                if *total != 0.0 {
+                    *slot += *total;
+                    *total = 0.0;
+                }
+            }
+        }
+    }
+
     /// Take a workspace out of the pool, growing it if every one is in use.
     /// The guard puts it back when dropped.
     pub(crate) fn checkout(&self) -> WorkspaceGuard<'_> {
@@ -313,6 +342,7 @@ impl PathSolverWorkspace {
             node_load: vec![0.0; n_nodes],
             edge_load: vec![0.0; n_pipes],
             edge_touched: Vec::with_capacity(1024),
+            usage_accum: vec![0.0; n_pipes],
             settle_order: Vec::with_capacity(1024),
             touched_nodes: Vec::with_capacity(1024),
             in_corridor: vec![false; n_nodes],
@@ -437,6 +467,17 @@ impl PathSolverWorkspace {
         out.reserve(self.edge_touched.len());
         for &pipe in &self.edge_touched {
             out.push((pipe as u32, self.edge_load[pipe]));
+        }
+    }
+
+    /// Fold the current net's edge usage into this workspace's running total.
+    ///
+    /// Touches only the pipes this net used, so the per-net cost still scales
+    /// with the net's corridor, while the memory held between nets stays at
+    /// one dense array instead of growing with every net solved.
+    pub(crate) fn accumulate_edge_usage(&mut self) {
+        for &pipe in &self.edge_touched {
+            self.usage_accum[pipe] += self.edge_load[pipe];
         }
     }
 }
