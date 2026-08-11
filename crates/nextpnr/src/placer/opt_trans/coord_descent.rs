@@ -5003,11 +5003,32 @@ pub fn run_inner_outer(
             let mut n_active = 0usize;
             let mut max_lambda = 0.0f64;
             let mut sum_lambda = 0.0f64;
+            // Sign of the aggregate capacity balance, on the pipe network the
+            // field is actually built from. The spreading solve is a
+            // Laplacian, which annihilates the DC mode, so it can only
+            // redistribute `usage - capacity` and never lower its mean; its
+            // fixed point is a UNIFORM imbalance, which puts every pipe over
+            // capacity whenever that mean is positive. Whether we are in that
+            // regime is a property of the design, so measure it here instead
+            // of inferring it from the H/V-grid congestion estimator, which is
+            // a different instrument on a different grid.
+            let mut excess_total = 0.0f64;
+            let mut slack_total = 0.0f64;
+            let mut cap_total = 0.0f64;
+            let mut n_capped = 0usize;
             for pipe in network.pipes.iter_mut() {
                 if pipe.capacity <= 0.0 {
                     continue;
                 }
-                let violation = (pipe.net_count - pipe.capacity) / pipe.capacity;
+                let raw = pipe.net_count - pipe.capacity;
+                if raw > 0.0 {
+                    excess_total += raw;
+                } else {
+                    slack_total += -raw;
+                }
+                cap_total += pipe.capacity;
+                n_capped += 1;
+                let violation = raw / pipe.capacity;
                 let next = decay * pipe.dual_lambda + step * violation;
                 pipe.dual_lambda = next.max(0.0);
                 if pipe.dual_lambda > 0.0 {
@@ -5019,13 +5040,29 @@ pub fn run_inner_outer(
                 }
             }
             eprintln!(
-                "    dual_ascent[outer={}]: active_pipes={} max_lambda={:.4} mean_lambda={:.4} step={:.3} decay={:.3}",
+                "    dual_ascent[outer={}]: active_pipes={}/{} max_lambda={:.4} mean_lambda={:.4} step={:.3} decay={:.3}",
                 outer,
                 n_active,
+                n_capped,
                 max_lambda,
                 if n_active > 0 { sum_lambda / n_active as f64 } else { 0.0 },
                 step,
                 decay,
+            );
+            // net_balance > 0 means no redistribution can reach feasibility:
+            // the chip needs less total demand, not a different arrangement.
+            eprintln!(
+                "    cap_balance[outer={}]: excess_total={:.1} slack_total={:.1} net_balance={:.1} cap_total={:.1} mean_util={:.3}",
+                outer,
+                excess_total,
+                slack_total,
+                excess_total - slack_total,
+                cap_total,
+                if cap_total > 0.0 {
+                    (cap_total + excess_total - slack_total) / cap_total
+                } else {
+                    0.0
+                },
             );
         }
 
