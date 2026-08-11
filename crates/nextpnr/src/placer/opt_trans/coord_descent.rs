@@ -2667,6 +2667,47 @@ fn refresh_dist_row(
     }
 }
 
+/// Exact cost of the nets this cell DRIVES, if the cell sat at `node`.
+///
+/// `evaluate_cell_at` cannot compute this and does not try: every `dist_cache`
+/// row is anchored at its net's driver, so moving the driver invalidates the
+/// whole row. Here the driver pin is moved and the net re-solved instead --
+/// one Dijkstra per driven net per candidate. That is far too expensive for
+/// the sweep, which is why the sweep prices only the sink side; it is
+/// affordable for a sampled diagnostic.
+fn driver_side_cost(
+    node: usize,
+    cell_nets: &[(usize, usize)],
+    net_infos: &[NetInfo],
+    network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
+    ws: &mut PathSolverWorkspace,
+    scratch: &mut FxHashMap<u32, f32>,
+) -> f64 {
+    let mut cost = 0.0;
+    for &(net_idx, pin_idx) in cell_nets {
+        let info = &net_infos[net_idx];
+        if !info.pins[pin_idx].is_driver {
+            continue;
+        }
+        let mut moved = info.clone();
+        moved.pins[pin_idx].node = node;
+        refresh_dist_row(scratch, &moved, network, ws);
+        let weight = net_path_weight(info, cfg);
+        for pin in moved.pins.iter().filter(|p| !p.is_driver) {
+            let d = scratch
+                .get(&(pin.node as u32))
+                .copied()
+                .unwrap_or(f32::INFINITY) as f64;
+            if !d.is_finite() {
+                return f64::INFINITY;
+            }
+            cost += weight * d;
+        }
+    }
+    cost
+}
+
 /// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): measure the cell net-adjacency coloring
 /// that colored Gauss-Seidel would use, then exit. High-fanout nets form huge
 /// cliques that blow up the chromatic number, so nets with more than
@@ -5307,6 +5348,204 @@ pub fn run_inner_outer(
                 eprintln!(
                     "    SwapProbe: tested={} improving={} ({:.1}%) avg_delta={:+.3} avg_improve={:.2} max_improve={:.2} {}",
                     n_tested, n_improve, pct, avg_delta, avg_imp, max_improve, bp,
+                );
+            }
+        }
+
+        // Driver-blindness probe: is the sweep's argmin displaced by the cost
+        // it cannot see?
+        //
+        // `evaluate_cell_at` skips `pin.is_driver`, so the argmin prices only
+        // the nets a cell SINKS on. Position A below is that argmin -- where
+        // the sweep just put this cell. Position B is the Manhattan median of
+        // ALL its pin neighbours, driven sinks included. Both are scored on
+        // the full objective, with the driven nets priced EXACTLY: the driver
+        // pin moves to the candidate and the net is re-solved, because a
+        // driver-anchored dist_cache row cannot price its own driver moving.
+        //
+        // B is a crude guess, so a win for B is a LOWER bound on what the
+        // sink-only argmin gives up. Splitting that win into sink and driver
+        // halves is the point: A wins the sink half by construction, and the
+        // question is whether the driver half more than pays it back.
+        if let Some(n_probe) = std::env::var("NPNR_OT_DRIVER_PROBE")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if n_probe > 0 && n >= 1 {
+                let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+                let mut scratch: FxHashMap<u32, f32> = FxHashMap::default();
+                let width = network.width as usize;
+
+                let mut rng_state = cfg
+                    .seed
+                    .wrapping_add(outer as u64)
+                    .wrapping_add(0xD1B5_4A32_D192_ED03);
+                if rng_state == 0 {
+                    rng_state = 1;
+                }
+                let mut xs = || -> u64 {
+                    let mut x = rng_state;
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    rng_state = x;
+                    x
+                };
+
+                let mut n_tested = 0usize;
+                let mut n_better = 0usize;
+                let mut n_invalid_b = 0usize;
+                let mut n_sink_worse = 0usize;
+                let mut n_sink_worse_total_better = 0usize;
+                let mut sum_d_sink = 0.0f64;
+                let mut sum_d_drv = 0.0f64;
+                let mut sum_d_total = 0.0f64;
+                let mut sum_rel_gain = 0.0f64;
+
+                for _ in 0..n_probe {
+                    let i = (xs() as usize) % n;
+                    let nets_i = &post_cell_net_map.map[i];
+                    if nets_i.is_empty() {
+                        continue;
+                    }
+                    // Nothing is unpriced for a cell that drives nothing.
+                    if !nets_i
+                        .iter()
+                        .any(|&(ni, pi)| post_net_infos[ni].pins[pi].is_driver)
+                    {
+                        continue;
+                    }
+
+                    let xa = network.tile_to_net(cell_x[i]).round() as i32;
+                    let ya = network.tile_to_net(cell_y[i]).round() as i32;
+
+                    // Manhattan median over every pin neighbour, both roles.
+                    let mut nx: Vec<f64> = Vec::new();
+                    let mut ny: Vec<f64> = Vec::new();
+                    for &(ni, pi) in nets_i {
+                        let info = &post_net_infos[ni];
+                        if info.pins[pi].is_driver {
+                            for p in info.pins.iter().filter(|p| !p.is_driver) {
+                                nx.push((p.node % width) as f64);
+                                ny.push((p.node / width) as f64);
+                            }
+                        } else if let Some(src) = source_node(info) {
+                            nx.push((src % width) as f64);
+                            ny.push((src / width) as f64);
+                        }
+                    }
+                    if nx.is_empty() {
+                        continue;
+                    }
+                    nx.sort_by(|a, b| a.partial_cmp(b).expect("finite coords"));
+                    ny.sort_by(|a, b| a.partial_cmp(b).expect("finite coords"));
+                    let xb = nx[nx.len() / 2] as i32;
+                    let yb = ny[ny.len() / 2] as i32;
+                    if (xb, yb) == (xa, ya) {
+                        n_tested += 1;
+                        continue;
+                    }
+
+                    let sink_a = evaluate_cell_at(
+                        i,
+                        xa,
+                        ya,
+                        nets_i,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    let sink_b = evaluate_cell_at(
+                        i,
+                        xb,
+                        yb,
+                        nets_i,
+                        &post_net_infos,
+                        &dist_cache,
+                        network,
+                        cfg,
+                        validity,
+                    );
+                    if !sink_a.is_finite() {
+                        continue;
+                    }
+                    if !sink_b.is_finite() {
+                        // B is off-type for this cell, so the comparison would
+                        // be vacuous. Count it rather than drop it silently.
+                        n_invalid_b += 1;
+                        continue;
+                    }
+
+                    let drv_a = driver_side_cost(
+                        coord_to_node(network, xa, ya),
+                        nets_i,
+                        &post_net_infos,
+                        network,
+                        cfg,
+                        &mut ws,
+                        &mut scratch,
+                    );
+                    let drv_b = driver_side_cost(
+                        coord_to_node(network, xb, yb),
+                        nets_i,
+                        &post_net_infos,
+                        network,
+                        cfg,
+                        &mut ws,
+                        &mut scratch,
+                    );
+                    if !(drv_a.is_finite() && drv_b.is_finite()) {
+                        continue;
+                    }
+
+                    let d_sink = sink_b - sink_a;
+                    let d_drv = drv_b - drv_a;
+                    let d_total = d_sink + d_drv;
+                    n_tested += 1;
+                    sum_d_sink += d_sink;
+                    sum_d_drv += d_drv;
+                    sum_d_total += d_total;
+                    if d_total < -1e-9 {
+                        n_better += 1;
+                        sum_rel_gain += -d_total / (sink_a + drv_a).abs().max(1e-9);
+                    }
+                    // The unambiguous case. A is only guaranteed to beat B on
+                    // the priced half when d_sink > 0 -- the sweep is damped by
+                    // the theta anneal and gated on capacity, so A is not
+                    // exactly the sink-only argmin. Restricting to d_sink > 0
+                    // isolates cells where the sweep's choice looks RIGHT on
+                    // everything it can see and is still wrong overall.
+                    if d_sink > 1e-9 {
+                        n_sink_worse += 1;
+                        if d_total < -1e-9 {
+                            n_sink_worse_total_better += 1;
+                        }
+                    }
+                }
+
+                let tf = n_tested.max(1) as f64;
+                eprintln!(
+                    "    DriverProbe[outer={}]: tested={} better_at_full_median={} ({:.1}%) \
+                     invalid_b={} avg_d_sink={:+.3} avg_d_driver={:+.3} avg_d_total={:+.3} \
+                     avg_rel_gain={:.4} sink_worse={} of_those_total_better={} ({:.1}%)",
+                    outer,
+                    n_tested,
+                    n_better,
+                    100.0 * n_better as f64 / tf,
+                    n_invalid_b,
+                    sum_d_sink / tf,
+                    sum_d_drv / tf,
+                    sum_d_total / tf,
+                    if n_better > 0 {
+                        sum_rel_gain / n_better as f64
+                    } else {
+                        0.0
+                    },
+                    n_sink_worse,
+                    n_sink_worse_total_better,
+                    100.0 * n_sink_worse_total_better as f64 / n_sink_worse.max(1) as f64,
                 );
             }
         }
