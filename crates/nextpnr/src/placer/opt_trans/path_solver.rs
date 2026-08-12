@@ -11,39 +11,6 @@ use super::network::{Pipe, PipeNetwork, DIST_SCALE};
 
 pub(crate) const LOGIT_THETA: f64 = 0.25;
 
-/// Read-once switch for union booking, set via `NPNR_OT_UNION_BOOK=1`.
-///
-/// The Dial backward pass accumulates every sink's demand along shared
-/// predecessor edges, so a fanout-F net books ~F units of usage on the trunk
-/// pipes near its driver. Real routing books ONE wire there however many
-/// sinks the trunk feeds. That gap is what produces the measured 57-247x
-/// pipe oversubscription on a network that is ~87% empty on average.
-///
-/// Union booking clamps a single net's contribution to one pipe at one wire,
-/// which is the physical truth. It changes only what gets BOOKED; the energy
-/// stays the per-sink star so the two effects can be attributed separately.
-#[inline]
-pub(crate) fn union_book() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("NPNR_OT_UNION_BOOK")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
-/// Per-net contribution of `pipe`, after any union clamp.
-#[inline(always)]
-fn published_load(edge_load: &[f64], pipe: usize, clamp: bool) -> f64 {
-    let load = edge_load[pipe];
-    if clamp {
-        load.min(1.0)
-    } else {
-        load
-    }
-}
-
 /// Pick a chunk size that gives Rayon ~8 chunks per worker thread for
 /// work-stealing without spawning thousands of fold-init allocations.
 /// Each fold init pays a `vec![0.0; n_pipes]` (~20 MB on FPGA01), so on
@@ -498,9 +465,8 @@ impl PathSolverWorkspace {
     /// `begin_net` clears `edge_load` / `edge_touched` before the retry.
     pub(crate) fn drain_edge_usage(&self, out: &mut Vec<(u32, f64)>) {
         out.reserve(self.edge_touched.len());
-        let clamp = union_book();
         for &pipe in &self.edge_touched {
-            out.push((pipe as u32, published_load(&self.edge_load, pipe, clamp)));
+            out.push((pipe as u32, self.edge_load[pipe]));
         }
     }
 
@@ -510,9 +476,8 @@ impl PathSolverWorkspace {
     /// with the net's corridor, while the memory held between nets stays at
     /// one dense array instead of growing with every net solved.
     pub(crate) fn accumulate_edge_usage(&mut self) {
-        let clamp = union_book();
         for &pipe in &self.edge_touched {
-            self.usage_accum[pipe] += published_load(&self.edge_load, pipe, clamp);
+            self.usage_accum[pipe] += self.edge_load[pipe];
         }
     }
 }
@@ -905,9 +870,8 @@ fn evaluate_net_path(
 
     ws.begin_net();
     let result = dial_logit_load(network, source_node, &sink_demands, ws, true);
-    let clamp = union_book();
     for &pipe in &ws.edge_touched {
-        local.edge_usage[pipe] += published_load(&ws.edge_load, pipe, clamp);
+        local.edge_usage[pipe] += ws.edge_load[pipe];
     }
 
     local.stats.total_solves += 1;
@@ -1869,42 +1833,4 @@ mod tests {
     // 2026-05-06 that capped DistCache). The "unreachable sink → missing
     // demand" behaviour is already covered by
     // `dial_reports_unreachable_sink_demand`.
-
-    /// `(per_net_load, clamped, unclamped)`. The loads above 1.0 are what a
-    /// trunk pipe accumulates when the Dial backward pass sums every sink's
-    /// demand: a fanout-32 net books ~32 wires on a pipe that physically
-    /// carries one.
-    #[test]
-    fn union_clamp_books_one_wire_per_net_per_pipe() {
-        let cases: [(f64, f64, f64); 5] = [
-            (0.0, 0.0, 0.0),
-            (0.4, 0.4, 0.4),
-            (1.0, 1.0, 1.0),
-            (7.0, 1.0, 7.0),
-            (32.0, 1.0, 32.0),
-        ];
-        for (load, clamped, unclamped) in cases {
-            let edge_load = [load];
-            assert_eq!(
-                published_load(&edge_load, 0, true),
-                clamped,
-                "load={load} under union booking"
-            );
-            assert_eq!(
-                published_load(&edge_load, 0, false),
-                unclamped,
-                "load={load} without union booking"
-            );
-        }
-    }
-
-    /// The clamp is off unless `NPNR_OT_UNION_BOOK` is set, so every existing
-    /// arm keeps its recorded behaviour. Asserted against the env directly
-    /// because `union_book()` latches process-globally.
-    #[test]
-    fn union_booking_defaults_off() {
-        if std::env::var("NPNR_OT_UNION_BOOK").is_err() {
-            assert!(!union_book());
-        }
-    }
 }
