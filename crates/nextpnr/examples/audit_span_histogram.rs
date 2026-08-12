@@ -111,7 +111,9 @@ fn main() {
         db.num_tile_types()
     );
 
-    // Richest (tile_type, shape) representative, exactly as production does.
+    // Least-clipped (tile_type, shape) representative, exactly as production
+    // does. Scoring by distinct-key count instead prefers edge tiles once long
+    // wires exist: their truncated spans add keys an interior tile lacks.
     let mut seen: FxHashMap<(i32, i32), i32> = FxHashMap::default();
     for tile in 0..db.num_tiles() {
         let tt = db.tile_type_index(tile);
@@ -121,22 +123,21 @@ fn main() {
         seen.entry((tt, db.tile_shape_index(tile))).or_insert(tile);
     }
     let num_tt = db.num_tile_types();
-    let mut best: Vec<Option<(i32, usize)>> = vec![None; num_tt];
+    let mut best: Vec<Option<(i32, f64)>> = vec![None; num_tt];
     for ((tt_idx, _sh), tile) in &seen {
         let tt = db.tile_type_by_index(*tt_idx);
-        let mut distinct: FxHashMap<(i32, i32), ()> = FxHashMap::default();
+        let mut total_reach = 0.0f64;
         for wire_idx in 0..tt.wires.len() {
             if let Some(offs) = node_deltas(&db, *tile, wire_idx) {
-                if let Some(k) = max_reach_key(&offs) {
-                    distinct.insert(k, ());
+                for ((dx, dy), share) in reach_contributions(&offs) {
+                    total_reach += share * (dx.abs() + dy.abs()) as f64;
                 }
             }
         }
-        let n = distinct.len();
         let slot = &mut best[*tt_idx as usize];
         match slot {
-            Some((_, bn)) if *bn >= n => {}
-            _ => *slot = Some((*tile, n)),
+            Some((_, b)) if *b >= total_reach => {}
+            _ => *slot = Some((*tile, total_reach)),
         }
     }
 

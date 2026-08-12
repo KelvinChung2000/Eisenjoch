@@ -1147,8 +1147,14 @@ fn is_clock_ladder_wire(name: &str) -> bool {
 /// resources.
 ///
 /// Per-tile-type representative picker: for each tile type, pick the shape
-/// with the most distinct non-zero reach keys (typically an interior shape
-/// rather than a chip-boundary corner with missing neighbours).
+/// with the greatest total reach, which is the least edge-clipped one.
+///
+/// Counting distinct reach keys instead is actively wrong once the device has
+/// long wires: a tile within one long-wire span of the die edge has its span-12
+/// nodes truncated to span-7, -9, -10..., so it reports MORE distinct keys than
+/// an interior tile and wins the comparison. The histogram then carries phantom
+/// span classes and only half the real span-12 capacity. Total reach is maximal
+/// exactly when nothing is clipped.
 fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     let num_tt = chipdb.num_tile_types();
     let num_tiles = chipdb.num_tiles();
@@ -1209,10 +1215,9 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     };
 
     // Enumerate all unique (tile_type, tile_shape) combinations and pick the
-    // richest shape per tile type. "Richest" = highest count of distinct
-    // non-zero reach keys across all non-internal wires in that shape. This
-    // avoids the single-representative bug where a corner tile with no east
-    // neighbours dropped all horizontal connectivity.
+    // least-clipped shape per tile type, scored by total reach: the sum over
+    // every non-internal wire of its booked share times that share's Manhattan
+    // reach. An interior tile clips nothing, so it maximises this.
     let mut seen: FxHashMap<(i32, i32), i32> = FxHashMap::default();
     for tile in 0..num_tiles {
         let tt = chipdb.tile_type_index(tile);
@@ -1223,20 +1228,19 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
         seen.entry((tt, sh)).or_insert(tile);
     }
 
-    let mut best_shape_per_tt: Vec<Option<(i32, usize)>> = vec![None; num_tt];
+    let mut best_shape_per_tt: Vec<Option<(i32, f64)>> = vec![None; num_tt];
     for ((tt_idx, _sh_idx), tile) in &seen {
         let tt = chipdb.tile_type_by_index(*tt_idx);
-        let mut distinct: FxHashMap<(i32, i32), ()> = FxHashMap::default();
+        let mut total_reach = 0.0f64;
         for wire_idx in 0..tt.wires.len() {
-            for (key, _) in wire_reach(*tile, wire_idx) {
-                distinct.insert(key, ());
+            for ((dx, dy), share) in wire_reach(*tile, wire_idx) {
+                total_reach += share * (dx.abs() + dy.abs()) as f64;
             }
         }
-        let n = distinct.len();
         let slot = &mut best_shape_per_tt[*tt_idx as usize];
         match slot {
-            Some((_, best_n)) if *best_n >= n => {}
-            _ => *slot = Some((*tile, n)),
+            Some((_, best)) if *best >= total_reach => {}
+            _ => *slot = Some((*tile, total_reach)),
         }
     }
 

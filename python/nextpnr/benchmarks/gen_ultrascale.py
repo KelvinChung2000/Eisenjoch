@@ -59,22 +59,43 @@ BRAM_DATA_WIDTH = 36
 
 N_IO_PER_TILE = 64
 
-# Switch matrix sizing.
-WL_DEFAULT = 96  # SLICE pin count dominates; ~96 wires is enough fan-in/out
-WL_SLIM = 32    # NULL / sparse tiles get a slimmer matrix to keep db size down
+# Intra-tile switch hub. These wires carry no node: they are the tile-local
+# crossbar that span wires and BEL pins connect through, matching the role of
+# the real INT tile's INT_NODE_* resources.
+SWITCH_NODES = 208
 SI = 6
 SQ = 6
 
-DIRS = [
-    ("N", 0, -1),
-    ("NE", 1, -1),
-    ("E", 1, 0),
-    ("SE", 1, 1),
-    ("S", 0, 1),
-    ("SW", -1, 1),
-    ("W", -1, 0),
-    ("NW", -1, -1),
-]
+# Inter-tile span wires, measured from a real UltraScale INT tile: xcvu3p
+# INT_X0Y149 under Vivado 2025.2, counting "_BEG" node origins per class.
+#
+# VU095's virtexu family is not installed locally, so this is UltraScale+.
+# It shares the INT tile's EE/WW/NN/SS classes, and every vertical class
+# measured its nominal span exactly (NN04 -> 4 tiles, NN12 -> 12), which
+# validates reading the span off the wire name.
+#
+# There are no diagonal resources in the real device, and none here.
+SPAN_WIRE_COUNTS = {
+    "E": {1: 8, 2: 16, 4: 16, 12: 8},
+    "W": {1: 8, 2: 16, 4: 16, 12: 8},
+    "N": {1: 16, 2: 16, 4: 16, 12: 8},
+    "S": {1: 16, 2: 16, 4: 16, 12: 8},
+}
+DIR_DELTA = {"E": (1, 0), "W": (-1, 0), "N": (0, -1), "S": (0, 1)}
+
+# Real span wires tap EVERY intermediate tile (measured: NN04 taps at dy=0..4),
+# which is what lets a short net ride a long wire. Emitting the taps keeps each
+# node collinear, so the placer books it at max reach and prices the borrow.
+def span_wire_names(direction, length, index):
+    """(beg, [intermediate taps], end) wire names for one span wire."""
+    beg = f"{direction}{length}_BEG{index}"
+    taps = [f"{direction}{length}_T{k}_{index}" for k in range(1, length)]
+    end = f"{direction}{length}_END{index}"
+    return beg, taps, end
+
+
+def span_origin_count():
+    return sum(sum(per_len.values()) for per_len in SPAN_WIRE_COUNTS.values())
 
 
 def parse_scl_sitemap(scl_path):
@@ -102,14 +123,31 @@ def parse_scl_sitemap(scl_path):
     return X, Y, sites
 
 
-def create_switch_matrix(tt, inputs, outputs, *, wl=WL_DEFAULT, n_clk=N_CLK):
+def create_switch_matrix(tt, inputs, outputs, *, wl=SWITCH_NODES, n_clk=N_CLK):
+    """Tile-local crossbar plus the full inter-tile span wire set.
+
+    Every tile type gets the same span wires. Real UltraScale puts a full INT
+    tile beside BRAM/DSP/IO columns, so thinning the matrix in column gaps
+    would build routing walls the device does not have.
+    """
     tt.create_wire("GND", "GND", const_value="GND")
     tt.create_wire("VCC", "VCC", const_value="VCC")
     for i in range(wl):
         tt.create_wire(f"SWITCH{i}", "SWITCH")
-    for i in range(wl):
-        for d, _, _ in DIRS:
-            tt.create_wire(f"{d}{i}", f"NEIGH_{d}")
+
+    # Span wires: `drives` are node origins the hub feeds, `taps` are the
+    # intermediate and far-end wires that feed back into the hub.
+    drives, taps = [], []
+    for d, per_len in SPAN_WIRE_COUNTS.items():
+        for length, n in per_len.items():
+            for i in range(n):
+                beg, mid, end = span_wire_names(d, length, i)
+                tt.create_wire(beg, f"SPAN_{d}{length}")
+                drives.append(beg)
+                for w in mid + [end]:
+                    tt.create_wire(w, f"SPAN_{d}{length}")
+                    taps.append(w)
+
     for i, w in enumerate(inputs):
         for j in range((i % SI), wl, SI):
             tt.create_pip(f"SWITCH{j}", w, timing_class="SWINPUT")
@@ -119,10 +157,12 @@ def create_switch_matrix(tt, inputs, outputs, *, wl=WL_DEFAULT, n_clk=N_CLK):
     for i in range(wl):
         tt.create_pip("GND", f"SWITCH{i}")
         tt.create_pip("VCC", f"SWITCH{i}")
-    for i in range(wl):
-        for j, (d, _, _) in enumerate(DIRS):
-            tt.create_pip(f"{d}{(i + j) % wl}", f"SWITCH{i}", timing_class="SWNEIGH")
-            tt.create_pip(f"SWITCH{i}", f"{d}{(i + j) % wl}", timing_class="SWNEIGH")
+    for i, w in enumerate(drives):
+        for j in range((i % SQ), wl, SQ):
+            tt.create_pip(f"SWITCH{j}", w, timing_class="SWNEIGH")
+    for i, w in enumerate(taps):
+        for j in range((i % SI), wl, SI):
+            tt.create_pip(w, f"SWITCH{j}", timing_class="SWNEIGH")
     for c in range(n_clk):
         if not tt.has_wire(f"CLK{c}"):
             tt.create_wire(f"CLK{c}", "TILE_CLK")
@@ -280,7 +320,7 @@ def create_io_tiletype(chip):
 
 def create_null_tiletype(chip):
     tt = chip.create_tile_type("NULL")
-    create_switch_matrix(tt, [], [], wl=WL_SLIM)
+    create_switch_matrix(tt, [], [])
     return tt
 
 
@@ -302,36 +342,38 @@ def create_tieoff_tiletype(chip):
     vcc = tt.create_bel("VCC_DRV", "VCC_DRV", z=1)
     tt.add_bel_pin(vcc, "VCC", "VCC_DRV_OUT", PinType.OUTPUT)
 
-    create_switch_matrix(tt, [], ["GND_DRV_OUT", "VCC_DRV_OUT"], wl=WL_SLIM)
+    create_switch_matrix(tt, [], ["GND_DRV_OUT", "VCC_DRV_OUT"])
     return tt
 
 
 def create_nodes(chip, X, Y, layout):
-    """Tile-to-tile neighbor wires + clock distribution ladders.
+    """Inter-tile span wires + clock distribution ladders.
 
     `layout[(x, y)]` is the tile-type name at that grid cell. Caller fills
-    every cell (NULL for gaps).
+    every cell (NULL for gaps). Every tile type carries the same span wires,
+    so there is no per-type width to reconcile.
+
+    Each span wire is one node running from its origin tile to the tile `length`
+    away, tapping every tile in between. A node truncated by the die edge is
+    still emitted, shorter; one reduced to a single wire is dropped.
     """
-
-    def wl_of(tile_type):
-        return WL_SLIM if tile_type in ("NULL", "TIEOFF") else WL_DEFAULT
-
     for y in range(Y):
         for x in range(X):
-            ty_here = layout[(x, y)]
-            wl_here = wl_of(ty_here)
-            for i in range(wl_here):
-                node = [NodeWire(x, y, f"SWITCH{i}")]
-                for d, dx, dy in DIRS:
-                    nx, ny = x - dx, y - dy
-                    if not (0 <= nx < X and 0 <= ny < Y):
-                        continue
-                    wl_there = wl_of(layout[(nx, ny)])
-                    if i >= wl_there:
-                        continue
-                    node.append(NodeWire(nx, ny, f"{d}{i}"))
-                if len(node) > 1:
-                    chip.add_node(node)
+            for d, per_len in SPAN_WIRE_COUNTS.items():
+                dx, dy = DIR_DELTA[d]
+                for length, n in per_len.items():
+                    for i in range(n):
+                        beg, mid, end = span_wire_names(d, length, i)
+                        node = [NodeWire(x, y, beg)]
+                        for k in range(1, length + 1):
+                            nx, ny = x + k * dx, y + k * dy
+                            if not (0 <= nx < X and 0 <= ny < Y):
+                                break
+                            node.append(
+                                NodeWire(nx, ny, end if k == length else mid[k - 1])
+                            )
+                        if len(node) > 1:
+                            chip.add_node(node)
 
             # Clock distribution: simple top-to-bottom ladder per column.
             for c in range(N_CLK):
@@ -435,8 +477,13 @@ def main():
             layout[(x, y)] = ty
 
     # Replace one NULL slot with a TIEOFF tile to host GND_DRV/VCC_DRV BELs.
-    tieoff_xy = next(
-        ((x, y) for (x, y), ty in layout.items() if ty == "NULL"), None
+    # Pick the NULL slot nearest the die centre: a corner slot has every long
+    # wire truncated, which shows up as a bogus capacity histogram for the
+    # one-and-only tile of this type.
+    tieoff_xy = min(
+        ((x, y) for (x, y), ty in layout.items() if ty == "NULL"),
+        key=lambda xy: abs(xy[0] - X // 2) + abs(xy[1] - Y // 2),
+        default=None,
     )
     if tieoff_xy is None:
         raise RuntimeError("No NULL slot available to host TIEOFF tile")
@@ -446,6 +493,13 @@ def main():
     for (x, y), ty in layout.items():
         chip.set_tile_type(x, y, ty)
 
+    per_dir = {d: sum(v.values()) for d, v in SPAN_WIRE_COUNTS.items()}
+    print(
+        f"Routing budget: {span_origin_count()} node origins/tile "
+        f"(E={per_dir['E']} W={per_dir['W']} N={per_dir['N']} S={per_dir['S']}), "
+        f"spans {sorted({length for v in SPAN_WIRE_COUNTS.values() for length in v})}, "
+        f"hub={SWITCH_NODES}"
+    )
     print("Building nodes...")
     create_nodes(chip, X, Y, layout)
     print("Setting timings...")
