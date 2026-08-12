@@ -4239,6 +4239,54 @@ pub fn run_inner_outer(
                 hops
             }
 
+            /// Cost of a MONOTONE straight walk from `src` to `dst`, priced at
+            /// the current `R_eff`. At each node take the neighbour with the
+            /// best cost-per-tile-of-progress that never moves away on either
+            /// axis -- O(degree) per hop, no search, no heap. This is the
+            /// closed-form competitor: comparing it to the Dijkstra label
+            /// isolates what the SEARCH buys from what BPR pricing buys, which
+            /// a tiles-vs-cost ratio cannot separate once pipes saturate.
+            fn straight_cost(network: &PipeNetwork, src: usize, dst: usize) -> Option<f64> {
+                let adj = &network.flat_adjacency;
+                let (tx, ty) = (network.nodes[dst].tile_x, network.nodes[dst].tile_y);
+                let mut cur = src;
+                let mut total = 0.0f64;
+                for _ in 0..1024 {
+                    let (cx, cy) = (network.nodes[cur].tile_x, network.nodes[cur].tile_y);
+                    let rem = (tx - cx).abs() + (ty - cy).abs();
+                    if rem == 0 {
+                        return Some(total);
+                    }
+                    let (s, e) = (
+                        adj.offsets[cur] as usize,
+                        adj.offsets[cur + 1] as usize,
+                    );
+                    let mut best: Option<(f64, f64, usize)> = None;
+                    for k in s..e {
+                        let nb = adj.neighbors[k] as usize;
+                        let (nx, ny) = (network.nodes[nb].tile_x, network.nodes[nb].tile_y);
+                        if (tx - nx).abs() > (tx - cx).abs()
+                            || (ty - ny).abs() > (ty - cy).abs()
+                        {
+                            continue;
+                        }
+                        let prog = rem - ((tx - nx).abs() + (ty - ny).abs());
+                        if prog <= 0 {
+                            continue;
+                        }
+                        let cost = adj.cost_f[k] as f64;
+                        let rate = cost / prog as f64;
+                        if best.map_or(true, |(br, _, _)| rate < br) {
+                            best = Some((rate, cost, nb));
+                        }
+                    }
+                    let (_, cost, nb) = best?;
+                    total += cost;
+                    cur = nb;
+                }
+                None
+            }
+
             let mut n_valid = 0usize;
             let mut sum_hpwl = 0.0f64;
             let mut sum_star = 0.0f64;
@@ -4248,6 +4296,9 @@ pub fn run_inner_outer(
             let mut n_ratio_lt02 = 0usize;
             let mut sum_manh = 0.0f64;
             let mut sum_hops = 0.0f64;
+            let mut sum_straight = 0.0f64;
+            let mut n_straight_fail = 0usize;
+            let mut n_search_wins = 0usize;
             let mut n_detour_gt5pct = 0usize;
             let mut n_detour_gt25pct = 0usize;
             let mut ratios: Vec<(f64, usize, f64, f64, u32)> = Vec::new();
@@ -4284,11 +4335,13 @@ pub fn run_inner_outer(
                 // per-hop switch-matrix term or via a genuine detour around
                 // congestion -- which is exactly what we need to size before
                 // replacing the path solve with a closed form.
-                let driver_xy = info.pins.iter().find(|p| p.is_driver).map(|p| {
-                    let n = &network.nodes[p.node];
+                let driver_node = info.pins.iter().find(|p| p.is_driver).map(|p| p.node);
+                let driver_xy = driver_node.map(|nd| {
+                    let n = &network.nodes[nd];
                     (n.tile_x, n.tile_y)
                 });
                 let mut star = 0.0f64;
+                let mut straight = 0.0f64;
                 let mut manh = 0.0f64;
                 let mut hops = 0u32;
                 let mut ok = true;
@@ -4310,6 +4363,12 @@ pub fn run_inner_outer(
                         manh += (dx + dy) as f64;
                         hops += greedy_span_hops(dx) + greedy_span_hops(dy);
                     }
+                    if let Some(dn) = driver_node {
+                        match straight_cost(network, dn, pin.node) {
+                            Some(c) => straight += c,
+                            None => n_straight_fail += 1,
+                        }
+                    }
                 }
                 if !ok || fanout == 0 {
                     continue;
@@ -4319,6 +4378,10 @@ pub fn run_inner_outer(
                 sum_star += star;
                 sum_manh += manh;
                 sum_hops += hops as f64;
+                sum_straight += straight;
+                if straight > star * 1.05 {
+                    n_search_wins += 1;
+                }
                 if manh > 0.5 {
                     let dr = star / manh;
                     if dr > 1.05 {
@@ -4377,6 +4440,18 @@ pub fn run_inner_outer(
                 n_detour_gt5pct,
                 n_detour_gt25pct,
                 n_valid,
+            );
+            // The decisive ratio. `straight` is priced at the SAME R_eff as
+            // `star`, so straight/star == 1.000 means the search found nothing
+            // a monotone greedy walk missed, at any congestion level.
+            eprintln!(
+                "    SearchValue_check: sum_straight={:.0} sum_star={:.0} straight/star={:.4} search_wins>5%={} of {} nets (walk_fail={})",
+                sum_straight,
+                sum_star,
+                if sum_star > 0.0 { sum_straight / sum_star } else { 0.0 },
+                n_search_wins,
+                n_valid,
+                n_straight_fail,
             );
             ratios.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             let n_show = ratios.len().min(10);
