@@ -4224,6 +4224,21 @@ pub fn run_inner_outer(
         // update pin.node, so running this after the sweep compares stale
         // dist_cache entries against post-sweep pin positions — meaningless.
         if std::env::var("NPNR_OT_HPWL_CHECK").ok().as_deref() == Some("1") {
+            /// Hops a greedy longest-first decomposition needs to cover `d`
+            /// tiles. Assumes the UltraScale span set {12,4,2,1}; this is a
+            /// diagnostic only, so it is not read from the chipdb.
+            fn greedy_span_hops(d: i32) -> u32 {
+                let mut left = d;
+                let mut hops = 0u32;
+                for span in [12, 4, 2, 1] {
+                    while left >= span {
+                        left -= span;
+                        hops += 1;
+                    }
+                }
+                hops
+            }
+
             let mut n_valid = 0usize;
             let mut sum_hpwl = 0.0f64;
             let mut sum_star = 0.0f64;
@@ -4231,6 +4246,10 @@ pub fn run_inner_outer(
             let mut n_ratio_gt5 = 0usize;
             let mut n_ratio_lt05 = 0usize;
             let mut n_ratio_lt02 = 0usize;
+            let mut sum_manh = 0.0f64;
+            let mut sum_hops = 0.0f64;
+            let mut n_detour_gt5pct = 0usize;
+            let mut n_detour_gt25pct = 0usize;
             let mut ratios: Vec<(f64, usize, f64, f64, u32)> = Vec::new();
             for (net_idx, info) in net_infos.iter().enumerate() {
                 if info.pins.is_empty() {
@@ -4258,7 +4277,20 @@ pub fn run_inner_outer(
                     }
                 }
                 let hpwl = (mxx - mnx) as f64 + (mxy - mny) as f64;
+                // Closed-form control for the Dijkstra: the same star sum priced
+                // as pure Manhattan, plus the hop count a greedy span
+                // decomposition would need. At exp=1.0 wire cost is
+                // span-invariant, so `star` can only exceed `manh` via the
+                // per-hop switch-matrix term or via a genuine detour around
+                // congestion -- which is exactly what we need to size before
+                // replacing the path solve with a closed form.
+                let driver_xy = info.pins.iter().find(|p| p.is_driver).map(|p| {
+                    let n = &network.nodes[p.node];
+                    (n.tile_x, n.tile_y)
+                });
                 let mut star = 0.0f64;
+                let mut manh = 0.0f64;
+                let mut hops = 0u32;
                 let mut ok = true;
                 let mut fanout = 0u32;
                 for pin in &info.pins {
@@ -4272,6 +4304,12 @@ pub fn run_inner_outer(
                         break;
                     }
                     star += d;
+                    if let Some((sx, sy)) = driver_xy {
+                        let n = &network.nodes[pin.node];
+                        let (dx, dy) = ((n.tile_x - sx).abs(), (n.tile_y - sy).abs());
+                        manh += (dx + dy) as f64;
+                        hops += greedy_span_hops(dx) + greedy_span_hops(dy);
+                    }
                 }
                 if !ok || fanout == 0 {
                     continue;
@@ -4279,6 +4317,17 @@ pub fn run_inner_outer(
                 n_valid += 1;
                 sum_hpwl += hpwl;
                 sum_star += star;
+                sum_manh += manh;
+                sum_hops += hops as f64;
+                if manh > 0.5 {
+                    let dr = star / manh;
+                    if dr > 1.05 {
+                        n_detour_gt5pct += 1;
+                    }
+                    if dr > 1.25 {
+                        n_detour_gt25pct += 1;
+                    }
+                }
                 if star > 0.5 {
                     let r = hpwl / star;
                     if r > 2.0 {
@@ -4315,6 +4364,19 @@ pub fn run_inner_outer(
                 "    HPWL_check (pre-sweep): n_valid={} sum_hpwl={:.0} sum_star={:.0} global_ratio={:.3} mean_hpwl={:.1} mean_star={:.1}  hpwl/star buckets: >5x={} >2x={} <0.5x={} <0.2x={}",
                 n_valid, sum_hpwl, sum_star, global_ratio, mean_hpwl, mean_star,
                 n_ratio_gt5, n_ratio_gt2, n_ratio_lt05, n_ratio_lt02,
+            );
+            // Closed-form control. `star/manh` is the entire value the Dijkstra
+            // adds over an O(1) Manhattan lookup: 1.000 means the search is
+            // recomputing a number we already know.
+            eprintln!(
+                "    ClosedForm_check: sum_manh={:.0} star/manh={:.4} sum_hops={:.0} hops/sink={:.2} detour>5%={} detour>25%={} (of {} nets)",
+                sum_manh,
+                if sum_manh > 0.0 { sum_star / sum_manh } else { 0.0 },
+                sum_hops,
+                if n_valid > 0 { sum_hops / n_valid as f64 } else { 0.0 },
+                n_detour_gt5pct,
+                n_detour_gt25pct,
+                n_valid,
             );
             ratios.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             let n_show = ratios.len().min(10);
