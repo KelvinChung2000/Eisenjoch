@@ -14,7 +14,7 @@ use rustc_hash::FxHashMap;
 use crate::chipdb::{port_key, span_bucket_of, Side, TileLocalWs, TileTypeTemplate};
 
 use super::network::{PipeNetwork, DIST_SCALE};
-use super::resistance::{bpr_alpha, bpr_beta, ResistanceModel};
+use super::resistance::{bpr_alpha, bpr_beta, bpr_cap, bpr_multiplier, ResistanceModel};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TileSpanCostKey {
@@ -309,8 +309,14 @@ pub fn compute_switch_matrix_costs(
     // at most 1 net in an idealised switch), so the saturation ratio equals
     // tile_usage_q itself. Cap at 1024 to avoid integer overflow on the α·u^β
     // scale factor; in practice tile_usage on sv3 stays well below that.
+    //
+    // This is the SECOND congestion channel: because the synthetic capacity is
+    // 1, the ratio here is raw tile usage, so it saturates far harder than the
+    // pipe-level BPR (usage/capacity, capacity 16-32). `NPNR_OT_BPR_CAP` has to
+    // bound both or the pipe cap is cosmetic -- `total_cost = wire + sm` and the
+    // sm half would carry the explosion on its own.
     let usage = tile_usage_q.min(1024) as f64;
-    let scale = 1.0 + bpr_alpha() * usage.powf(bpr_beta());
+    let scale = bpr_multiplier(bpr_alpha(), usage, bpr_beta(), bpr_cap());
     let scaled_pip_cost =
         ((template.pip_base_cost as f64 * scale).round() as u32).max(template.pip_base_cost);
 
