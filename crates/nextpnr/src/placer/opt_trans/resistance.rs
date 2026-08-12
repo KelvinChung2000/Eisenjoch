@@ -53,6 +53,28 @@ pub(crate) fn bpr_beta() -> f64 {
     })
 }
 
+/// Read-once upper bound on the BPR multiplier `(1 + alpha * ratio^beta)`,
+/// set via `NPNR_OT_BPR_CAP`. Unset means unbounded, which is the historical
+/// behaviour.
+///
+/// Why a cap and not a gentler slope: measured on FPGA01, 22% of pipes price
+/// at >=100x base and the congestion term reaches 3.2e12 against a 4.0e6
+/// wirelength term -- `cong_share = 100.0%`. Reshaping the curve via alpha or
+/// beta still leaves the tail unbounded, so the descent keeps optimising
+/// congestion alone and wirelength stays invisible. Bounding the multiplier
+/// is what puts the two terms back on comparable scales.
+#[inline]
+pub(crate) fn bpr_cap() -> f64 {
+    static CAP: OnceLock<f64> = OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("NPNR_OT_BPR_CAP")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .map(|v| v.max(1.0))
+            .unwrap_or(f64::INFINITY)
+    })
+}
+
 #[cfg(test)]
 pub(crate) const BPR_ALPHA: f64 = BPR_ALPHA_DEFAULT;
 #[cfg(test)]
@@ -86,6 +108,15 @@ pub(crate) fn borrow_slack(span: i32) -> f64 {
     }
 }
 
+/// BPR multiplier `min(1 + alpha * ratio^beta, cap)`.
+///
+/// Split out from `effective_resistance` so the cap behaviour is testable
+/// without touching the process-global env readers.
+#[inline(always)]
+pub(crate) fn bpr_multiplier(alpha: f64, ratio: f64, beta: f64, cap: f64) -> f64 {
+    (1.0 + alpha * ratio.powf(beta)).min(cap)
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct ResistanceModel;
 
@@ -107,7 +138,7 @@ impl ResistanceModel {
         // and becomes a per-pipe price that keeps rising while the constraint
         // is violated.
         let alpha = bpr_alpha() + pipe.dual_lambda;
-        base * (1.0 + alpha * ratio.powf(bpr_beta()))
+        base * bpr_multiplier(alpha, ratio, bpr_beta(), bpr_cap())
     }
 }
 
@@ -233,5 +264,42 @@ mod tests {
         let model = ResistanceModel;
         let r = model.effective_resistance(&pipe_with_span(0, 6, 10.0, 10.0));
         assert!((r - (1.0 + BPR_ALPHA)).abs() < 1e-12);
+    }
+
+    /// `(ratio, cap, expected)` at alpha=0.05 / beta=4. The uncapped cases
+    /// pin the curve; the capped ones pin the bound. Ratios 57 and 247 are
+    /// the measured FPGA01 max_util at convergence and mid-run.
+    #[test]
+    fn bpr_multiplier_saturates_at_cap() {
+        let cases: [(f64, f64, f64); 6] = [
+            // Below the knee the cap is inactive.
+            (0.5, f64::INFINITY, 1.0 + 0.05 * 0.5f64.powi(4)),
+            (0.5, 10.0, 1.0 + 0.05 * 0.5f64.powi(4)),
+            // At capacity, still far under any sane cap.
+            (1.0, 10.0, 1.05),
+            // Measured oversubscription: uncapped explodes, capped binds.
+            (57.0, f64::INFINITY, 1.0 + 0.05 * 57f64.powi(4)),
+            (57.0, 10.0, 10.0),
+            (247.0, 10.0, 10.0),
+        ];
+        for (ratio, cap, expected) in cases {
+            let got = bpr_multiplier(0.05, ratio, 4.0, cap);
+            assert!(
+                (got - expected).abs() < 1e-9 * expected.max(1.0),
+                "ratio={ratio} cap={cap}: got {got}, want {expected}"
+            );
+        }
+    }
+
+    /// A cap must never raise a price, and must never fall below 1.0 (a pipe
+    /// can cost its base resistance, never less).
+    #[test]
+    fn bpr_cap_only_ever_lowers_the_multiplier() {
+        for ratio in [0.0, 0.25, 1.0, 4.0, 57.0, 247.0] {
+            let uncapped = bpr_multiplier(0.05, ratio, 4.0, f64::INFINITY);
+            let capped = bpr_multiplier(0.05, ratio, 4.0, 10.0);
+            assert!(capped <= uncapped, "ratio={ratio}: cap raised the price");
+            assert!(capped >= 1.0, "ratio={ratio}: capped below base");
+        }
     }
 }
