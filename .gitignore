@@ -35,3 +35,4 @@ build
 !demo/blinky.json
 *.so
 perf.data*
+/target-diag
