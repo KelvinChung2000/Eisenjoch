@@ -16,8 +16,9 @@
 //! hook gets, and eisenjoch's chipdb is himbaechel-derived.
 
 use crate::chipdb::{BelId, Loc, WireId};
+use crate::common::IdString;
 use crate::netlist::{CellId, CellPin, NetId};
-use crate::timing::DelayT;
+use crate::timing::{DelayT, TimingPortClass};
 
 use super::Context;
 
@@ -156,6 +157,54 @@ impl Context {
         // Kept in step with `context::timing`'s DELAY_SCALE so placement-time
         // and routing-time estimates agree.
         ((sx - dx).abs() + (sy - dy).abs()) * 10
+    }
+
+    /// `getPortTimingClass` -- the timing role of a cell port.
+    ///
+    /// nextpnr also hands back a clock-argument count; no caller in the ported
+    /// placers uses it, so it is omitted. Ports with no timing data, or on a
+    /// chipdb with no speed grade loaded, come back `Ignore` -- which is what
+    /// `get_net_metric` needs to skip untimed nets rather than cost them at
+    /// zero slack.
+    pub fn port_timing_class(&self, cell: CellId, port: IdString) -> TimingPortClass {
+        let Some(speed_grade) = self.speed_grade() else {
+            return TimingPortClass::Ignore;
+        };
+        let info = self.design.cell(cell);
+        let Some(port_info) = info.ports.get(&port) else {
+            return TimingPortClass::Ignore;
+        };
+        let type_idx = info
+            .timing_index
+            .map(|ti| ti.0 as usize)
+            .or_else(|| {
+                self.chipdb()
+                    .cell_timing_index(speed_grade, info.cell_type.index())
+            });
+        let Some(type_idx) = type_idx else {
+            return TimingPortClass::Ignore;
+        };
+        self.chipdb()
+            .port_timing_class(speed_grade, type_idx, port.index(), port_info.port_type)
+    }
+
+    /// `setting<bool>` -- read a boolean run setting, defaulting to false.
+    ///
+    /// Settings arrive as `Property`, which has no native boolean, so an
+    /// integer is truthy when non-zero and a string when it reads "1", "true"
+    /// or "yes".
+    pub fn setting_bool(&self, name: &str) -> bool {
+        let key = self.id(name);
+        let Some(prop) = self.settings().get(&key) else {
+            return false;
+        };
+        if let Some(v) = prop.as_int() {
+            return v != 0;
+        }
+        matches!(
+            prop.as_str().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
     }
 
     // -----------------------------------------------------------------------

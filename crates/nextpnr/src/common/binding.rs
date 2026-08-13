@@ -3,7 +3,11 @@ use std::fmt;
 /// Strength of a cell's placement constraint.
 ///
 /// Higher values indicate stronger constraints that are harder to override.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+///
+/// Ordered because nextpnr's placers compare strengths directly
+/// (`belStrength >= STRENGTH_STRONG`) to decide what may be ripped up, so the
+/// ordering is part of the API rather than incidental.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 #[repr(u8)]
 pub enum PlaceStrength {
     /// No placement constraint.
