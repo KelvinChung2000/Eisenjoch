@@ -749,11 +749,15 @@ fn test_netnames_rename_nets() {
 }
 
 // =========================================================================
-// Hidden net name test
+// Net label selection (nextpnr `prefer_netlabel`)
 // =========================================================================
 
+/// `hide_name` is written by nextpnr's JSON backend but never read by its
+/// frontend, so a hidden label is still a name. Skipping them would discard
+/// every `$abc$...`/`$auto$...` net and substitute a synthetic `$signal$N`,
+/// which breaks any cross-tool comparison keyed on net names.
 #[test]
-fn test_hidden_netnames_not_applied() {
+fn test_hidden_netnames_are_still_applied() {
     let json = r#"{
         "modules": {
             "top": {
@@ -776,11 +780,73 @@ fn test_hidden_netnames_not_applied() {
     let pool = make_pool();
     let design = parse_json(json, &pool).unwrap();
 
-    // The hidden name should not be applied
     let hidden_id = pool.intern("$internal_wire");
     assert!(
-        design.net_by_name(hidden_id).is_none(),
-        "Hidden net name should not be in lookup"
+        design.net_by_name(hidden_id).is_some(),
+        "a hide_name label is still the net's name, as in nextpnr"
+    );
+}
+
+/// With several labels on one net, the primary name follows nextpnr's
+/// `prefer_netlabel`: top-level ports first, then fewer `$`, then fewer `.`,
+/// then alphabetical -- not whichever label was visited last.
+#[test]
+fn test_aliased_net_prefers_the_cleanest_label() {
+    let json = r#"{
+        "modules": {
+            "top": {
+                "attributes": { "top": "00000000000000000000000000000001" },
+                "parameter_default_values": {},
+                "ports": {
+                    "a": { "direction": "input", "bits": [2] }
+                },
+                "cells": {},
+                "netnames": {
+                    "$abc$1$xyz":   { "hide_name": 1, "bits": [2], "attributes": {} },
+                    "clean_label":  { "hide_name": 0, "bits": [2], "attributes": {} },
+                    "dotted.label": { "hide_name": 0, "bits": [2], "attributes": {} }
+                }
+            }
+        }
+    }"#;
+    let pool = make_pool();
+    let design = parse_json(json, &pool).unwrap();
+
+    assert!(
+        design.net_by_name(pool.intern("clean_label")).is_some(),
+        "fewest $ then fewest . wins, so 'clean_label' beats '$abc$1$xyz' and 'dotted.label'"
+    );
+    assert!(
+        design.net_by_name(pool.intern("$abc$1$xyz")).is_none(),
+        "a net has exactly one primary name"
+    );
+}
+
+/// A top-level port name outranks every other label, even a cleaner-looking one.
+#[test]
+fn test_toplevel_port_label_wins() {
+    let json = r#"{
+        "modules": {
+            "top": {
+                "attributes": { "top": "00000000000000000000000000000001" },
+                "parameter_default_values": {},
+                "ports": {
+                    "a": { "direction": "input", "bits": [2] }
+                },
+                "cells": {},
+                "netnames": {
+                    "a":    { "hide_name": 0, "bits": [2], "attributes": {} },
+                    "aaaa": { "hide_name": 0, "bits": [2], "attributes": {} }
+                }
+            }
+        }
+    }"#;
+    let pool = make_pool();
+    let design = parse_json(json, &pool).unwrap();
+
+    assert!(
+        design.net_by_name(pool.intern("a")).is_some(),
+        "the top-level port label 'a' outranks 'aaaa'"
     );
 }
 

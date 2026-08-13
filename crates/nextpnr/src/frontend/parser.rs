@@ -121,9 +121,15 @@ fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Res
         }
     }
 
-    // Step 5: Apply net names from the "netnames" section.
+    // Step 5: Apply net names from the "netnames" section. Top-level port names
+    // outrank every other label for a net, so collect them first.
     if let Some(netnames) = module.get("netnames").and_then(|n| n.as_object()) {
-        apply_net_names(netnames, design, pool, &bit_to_net)?;
+        let top_ports: rustc_hash::FxHashSet<String> = module
+            .get("ports")
+            .and_then(|p| p.as_object())
+            .map(|ports| ports.keys().cloned().collect())
+            .unwrap_or_default();
+        apply_net_names(netnames, design, pool, &bit_to_net, &top_ports)?;
     }
 
     Ok(())

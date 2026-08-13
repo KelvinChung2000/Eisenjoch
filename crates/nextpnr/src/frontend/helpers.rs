@@ -3,7 +3,7 @@
 use crate::common::IdString;
 use crate::netlist::{CellId, Design, NetId, PortType, Property};
 use anyhow::{bail, Context, Result};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 
 /// A bit value in a Yosys JSON connection or port bits array.
@@ -238,28 +238,59 @@ pub fn connect_port_to_net(
     Ok(())
 }
 
+/// Is `a` the better primary name for a net than `b`?
+///
+/// Faithful port of `prefer_netlabel` in nextpnr `frontend/frontend_base.h`
+/// (upstream YosysHQ `main` @ `4d235150`):
+///
+/// - top-level ports always win
+/// - then fewer `$`
+/// - then fewer `.`
+/// - then alphabetical
+///
+/// `top_ports` holds the *bus* names from the JSON `ports` section, matching
+/// nextpnr's `port_to_bus` lookup: a per-bit label like `din[5]` therefore only
+/// hits this check on single-bit ports. That quirk is reproduced deliberately.
+fn prefer_netlabel(a: &str, b: &str, top_ports: &FxHashSet<String>) -> bool {
+    if top_ports.contains(a) {
+        return true;
+    }
+    if top_ports.contains(b) {
+        return false;
+    }
+    if b.is_empty() {
+        return true;
+    }
+
+    let (a_dollars, b_dollars) = (a.matches('$').count(), b.matches('$').count());
+    if a_dollars != b_dollars {
+        return a_dollars < b_dollars;
+    }
+    let (a_dots, b_dots) = (a.matches('.').count(), b.matches('.').count());
+    if a_dots != b_dots {
+        return a_dots < b_dots;
+    }
+    a < b
+}
+
 /// Apply human-readable names from the `netnames` section to nets.
 ///
-/// Yosys includes a `netnames` section that maps names to bit indices. We use
-/// this to rename nets from their synthetic `$signal$N` names to the actual
-/// signal names from the HDL source.
+/// Every label is a candidate, including ones Yosys marks `hide_name` -- that
+/// flag is emitted by nextpnr's JSON writer but never read back by its frontend,
+/// so honouring it here would drop the majority of net names (all the
+/// `$abc$...`/`$auto$...` ones) and replace them with synthetic `$signal$N`.
+/// Where several labels alias the same net, the primary name is chosen by
+/// [`prefer_netlabel`] rather than by whichever happened to be visited last.
 pub fn apply_net_names(
     netnames: &serde_json::Map<String, Value>,
     design: &mut Design,
     pool: &crate::common::IdStringPool,
     bit_to_net: &FxHashMap<i64, NetId>,
+    top_ports: &FxHashSet<String>,
 ) -> Result<()> {
+    let mut candidates: FxHashMap<NetId, Vec<String>> = FxHashMap::default();
+
     for (net_name, nn_json) in netnames {
-        let hide_name = nn_json
-            .get("hide_name")
-            .and_then(|h| h.as_i64())
-            .unwrap_or(0);
-
-        // Only apply names that are not hidden (hide_name == 0)
-        if hide_name != 0 {
-            continue;
-        }
-
         let bits = nn_json
             .get("bits")
             .and_then(|b| b.as_array())
@@ -270,10 +301,10 @@ pub fn apply_net_names(
         for (i, bit) in bits.iter().enumerate() {
             if let BitValue::Signal(idx) = parse_bit_value(bit)? {
                 if let Some(&net_idx) = bit_to_net.get(&idx) {
-                    let actual_name = port_bit_name(net_name, i, total_bits);
-                    let name_id = pool.intern(&actual_name);
-
-                    design.rename_net(net_idx, name_id);
+                    candidates
+                        .entry(net_idx)
+                        .or_default()
+                        .push(port_bit_name(net_name, i, total_bits));
                 }
             }
         }
@@ -293,6 +324,18 @@ pub fn apply_net_names(
                 }
             }
         }
+    }
+
+    // Pick each net's primary name once every candidate label is known.
+    for (net_idx, names) in candidates {
+        let mut best = names[0].as_str();
+        for name in &names[1..] {
+            if prefer_netlabel(name, best, top_ports) {
+                best = name;
+            }
+        }
+        let name_id = pool.intern(best);
+        design.rename_net(net_idx, name_id);
     }
 
     Ok(())

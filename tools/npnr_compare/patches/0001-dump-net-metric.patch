@@ -1,0 +1,45 @@
+common/kernel/command.cc --- 1/3 --- Text (8 C++ parse errors, exceeded DFT_PARSE_ERROR_LIMIT)
+ 39  39 #include "command.h"
+ 40  40 #include "design_utils.h"
+ 41  41 #include "json_frontend.h"
+ ..  42 #include "place_common.h"
+ 42  43 #include "jsonwrite.h"
+ 43  44 #include "log.h"
+ 44  45 #include "timing.h"
+
+common/kernel/command.cc --- 2/3 --- Text (8 C++ parse errors, exceeded DFT_PARSE_ERROR_LIMIT)
+364 365     general.add_options()("no-tmdriv", "disable timing-driven placement");
+365 366     general.add_options()("sdc", po::value<std::string>(), "Generic timing constraints SDC file to load");
+366 367     general.add_options()("sdf", po::value<std::string>(), "SDF delay back-annotation file to write");
+... 368     general.add_options()("dump-net-metric", po::value<std::string>(),
+... 369                           "write per-net get_net_metric(WIRELENGTH) values for baseline comparison");
+367 370     general.add_options()("sdf-cvc", "enable tweaks for SDF file compatibility with the CVC simulator");
+368 371     general.add_options()("no-print-critical-path-source",
+369 372                           "disable printing of the line numbers associated with each net in the critical path");
+
+common/kernel/command.cc --- 3/3 --- Text (8 C++ parse errors, exceeded DFT_PARSE_ERROR_LIMIT)
+683 686             log_error("Saving design failed.\n");
+684 687     }
+685 688 
+... 689     if (vm.count("dump-net-metric")) {
+... 690         // Emit nextpnr's OWN get_net_metric for every net, so an external
+... 691         // implementation can be checked against this exact code rather than
+... 692         // against a reimplementation of it.
+... 693         std::string filename = vm["dump-net-metric"].as<std::string>();
+... 694         std::ofstream df(filename);
+... 695         wirelen_t total = 0;
+... 696         for (auto &net : ctx->nets) {
+... 697             float tns = 0;
+... 698             wirelen_t wl = get_net_metric(ctx.get(), net.second.get(), MetricType::WIRELENGTH, tns);
+... 699             df << net.first.c_str(ctx.get()) << "\t" << wl << "\n";
+... 700             total += wl;
+... 701         }
+... 702         df << "# total\t" << total << "\n";
+... 703         log_info("Wrote %d net metrics to %s (total wirelength %d)\n", int(ctx->nets.size()),
+... 704                  filename.c_str(), int(total));
+... 705     }
+... 706 
+686 707     if (vm.count("sdf")) {
+687 708         std::string filename = vm["sdf"].as<std::string>();
+688 709         auto f = open_ofstream_and_log_error(filename, "SDF file");
+
