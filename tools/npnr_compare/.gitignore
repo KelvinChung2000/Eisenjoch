@@ -1,2 +1,3 @@
-out/*.bba
-out/*.json
+# Regeneration scratch; the fixtures the test reads are published to
+# crates/nextpnr/tests/fixtures/npnr_baseline/ by regen.sh.
+out/
