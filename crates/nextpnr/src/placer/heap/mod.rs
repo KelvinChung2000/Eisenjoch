@@ -13,6 +13,7 @@
 pub mod algorithm;
 pub mod analytical;
 pub mod config;
+pub mod equation_system;
 pub mod legalize;
 pub mod spreading;
 pub mod state;
