@@ -1,0 +1,3 @@
+# Fixtures for the nextpnr baseline comparison; the repo-wide *.json rule
+# would otherwise drop the placed design the test reads.
+!*.json
