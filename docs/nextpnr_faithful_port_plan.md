@@ -125,3 +125,32 @@ harness that runs baseline vs `opt_trans`/`raster` on the same netlists.
 ## Total
 
 ~11,300 lines of C++ across 13 files.
+
+## Progress
+
+Branch `npnr-faithful-port`.
+
+- [x] **Reference pinned** — upstream `4d235150`, with the fork's local HeAP
+      work explicitly excluded. (`68441d8`)
+- [x] **RNG** — `deterministic_rng.h` → `context/rng.rs`, byte-exact against a
+      golden trace from the real C++. 12 tests. (`c2d3362`)
+- [x] **Arch-API shim** — `context/arch_api.rs`, 15 nextpnr-named calls the
+      ports need. **FastBels** — `placer/fast_bels.rs`. (`5a0e106`)
+- [x] **place_common** — wirelength model, constraint legaliser,
+      `IncreasingDiameterSearch` golden-tested. 6 tests. (`97fdc8c`)
+- [ ] `placer_heap.cc` → `placer/heap/`
+- [ ] `placer_static.cc` + `static_util.h` → `placer/static/`
+- [ ] `router2.cc` → `router/router2/`
+- [ ] `router1.cc` → `router/router1/`
+- [ ] `placer1.cc` → `placer/placer1/`
+- [ ] Phase 3: `detail_place_core`, `parallel_refine`, `timing_opt`
+- [ ] Phase 4: integration, trait wiring, comparison harness
+
+Phase 1 is done: 778 tests pass across 26 targets. Two failures in
+`tests/context` (`estimate_delay_adjacent`, `estimate_delay_diagonal`) are
+pre-existing, verified on the parent commit, and unrelated to this work.
+`tests/router2_tests` does not compile, also pre-existing (`Router2Cfg` field
+drift) — it will be rewritten with the router2 port anyway.
+
+The five Phase 2 modules are independent of each other now that Phase 1 has
+landed, so they can be worked in parallel worktrees if wanted.
