@@ -8,6 +8,7 @@
 //!
 //! All placer, router, and timing code operates through the `Context`.
 
+mod arch_api;
 mod buckets;
 mod core;
 mod definition;
@@ -17,6 +18,7 @@ mod storage;
 mod timing;
 mod views;
 
+pub use arch_api::BoundingBox;
 pub use crate::metrics::{ResourceRow, UtilizationReport};
 pub use definition::Context;
 pub use rng::DeterministicRng;
