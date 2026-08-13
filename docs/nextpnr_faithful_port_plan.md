@@ -156,3 +156,20 @@ drift) — it will be rewritten with the router2 port anyway.
 
 The five Phase 2 modules are independent of each other now that Phase 1 has
 landed, so they can be worked in parallel worktrees if wanted.
+
+### Notes for whoever picks up heap
+
+- `placer/heap/` is currently **hybrid**: `equation_system.rs` is a faithful
+  port, every other file is the old sketch. The commit that ports the placer
+  body must delete the sketch *and* its `heap_tests` / `heap_internal_tests`
+  (31 tests) in the same change — those test the sketch, not the port.
+- `Context::bels_by_tile` allocates a fresh `Vec` per call, and
+  `bel_by_location` sits on top of it. nextpnr's equivalent is array-indexed.
+  HeAP's strict legalisation pass hammers both in inner loops, so this wants a
+  cached or iterator-based form before the heap body lands — it is a
+  performance issue only, not a correctness one.
+- The golden-trace recipe is the thing to reuse: write a small C++ harness that
+  embeds the nextpnr code verbatim, dump reference values as hex floats, commit
+  harness and output together as fixtures. Three components are pinned this way
+  so far (RNG, `IncreasingDiameterSearch`, `EquationSystem`), and it has already
+  caught behaviour a plausible-looking reimplementation would have lost.
