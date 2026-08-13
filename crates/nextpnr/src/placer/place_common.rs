@@ -29,7 +29,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::chipdb::{BelId, Loc};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::{CellId, NetId};
+use crate::netlist::{CellId, NetId, Property};
 use crate::placer::fast_bels::FastBels;
 use crate::placer::PlacerError;
 use crate::timing::TimingPortClass;
@@ -82,7 +82,7 @@ pub fn get_net_metric(
         return 0;
     }
 
-    let timing_driven = ctx.setting_bool("timing_driven")
+    let timing_driven = ctx.timing_driven()
         && metric_type == MetricType::Cost
         && ctx.port_timing_class(driver_cell, net_info.driver.port) != TimingPortClass::Ignore;
 
@@ -566,8 +566,14 @@ impl ConstraintLegaliseWorker {
     fn place_single_cell(&mut self, ctx: &mut Context, start: CellId) -> bool {
         let mut current = Some(start);
 
+        // Declared outside the chain loop, exactly as in the C++: the search
+        // window persists as the displacement chain ripples, so each displaced
+        // cell starts from the width its predecessor had to widen to. Resetting
+        // it per link would change both the RNG draw count and where ripped
+        // cells land.
+        let mut diameter = 1;
+
         while let Some(cell) = current {
-            let mut diameter = 1;
             if let Some(bel) = ctx.design.cell(cell).bel {
                 ctx.unbind_bel(bel);
             }
@@ -694,6 +700,15 @@ impl ConstraintLegaliseWorker {
                 ctx.bind_bel(best, cell, PlaceStrength::Weak),
                 "best BEL was just freed but the bind failed"
             );
+
+            // nextpnr back-annotates the chosen BEL onto the cell so a later
+            // re-read of the design reproduces this placement.
+            let bel_name = ctx.chipdb().bel_name(best).to_owned();
+            let bel_attr = ctx.id("BEL");
+            ctx.design
+                .cell_mut(cell)
+                .attrs
+                .insert(bel_attr, Property::string(bel_name));
 
             // Follow the chain: whoever we displaced is placed next.
             current = displaced;

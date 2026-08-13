@@ -194,9 +194,19 @@ impl Context {
     /// integer is truthy when non-zero and a string when it reads "1", "true"
     /// or "yes".
     pub fn setting_bool(&self, name: &str) -> bool {
+        self.setting_bool_or(name, false)
+    }
+
+    /// `setting<bool>` with an explicit default for an absent key.
+    ///
+    /// nextpnr seeds several settings in `command.cc` before the placers run,
+    /// so "absent" there does not mean "false". Callers that mirror one of
+    /// those settings must pass nextpnr's seeded value as the default -- see
+    /// [`Self::timing_driven`].
+    pub fn setting_bool_or(&self, name: &str, default: bool) -> bool {
         let key = self.id(name);
         let Some(prop) = self.settings().get(&key) else {
-            return false;
+            return default;
         };
         if let Some(v) = prop.as_int() {
             return v != 0;
@@ -205,6 +215,18 @@ impl Context {
             prop.as_str().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes"
         )
+    }
+
+    /// The `timing_driven` setting, defaulting to **true**.
+    ///
+    /// nextpnr's `command.cc` seeds `timing_driven = true` unless `--no-tmdriv`
+    /// was passed (upstream `4d235150`, `command.cc:537`), so a real nextpnr run
+    /// is timing-driven by default. Reading the raw setting and defaulting to
+    /// false would quietly make the baseline pure-HPWL and bias every
+    /// comparison against it.
+    #[inline]
+    pub fn timing_driven(&self) -> bool {
+        self.setting_bool_or("timing_driven", true)
     }
 
     // -----------------------------------------------------------------------
@@ -251,24 +273,36 @@ impl Context {
         self.design.cell(cluster).cluster.unwrap_or(cluster)
     }
 
-    /// `getClusterPlacement` -- where every member of `cluster` would land if
-    /// its root sat on `root_bel`.
+    /// `BaseArch::getClusterPlacement` -- where every member of `cluster` would
+    /// land if its root sat on `root_bel`.
     ///
-    /// Returns `None` if any member has no BEL at its constrained offset, which
-    /// is nextpnr's signal that the root position is unusable. Callers rely on
-    /// that: it is how the constraint legaliser rejects a candidate location
-    /// without binding anything.
+    /// Returns `None` if any member has no BEL at its constrained offset *or*
+    /// that BEL cannot host the member's cell type. Callers rely on this: it is
+    /// how the constraint legaliser rejects a candidate root position without
+    /// binding anything. Checking only for a BEL's existence would be too
+    /// permissive and would surface as mysterious legaliser behaviour later.
     ///
-    /// `constr_abs_z` children take their z absolutely rather than relative to
-    /// the root -- that is how a cluster spans BEL slots at a fixed z within
-    /// each tile.
+    /// A root with `constr_abs_z` is first coerced onto its absolute z and
+    /// re-resolved, so the whole cluster hangs off the corrected root. Children
+    /// with `constr_abs_z` take their z absolutely rather than relative to the
+    /// root -- that is how a cluster spans fixed BEL slots within each tile.
     pub fn cluster_placement(
         &self,
         cluster: CellId,
         root_bel: BelId,
     ) -> Option<Vec<(CellId, BelId)>> {
         let root = self.cluster_root_cell(cluster);
-        let root_loc = self.chipdb().bel_loc(root_bel);
+        let root_info = self.design.cell(root);
+        let mut root_bel = root_bel;
+        let mut root_loc = self.chipdb().bel_loc(root_bel);
+
+        if root_info.constr_abs_z {
+            root_loc.z = root_info.constr_z;
+            root_bel = self.bel_by_location(root_loc)?;
+            if !self.bel(root_bel).is_valid_for_cell_type(root_info.cell_type) {
+                return None;
+            }
+        }
 
         let mut placement = vec![(root, root_bel)];
 
@@ -288,6 +322,9 @@ impl Context {
                 },
             );
             let child_bel = self.bel_by_location(want)?;
+            if !self.bel(child_bel).is_valid_for_cell_type(info.cell_type) {
+                return None;
+            }
             placement.push((child, child_bel));
         }
 
