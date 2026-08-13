@@ -138,7 +138,9 @@ Branch `npnr-faithful-port`.
       ports need. **FastBels** — `placer/fast_bels.rs`. (`5a0e106`)
 - [x] **place_common** — wirelength model, constraint legaliser,
       `IncreasingDiameterSearch` golden-tested. 6 tests. (`97fdc8c`)
-- [ ] `placer_heap.cc` → `placer/heap/`
+- [~] `placer_heap.cc` → `placer/heap/` — **`EquationSystem` + its
+      Jacobi-preconditioned CG done and verified against real Eigen** (`f00c15e`,
+      8 tests). The placer body (~2,000 lines) is not started.
 - [ ] `placer_static.cc` + `static_util.h` → `placer/static/`
 - [ ] `router2.cc` → `router/router2/`
 - [ ] `router1.cc` → `router/router1/`
