@@ -1,3 +1,4 @@
+use super::chip::ConstIdStr;
 use super::*;
 use crate::netlist::PortType;
 use crate::read_packed;
@@ -56,10 +57,14 @@ impl ChipDb {
         if index < 0 || (index as usize) >= self.constid_strs.len() {
             return None;
         }
-        self.constid_strs[index as usize].map(|ptr| unsafe {
-            let cstr = CStr::from_ptr(ptr as *const std::ffi::c_char);
-            cstr.to_str().unwrap_or("<invalid utf8>")
-        })
+        match &self.constid_strs[index as usize] {
+            ConstIdStr::Embedded(ptr) => Some(unsafe {
+                let cstr = CStr::from_ptr(*ptr as *const std::ffi::c_char);
+                cstr.to_str().unwrap_or("<invalid utf8>")
+            }),
+            ConstIdStr::Known(s) => Some(s.as_str()),
+            ConstIdStr::Missing => None,
+        }
     }
 
     pub fn extra_constids(&self) -> &[RelPtr<u8>] {

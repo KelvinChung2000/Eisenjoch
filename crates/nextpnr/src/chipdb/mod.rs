@@ -10,7 +10,7 @@ mod relptr;
 pub mod tile_template;
 
 pub use access::RegArcInfo;
-pub use chip::ChipDb;
+pub use chip::{parse_constids_inc, ChipDb};
 pub use grid::Loc;
 pub use ids::{BelId, PipId, WireId};
 pub use pod::*;
@@ -37,10 +37,10 @@ pub enum ChipDbError {
     #[error("chip database contains null required string pointer: {field}")]
     NullRequiredStringPointer { field: &'static str },
     #[error(
-        "chip database has {count} known constids without embedded strings; \
-         regenerate with known_id_count=0 to embed all strings in the binary"
+        "chip database expects {db_count} compiled-in constids but {supplied} were supplied; \
+         load with the uarch's constids.inc (or none, for a database built with known_id_count=0)"
     )]
-    MissingKnownConstids { count: i32 },
+    KnownConstidMismatch { db_count: i32, supplied: i32 },
 }
 
 #[macro_export]

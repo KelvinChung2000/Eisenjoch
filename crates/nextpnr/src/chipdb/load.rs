@@ -5,7 +5,17 @@ use memmap2::Mmap;
 use std::path::Path;
 
 impl ChipDb {
+    /// Load a database that embeds every constid string (`known_id_count = 0`).
     pub fn load(path: &Path) -> Result<Self, ChipDbError> {
+        Self::load_with_known_constids(path, &[])
+    }
+
+    /// Load a database generated for an arch whose `constids.inc` is compiled
+    /// in, which is how every stock himbaechel chipdb is built.
+    ///
+    /// `known` must be the uarch's `constids.inc` in file order -- see
+    /// [`parse_constids_inc`]. Passing an empty slice is the `load` case.
+    pub fn load_with_known_constids(path: &Path, known: &[String]) -> Result<Self, ChipDbError> {
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
@@ -42,7 +52,7 @@ impl ChipDb {
             return Err(ChipDbError::NullRequiredStringPointer { field: "uarch" });
         }
 
-        let constid_strs = unsafe { build_constid_table(chip_info)? };
+        let constid_strs = unsafe { build_constid_table(chip_info, known)? };
 
         Ok(Self {
             _mmap: mmap,
@@ -101,7 +111,7 @@ impl ChipDb {
             return Err(ChipDbError::NullRequiredStringPointer { field: "uarch" });
         }
 
-        let constid_strs = build_constid_table(chip_info)?;
+        let constid_strs = build_constid_table(chip_info, &[])?;
 
         Ok(Self {
             _mmap: mmap,
