@@ -186,11 +186,13 @@ directory's README for setup and regeneration. Three things this turned up:
    having a trailing `extra_data` RelPtr). Only `speed_grades[0]` is ever read
    and the first 28 bytes are identical, so this is currently benign — but it is
    a real latent mismatch: a database with two speed grades would misparse from
-   index 1 on. Fixing it means moving `tests/fixtures/example.bin` to upstream's
-   dbgen at the same time, since the struct cannot match both layouts. That
-   fixture is K=6/LUT6 (the stock example arch is K=4/LUT4) and 125 test
-   references depend on it, so it is a contained but non-trivial change, kept
-   separate from this work deliberately.
+   index 1 on. The struct cannot match both layouts, so `tests/fixtures/example.bin`
+   has to move to upstream's dbgen in the same commit. That is cheaper than it
+   sounds — repoint `gen_example_chipdb.py`'s `PYTHONPATH` at the upstream
+   checkout, regenerate, add the field, bump the size assertion in
+   `tests/chipdb.rs`. Keep the fixture generator's `K = 6`: it is the *dbgen
+   library* that must come from upstream, not the fabric parameters, so all 125
+   LUT6 references keep working and no K=4 migration is involved.
 
 ### Notes for whoever picks up heap
 
