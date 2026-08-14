@@ -13,11 +13,14 @@ Architecture features:
 """
 
 import argparse
+import os
 import sys
 from os import path
 
-# Point at the himbaechel dbgen library in the C++ nextpnr checkout.
-CPP_NEXTPNR = "/home/kelvin/nextpnr"
+# Point at the himbaechel dbgen library. This must be UPSTREAM nextpnr, not
+# the local fork: the fork's SpeedGradePOD lacks the trailing extra_data
+# field, so its dbgen emits 28-byte speed grades where chipdb.h wants 32.
+CPP_NEXTPNR = os.environ.get("NPNR_UPSTREAM", "/home/kelvin/nextpnr-upstream")
 sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
 

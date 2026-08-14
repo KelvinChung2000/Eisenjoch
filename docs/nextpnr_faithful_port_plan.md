@@ -182,17 +182,17 @@ directory's README for setup and regeneration. Three things this turned up:
    nets, where nextpnr has a documented one. `prefer_netlabel` is now ported
    from `frontend/frontend_base.h`, and `test_hidden_netnames_not_applied` — a
    test that pinned the divergence as if it were intended — was replaced.
-3. **`SpeedGradePod` is still on the fork's layout** (28 bytes; upstream is 32,
-   having a trailing `extra_data` RelPtr). Only `speed_grades[0]` is ever read
-   and the first 28 bytes are identical, so this is currently benign — but it is
-   a real latent mismatch: a database with two speed grades would misparse from
-   index 1 on. The struct cannot match both layouts, so `tests/fixtures/example.bin`
-   has to move to upstream's dbgen in the same commit. That is cheaper than it
-   sounds — repoint `gen_example_chipdb.py`'s `PYTHONPATH` at the upstream
-   checkout, regenerate, add the field, bump the size assertion in
-   `tests/chipdb.rs`. Keep the fixture generator's `K = 6`: it is the *dbgen
-   library* that must come from upstream, not the fabric parameters, so all 125
-   LUT6 references keep working and no K=4 migration is involved.
+3. **`SpeedGradePod` was on the fork's layout** — 28 bytes against upstream's 32.
+   **Fixed.** The trailing `extra_data` RelPtr is now present, and the header has
+   been audited struct by struct against upstream `4d235150`: that one field was
+   the *only* divergence across all 24 PODs, and it is likewise the only
+   difference between the fork's `chipdb.h` and upstream's. All three generators
+   (`tests/fixtures/gen_example_chipdb.py`, `chip_database/gen_chipdb.py`,
+   `python/nextpnr/benchmarks/gen_chipdb.py`) had been pointing at the fork's
+   dbgen, whose `chip.py` differs from upstream's by exactly the 12 lines that
+   write this field; they now resolve upstream via `$NPNR_UPSTREAM`. `example.bin`
+   was regenerated and grew by exactly 4 bytes — one speed grade, one null
+   pointer — with the fixture's `K = 6` and `known_id_count = 0` unchanged.
 
 ### Notes for whoever picks up heap
 

@@ -419,7 +419,8 @@ impl SyntheticChipDbBuilder {
 
         // SpeedGradePod: "DEFAULT" speed grade with all timing classes
         let speed_grade_offset = db.buf.len();
-        // Fields: name(4) + pip_classes(8) + node_classes(8) + cell_types(8) = 28
+        // Fields: name(4) + pip_classes(8) + node_classes(8) + cell_types(8)
+        //       + extra_data(4) = 32
         let sg_pip_field = speed_grade_offset + 4;
         let sg_node_field = speed_grade_offset + 12;
         let sg_cell_field = speed_grade_offset + 20;
@@ -428,6 +429,7 @@ impl SyntheticChipDbBuilder {
             pip_classes: Self::make_relslice(sg_pip_field, pip_timing_offset, 1),
             node_classes: Self::make_relslice(sg_node_field, node_timing_offset, 1),
             cell_types: Self::make_relslice(sg_cell_field, cell_timing_offset, 1),
+            extra_data: Self::null_relptr(),
         };
         db.append_val(&speed_grade);
 

@@ -37,7 +37,7 @@ fn pod_struct_sizes() {
     assert_eq!(mem::size_of::<CellPinRegArcPod>(), 56);
     assert_eq!(mem::size_of::<CellPinTimingPod>(), 24);
     assert_eq!(mem::size_of::<CellTimingPod>(), 12);
-    assert_eq!(mem::size_of::<SpeedGradePod>(), 28);
+    assert_eq!(mem::size_of::<SpeedGradePod>(), 32);
     assert_eq!(mem::size_of::<ConstIdDataPod>(), 12);
     assert_eq!(mem::size_of::<ChipInfoPod>(), 84);
 }

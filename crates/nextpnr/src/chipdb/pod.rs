@@ -1,6 +1,11 @@
 //! Plain Old Data (POD) struct definitions matching the nextpnr-himbaechel
 //! binary chip database format (chipdb.h, database_version = 6).
 //!
+//! Layout reference: upstream YosysHQ nextpnr `main` @ `4d235150`, not the
+//! local fork — the fork's `SpeedGradePOD` is missing its trailing
+//! `extra_data`, which is the only place the two headers disagree. Databases
+//! must be generated with upstream's `himbaechel_dbgen`.
+//!
 //! All structs are `#[repr(C, packed)]` to guarantee exact memory layout
 //! compatibility with the C++ definitions. Fields must never be reordered.
 //!
@@ -415,6 +420,8 @@ pub struct SpeedGradePod {
     pub node_classes: RelSlice<NodeTimingPod>,
     /// Cell timing entries.
     pub cell_types: RelSlice<CellTimingPod>,
+    /// Optional extra data.
+    pub extra_data: RelPtr<u8>,
 }
 
 // =============================================================================
@@ -423,12 +430,16 @@ pub struct SpeedGradePod {
 
 /// Constant ID string lookup table.
 ///
-/// Maps integer constid indices to strings via `bba_ids`.
-/// `known_id_count` must be 0 (all strings embedded in the binary).
+/// Maps integer constid indices to strings via `bba_ids`. Ids
+/// `1..known_id_count` are *not* stored in the file: C++ nextpnr compiles them
+/// in from the uarch's `constids.inc`. Supply them via
+/// [`ChipDb::load_with_known_constids`](super::ChipDb::load_with_known_constids)
+/// to read a stock vendor database; `known_id_count == 0` means the generator
+/// embedded every string.
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
 pub struct ConstIdDataPod {
-    /// Must be 0; loading rejects chipdb files with non-zero values.
+    /// Number of ids the arch compiles in ahead of `bba_ids`.
     pub known_id_count: i32,
     /// ID strings, one RelPtr per constid index.
     pub bba_ids: RelSlice<RelPtr<u8>>,
@@ -606,8 +617,8 @@ const _: () = {
     assert!(std::mem::size_of::<CellPinTimingPod>() == 24);
     // CellTimingPod: 4+8 = 12
     assert!(std::mem::size_of::<CellTimingPod>() == 12);
-    // SpeedGradePod: 4+8+8+8 = 28
-    assert!(std::mem::size_of::<SpeedGradePod>() == 28);
+    // SpeedGradePod: 4+8+8+8+4 = 32
+    assert!(std::mem::size_of::<SpeedGradePod>() == 32);
     // ConstIdDataPod: 4+8 = 12
     assert!(std::mem::size_of::<ConstIdDataPod>() == 12);
     // ChipInfoPod: 4+4+4+4+4+4+4+8+8+8+8+8+8+4+4 = 84
