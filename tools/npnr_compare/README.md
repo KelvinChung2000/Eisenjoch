@@ -44,14 +44,21 @@ The pinned reference is upstream YosysHQ nextpnr `main` @ `4d235150`.
 git -C ~/nextpnr worktree add ~/nextpnr-upstream 4d235150
 cd ~/nextpnr-upstream
 git apply /path/to/eisenjoch/tools/npnr_compare/patches/0001-dump-net-metric.patch
+git apply /path/to/eisenjoch/tools/npnr_compare/patches/0002-optional-lutff-pack.patch
 cmake -B build -DARCH=himbaechel -DHIMBAECHEL_UARCH=example \
       -DBUILD_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-The patch adds one option, `--dump-net-metric <file>`, which writes
+`0001` adds one option, `--dump-net-metric <file>`, which writes
 `<net>\t<wirelength>` per net plus a total. It only reads the design; it changes
 no placement or routing behaviour.
+
+`0002` makes the example uarch's LUT4->DFF pairing constraint optional, via
+`NPNR_NO_LUTFF_PACK=1`. Default behaviour is unchanged. It exists to answer
+"how much of the placement gap is packing?" by removing packing from the
+reference — measured answer: about −1.7%, i.e. it slightly *hurts* nextpnr's
+wirelength. See `docs/dcd_vs_nextpnr_baseline.md`.
 
 ## Regenerating
 

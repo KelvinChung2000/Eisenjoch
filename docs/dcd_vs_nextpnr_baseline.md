@@ -58,12 +58,69 @@ Splitting by whether a net touches an IO cell (20x20):
 
 81-88% of the excess is in core logic-to-logic nets, consistently across all
 three fabrics. Core wirelength alone is 5.3x nextpnr's on the 20x20 case.
+("core" here still includes the LUT->FF pairs; they are split out below.)
 
 This kills the obvious hypothesis. `lock_boundary_cells` only locks IO cells
 that are *already placed*, and nothing pre-places them here, so IO cells keep
 whatever bel the initial discrete binding gave them and DCD never moves them
 (`TypeAwarePlacement: 2 cell types` — only LUT4 and DFF). That looked like the
 answer and is not: IO placement is nearly free, the loss is in the logic core.
+
+### The loss is short-range, not global
+
+Mean wirelength per net by class, against the unpacked nextpnr baseline, with
+`mst=4 steiner=1`:
+
+| class | nets | nextpnr | opt_trans | ratio |
+|---|---|---|---|---|
+| LUT->FF pairs | 128 | 0.25 | 1.27 | 5.1x |
+| io-touching | 260 | 5.39 | 5.70 | **1.06x** |
+| other core | 301 | 1.30 | 2.50 | 1.93x |
+
+We are within 6% of HeAP on the long IO nets — the global structure of the
+placement is fine. The loss is concentrated in the short nets, and it is worst
+on the shortest class of all. This is local tightening, not global optimisation:
+DCD gets cells into roughly the right region and then fails to squeeze the last
+one or two tiles.
+
+That is consistent with legalisation being the culprit rather than DCD's solve:
+`Pre-legalization: HPWL=3711` → `Post-legalization: HPWL=4086` on a default
+20x20 run, i.e. our legaliser *adds* about 10%. HeAP's strict legalisation plus
+its detail-placement refinement is exactly the machinery we are missing.
+
+## Is it packing? Measured: no
+
+The obvious objection is that nextpnr *packs* and we do not. Its example uarch
+runs `constrain_cell_pairs(LUT4.F -> DFF.D, delta_z=1, allow_fanout=false)`,
+reporting "Constrained 128 LUTFF pairs" on the 20x20 run. That pins each DFF to
+`constr_x=0, constr_y=0, constr_z=+1` — the same tile as its LUT. Checked
+against the placement: all 128 such pairs are in the same tile, total manhattan
+distance **0**. We apply no such constraint.
+
+That looks like it should explain a lot. It does not. Disabling the constraint
+in nextpnr (`patches/0002-optional-lutff-pack.patch`, `NPNR_NO_LUTFF_PACK=1`)
+and re-placing the same netlist:
+
+| nextpnr, 20x20 W=64 | total wirelength | the 128 LUT->FF nets |
+|---|---|---|
+| with LUTFF packing | 1857 | 0 |
+| without | **1825** | **32** |
+
+Two things follow:
+
+1. **Packing is worth about −1.7% of total wirelength — it slightly *hurts*.**
+   The constraint is a restriction, so unconstrained HeAP does marginally better
+   on pure wirelength. It cannot explain a 2x gap in either direction.
+2. **HeAP co-locates LUT->FF pairs unaided.** With no constraint at all it still
+   places those 128 nets at total distance 32 (0.25 tiles average). opt_trans
+   puts them at 448 (3.5 tiles) by default, 163 (1.3 tiles) tuned. So this class
+   is measuring placement quality, exactly like every other class.
+
+Comparing against the *unpacked* nextpnr baseline, so neither side packs, the
+gap is essentially unchanged: 2.19x at default, 1.32x with MST/Steiner. Earlier
+drafts of this document reported a "packing-attributable" share of 19-31%; that
+framing was wrong and has been removed — subtracting the LUT->FF class is not a
+packing correction, because the reference does not depend on packing.
 
 ## The lever: the MST/Steiner terms are off by default
 
@@ -107,11 +164,12 @@ moves.
 ## Caveats that bound the claim
 
 1. **Legality is not verified, and this flatters opt_trans.** The example uarch
-   enforces `isBelLocationValid` → `slice_valid(x, y, z/2)` and constrains
-   LUT4→DFF pairs (`Constrained 128 LUTFF pairs` on the 20x20 run). We enforce
-   neither. nextpnr's number is a *legal* placement; ours is not known to be.
-   Treat opt_trans's wirelength as a lower bound on what it could achieve
-   legally — the true gap is at least this large, possibly larger.
+   enforces `isBelLocationValid` → `slice_valid(x, y, z/2)`. We do not.
+   nextpnr's number is a *legal* placement; ours is not known to be. Treat
+   opt_trans's wirelength as a lower bound — the true gap is at least this
+   large, possibly larger. (The LUT4→DFF pairing constraint, previously listed
+   here too, has since been measured directly and is worth −1.7%; see the
+   packing section.)
 2. **HPWL is nextpnr's objective, not opt_trans's.** DCD optimises a
    congestion-aware transport energy; the whole premise is trading wirelength
    for routability. Scoring only HPWL is biased toward nextpnr by construction.
@@ -122,18 +180,22 @@ moves.
 
 ## Next steps, in value order
 
-1. **Route both placements and compare.** Removes caveat 2 and most of caveat 1
+1. **Attack local tightening, not the global solve.** We match HeAP within 6%
+   on long nets and lose 2-5x on short ones, and our legaliser adds ~10% over
+   the pre-legalisation HPWL. A detail-placement / refinement pass is the
+   indicated fix.
+2. **Route both placements and compare.** Removes caveat 2 and most of caveat 1
    at once. Writing our placement back out as JSON with `NEXTPNR_BEL` attributes
    lets nextpnr route *both*, so the router is identical and legality is checked
    by the tool that defines it.
-2. **Validate `mst_edge_weight` on the real benchmarks** before touching
+3. **Validate `mst_edge_weight` on the real benchmarks** before touching
    defaults.
-3. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
+4. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
    config and `num_threads = 1` still disagree run to run, which makes any
    single-run opt_trans measurement untrustworthy.
-4. Denser and larger fabrics; this design is IO-bound, which capped LUT
+5. Denser and larger fabrics; this design is IO-bound, which capped LUT
    utilisation at 14% on the 20x20.
-5. Teach the placer the arch's bel-bucket and validity rules, so `INBUF`/`OUTBUF`
+6. Teach the placer the arch's bel-bucket and validity rules, so `INBUF`/`OUTBUF`
    need not be retyped to `IOB` by hand in the driver.
 
 ## Reproducing

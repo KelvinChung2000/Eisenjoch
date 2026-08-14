@@ -1,0 +1,10 @@
+himbaechel/uarch/example/example.cc --- C++
+75 75         const dict<IdString, Property> gnd_params = {{id_INIT, Property(0x0000, 16)}};
+76 76         h.replace_constants(CellTypePort(id_VCC_DRV, id_VCC), CellTypePort(id_GND_DRV, id_GND), {}, {}, id_VCC, id_GND);
+77 77         // Constrain directly connected LUTs and FFs together to use dedicated resources
+78 78         int lutffs = 0;
+.. 79         if (getenv("NPNR_NO_LUTFF_PACK") == nullptr)
+.. 80             lutffs = h.constrain_cell_pairs(pool<CellTypePort>{{id_LUT4, id_F}}, pool<CellTypePort>{{id_DFF, id_D}}, 1);
+79 81         log_info("Constrained %d LUTFF pairs.\n", lutffs);
+80 82     }
+

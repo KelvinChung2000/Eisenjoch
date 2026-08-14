@@ -83,34 +83,65 @@ fn score(ctx: &Context) -> (WirelenT, usize) {
     (total, n)
 }
 
-/// Split total wirelength by whether a net touches an IO cell.
+/// Per-class wirelength: (total, net count) for each of three classes.
+#[derive(Default, Clone, Copy)]
+struct ClassStats {
+    lutff: (WirelenT, usize),
+    io: (WirelenT, usize),
+    core: (WirelenT, usize),
+}
+
+/// Split wirelength three ways.
 ///
-/// DCD only moves cell types whose bels live on CLB tiles, so IO cells keep
-/// whatever bel the initial discrete binding handed them. If that is the gap,
-/// it shows up here as an IO-touching share far above nextpnr's.
-fn score_by_io(ctx: &Context) -> (WirelenT, WirelenT, usize, usize) {
-    let iob = ctx.id("IOB");
-    let (mut io_wl, mut core_wl, mut io_n, mut core_n) = (0, 0, 0, 0);
+/// `lutff` is the class nextpnr *packs*: `constrain_cell_pairs(LUT4.F ->
+/// DFF.D, delta_z=1, allow_fanout=false)` pins the DFF to constr_x/y=0,
+/// constr_z=+1 -- the same tile as its LUT, making those nets 0.
+///
+/// It is tempting to call the excess here "packing" and discount it. Measured,
+/// that is wrong: with the constraint disabled (patches/0002) HeAP still places
+/// these 128 nets at total distance 32, and its overall wirelength *improves*
+/// (1857 -> 1825). HeAP finds the co-location unaided, so this class measures
+/// placement quality like any other -- see docs/dcd_vs_nextpnr_baseline.md.
+///
+/// `io` is any remaining net touching an IO cell; `core` is the rest.
+fn score_by_class(ctx: &Context) -> ClassStats {
+    let (iob, lut4, dff) = (ctx.id("IOB"), ctx.id("LUT4"), ctx.id("DFF"));
+    let mut s = ClassStats::default();
     for net in ctx.nets() {
         let id = net.id();
         let info = ctx.design.net(id);
-        let touches_io = info
-            .driver()
+        let live: Vec<_> = info.users().iter().copied().filter(|p| p.cell.is_some()).collect();
+        let drv = info.driver().filter(|p| p.cell.is_some());
+
+        // Mirror constrain_cell_pairs: LUT4 output, single sink, sink is a DFF.
+        let is_lutff = drv.is_some_and(|d| ctx.design.cell(d.cell).cell_type == lut4)
+            && live.len() == 1
+            && ctx.design.cell(live[0].cell).cell_type == dff;
+        let touches_io = drv
             .into_iter()
-            .chain(info.users().iter().copied())
-            .filter(|p| p.cell.is_some())
+            .chain(live.iter().copied())
             .any(|p| ctx.design.cell(p.cell).cell_type == iob);
+
         let mut tns = 0.0f32;
         let wl = get_net_metric(ctx, id, MetricType::Wirelength, &mut tns);
-        if touches_io {
-            io_wl += wl;
-            io_n += 1;
+        let slot = if is_lutff {
+            &mut s.lutff
+        } else if touches_io {
+            &mut s.io
         } else {
-            core_wl += wl;
-            core_n += 1;
-        }
+            &mut s.core
+        };
+        slot.0 += wl;
+        slot.1 += 1;
     }
-    (io_wl, core_wl, io_n, core_n)
+    s
+}
+
+fn report_classes(label: &str, s: ClassStats) {
+    println!(
+        "               {label:<9} lutff-pair {:>6} / {:>4} nets | io {:>6} / {:>4} | core {:>6} / {:>4}",
+        s.lutff.0, s.lutff.1, s.io.0, s.io.1, s.core.0, s.core.1
+    );
 }
 
 fn bound_count(ctx: &Context) -> (usize, usize) {
@@ -162,9 +193,9 @@ fn main() {
     apply_nextpnr_placement(&mut ref_ctx);
     let (ref_wl, ref_nets) = score(&ref_ctx);
     let (rb, rt) = bound_count(&ref_ctx);
-    let (r_io, r_core, r_ion, r_coren) = score_by_io(&ref_ctx);
+    let rs = score_by_class(&ref_ctx);
     println!("nextpnr      : wirelength {ref_wl:>8}   nets {ref_nets:>5}   bound {rb}/{rt}");
-    println!("               io-touching {r_io:>6} over {r_ion:>4} nets | core {r_core:>6} over {r_coren:>4} nets");
+    report_classes("", rs);
 
     // --- Ours: opt_trans placing the same netlist from scratch ---------------
     let mut ot_ctx = load(chipdb, constids, bench);
@@ -191,13 +222,27 @@ fn main() {
             let secs = t.elapsed().as_secs_f64();
             let (wl, nets) = score(&ot_ctx);
             let (b, tot) = bound_count(&ot_ctx);
-            let (o_io, o_core, o_ion, o_coren) = score_by_io(&ot_ctx);
+            let os = score_by_class(&ot_ctx);
             println!("opt_trans    : wirelength {wl:>8}   nets {nets:>5}   bound {b}/{tot}   {secs:.1}s");
-            println!("               io-touching {o_io:>6} over {o_ion:>4} nets | core {o_core:>6} over {o_coren:>4} nets");
+            report_classes("", os);
             println!(
-                "               excess: io {:>6}  core {:>6}",
-                o_io - r_io,
-                o_core - r_core
+                "               excess:   lutff-pair {:>6} | io {:>6} | core {:>6}",
+                os.lutff.0 - rs.lutff.0,
+                os.io.0 - rs.io.0,
+                os.core.0 - rs.core.0
+            );
+            let ex_lutff = os.lutff.0 - rs.lutff.0;
+            let ex_rest = (os.io.0 - rs.io.0) + (os.core.0 - rs.core.0);
+            println!(
+                "               lutff-class share of excess: {ex_lutff} of {} ({:.0}%)",
+                ex_lutff + ex_rest,
+                100.0 * ex_lutff as f64 / (ex_lutff + ex_rest).max(1) as f64
+            );
+            println!(
+                "               excluding lutff class: ours {} vs nextpnr {} = {:.3}x",
+                wl - os.lutff.0,
+                ref_wl - rs.lutff.0,
+                (wl - os.lutff.0) as f64 / (ref_wl - rs.lutff.0).max(1) as f64
             );
             if ref_wl > 0 {
                 println!(
