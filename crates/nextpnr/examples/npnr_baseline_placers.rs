@@ -169,9 +169,23 @@ fn main() {
     // --- Ours: opt_trans placing the same netlist from scratch ---------------
     let mut ot_ctx = load(chipdb, constids, bench);
     let t = Instant::now();
+    let envf = |k: &str, d: f64| -> f64 {
+        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+    };
+    let envu = |k: &str, d: usize| -> usize {
+        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+    };
     let mut cfg = OptTransPlacerCfg::default();
-    cfg.max_outer_iters = 50;
     cfg.num_threads = 8;
+    cfg.max_outer_iters = envu("OT_ITERS", 50);
+    cfg.dcd_iters_per_cell = envu("OT_DCD_ITERS", cfg.dcd_iters_per_cell);
+    cfg.steiner_weight = envf("OT_STEINER", cfg.steiner_weight);
+    cfg.mst_edge_weight = envf("OT_MST", cfg.mst_edge_weight);
+    cfg.seed = envu("OT_SEED", cfg.seed as usize) as u64;
+    eprintln!(
+        "  cfg: iters={} dcd_iters={} steiner={} mst={} seed={}",
+        cfg.max_outer_iters, cfg.dcd_iters_per_cell, cfg.steiner_weight, cfg.mst_edge_weight, cfg.seed
+    );
     match place_opt_trans(&mut ot_ctx, &cfg) {
         Ok(()) => {
             let secs = t.elapsed().as_secs_f64();
