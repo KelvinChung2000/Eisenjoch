@@ -91,8 +91,33 @@ impl Context {
         // thousand of those slots. The sparse maps start empty and grow
         // one entry at a time as binds arrive.
 
+        // nextpnr has a single global IdString space, and the chipdb's strings
+        // occupy their own file indices in it (that is what `known_id_count`
+        // is for). Ids stored *inside* the database -- cell timing
+        // `type_variant`, timing pin names -- are indices into that space, so a
+        // pool that starts empty and interns design names first produces
+        // IdStrings that silently miss every such lookup. Seeding in file order
+        // makes a pool IdString usable directly as a database key.
+        let id_pool = IdStringPool::new();
+        for i in 1..chipdb.num_constids() {
+            // A null entry still consumes an id; give it a placeholder so the
+            // rest of the table does not shift.
+            let name = chipdb
+                .constid_str(i as i32)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("$unnamed_constid_{i}$"));
+            let id = id_pool.intern(&name);
+            assert_eq!(
+                id.index(),
+                i as i32,
+                "chipdb constid table is not a dense ordered list: entry {i} ({name:?}) \
+                 interned as {}, so pool ids no longer match database ids",
+                id.index(),
+            );
+        }
+
         Self {
-            id_pool: IdStringPool::new(),
+            id_pool,
             chipdb,
             design: Design::new(),
             bel_to_cell,

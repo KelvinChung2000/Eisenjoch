@@ -1,0 +1,20 @@
+diff --git a/common/place/placer_heap.cc b/common/place/placer_heap.cc
+index 191c273c..3b07c8c1 100644
+--- a/common/place/placer_heap.cc
++++ b/common/place/placer_heap.cc
+@@ -397,6 +397,15 @@ class HeAPPlacer
+         ctx->check();
+         lock.unlock();
+ 
++        // Skip the post-legalisation refinement pass, so the placement written
++        // out is HeAP's own output. Lets an external placer be compared against
++        // the analytical stage alone, and gives a refiner under test a known
++        // input with a known target. Default behaviour is unchanged.
++        if (getenv("NPNR_NO_REFINE") != nullptr && std::string(getenv("NPNR_NO_REFINE")) == "1") {
++            log_info("Skipping SA refinement (NPNR_NO_REFINE=1).\n");
++            return true;
++        }
++
+ #if !defined(NPNR_DISABLE_THREADS)
+         if (cfg.parallelRefine) {
+             if (!parallel_refine(ctx, ParallelRefineCfg(ctx))) {

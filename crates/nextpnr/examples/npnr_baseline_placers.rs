@@ -299,19 +299,47 @@ fn bound_count(ctx: &Context) -> (usize, usize) {
 }
 
 /// Rebuild nextpnr's placement from the `NEXTPNR_BEL` attributes.
+///
+/// Port of `BaseCtx::attributesToArchInfo` (`basectx.cc:218`): the strength
+/// comes from `BEL_STRENGTH`, defaulting to `USER` when the attribute is
+/// absent. Binding everything at one strength instead loses the distinction
+/// nextpnr wrote down -- on this benchmark every cell is `WEAK` except the
+/// clock buffer at `USER`, and flattening that makes the pinned clock buffer
+/// look movable. Moving it strands the `GCLK_OUT` pip, which exists in exactly
+/// one tile, and the clock stops routing.
 fn apply_nextpnr_placement(ctx: &mut Context) {
     let by_name = bel_name_map(ctx);
     let bel_attr = ctx.id("NEXTPNR_BEL");
+    let strength_attr = ctx.id("BEL_STRENGTH");
     let bindings: Vec<_> = ctx
         .design
         .iter_cell_indices()
         .filter_map(|c| {
-            let name = ctx.design.cell(c).attrs.get(&bel_attr)?.as_str();
-            Some((*by_name.get(&name)?, c))
+            let cell = ctx.design.cell(c);
+            let name = cell.attrs.get(&bel_attr)?.as_str();
+            let strength = cell
+                .attrs
+                .get(&strength_attr)
+                .and_then(|v| i64::from_str_radix(v.as_str().trim(), 2).ok())
+                .map_or(PlaceStrength::User, place_strength_from_i64);
+            Some((*by_name.get(&name)?, c, strength))
         })
         .collect();
-    for (bel, c) in bindings {
-        assert!(ctx.bind_bel(bel, c, PlaceStrength::Strong), "bind failed");
+    for (bel, c, strength) in bindings {
+        assert!(ctx.bind_bel(bel, c, strength), "bind failed");
+    }
+}
+
+fn place_strength_from_i64(v: i64) -> PlaceStrength {
+    match v {
+        0 => PlaceStrength::None,
+        1 => PlaceStrength::Weak,
+        2 => PlaceStrength::Strong,
+        3 => PlaceStrength::Placer,
+        4 => PlaceStrength::Fixed,
+        5 => PlaceStrength::Locked,
+        6 => PlaceStrength::User,
+        other => panic!("BEL_STRENGTH {other} is not a PlaceStrength"),
     }
 }
 
@@ -337,6 +365,15 @@ fn main() {
     // NPNR_NO_REFINE=1 (patches/0003) and the target is that same seed's
     // refined wirelength: the input and the goal both come from nextpnr, so
     // this isolates the refiner from opt_trans entirely.
+    // Control: write nextpnr's placement straight back out without refining
+    // it. If this fails to route, the writer is at fault and not the refiner.
+    if std::env::var("OT_REFINE_VALIDATE").as_deref() == Ok("writeonly") {
+        let path = std::env::var("OT_WRITE_PLACEMENT")
+            .expect("OT_REFINE_VALIDATE=writeonly needs OT_WRITE_PLACEMENT");
+        write_placement_json(&ref_ctx, bench, &path);
+        return;
+    }
+
     if std::env::var("OT_REFINE_VALIDATE").as_deref() == Ok("1") {
         // The timing term dies quietly if the arch has no speed grade, so say
         // what the fabric actually offers before trusting any timing number.
@@ -353,35 +390,11 @@ fn main() {
             }
         }
         println!("               speed grades {n_grades}, {non_ignore} nets with a timed driver");
-        {
-            let mut by_type: HashMap<String, (usize, usize)> = HashMap::new();
-            for net in ref_ctx.nets() {
-                let Some(d) = ref_ctx.design.net(net.id()).driver() else {
-                    continue;
-                };
-                let ty = ref_ctx.name_of(ref_ctx.design.cell(d.cell).cell_type).to_owned();
-                let timed = ref_ctx.port_timing_class(d.cell, d.port)
-                    != nextpnr::timing::TimingPortClass::Ignore;
-                let e = by_type.entry(ty).or_default();
-                e.0 += 1;
-                e.1 += usize::from(timed);
-            }
-            let mut rows: Vec<_> = by_type.into_iter().collect();
-            rows.sort();
-            for (ty, (n, timed)) in rows {
-                println!("                 driver {ty:12} nets {n:4}  timed {timed:4}");
-            }
-            if let Some(sg) = ref_ctx.speed_grade() {
-                for name in ["LUT4", "DFF"] {
-                    let id = ref_ctx.id(name);
-                    let idx = ref_ctx.chipdb().cell_timing_index(sg, id.index());
-                    println!(
-                        "                 {name}: idstring idx {} -> timing variant {idx:?}",
-                        id.index()
-                    );
-                }
-            }
-        }
+        assert!(
+            non_ignore > 0,
+            "no net has a timed driver -- the timing half of the objective is \
+             inert and the run is wirelength-only",
+        );
 
         let cfg = nextpnr::placer::RefineCfg::default();
         let t = Instant::now();
@@ -409,6 +422,13 @@ fn main() {
             stats.autoplaced + stats.chain_basis > 0,
             "refiner had nothing to move -- check bind strengths",
         );
+        // Emit onto the original netlist, not onto `placed`: nextpnr's output
+        // JSON still carries the IO pseudo-cells we trimmed on load, and
+        // re-reading those alongside the real buffers trips its duplicate-name
+        // assertion.
+        if let Ok(path) = std::env::var("OT_WRITE_PLACEMENT") {
+            write_placement_json(&ref_ctx, bench, &path);
+        }
         return;
     }
 

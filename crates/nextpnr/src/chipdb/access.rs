@@ -53,6 +53,18 @@ impl ChipDb {
         unsafe { read_packed!(*self.chip_info(), version) }
     }
 
+    /// Size of the constid table, including id 0 (the empty string).
+    ///
+    /// The table is the arch's `constids.inc` followed by the strings the
+    /// database embeds itself, and its indices are the ids that appear
+    /// throughout the database -- cell timing `type_variant`, pin names, and so
+    /// on. [`crate::context::Context`] seeds its `IdStringPool` from this so
+    /// the two share one index space, as nextpnr's single global pool does.
+    #[inline]
+    pub fn num_constids(&self) -> usize {
+        self.constid_strs.len()
+    }
+
     pub fn constid_str(&self, index: i32) -> Option<&str> {
         if index < 0 || (index as usize) >= self.constid_strs.len() {
             return None;
