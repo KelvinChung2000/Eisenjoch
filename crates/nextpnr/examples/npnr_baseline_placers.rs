@@ -332,6 +332,86 @@ fn main() {
     println!("nextpnr      : wirelength {ref_wl:>8}   nets {ref_nets:>5}   bound {rb}/{rt}");
     report_classes("", rs);
 
+    // --- Refiner validation --------------------------------------------------
+    // Run *our* refiner on nextpnr's own placement. Feed it a run made with
+    // NPNR_NO_REFINE=1 (patches/0003) and the target is that same seed's
+    // refined wirelength: the input and the goal both come from nextpnr, so
+    // this isolates the refiner from opt_trans entirely.
+    if std::env::var("OT_REFINE_VALIDATE").as_deref() == Ok("1") {
+        // The timing term dies quietly if the arch has no speed grade, so say
+        // what the fabric actually offers before trusting any timing number.
+        let n_grades = ref_ctx.chipdb().num_speed_grades();
+        let mut non_ignore = 0usize;
+        for net in ref_ctx.nets() {
+            let Some(d) = ref_ctx.design.net(net.id()).driver() else {
+                continue;
+            };
+            if ref_ctx.port_timing_class(d.cell, d.port)
+                != nextpnr::timing::TimingPortClass::Ignore
+            {
+                non_ignore += 1;
+            }
+        }
+        println!("               speed grades {n_grades}, {non_ignore} nets with a timed driver");
+        {
+            let mut by_type: HashMap<String, (usize, usize)> = HashMap::new();
+            for net in ref_ctx.nets() {
+                let Some(d) = ref_ctx.design.net(net.id()).driver() else {
+                    continue;
+                };
+                let ty = ref_ctx.name_of(ref_ctx.design.cell(d.cell).cell_type).to_owned();
+                let timed = ref_ctx.port_timing_class(d.cell, d.port)
+                    != nextpnr::timing::TimingPortClass::Ignore;
+                let e = by_type.entry(ty).or_default();
+                e.0 += 1;
+                e.1 += usize::from(timed);
+            }
+            let mut rows: Vec<_> = by_type.into_iter().collect();
+            rows.sort();
+            for (ty, (n, timed)) in rows {
+                println!("                 driver {ty:12} nets {n:4}  timed {timed:4}");
+            }
+            if let Some(sg) = ref_ctx.speed_grade() {
+                for name in ["LUT4", "DFF"] {
+                    let id = ref_ctx.id(name);
+                    let idx = ref_ctx.chipdb().cell_timing_index(sg, id.index());
+                    println!(
+                        "                 {name}: idstring idx {} -> timing variant {idx:?}",
+                        id.index()
+                    );
+                }
+            }
+        }
+
+        let cfg = nextpnr::placer::RefineCfg::default();
+        let t = Instant::now();
+        let stats = nextpnr::placer::refine_placement(&mut ref_ctx, &cfg)
+            .expect("refine nextpnr placement");
+        let (post_wl, _) = score(&ref_ctx);
+        println!(
+            "refine       : {ref_wl} -> {post_wl}  ({:+.1}%)  in {:.2}s",
+            100.0 * (post_wl - ref_wl) as f64 / ref_wl as f64,
+            t.elapsed().as_secs_f64(),
+        );
+        println!(
+            "               autoplaced {} chains {} iters {} moves {}/{} accepted",
+            stats.autoplaced,
+            stats.chain_basis,
+            stats.iterations,
+            stats.moves_accepted,
+            stats.moves_tried,
+        );
+        println!(
+            "               timing cost {:.3} -> {:.3}, {} critical arcs",
+            stats.timing.cost_before, stats.timing.cost_after, stats.timing.critical_arcs,
+        );
+        assert!(
+            stats.autoplaced + stats.chain_basis > 0,
+            "refiner had nothing to move -- check bind strengths",
+        );
+        return;
+    }
+
     // --- Ours: opt_trans placing the same netlist from scratch ---------------
     let mut ot_ctx = load(chipdb, constids, bench);
 

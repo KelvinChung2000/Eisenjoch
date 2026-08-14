@@ -94,17 +94,29 @@ impl TimingAnalyser {
     }
 
     /// Get criticality of a specific port.
+    ///
+    /// `TimingAnalyser::compute_criticality` (`common/kernel/timing.cc:771`)
+    /// applies this formula unconditionally -- there is deliberately no
+    /// "timing is met, so nothing is critical" branch. On a design that meets
+    /// timing the denominator goes negative and every endpoint clamps to 1.0,
+    /// which turns a criticality-weighted delay sum into a plain sum of arc
+    /// delays. That is the regime timing-driven placement spends most of its
+    /// life in: gating it to zero silently disables the timing half of the
+    /// placer1 objective, leaving a wirelength-only pass that looks like it is
+    /// winning because it spends nothing on delay.
     pub fn port_criticality(&self, cell: CellId, port: IdString) -> f32 {
-        if self.worst_slack >= 0 {
-            return 0.0;
-        }
-
         let pin = CellPin::new(cell, port);
         let arrival = self.arrival_times.get(&pin).copied().unwrap_or(0);
         let required = self.required_times.get(&pin).copied().unwrap_or(0);
         let slack = required - arrival;
 
-        let neg_ws = -self.worst_slack as f64;
+        // Upstream divides by zero here and lets the NaN clamp to 1.0; say so
+        // outright instead. Zero worst slack means everything is exactly at
+        // the limit, so everything is maximally critical.
+        if self.worst_slack == 0 {
+            return 1.0;
+        }
+        let neg_ws = -(self.worst_slack as f64);
         let crit = 1.0 - ((slack - self.worst_slack) as f64 / neg_ws);
         crit.clamp(0.0, 1.0) as f32
     }
