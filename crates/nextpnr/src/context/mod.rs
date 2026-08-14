@@ -20,7 +20,7 @@ mod views;
 
 pub use arch_api::BoundingBox;
 pub use crate::metrics::{ResourceRow, UtilizationReport};
-pub use definition::Context;
+pub use definition::{ArchValidityCheck, Context};
 pub use rng::DeterministicRng;
 pub use views::{
     Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView,

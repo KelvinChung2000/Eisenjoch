@@ -95,14 +95,29 @@ impl Context {
     /// configuration given everything currently bound to it.
     ///
     /// nextpnr's `BaseArch` default is `true`; himbaechel delegates to the
-    /// uarch. eisenjoch's equivalent of the uarch hook is
-    /// `PlacerPlugin::check_placement_validity`, but the plugin manager is not
-    /// owned by `Context`, so the plugin-aware form is
-    /// [`Self::is_bel_location_valid_with`]. This bare version is the
-    /// no-uarch default that plain himbaechel archs get.
+    /// uarch. The uarch rule lives in `validity_check`, installed by
+    /// [`Self::set_validity_check`]; with none installed this is the
+    /// always-valid default that plain himbaechel archs get.
+    ///
+    /// A placer that does not call this cannot produce a legal placement on any
+    /// arch with site rules -- which is most of them. `opt_trans` did not, and
+    /// its placements were rejected by nextpnr with 124 invalid slices; see
+    /// `docs/dcd_vs_nextpnr_baseline.md`.
     #[inline]
-    pub fn is_bel_location_valid(&self, _bel: BelId) -> bool {
-        true
+    pub fn is_bel_location_valid(&self, bel: BelId) -> bool {
+        match &self.validity_check {
+            // Two immutable borrows of `self`: the field, and the argument.
+            Some(check) => check(self, bel),
+            None => true,
+        }
+    }
+
+    /// Install the architecture's `isBelLocationValid` rule.
+    ///
+    /// Arch-specific by nature, so callers (a uarch shim, or a driver) supply
+    /// it rather than the core owning a table of rules.
+    pub fn set_validity_check(&mut self, check: crate::context::ArchValidityCheck) {
+        self.validity_check = Some(check);
     }
 
     /// `isBelLocationValid`, consulting a placer plugin as himbaechel consults

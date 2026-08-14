@@ -9,7 +9,7 @@ use super::helpers::connect_port;
 use super::PackerError;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::{CellId, PortType};
+use crate::netlist::{Cluster, CellId, PortType};
 
 /// Ensure GND/VCC constant-driver cells and nets exist.
 ///
@@ -195,6 +195,115 @@ pub fn remove_nextpnr_iobs(ctx: &mut Context) -> Result<usize, PackerError> {
     }
 
     Ok(victims.len())
+}
+
+/// A (cell type, port) pair. Upstream's `CellTypePort`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CellTypePort {
+    pub cell_type: IdString,
+    pub port: IdString,
+}
+
+impl CellTypePort {
+    pub fn new(cell_type: IdString, port: IdString) -> Self {
+        Self { cell_type, port }
+    }
+}
+
+/// Constrain driver-sink pairs into one cluster, so they place as a unit.
+///
+/// Port of `HimbaechelHelpers::constrain_cell_pairs` (upstream `4d235150`).
+///
+/// This is how nextpnr makes site legality *structural* rather than a filter.
+/// On the example uarch a slice's LUT and FF may only share a site if the FF is
+/// driven by that LUT; constraining each such pair to `delta_z = 1` means every
+/// shared slice is legal by construction, and the placer never has to discover
+/// the rule by trial and error.
+///
+/// Each driver takes at most one sink, and cells already in a cluster are left
+/// alone -- both matching upstream, which breaks out of the port loop after the
+/// first match. With `allow_fanout = false` a driver whose net has more than one
+/// live user is skipped entirely, since the pair could not be honoured for all
+/// of them.
+///
+/// Returns the number of pairs constrained.
+pub fn constrain_cell_pairs(
+    ctx: &mut Context,
+    src_ports: &[CellTypePort],
+    sink_ports: &[CellTypePort],
+    delta_z: i32,
+    allow_fanout: bool,
+) -> usize {
+    let candidates: Vec<CellId> = ctx
+        .design
+        .iter_alive_cells()
+        .filter(|(_, cell)| cell.cluster.is_none())
+        .map(|(idx, _)| idx)
+        .collect();
+
+    let mut constrained = 0usize;
+    for root in candidates {
+        // A cell constrained as some earlier root's child is no longer free.
+        if ctx.design.cell(root).cluster.is_some() {
+            continue;
+        }
+        let root_type = ctx.design.cell(root).cell_type;
+
+        let Some((net, _)) = src_ports
+            .iter()
+            .filter(|s| s.cell_type == root_type)
+            .find_map(|s| {
+                let cell = ctx.design.cell(root);
+                if cell.port_type(s.port) != Some(PortType::Out) {
+                    return None;
+                }
+                cell.port_net(s.port).map(|net| (net, s.port))
+            })
+        else {
+            continue;
+        };
+
+        // `users` keeps blanked slots after disconnect_user, so count live ones.
+        let live: Vec<_> = ctx
+            .design
+            .net(net)
+            .users()
+            .iter()
+            .copied()
+            .filter(|u| u.cell.is_some())
+            .collect();
+        if !allow_fanout && live.len() > 1 {
+            continue;
+        }
+
+        let Some(sink) = live.into_iter().find(|u| {
+            let sink_cell = ctx.design.cell(u.cell);
+            sink_cell.cluster.is_none()
+                && sink_ports
+                    .iter()
+                    .any(|p| p.cell_type == sink_cell.cell_type && p.port == u.port)
+        }) else {
+            continue;
+        };
+
+        ctx.design.cell_edit(root).set_cluster(Some(root));
+        ctx.design.cell_edit(root).set_constraints(0, 0, 0, false);
+        ctx.design.cell_edit(sink.cell).set_cluster(Some(root));
+        ctx.design
+            .cell_edit(sink.cell)
+            .set_constraints(0, 0, delta_z, false);
+
+        let cluster = ctx
+            .design
+            .clusters
+            .entry(root)
+            .or_insert_with(|| Cluster::new(root));
+        cluster.members.push(sink.cell);
+        cluster.constr_children.push(sink.cell);
+        constrained += 1;
+    }
+
+    constrained
 }
 
 /// Bind explicit BUFG cells to BUFG BELs.

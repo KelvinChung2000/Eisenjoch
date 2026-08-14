@@ -47,7 +47,53 @@ is ~40%, an order of magnitude above this noise. But single-run comparisons of
 opt_trans against anything should be treated as unreliable, and every number
 here is a 5-run mean.
 
-## Routing it: the placement is illegal
+## FIXED: the placer is now legality-aware, and it routes
+
+Two changes, both ports of what nextpnr does:
+
+1. **The predicate.** `Context::is_bel_location_valid` now consults an installed
+   arch rule (`set_validity_check`) instead of returning `true`, and
+   `SortedLegalizer` calls it: bind the candidate, ask the arch, unbind and try
+   the next bel if rejected. It has to be bind-then-ask because `slice_valid`
+   reads live tile occupancy. Cluster children are re-checked after
+   `place_cluster_children`, since binding the FF beside a LUT is exactly what
+   turns a legal slice illegal. Reported as `arch_validity_rejects`.
+2. **The structural pass.** `constrain_cell_pairs` (port of
+   `HimbaechelHelpers::constrain_cell_pairs`) clusters each LUT->FF pair at
+   `delta_z = 1`, so shared slices are legal by construction. Opt-in in the
+   driver via `OT_PAIR_LUTFF=1`; it constrains 128 pairs, matching nextpnr's own
+   "Constrained 128 LUTFF pairs" exactly.
+
+Results on the 20x20 fabric, 5 seeds each, every run legality-checked and routed
+by nextpnr's own router:
+
+| | reference | ours | ratio |
+|---|---|---|---|
+| **filter only** (vs unpacked ref) | | | |
+| HPWL | 1825 | 2485 (2419-2543) | 1.36x |
+| post-route Fmax | 44.07 MHz | 38.66 MHz (36.09-40.47) | 1.14x |
+| **structural pairing** (vs packed ref) | | | |
+| HPWL | 1857 | 2310 (2274-2334) | 1.24x |
+| post-route Fmax | 46.67 MHz | 40.34 MHz (37.39-41.94) | 1.16x |
+
+**10/10 placements legal, 10/10 routed.** Three things follow.
+
+**Legality is nearly free.** The illegal placement scored 2452; the same config
+with the rule enforced scores 2485, +1.3%. 2946 candidate bels were rejected
+during legalisation and the cost was almost nothing -- the placer had ample
+slack, it simply was never asked.
+
+**Structural beats filtering**, as nextpnr's default flow implies: 2485 -> 2310,
+-7%, and `arch_validity_rejects` drops to 0 because the constraint means the
+filter never has to fire.
+
+**The HPWL gap overstates the real gap.** We are 1.24-1.36x on wirelength but
+only 1.14-1.16x on post-route Fmax, and 1.13x on routed wire/pip records (7633
+vs 6745). Scoring placement by HPWL -- nextpnr's own objective -- flatters
+nextpnr, exactly as suspected. Everything below that is expressed as an HPWL
+ratio should be read with that discount.
+
+## How we got here: the placement used to be illegal
 
 Handing our placement to nextpnr's own router was meant to retire two caveats at
 once. It retired them by failing:
@@ -77,10 +123,10 @@ exactly (124 illegal against 248 warnings):
 | nextpnr, unpacked | 80 | 80 | 0 |
 | nextpnr, packed | 128 | 128 | 0 |
 
-Root cause: `Context::is_bel_location_valid` is a hardcoded `true`
-(`arch_api.rs:104`), and opt_trans never calls it regardless — the only two call
-sites in the tree are in `place_common.rs`. The placer has no arch-legality
-awareness of any kind.
+Root cause: `Context::is_bel_location_valid` was a hardcoded `true`, and
+opt_trans never called it regardless — the only two call sites in the tree were
+in `place_common.rs`. The placer had no arch-legality awareness of any kind.
+Fixed as described above.
 
 This inverts the reading of the LUT->FF class. We were not merely "5.1x worse at
 co-locating pairs": we were achieving our co-location by stuffing *unrelated*
@@ -88,9 +134,10 @@ FFs into LUT slices, which is the one thing the arch forbids. HeAP's 80 shared
 slices are all real driver-sink pairs, found unaided, because its legaliser only
 accepts moves that pass `isBelLocationValid`.
 
-**Every HPWL number in this document is therefore a lower bound in our favour.**
-Adding legality can only push our wirelength up. The true gap is larger than
-measured, and no HPWL result here should be quoted without this caveat.
+**Every HPWL number measured before the fix is therefore a lower bound in our
+favour** — including the tables further down, which predate it. The measured
+cost of legality turned out to be small (+1.3%), so those figures are close, but
+the legal numbers in the section above are the ones to quote.
 
 ### The pinned clock buffer was also being ignored
 
@@ -239,35 +286,29 @@ moves.
 
 ## Caveats that bound the claim
 
-1. **Legality is now verified, and our placement fails it.** This caveat used to
-   read "not verified, and this flatters opt_trans". It has been measured: 124
-   illegal slices, and nextpnr refuses to route the result. See "Routing it:
-   the placement is illegal" above. Every wirelength figure here remains a
-   lower bound in our favour. (The LUT4→DFF pairing constraint, previously
-   listed here too, is worth −1.7%; see the packing section.)
-2. **HPWL is nextpnr's objective, not opt_trans's.** DCD optimises a
-   congestion-aware transport energy; the whole premise is trading wirelength
-   for routability. Scoring only HPWL is biased toward nextpnr by construction.
-   The honest comparison routes both placements and compares routed wirelength
-   and routing success. That is the main thing this harness still cannot do.
+1. **Legality: closed.** This caveat read "not verified, and this flatters
+   opt_trans", then "measured, and we fail it". Both are now history: the
+   placer enforces the arch rule and 10/10 placements route. (The LUT4→DFF
+   pairing constraint, previously listed here too, is worth −1.7% to nextpnr;
+   see the packing section.)
+2. **HPWL bias: measured, not just argued.** DCD optimises a congestion-aware
+   transport energy, so scoring only HPWL is biased toward nextpnr by
+   construction. Now quantified: 1.24-1.36x on HPWL against 1.14-1.16x on
+   post-route Fmax. Report Fmax.
 3. Synthetic fabric, one benchmark family (LFSR + accumulator), low LUT
    utilisation on two of three fabrics.
 
 ## Next steps, in value order
 
-1. **Teach opt_trans arch legality.** This is now the only thing worth doing
-   first, because nothing else can be measured until it is done: our placement
-   does not route. Give `Context::is_bel_location_valid` a real implementation
-   (via `PlacerPlugin::check_placement_validity`, which already exists as the
-   uarch-hook equivalent) and make the legaliser reject moves that fail it, the
-   way HeAP's does. Expect our HPWL to get *worse*; that is the point.
-2. **Then re-measure everything.** The MST/Steiner result, the class split and
-   the "local tightening" reading are all conclusions drawn from an illegal
-   placement, and legality bears directly on the LUT->FF class those
-   conclusions rest on.
-3. **Then route.** The harness is ready and validated — nextpnr reported
-   `wirelen = 2429` for our injected placement, matching our own score exactly,
-   so the round-trip is faithful. It only needs a legal placement to consume.
+1. ~~Teach opt_trans arch legality~~ — **done**; see the fix section above.
+   10/10 legal, 10/10 routed.
+2. **Close the routed gap, which is 1.14-1.16x on Fmax, not 1.36x.** The HPWL
+   framing overstated it. Whatever is attacked next should be measured on
+   routed Fmax, not HPWL, or it will optimise the wrong thing.
+3. **Re-derive the class split under legality.** The "local tightening" reading
+   and the MST/Steiner numbers were taken on illegal placements. Legality cost
+   only +1.3% so they are probably close, but the LUT->FF class is exactly the
+   one legality governs, so that one needs redoing before it is trusted.
 4. **Validate `mst_edge_weight` on the real benchmarks** before touching
    defaults.
 5. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed

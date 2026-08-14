@@ -120,8 +120,8 @@ fn full_pack_default_on_example_chipdb() {
 // remaps the pseudo-cell onto an IOB bel instead of deleting it.
 
 use nextpnr::context::Context;
-use nextpnr::netlist::{CellPin, PortType};
-use nextpnr::packer::passes::remove_nextpnr_iobs;
+use nextpnr::netlist::{CellId, CellPin, PortType};
+use nextpnr::packer::passes::{constrain_cell_pairs, remove_nextpnr_iobs, CellTypePort};
 
 /// Build `pseudo -> real` (input side) or `real -> pseudo` (output side),
 /// returning (pseudo cell, real cell, net, index of the user slot if any).
@@ -209,4 +209,111 @@ fn remove_nextpnr_iobs_leaves_real_cells_alone() {
     let lut = ctx.design.add_cell(ctx.id("lut0"), ctx.id("LUT4"));
     assert_eq!(remove_nextpnr_iobs(&mut ctx).unwrap(), 0);
     assert!(ctx.design.cell(lut).alive);
+}
+
+// ---------------------------------------------------------------------
+// constrain_cell_pairs
+// ---------------------------------------------------------------------
+
+/// Build `LUT4.F -> net -> DFF.D`, with `extra_sinks` further DFFs on the net.
+/// Returns (lut, first dff).
+fn wire_lut_ff(ctx: &mut Context, extra_sinks: usize) -> (CellId, CellId) {
+    let (lut4, dff) = (ctx.id("LUT4"), ctx.id("DFF"));
+    let (f, d) = (ctx.id("F"), ctx.id("D"));
+    let net = ctx.design.add_net(ctx.id("lut_out"));
+
+    let lut = ctx.design.add_cell(ctx.id("lut"), lut4);
+    ctx.design
+        .cell_edit(lut)
+        .add_port(f, PortType::Out)
+        .set_port_net(f, Some(net), None);
+    ctx.design.net_edit(net).set_driver(lut, f);
+
+    let mut first = None;
+    for i in 0..=extra_sinks {
+        let ff = ctx.design.add_cell(ctx.id(&format!("ff{i}")), dff);
+        let u = ctx.design.net_edit(net).add_user(ff, d);
+        ctx.design
+            .cell_edit(ff)
+            .add_port(d, PortType::In)
+            .set_port_net(d, Some(net), Some(u));
+        first.get_or_insert(ff);
+    }
+    (lut, first.expect("at least one sink"))
+}
+
+fn lutff_ports(ctx: &Context) -> (Vec<CellTypePort>, Vec<CellTypePort>) {
+    (
+        vec![CellTypePort::new(ctx.id("LUT4"), ctx.id("F"))],
+        vec![CellTypePort::new(ctx.id("DFF"), ctx.id("D"))],
+    )
+}
+
+#[test]
+fn constrain_cell_pairs_respects_fanout_and_prior_clusters() {
+    // (extra sinks, allow_fanout, pre-cluster the FF?, expected pairs)
+    let cases = [
+        (0, false, false, 1), // the ordinary case
+        (1, false, false, 0), // fanout 2 with allow_fanout=false -> skipped
+        (1, true, false, 1),  // ... same net, but fanout permitted
+        (0, false, true, 0),  // FF already clustered -> left alone
+    ];
+
+    for (extra, allow_fanout, precluster, expect) in cases {
+        let label = format!("extra={extra} fanout={allow_fanout} precluster={precluster}");
+        let mut ctx = common::make_context();
+        let (lut, ff) = wire_lut_ff(&mut ctx, extra);
+        if precluster {
+            ctx.design.cell_edit(ff).set_cluster(Some(ff));
+        }
+        let (src, sink) = lutff_ports(&ctx);
+
+        let n = constrain_cell_pairs(&mut ctx, &src, &sink, 1, allow_fanout);
+        assert_eq!(n, expect, "{label}: pair count");
+
+        if expect == 1 {
+            assert_eq!(
+                ctx.design.cell(lut).cluster,
+                Some(lut),
+                "{label}: root points at itself"
+            );
+            assert_eq!(
+                ctx.design.cell(ff).cluster,
+                Some(lut),
+                "{label}: child points at root"
+            );
+            assert_eq!(ctx.design.cell(ff).constr_z, 1, "{label}: delta_z applied");
+            assert!(
+                !ctx.design.cell(ff).constr_abs_z,
+                "{label}: delta_z is relative"
+            );
+            assert_eq!(
+                ctx.design.clusters[&lut].constr_children,
+                vec![ff],
+                "{label}: child registered on the cluster"
+            );
+        } else if !precluster {
+            assert!(
+                ctx.design.cell(lut).cluster.is_none(),
+                "{label}: root left free"
+            );
+        }
+    }
+}
+
+#[test]
+fn constrain_cell_pairs_takes_each_driver_once() {
+    // Two sinks with fanout allowed: upstream breaks after the first match, so
+    // the driver gets exactly one child.
+    let mut ctx = common::make_context();
+    let (lut, _) = wire_lut_ff(&mut ctx, 1);
+    let (src, sink) = lutff_ports(&ctx);
+
+    assert_eq!(constrain_cell_pairs(&mut ctx, &src, &sink, 1, true), 1);
+    assert_eq!(ctx.design.clusters[&lut].constr_children.len(), 1);
+    assert_eq!(
+        constrain_cell_pairs(&mut ctx, &src, &sink, 1, true),
+        0,
+        "a second pass must not re-constrain an existing cluster"
+    );
 }

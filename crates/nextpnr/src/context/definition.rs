@@ -58,7 +58,20 @@ pub struct Context {
     pub(super) debug: bool,
     /// Force operations even when validity checks fail.
     pub(super) force: bool,
+    /// Architecture validity rule, if one has been installed.
+    ///
+    /// nextpnr's `Arch::isBelLocationValid` delegates to the uarch; this is
+    /// where that uarch rule lives for us. `None` means "no rule", which is
+    /// `BaseArch`'s default of always-valid -- see
+    /// [`Context::is_bel_location_valid`].
+    pub(super) validity_check: Option<ArchValidityCheck>,
 }
+
+/// An architecture's `isBelLocationValid` rule.
+///
+/// Takes the whole context because these rules are tile-level: whether a bel is
+/// valid depends on what else is currently bound around it.
+pub type ArchValidityCheck = std::sync::Arc<dyn Fn(&Context, BelId) -> bool + Send + Sync>;
 
 impl Context {
     /// Create a new context from a chip database.
@@ -94,6 +107,7 @@ impl Context {
             verbose: false,
             debug: false,
             force: false,
+            validity_check: None,
         }
     }
 }

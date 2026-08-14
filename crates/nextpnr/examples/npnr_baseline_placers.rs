@@ -36,6 +36,7 @@ fn load(chipdb: &str, constids: &str, design: &str) -> Context {
     eprintln!("  (trimmed {trimmed} nextpnr IO pseudo-cells)");
     adapt_cell_types(&mut ctx);
     apply_bel_constraints(&mut ctx);
+    install_slice_valid(&mut ctx);
     ctx
 }
 
@@ -67,6 +68,52 @@ fn apply_bel_constraints(ctx: &mut Context) {
         );
         eprintln!("  (locked {name} from BEL constraint)");
     }
+}
+
+/// Install the example uarch's `slice_valid` as this arch's validity rule.
+///
+/// Port of `ExampleImpl::slice_valid` / `isBelLocationValid` (upstream
+/// `4d235150`, `himbaechel/uarch/example/example.cc:134`). A slice holds a LUT
+/// at z and its FF at z+1; if both are occupied, the FF's D net must be the
+/// LUT's F net, or the LUT's I3 must be unused.
+///
+/// The I3 escape hatch is nearly dead in practice: `lut_i3_used` tests the
+/// *net*, and a constant tie is a real net once constants are driven, so an I3
+/// tied to '0' counts as used.
+///
+/// Keyed off bel *type*, not z parity: IO tiles put IOBs at z = i, so parity
+/// would misread them as slices.
+fn install_slice_valid(ctx: &mut Context) {
+    let mut by_loc: HashMap<(i32, i32, i32), BelId> = HashMap::new();
+    for bel in ctx.chipdb().bels() {
+        let t = ctx.chipdb().bel_type(bel);
+        if t == "LUT4" || t == "DFF" {
+            let l = ctx.chipdb().bel_loc(bel);
+            by_loc.insert((l.x, l.y, l.z), bel);
+        }
+    }
+    let (f, d, i3) = (ctx.id("F"), ctx.id("D"), ctx.id("I[3]"));
+
+    ctx.set_validity_check(std::sync::Arc::new(move |ctx: &Context, bel: BelId| {
+        let loc = ctx.chipdb().bel_loc(bel);
+        let (lut_z, ff_z) = match ctx.chipdb().bel_type(bel) {
+            "LUT4" => (loc.z, loc.z + 1),
+            "DFF" => (loc.z - 1, loc.z),
+            _ => return true,
+        };
+        let lookup = |z| {
+            by_loc
+                .get(&(loc.x, loc.y, z))
+                .and_then(|&b| ctx.bel(b).bound_cell().map(|c| c.id()))
+        };
+        let (Some(lut), Some(ff)) = (lookup(lut_z), lookup(ff_z)) else {
+            return true; // only one half of the slice is used
+        };
+        if ctx.design.cell(lut).port_net(f) == ctx.design.cell(ff).port_net(d) {
+            return true;
+        }
+        ctx.design.cell(lut).port_net(i3).is_none()
+    }));
 }
 
 /// `"X{x}Y{y}/{bel}"` -> bel, the name form nextpnr reads and writes.
@@ -287,6 +334,26 @@ fn main() {
 
     // --- Ours: opt_trans placing the same netlist from scratch ---------------
     let mut ot_ctx = load(chipdb, constids, bench);
+
+    // Optional: make slice legality structural instead of a filter, the way
+    // nextpnr's example pack() does. Off by default so the primary comparison
+    // is unpacked-vs-unpacked against placed*_nopack.json; set OT_PAIR_LUTFF=1
+    // to compare packed-vs-packed instead.
+    // Value-based, not presence-based: `OT_PAIR_LUTFF=` sets the variable to an
+    // empty string, which `is_ok()` would accept and silently enable pairing.
+    if std::env::var("OT_PAIR_LUTFF").as_deref() == Ok("1") {
+        let (lut4, dff) = (ot_ctx.id("LUT4"), ot_ctx.id("DFF"));
+        let (f, d) = (ot_ctx.id("F"), ot_ctx.id("D"));
+        let n = nextpnr::packer::passes::constrain_cell_pairs(
+            &mut ot_ctx,
+            &[nextpnr::packer::passes::CellTypePort::new(lut4, f)],
+            &[nextpnr::packer::passes::CellTypePort::new(dff, d)],
+            1,
+            false,
+        );
+        eprintln!("  (constrained {n} LUTFF pairs)");
+    }
+
     let t = Instant::now();
     let envf = |k: &str, d: f64| -> f64 {
         std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)

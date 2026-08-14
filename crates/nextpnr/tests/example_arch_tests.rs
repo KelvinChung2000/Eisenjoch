@@ -1216,3 +1216,54 @@ fn route_all_via_trait() {
         net.wires().len()
     );
 }
+
+// =====================================================================
+// Arch validity rule (isBelLocationValid)
+// =====================================================================
+
+/// The legalizer must honour an installed arch validity rule.
+///
+/// Without one, `opt_trans` produced placements nextpnr rejected outright --
+/// 124 illegal slices on the 20x20 comparison fabric. This pins the mechanism
+/// that fixed it: a rule banning some bels must push every cell elsewhere.
+#[test]
+fn sorted_legalize_honours_the_arch_validity_rule() {
+    use nextpnr::placer::common::TypeAwarePlacement;
+    use nextpnr::placer::legalize::sorted_legalize;
+
+    // How many of the bucket's bels the rule rejects.
+    for banned in [0usize, 2usize] {
+        let mut ctx = common::make_example_context();
+        let lut6 = ctx.id("LUT6");
+
+        // Cells first: bucket population only covers types the design uses.
+        let cells: Vec<_> = (0..2)
+            .map(|i| ctx.design.add_cell(ctx.id(&format!("vlut{i}")), lut6))
+            .collect();
+        ctx.populate_bel_buckets();
+
+        let bels: Vec<BelId> = ctx.bels_for_bucket(lut6).map(|b| b.id()).collect();
+        assert!(bels.len() > banned + 2, "need spare bels for the test");
+
+        // Ban the bels nearest the target, so the rule actually has to bite.
+        let rejected: std::collections::HashSet<BelId> =
+            bels.iter().copied().take(banned).collect();
+        ctx.set_validity_check(std::sync::Arc::new(move |_: &Context, bel: BelId| {
+            !rejected.contains(&bel)
+        }));
+
+        let type_aware = TypeAwarePlacement::build(&ctx, 0, 0);
+        let xs = vec![0.0; cells.len()];
+        let ys = vec![0.0; cells.len()];
+        sorted_legalize(&mut ctx, &cells, &xs, &ys, &type_aware)
+            .unwrap_or_else(|e| panic!("banned={banned}: legalize failed: {e}"));
+
+        for &c in &cells {
+            let bel = ctx.design.cell(c).bel.expect("cell must be placed");
+            assert!(
+                ctx.is_bel_location_valid(bel),
+                "banned={banned}: cell landed on a bel the arch rejects"
+            );
+        }
+    }
+}

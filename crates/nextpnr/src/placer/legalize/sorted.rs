@@ -246,6 +246,7 @@ pub fn sorted_legalize(
     // so they don't contribute.
     let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
     let mut shared_mux_rejects: u64 = 0;
+    let mut arch_validity_rejects: u64 = 0;
     let mut cluster_footprint_rejects: u64 = 0;
 
     // Phase B (sequential): assign cells to nearest available BEL that
@@ -304,31 +305,62 @@ pub fn sorted_legalize(
                 }
             }
 
-            // All checks passed — commit.
+            // All cheap checks passed — commit, then ask the architecture.
             if !ctx.bind_bel(bel, info.cell_idx, PlaceStrength::Placer) {
                 return Err(PlacerError::PlacementFailed(format!(
                     "Failed to bind cell {} to BEL {}",
                     info.cell_name, bel,
                 )));
             }
+
+            // `isBelLocationValid` is a *tile-level* rule -- it reads whatever
+            // is currently bound around the candidate -- so the cell has to be
+            // bound before we can ask. Roll back and try the next bel if the
+            // arch rejects it. Checked last because it is the costliest test
+            // and the previous ones have already pruned most candidates.
+            if !ctx.is_bel_location_valid(bel) {
+                ctx.unbind_bel(bel);
+                arch_validity_rejects += 1;
+                continue 'outer;
+            }
+            // place_cluster_children binds each child to its constrained
+            // slot. The child slots we resolved above must match exactly.
+            place_cluster_children(ctx, &bel_by_loc, info.cell_idx, bel)?;
+
+            // Re-check with the children bound. This is not redundant: a lone
+            // LUT in a slice is valid, and it is binding the FF beside it that
+            // can make the slice illegal. Validate the root's bel again too,
+            // since the children share its tile.
+            let child_bound: Vec<BelId> = child_bels
+                .iter()
+                .map(|&(child_id, _)| {
+                    ctx.design
+                        .cell(child_id)
+                        .bel
+                        .expect("place_cluster_children must bind child")
+                })
+                .collect();
+            if !std::iter::once(bel)
+                .chain(child_bound.iter().copied())
+                .all(|b| ctx.is_bel_location_valid(b))
+            {
+                for &b in &child_bound {
+                    ctx.unbind_bel(b);
+                }
+                ctx.unbind_bel(bel);
+                arch_validity_rejects += 1;
+                continue 'outer;
+            }
+
             registry.record(ctx, info.cell_idx, bel);
+            for (&(child_id, _), &bound_bel) in child_bels.iter().zip(&child_bound) {
+                registry.record(ctx, child_id, bound_bel);
+            }
 
             let loc = ctx.bel(bel).loc();
             let dx = loc.x as f64 - info.target_x;
             let dy = loc.y as f64 - info.target_y;
             total_displacement += dx * dx + dy * dy;
-
-            // place_cluster_children binds each child to its constrained
-            // slot. The child slots we resolved above must match exactly.
-            place_cluster_children(ctx, &bel_by_loc, info.cell_idx, bel)?;
-            for &(child_id, _) in &child_bels {
-                let bound_bel = ctx
-                    .design
-                    .cell(child_id)
-                    .bel
-                    .expect("place_cluster_children must bind child");
-                registry.record(ctx, child_id, bound_bel);
-            }
 
             bound = true;
             break;
@@ -336,18 +368,19 @@ pub fn sorted_legalize(
 
         if !bound {
             return Err(PlacerError::NoBelsAvailable(format!(
-                "{} (no available BELs for cell {} after {} cluster-footprint and {} shared-mux rejections)",
+                "{} (no available BELs for cell {} after {} cluster-footprint, {} shared-mux and {} arch-validity rejections)",
                 info.cell_type_name,
                 info.cell_name,
                 cluster_footprint_rejects,
                 shared_mux_rejects,
+                arch_validity_rejects,
             )));
         }
     }
 
     eprintln!(
-        "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={}",
-        cluster_footprint_rejects, shared_mux_rejects,
+        "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={} arch_validity_rejects={}",
+        cluster_footprint_rejects, shared_mux_rejects, arch_validity_rejects,
     );
 
     Ok(total_displacement)
