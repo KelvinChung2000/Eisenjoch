@@ -135,6 +135,64 @@ pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
     Ok(())
 }
 
+/// Delete nextpnr's IO pseudo-cells, for flows where synthesis already inserted
+/// real IO buffers.
+///
+/// Port of `HimbaechelHelpers::remove_nextpnr_iobs` (upstream `4d235150`).
+///
+/// [`pack_io`] *remaps* `$nextpnr_IBUF` onto an `IOB` bel, which is correct when
+/// the pseudo-cell is itself the IO cell. When synthesis ran `iopadmap` the pad
+/// net already reaches a real buffer, so the pseudo-cell has to be removed
+/// instead: remapping it would double-book the IO site and, on a fabric with as
+/// many IO bels as pads, fail placement outright.
+///
+/// Upstream also errors when a pseudo-cell connects to anything other than the
+/// architecture's declared top-level port types. That check needs an arch
+/// cell-type list we do not have here, so it is deliberately omitted; the caller
+/// is expected to have synthesised with matching IO buffer insertion.
+///
+/// Returns the number of pseudo-cells removed.
+pub fn remove_nextpnr_iobs(ctx: &mut Context) -> Result<usize, PackerError> {
+    let pseudo_types = [
+        ctx.id("$nextpnr_IBUF"),
+        ctx.id("$nextpnr_OBUF"),
+        ctx.id("$nextpnr_IOBUF"),
+    ];
+    let pseudo_ports = [ctx.id("I"), ctx.id("O"), ctx.id("IO")];
+
+    let victims: Vec<CellId> = ctx
+        .design
+        .iter_alive_cells()
+        .filter(|(_, cell)| pseudo_types.contains(&cell.cell_type))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    for idx in &victims {
+        for &port in &pseudo_ports {
+            let cell = ctx.design.cell(*idx);
+            let Some(net) = cell.port_net(port) else {
+                continue;
+            };
+            let user_idx = cell.port_user_idx(port);
+            let drives = ctx
+                .design
+                .net(net)
+                .driver()
+                .is_some_and(|d| d.cell == *idx && d.port == port);
+
+            if drives {
+                ctx.design.net_edit(net).clear_driver();
+            } else if let Some(u) = user_idx {
+                ctx.design.net_edit(net).disconnect_user(u as usize);
+            }
+            ctx.design.cell_edit(*idx).set_port_net(port, None, None);
+        }
+        ctx.design.cell_edit(*idx).mark_dead();
+    }
+
+    Ok(victims.len())
+}
+
 /// Bind explicit BUFG cells to BUFG BELs.
 ///
 /// Yosys keeps BUFG as a real cell when clkbufmap is enabled, so there is no
