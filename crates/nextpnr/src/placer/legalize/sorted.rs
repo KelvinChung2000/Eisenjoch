@@ -306,7 +306,18 @@ pub fn sorted_legalize(
             }
 
             // All cheap checks passed — commit, then ask the architecture.
-            if !ctx.bind_bel(bel, info.cell_idx, PlaceStrength::Placer) {
+            //
+            // Strength matters: refinement only moves cells bound at or below
+            // STRONG (`placer1.cc:228`). Binding at PLACER would leave every
+            // legalised cell frozen and make the refiner a silent no-op.
+            // Upstream's strict legalisation binds plain cells WEAK
+            // (`placer_heap.cc:1242`) and cluster-constrained ones STRONG
+            // (`:1431`, matching `placer1.cc:580`); mirror that split.
+            let root_strength = match ctx.design.cell(info.cell_idx).cluster {
+                Some(_) => PlaceStrength::Strong,
+                None => PlaceStrength::Weak,
+            };
+            if !ctx.bind_bel(bel, info.cell_idx, root_strength) {
                 return Err(PlacerError::PlacementFailed(format!(
                     "Failed to bind cell {} to BEL {}",
                     info.cell_name, bel,

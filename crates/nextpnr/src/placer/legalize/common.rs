@@ -85,9 +85,12 @@ pub(crate) fn place_cluster_children(
             .copied()
             .filter(|&b| ctx.bel(b).is_available());
 
+        // STRONG, not PLACER: a cluster child must stay refinable, and
+        // upstream binds cluster-constrained cells at STRONG
+        // (`placer_heap.cc:1431`, `placer1.cc:580`).
         let mut placed = false;
         if let Some(bel_id) = candidate {
-            if ctx.bind_bel(bel_id, child_id, PlaceStrength::Placer) {
+            if ctx.bind_bel(bel_id, child_id, PlaceStrength::Strong) {
                 placed = true;
             }
         }
