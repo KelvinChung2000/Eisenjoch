@@ -22,7 +22,13 @@ Driver: `crates/nextpnr/examples/npnr_baseline_placers.rs`. Both sides read the
 same chipdb and the same netlist; nextpnr's placement is reconstructed from its
 `NEXTPNR_BEL` attributes, ours is produced from scratch.
 
-## Result
+## Result (historical — superseded)
+
+> These were the first numbers taken, before the placer enforced arch legality
+> and before it honoured the pinned clock buffer. They are kept because the rest
+> of the document reasons from them. **For current figures see "FIXED: the
+> placer is now legality-aware" below**; every table from here to that section
+> describes an illegal placement.
 
 Total wirelength, `opt_trans` against nextpnr's HeAP. opt_trans figures are the
 mean of 5 runs (see the nondeterminism note below):
@@ -64,8 +70,9 @@ Two changes, both ports of what nextpnr does:
    driver via `OT_PAIR_LUTFF=1`; it constrains 128 pairs, matching nextpnr's own
    "Constrained 128 LUTFF pairs" exactly.
 
-Results on the 20x20 fabric, 5 seeds each, every run legality-checked and routed
-by nextpnr's own router:
+Results on the 20x20 fabric, 5 opt_trans seeds each, every run legality-checked
+and routed by nextpnr's own router. Each placement is routed once at router seed
+1, so router noise sits inside these Fmax figures:
 
 | | reference | ours | ratio |
 |---|---|---|---|
@@ -83,9 +90,14 @@ with the rule enforced scores 2485, +1.3%. 2946 candidate bels were rejected
 during legalisation and the cost was almost nothing -- the placer had ample
 slack, it simply was never asked.
 
-**Structural beats filtering**, as nextpnr's default flow implies: 2485 -> 2310,
--7%, and `arch_validity_rejects` drops to 0 because the constraint means the
-filter never has to fire.
+**Structural beats filtering on wirelength**, as nextpnr's default flow implies:
+2485 -> 2310, -7%, absolute Fmax 38.66 -> 40.34, and `arch_validity_rejects`
+drops to 0 because the constraint means the filter never has to fire. Relative
+to its own reference it is a wash, though — 86.4% of 46.67 against the filter's
+87.7% of 44.07 — and the two configs are measured against *different*
+references, so they are not directly comparable. With a ~4 MHz Fmax spread
+across placements, treat "structural is better" as established on HPWL and
+unproven on relative Fmax.
 
 **The HPWL gap overstates the real gap.** We are 1.24-1.36x on wirelength but
 only 1.14-1.16x on post-route Fmax, and 1.13x on routed wire/pip records (7633

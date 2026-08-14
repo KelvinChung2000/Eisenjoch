@@ -72,6 +72,10 @@ bound our injected bels, and fights any placement that does not satisfy
 placement nextpnr rejected with 248 `post-placement validity check failed`
 warnings it reports 124 illegal slices, exactly 248/2.
 
+Validated in both directions: it also reports 0 illegal for the 10 legality-aware
+placements nextpnr went on to route successfully, so it is not simply
+pessimistic.
+
 Useful because a failed legality check aborts nextpnr *before* routing, and the
 warning list is long and unsorted; this gives the count directly, and works on
 any placed JSON including ones our own placer wrote.
