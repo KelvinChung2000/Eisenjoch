@@ -296,6 +296,100 @@ and tiny; prior opt_trans tuning has repeatedly reversed sign between synthetic
 and real fabrics. This needs a run on FPGA01/stereovision3 before any default
 moves.
 
+## The gap was mostly a missing pipeline stage
+
+Everything above compares opt_trans's legalised placement against a nextpnr
+number that was never HeAP's legalised placement. HeAP *always* ends with a
+simulated-annealing refinement pass (`placer_heap.cc:402-412`; `parallelRefine`
+defaults false, so it runs `placer1_refine`). Our pipeline stopped at
+legalisation.
+
+With `patches/0003` (`NPNR_NO_REFINE=1`) the two halves separate. On the 20x20
+fabric at seed 1, unpacked:
+
+| stage | wirelen | timing cost | post-route Fmax |
+|---|---|---|---|
+| HeAP legalised | 2379 | 10 | 40.62 MHz |
+| + nextpnr's refine | 1825 | 4 | 44.07 MHz |
+
+Refinement is worth 23% of the wirelength and 3.45 MHz on this seed, so the
+"1.36x gap" was comparing our 4-stage pipeline against their 5-stage one.
+
+### The reference is a distribution, not a number
+
+The published references were single runs at seed 1, and seed 1 is nextpnr's
+*worst* unpacked seed. Five seeds each, every run routed at router seed 1:
+
+| config | HeAP legalised | after refine | refine gain | post-route Fmax |
+|---|---|---|---|---|
+| packed | 1966.6 (1934-2027) | 1818.4 (1770-1857) | 7.5% | 46.03 (43.81-46.76) |
+| unpacked | 2432.2 (2369-2506) | 1831.0 (1694-1916) | 24.7% | 46.32 (44.07-49.49) |
+
+Corrected mean-to-mean, before we changed anything: **1.14x packed, 1.20x
+unpacked** on Fmax. The timing objective converges to ~4 from starts between 6
+and 12 with almost no spread — refinement is a strong attractor, which is why
+skipping it cost so much.
+
+## Porting the refiner, and what it fixed on the way
+
+`placer1_refine` is now ported (`placer/refine/`). Validating it on nextpnr's
+own pre-refine placement — same input, same target, opt_trans not involved —
+surfaced three defects no internal check had caught:
+
+1. **Our legaliser bound at PLACER(3)**, above the STRONG(2) cutoff refinement
+   uses. A faithful refiner would have moved zero cells and reported success.
+   Upstream binds plain cells WEAK and cluster-constrained ones STRONG.
+2. **The timing objective was identically zero, everywhere.**
+   `port_timing_class` returned `Ignore` for every port because
+   `Context::new` built a *fresh* `IdStringPool`, while ids stored inside the
+   chipdb index the database's own string table. nextpnr shares one global
+   space; we did not, so `LUT4` interned as 703 and matched nothing. This had
+   silently disabled the timing term in `get_net_metric` too, so every
+   "timing-driven" figure taken before this was wirelength-only.
+3. **`BEL_STRENGTH` was discarded on load.** We bound nextpnr's placements at
+   STRONG regardless, so the USER-pinned clock buffer looked movable. The
+   refiner moved it, and `GCLK_OUT` exists in exactly one tile, so the clock
+   stopped routing. Caught only by routing the output.
+
+Refiner against upstream on identical input (unpacked, seed 1):
+
+| | wirelen | timing | post-route Fmax |
+|---|---|---|---|
+| nextpnr's refiner | 2379 -> 1825 | 10 -> 4 | 44.07 MHz |
+| ours | 2379 -> 1779 | 10.190 -> 3.830 | 46.76 MHz |
+
+Reading 2379 and 10.190 for an input upstream reads as 2379 and 10 is the
+evidence that the cost model — bounding boxes, criticality, delay scale — agrees
+with placer1's.
+
+## Result with refinement (5 seeds each, all routed)
+
+| config | HPWL | vs ref | Fmax | vs ref | was |
+|---|---|---|---|---|---|
+| filter only | 2029.6 (1991-2068) | 1.112x | 42.81 (40.87-43.88) | **1.082x** | 1.20x |
+| structural pairing | 1937.0 (1925-1970) | 1.043x | 43.66 (40.08-45.11) | **1.054x** | 1.14x |
+
+**15/15 legal, 15/15 routed** across both configs and the variant below. The
+Fmax gap roughly halved, and refinement is worth 16-20% of our wirelength — more
+than it is worth to HeAP, because our legalised placement has more slack in it.
+
+### A clean case of HPWL lying
+
+opt_trans locks IO cells as anchors for its continuous solve
+(`lock_boundary_cells`) at the same LOCKED strength a user constraint uses, so
+131 cells stay frozen through refinement while nextpnr's refiner moves IO
+freely. Releasing them after legalisation (`OT_UNLOCK_IO=1`) does exactly what
+it should on the metric it targets, and the opposite on the one that matters:
+
+| variant | HPWL | vs ref | Fmax | vs ref |
+|---|---|---|---|---|
+| IO locked | 2029.6 | 1.112x | **42.81** | **1.082x** |
+| IO released | **1791.6** | **0.982x** | 41.63 | 1.113x |
+
+Releasing IO **beats nextpnr on wirelength outright** — 1791.6 against 1825 —
+and loses 2.8% of routed Fmax doing it. A 12% HPWL improvement bought a
+measurable Fmax regression. Keep the anchors; keep reporting Fmax.
+
 ## Caveats that bound the claim
 
 1. **Legality: closed.** This caveat read "not verified, and this flatters
@@ -314,9 +408,14 @@ moves.
 
 1. ~~Teach opt_trans arch legality~~ — **done**; see the fix section above.
    10/10 legal, 10/10 routed.
-2. **Close the routed gap, which is 1.14-1.16x on Fmax, not 1.36x.** The HPWL
-   framing overstated it. Whatever is attacked next should be measured on
-   routed Fmax, not HPWL, or it will optimise the wrong thing.
+2. ~~Close the routed gap~~ — **halved**, by porting the stage we were missing.
+   1.20x -> 1.082x unpacked, 1.14x -> 1.054x packed, on routed Fmax. The
+   warning in this item proved its worth twice: the un-refined comparison was
+   an HPWL artifact, and releasing the IO anchors improves HPWL past nextpnr
+   while *losing* Fmax.
+2b. **The remaining 5-8% is now the honest global-placement gap.** Both
+   pipelines end in the same refinement stage, so what is left is DCD against
+   HeAP's analytic solve plus spreading. Attack that, not the tail.
 3. **Re-derive the class split under legality.** The "local tightening" reading
    and the MST/Steiner numbers were taken on illegal placements. Legality cost
    only +1.3% so they are probably close, but the LUT->FF class is exactly the

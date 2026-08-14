@@ -474,6 +474,51 @@ fn main() {
     );
     match place_opt_trans(&mut ot_ctx, &cfg) {
         Ok(()) => {
+            // Match nextpnr's pipeline, which never stops at legalisation:
+            // HeAP always follows it with placer1_refine.
+            if std::env::var("OT_REFINE").as_deref() == Ok("1") {
+                // opt_trans locks IO cells as anchors for its continuous solve
+                // (`lock_boundary_cells`), at the same LOCKED strength a real
+                // user constraint uses. The anchor has served its purpose once
+                // legalisation is done, and nextpnr's refiner moves IO freely,
+                // so release everything that is not genuinely pinned by a BEL
+                // attribute.
+                if std::env::var("OT_UNLOCK_IO").as_deref() == Ok("1") {
+                    let bel_attr = ot_ctx.id("BEL");
+                    let to_free: Vec<_> = ot_ctx
+                        .design
+                        .iter_alive_cells()
+                        .filter(|(_, c)| {
+                            c.bel_strength.is_locked() && !c.attrs.contains_key(&bel_attr)
+                        })
+                        .map(|(id, c)| (id, c.bel))
+                        .collect();
+                    let n = to_free.len();
+                    for (id, bel) in to_free {
+                        ot_ctx
+                            .design
+                            .cell_edit(id)
+                            .set_bel(bel, PlaceStrength::Weak);
+                    }
+                    eprintln!("  (released {n} anchor locks before refinement)");
+                }
+                let (pre_wl, _) = score(&ot_ctx);
+                let rcfg = nextpnr::placer::RefineCfg::default();
+                let rt = Instant::now();
+                let rstats = nextpnr::placer::refine_placement(&mut ot_ctx, &rcfg)
+                    .expect("refine opt_trans placement");
+                let (post_wl, _) = score(&ot_ctx);
+                println!(
+                    "refine       : {pre_wl} -> {post_wl}  ({:+.1}%)  timing {:.3} -> {:.3}  \
+                     {} cells {} chains  {:.2}s",
+                    100.0 * (post_wl - pre_wl) as f64 / pre_wl as f64,
+                    rstats.timing.cost_before,
+                    rstats.timing.cost_after,
+                    rstats.autoplaced,
+                    rstats.chain_basis,
+                    rt.elapsed().as_secs_f64(),
+                );
+            }
             let secs = t.elapsed().as_secs_f64();
             let (wl, nets) = score(&ot_ctx);
             let (b, tot) = bound_count(&ot_ctx);

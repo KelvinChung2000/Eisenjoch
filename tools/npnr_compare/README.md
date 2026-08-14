@@ -45,6 +45,7 @@ git -C ~/nextpnr worktree add ~/nextpnr-upstream 4d235150
 cd ~/nextpnr-upstream
 git apply /path/to/eisenjoch/tools/npnr_compare/patches/0001-dump-net-metric.patch
 git apply /path/to/eisenjoch/tools/npnr_compare/patches/0002-optional-lutff-pack.patch
+git apply /path/to/eisenjoch/tools/npnr_compare/patches/0003-optional-refine.patch
 cmake -B build -DARCH=himbaechel -DHIMBAECHEL_UARCH=example \
       -DBUILD_PYTHON=OFF -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
@@ -59,6 +60,18 @@ no placement or routing behaviour.
 "how much of the placement gap is packing?" by removing packing from the
 reference — measured answer: about −1.7%, i.e. it slightly *hurts* nextpnr's
 wirelength. See `docs/dcd_vs_nextpnr_baseline.md`.
+
+`0003` makes the post-legalisation SA refinement pass skippable, via
+`NPNR_NO_REFINE=1`. Default behaviour is unchanged.
+
+It exists because HeAP *always* refines (`placer_heap.cc:402-412`;
+`parallelRefine` defaults false, so the pass is `placer1_refine`), which means
+every wirelength nextpnr reports is post-refinement and no comparison against
+"HeAP's placement" was ever comparing against HeAP's placement. With the patch
+you can take the analytical stage's own output and, separately, feed it to a
+refiner under test — the input and the target then both come from nextpnr. On
+the 20x20 fabric at seed 1, unpacked: HeAP legalises to 2379 and refines to
+1825, and post-route Fmax goes 40.62 -> 44.07 MHz.
 
 `0002` is also what makes *routing our own placement* possible at all:
 `constrain_cell_pairs` runs in `pack()`, after the JSON frontend has already

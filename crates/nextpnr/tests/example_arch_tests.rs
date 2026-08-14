@@ -8,6 +8,7 @@ mod common;
 use nextpnr::chipdb::{BelId, ChipDb, TileTypePod};
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::{BelPin, Context};
+use nextpnr::netlist::CellId;
 use nextpnr::placer::heap::{place_heap, PlacerHeapCfg};
 use nextpnr::read_packed;
 use nextpnr::router::maze::Router1Cfg;
@@ -1263,6 +1264,97 @@ fn sorted_legalize_honours_the_arch_validity_rule() {
             assert!(
                 ctx.is_bel_location_valid(bel),
                 "banned={banned}: cell landed on a bel the arch rejects"
+            );
+        }
+    }
+}
+
+// =====================================================================
+// Placement refinement (placer1_refine)
+// =====================================================================
+
+/// Place `n` LUT6 cells on the first available bels at the given strength.
+fn seed_refine_design(ctx: &mut Context, n: usize, strength: PlaceStrength) -> Vec<CellId> {
+    let lut6 = ctx.id("LUT6");
+    let cells: Vec<CellId> = (0..n)
+        .map(|i| ctx.design.add_cell(ctx.id(&format!("rf{i}")), lut6))
+        .collect();
+    ctx.populate_bel_buckets();
+    let bels: Vec<BelId> = ctx.bels_for_bucket(lut6).map(|b| b.id()).collect();
+    assert!(bels.len() >= n, "fixture needs at least {n} bels");
+    for (i, &c) in cells.iter().enumerate() {
+        assert!(ctx.bind_bel(bels[i], c, strength), "bind failed");
+    }
+    cells
+}
+
+/// Refinement must move exactly the cells nextpnr would: those bound at or
+/// below STRONG, and nothing else.
+///
+/// This is not academic. Our legaliser used to bind at PLACER, one step above
+/// the cutoff, which would have made the whole pass a silent no-op; and the
+/// harness used to bind nextpnr's placements at STRONG regardless of the
+/// BEL_STRENGTH it wrote, which set the USER-pinned clock buffer loose and
+/// broke clock routing.
+#[test]
+fn refine_moves_only_cells_at_or_below_strong() {
+    use nextpnr::placer::{refine_placement, RefineCfg};
+
+    let cases = [
+        (PlaceStrength::Weak, true),
+        (PlaceStrength::Strong, true),
+        (PlaceStrength::Placer, false),
+        (PlaceStrength::Fixed, false),
+        (PlaceStrength::Locked, false),
+        (PlaceStrength::User, false),
+    ];
+    for (strength, movable) in cases {
+        let mut ctx = common::make_example_context();
+        let cells = seed_refine_design(&mut ctx, 4, strength);
+        let before: Vec<_> = cells.iter().map(|&c| ctx.design.cell(c).bel).collect();
+
+        let stats = refine_placement(&mut ctx, &RefineCfg::default())
+            .unwrap_or_else(|e| panic!("{strength}: refine failed: {e}"));
+
+        assert_eq!(
+            stats.autoplaced,
+            if movable { cells.len() } else { 0 },
+            "{strength}: wrong number of cells offered to the refiner",
+        );
+        if !movable {
+            let after: Vec<_> = cells.iter().map(|&c| ctx.design.cell(c).bel).collect();
+            assert_eq!(before, after, "{strength}: a pinned cell was moved");
+        }
+    }
+}
+
+/// Every move is checked against the arch, so no cell may end up on a bel the
+/// rule rejects -- including the bel a swap partner is pushed onto.
+#[test]
+fn refine_never_lands_a_cell_on_an_arch_rejected_bel() {
+    use nextpnr::placer::{refine_placement, RefineCfg};
+
+    for banned in [0usize, 3usize] {
+        let mut ctx = common::make_example_context();
+        let cells = seed_refine_design(&mut ctx, 4, PlaceStrength::Weak);
+
+        // Ban bels the refiner would otherwise be free to wander onto.
+        let lut6 = ctx.id("LUT6");
+        let all: Vec<BelId> = ctx.bels_for_bucket(lut6).map(|b| b.id()).collect();
+        let rejected: std::collections::HashSet<BelId> =
+            all.iter().rev().copied().take(banned).collect();
+        ctx.set_validity_check(std::sync::Arc::new(move |_: &Context, bel: BelId| {
+            !rejected.contains(&bel)
+        }));
+
+        refine_placement(&mut ctx, &RefineCfg::default())
+            .unwrap_or_else(|e| panic!("banned={banned}: refine failed: {e}"));
+
+        for &c in &cells {
+            let bel = ctx.design.cell(c).bel.expect("cell must stay placed");
+            assert!(
+                ctx.is_bel_location_valid(bel),
+                "banned={banned}: refinement left a cell on a rejected bel",
             );
         }
     }
