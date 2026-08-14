@@ -377,6 +377,54 @@ Both move paths are exercised: the paired runs report `233 cells 128 chains`,
 so `try_swap_chain` is moving every one of the 128 LUT→FF clusters, matching
 nextpnr's own "Constrained 128 LUTFF pairs".
 
+### Routed wirelength, and where the gap actually is
+
+HPWL is an estimate. Counting what the router really consumed — wires and pips
+from each net's `ROUTING` record — gives the honest routed wirelength. 5 seeds
+per config, all routed at router seed 1:
+
+| config | routed wires | vs ref | pips | vs ref |
+|---|---|---|---|---|
+| nextpnr unpacked | 10320.0 (10147-10507) | — | 9659.6 | — |
+| nextpnr packed | 9864.6 (9669-10002) | — | 9253.4 | — |
+| ours, filter | 10646.0 (10479-10841) | **1.032x** | 10009.4 | 1.036x |
+| ours, paired | 10212.4 (10103-10270) | **1.035x** | 9617.0 | 1.039x |
+| ours, IO released | 10441.2 (10233-10719) | **1.012x** | 9794.6 | 1.014x |
+
+Line the three metrics up and they disagree in a way that localises the problem:
+
+| metric | filter | paired | IO released |
+|---|---|---|---|
+| HPWL | 1.112x | 1.043x | 0.982x |
+| routed wires | 1.032x | 1.035x | 1.012x |
+| **post-route Fmax** | **1.082x** | **1.054x** | **1.113x** |
+
+We consume nearly as much routing as nextpnr — 3% more — yet lose 5-8% of Fmax.
+The residual is therefore **not** a global wirelength or congestion problem: on
+average our placement is about as economical as HeAP's. It is a *critical path*
+problem. The IO-released variant states it most sharply: the best routed
+wirelength of any configuration measured (1.012x) and the worst Fmax (1.113x).
+
+That is where the remaining gap should be attacked — the timing-critical paths
+specifically, not total wire.
+
+### Runtime
+
+Placement wall-clock, mean of 5 seeds, both figures covering the whole placement
+pipeline (ours: DCD + legalisation + refinement; nextpnr: HeAP + SA refinement):
+
+| | ours, 8 threads | ours, 1 thread | nextpnr |
+|---|---|---|---|
+| unpacked / filter | 0.48s | 0.66s | 0.51s |
+| packed / paired | 0.40s | — | 0.33s |
+
+Roughly at parity: marginally ahead on the unpacked config with 8 threads
+(0.94x), 1.22x behind on packed, and about 1.29x behind single-threaded against
+nextpnr's default. **No runtime claim is worth much here** — the whole placement
+is half a second, our driver reports to one decimal, and a 20x20 fabric at 14%
+LUT utilisation is not a runtime benchmark. This needs FPGA01/stereovision3
+before anyone quotes a speed ratio.
+
 ### A clean case of HPWL lying
 
 opt_trans locks IO cells as anchors for its continuous solve
@@ -420,12 +468,13 @@ measurable Fmax regression. Keep the anchors; keep reporting Fmax.
    warning in this item proved its worth twice: the un-refined comparison was
    an HPWL artifact, and releasing the IO anchors improves HPWL past nextpnr
    while *losing* Fmax.
-2b. **The remaining 5-8% is now mostly the global-placement gap.** Both
-   pipelines end in the same refinement stage — though not on equal terms: ours
-   refines with 131 IO cells frozen and nextpnr's does not, and that
-   restriction measured as *beneficial*. So the residual is DCD against HeAP's
-   analytic solve plus spreading, plus some IO-placement quality. Attack that,
-   not the tail.
+2b. **The remaining 5-8% is a critical-path gap, not a wirelength gap.**
+   Routed wirelength is only 1.03x while Fmax is 1.05-1.08x, so our placement
+   is about as economical with routing as HeAP's overall and loses on the
+   timing-critical paths specifically. Target those. Both pipelines now end in
+   the same refinement stage, though not on equal terms — ours refines with 131
+   IO cells frozen and nextpnr's does not, and that restriction measured as
+   *beneficial*.
 3. **Re-derive the class split under legality.** The "local tightening" reading
    and the MST/Steiner numbers were taken on illegal placements. Legality cost
    only +1.3% so they are probably close, but the LUT->FF class is exactly the
