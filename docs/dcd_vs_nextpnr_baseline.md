@@ -373,6 +373,10 @@ with placer1's.
 Fmax gap roughly halved, and refinement is worth 16-20% of our wirelength — more
 than it is worth to HeAP, because our legalised placement has more slack in it.
 
+Both move paths are exercised: the paired runs report `233 cells 128 chains`,
+so `try_swap_chain` is moving every one of the 128 LUT→FF clusters, matching
+nextpnr's own "Constrained 128 LUTFF pairs".
+
 ### A clean case of HPWL lying
 
 opt_trans locks IO cells as anchors for its continuous solve
@@ -399,8 +403,11 @@ measurable Fmax regression. Keep the anchors; keep reporting Fmax.
    see the packing section.)
 2. **HPWL bias: measured, not just argued.** DCD optimises a congestion-aware
    transport energy, so scoring only HPWL is biased toward nextpnr by
-   construction. Now quantified: 1.24-1.36x on HPWL against 1.14-1.16x on
-   post-route Fmax. Report Fmax.
+   construction. First quantified as 1.24-1.36x HPWL against 1.14-1.16x Fmax;
+   those Fmax figures were single seed-1 runs and the corrected 5-seed numbers
+   are 1.14x packed / 1.20x unpacked. Current figures are in "Result with
+   refinement". Report Fmax — and see "A clean case of HPWL lying" for a change
+   that improves HPWL past nextpnr while losing Fmax.
 3. Synthetic fabric, one benchmark family (LFSR + accumulator), low LUT
    utilisation on two of three fabrics.
 
@@ -413,9 +420,12 @@ measurable Fmax regression. Keep the anchors; keep reporting Fmax.
    warning in this item proved its worth twice: the un-refined comparison was
    an HPWL artifact, and releasing the IO anchors improves HPWL past nextpnr
    while *losing* Fmax.
-2b. **The remaining 5-8% is now the honest global-placement gap.** Both
-   pipelines end in the same refinement stage, so what is left is DCD against
-   HeAP's analytic solve plus spreading. Attack that, not the tail.
+2b. **The remaining 5-8% is now mostly the global-placement gap.** Both
+   pipelines end in the same refinement stage — though not on equal terms: ours
+   refines with 131 IO cells frozen and nextpnr's does not, and that
+   restriction measured as *beneficial*. So the residual is DCD against HeAP's
+   analytic solve plus spreading, plus some IO-placement quality. Attack that,
+   not the tail.
 3. **Re-derive the class split under legality.** The "local tightening" reading
    and the MST/Steiner numbers were taken on illegal placements. Legality cost
    only +1.3% so they are probably close, but the LUT->FF class is exactly the
