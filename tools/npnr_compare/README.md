@@ -60,6 +60,22 @@ no placement or routing behaviour.
 reference — measured answer: about −1.7%, i.e. it slightly *hurts* nextpnr's
 wirelength. See `docs/dcd_vs_nextpnr_baseline.md`.
 
+`0002` is also what makes *routing our own placement* possible at all:
+`constrain_cell_pairs` runs in `pack()`, after the JSON frontend has already
+bound our injected bels, and fights any placement that does not satisfy
+`delta_z=1`. Set `NPNR_NO_LUTFF_PACK=1` on both sides.
+
+## Checking placement legality
+
+`check_slice_legality.py <placed.json>` counts violations of the example uarch's
+`slice_valid` rule without needing nextpnr. Validated against the tool: on a
+placement nextpnr rejected with 248 `post-placement validity check failed`
+warnings it reports 124 illegal slices, exactly 248/2.
+
+Useful because a failed legality check aborts nextpnr *before* routing, and the
+warning list is long and unsorted; this gives the count directly, and works on
+any placed JSON including ones our own placer wrote.
+
 ## Regenerating
 
 ```bash

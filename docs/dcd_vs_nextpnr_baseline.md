@@ -47,6 +47,72 @@ is ~40%, an order of magnitude above this noise. But single-run comparisons of
 opt_trans against anything should be treated as unreliable, and every number
 here is a 5-run mean.
 
+## Routing it: the placement is illegal
+
+Handing our placement to nextpnr's own router was meant to retire two caveats at
+once. It retired them by failing:
+
+```
+ERROR: Placing design failed.
+248x  Warning: post-placement validity check failed for Bel 'X3Y5/L2_LUT' ...
+```
+
+248 bels = **124 slices**. nextpnr will not route our placement at all.
+
+The rule is `slice_valid` (`example.cc:134`): a slice holding both a LUT and an
+FF is legal only if the FF's `D` net is that LUT's `F` net, or the LUT's `I3` is
+unused. The `I3` escape hatch is dead here — `lut_i3_used` tests
+`getPort(I[K-1]) != nullptr`, which is the *net*, and `replace_constants` turns
+a constant tie into the real GND net. Every LUT4 on this benchmark has
+`I[3] = '0'`, so the rule reduces to: **a LUT and an FF may share a slice only
+if the FF is driven by that LUT.**
+
+`tools/npnr_compare/check_slice_legality.py` reproduces the tool's verdict
+exactly (124 illegal against 248 warnings):
+
+| placement | LUT+FF slices | legal | illegal |
+|---|---|---|---|
+| opt_trans, `mst=4 steiner=1` | 127 | 3 | **124** |
+| opt_trans, default | 122 | 0 | **122** |
+| nextpnr, unpacked | 80 | 80 | 0 |
+| nextpnr, packed | 128 | 128 | 0 |
+
+Root cause: `Context::is_bel_location_valid` is a hardcoded `true`
+(`arch_api.rs:104`), and opt_trans never calls it regardless — the only two call
+sites in the tree are in `place_common.rs`. The placer has no arch-legality
+awareness of any kind.
+
+This inverts the reading of the LUT->FF class. We were not merely "5.1x worse at
+co-locating pairs": we were achieving our co-location by stuffing *unrelated*
+FFs into LUT slices, which is the one thing the arch forbids. HeAP's 80 shared
+slices are all real driver-sink pairs, found unaided, because its legaliser only
+accepts moves that pass `isBelLocationValid`.
+
+**Every HPWL number in this document is therefore a lower bound in our favour.**
+Adding legality can only push our wirelength up. The true gap is larger than
+measured, and no HPWL result here should be quoted without this caveat.
+
+### The pinned clock buffer was also being ignored
+
+`clk_buf` carries `(* BEL = "X1Y0/IO0" *)` — the example fabric's clock ladder is
+fed by a `GCLK_OUT` pip that exists only in that tile. nextpnr honours it; our
+driver did not, so opt_trans was free to move the clock buffer while the
+reference was not. Fixed in the driver (`apply_bel_constraints`, binding at
+`Locked`, which both `lock_boundary_cells` and the warmup re-shuffle respect).
+
+Honouring it costs us a lot, which is itself a finding: we handle a pinned
+high-fanout clock source (fanout 128) far worse than HeAP does. Corrected
+20x20 figures against the legal unpacked reference of 1825, means of 5 seeds:
+
+| config | mean | range | ratio |
+|---|---|---|---|
+| default | 5231 | 5136-5329 | 2.87x |
+| `mst=4 steiner=1` | 2452 | 2436-2475 | 1.34x |
+
+Superseding the 3958 / 2390 figures in the tables below, which were measured
+with the clock buffer free. Run-to-run spread also drops to under 2% once the
+buffer is pinned.
+
 ## Where the gap is
 
 Splitting by whether a net touches an IO cell (20x20):
@@ -82,6 +148,11 @@ placement is fine. The loss is concentrated in the short nets, and it is worst
 on the shortest class of all. This is local tightening, not global optimisation:
 DCD gets cells into roughly the right region and then fails to squeeze the last
 one or two tiles.
+
+Read this together with the legality section: the LUT->FF class is exactly where
+we break `slice_valid`, so "we fail to squeeze the last tile" understates it —
+we squeeze into slices we are not entitled to. Re-derive this split once the
+placer is legality-aware.
 
 That is consistent with legalisation being the culprit rather than DCD's solve:
 `Pre-legalization: HPWL=3711` → `Post-legalization: HPWL=4086` on a default
@@ -163,13 +234,12 @@ moves.
 
 ## Caveats that bound the claim
 
-1. **Legality is not verified, and this flatters opt_trans.** The example uarch
-   enforces `isBelLocationValid` → `slice_valid(x, y, z/2)`. We do not.
-   nextpnr's number is a *legal* placement; ours is not known to be. Treat
-   opt_trans's wirelength as a lower bound — the true gap is at least this
-   large, possibly larger. (The LUT4→DFF pairing constraint, previously listed
-   here too, has since been measured directly and is worth −1.7%; see the
-   packing section.)
+1. **Legality is now verified, and our placement fails it.** This caveat used to
+   read "not verified, and this flatters opt_trans". It has been measured: 124
+   illegal slices, and nextpnr refuses to route the result. See "Routing it:
+   the placement is illegal" above. Every wirelength figure here remains a
+   lower bound in our favour. (The LUT4→DFF pairing constraint, previously
+   listed here too, is worth −1.7%; see the packing section.)
 2. **HPWL is nextpnr's objective, not opt_trans's.** DCD optimises a
    congestion-aware transport energy; the whole premise is trading wirelength
    for routability. Scoring only HPWL is biased toward nextpnr by construction.
@@ -180,15 +250,20 @@ moves.
 
 ## Next steps, in value order
 
-1. **Attack local tightening, not the global solve.** We match HeAP within 6%
-   on long nets and lose 2-5x on short ones, and our legaliser adds ~10% over
-   the pre-legalisation HPWL. A detail-placement / refinement pass is the
-   indicated fix.
-2. **Route both placements and compare.** Removes caveat 2 and most of caveat 1
-   at once. Writing our placement back out as JSON with `NEXTPNR_BEL` attributes
-   lets nextpnr route *both*, so the router is identical and legality is checked
-   by the tool that defines it.
-3. **Validate `mst_edge_weight` on the real benchmarks** before touching
+1. **Teach opt_trans arch legality.** This is now the only thing worth doing
+   first, because nothing else can be measured until it is done: our placement
+   does not route. Give `Context::is_bel_location_valid` a real implementation
+   (via `PlacerPlugin::check_placement_validity`, which already exists as the
+   uarch-hook equivalent) and make the legaliser reject moves that fail it, the
+   way HeAP's does. Expect our HPWL to get *worse*; that is the point.
+2. **Then re-measure everything.** The MST/Steiner result, the class split and
+   the "local tightening" reading are all conclusions drawn from an illegal
+   placement, and legality bears directly on the LUT->FF class those
+   conclusions rest on.
+3. **Then route.** The harness is ready and validated — nextpnr reported
+   `wirelen = 2429` for our injected placement, matching our own score exactly,
+   so the round-trip is faithful. It only needs a legal placement to consume.
+4. **Validate `mst_edge_weight` on the real benchmarks** before touching
    defaults.
 4. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
    config and `num_threads = 1` still disagree run to run, which makes any
@@ -209,5 +284,22 @@ OT_MST=4.0 OT_STEINER=1.0 ./target/release/examples/npnr_baseline_placers \
 
 Knobs: `OT_MST`, `OT_STEINER`, `OT_ITERS`, `OT_DCD_ITERS`, `OT_SEED`,
 `OT_THREADS`. Average several runs — see the nondeterminism note.
+
+To check legality, and to route our placement once it is legal:
+
+```bash
+OT_MST=4.0 OT_STEINER=1.0 OT_WRITE_PLACEMENT=$O/ot20_64.json \
+    ./target/release/examples/npnr_baseline_placers \
+    $O/synth20.bin $F/constids.inc $O/bench64.json $O/placed20_64_nopack.json
+python3 tools/npnr_compare/check_slice_legality.py $O/ot20_64.json
+NPNR_NO_LUTFF_PACK=1 $NPNR/build/nextpnr-himbaechel \
+    --chipdb $O/synth20.bin --device EXAMPLE --json $O/ot20_64.json \
+    --write $O/ot20_64_routed.json --seed 1
+```
+
+`NPNR_NO_LUTFF_PACK=1` is required on both sides: `constrain_cell_pairs` runs in
+`pack()`, *after* the frontend has bound our injected bels, and would fight a
+placement that does not already satisfy `delta_z=1`. Compare against
+`placed20_64_nopack.json` so neither side packs.
 Fabrics other than the committed 12x12 are regenerated with
 `tools/npnr_compare/` (see its README); `out/` is scratch and not committed.

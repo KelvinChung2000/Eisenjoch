@@ -35,7 +35,102 @@ fn load(chipdb: &str, constids: &str, design: &str) -> Context {
     let trimmed = nextpnr::packer::passes::remove_nextpnr_iobs(&mut ctx).expect("trim iobs");
     eprintln!("  (trimmed {trimmed} nextpnr IO pseudo-cells)");
     adapt_cell_types(&mut ctx);
+    apply_bel_constraints(&mut ctx);
     ctx
+}
+
+/// Honour the `BEL` attribute as a locked pre-placement.
+///
+/// nextpnr applies these as placer constraints; without them the clock buffer
+/// is free to move, and on the example fabric that is fatal -- its clock ladder
+/// is fed by a single `GCLK_OUT` pip that exists only in the tile at X1Y0, so
+/// `clk_buf` carries `(* BEL = "X1Y0/IO0" *)` and routing fails anywhere else.
+///
+/// `Locked` is what makes this stick: `lock_boundary_cells` and the warmup
+/// re-shuffle both skip cells that are already locked, and `initial_placement`
+/// skips anything already bound.
+fn apply_bel_constraints(ctx: &mut Context) {
+    let bel_attr = ctx.id("BEL");
+    let by_name = bel_name_map(ctx);
+    let wanted: Vec<_> = ctx
+        .design
+        .iter_alive_cells()
+        .filter_map(|(c, cell)| Some((c, cell.attrs.get(&bel_attr)?.as_str())))
+        .collect();
+    for (c, name) in wanted {
+        let bel = *by_name
+            .get(&name)
+            .unwrap_or_else(|| panic!("BEL constraint names no such bel: {name}"));
+        assert!(
+            ctx.bind_bel(bel, c, PlaceStrength::Locked),
+            "BEL constraint {name} could not be bound"
+        );
+        eprintln!("  (locked {name} from BEL constraint)");
+    }
+}
+
+/// `"X{x}Y{y}/{bel}"` -> bel, the name form nextpnr reads and writes.
+fn bel_name_map(ctx: &Context) -> HashMap<String, BelId> {
+    let mut by_name = HashMap::new();
+    for bel in ctx.chipdb().bels() {
+        let loc = ctx.chipdb().bel_loc(bel);
+        by_name.insert(
+            format!("X{}Y{}/{}", loc.x, loc.y, ctx.chipdb().bel_name(bel)),
+            bel,
+        );
+    }
+    by_name
+}
+
+/// Write the input netlist back out with our placement as `NEXTPNR_BEL` attrs.
+///
+/// This is what lets nextpnr *route* our placement. `attributesToArchInfo()`
+/// runs in upstream's JSON frontend, before `pack()`, and calls
+/// `bindBel(bel, cell, strength)` with the strength from `BEL_STRENGTH`,
+/// defaulting to `STRENGTH_USER` (6). Every placer skips cells above
+/// `STRENGTH_STRONG` (2), so omitting `BEL_STRENGTH` pins the placement: the
+/// binary re-places nothing and goes straight to routing ours.
+///
+/// Cells nextpnr's own `pack()` creates -- the constant drivers -- are not in
+/// the input JSON and so get no attribute; nextpnr places those itself.
+///
+/// Fails loudly on any mismatch: a partially-injected placement would still
+/// route, and would silently be a different experiment.
+fn write_placement_json(ctx: &Context, bench: &str, out: &str) {
+    let mut root: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(bench).expect("read bench")).expect("json");
+    let top = ctx.name_of(ctx.design.top_module).to_owned();
+    let cells = root["modules"][&top]["cells"]
+        .as_object_mut()
+        .unwrap_or_else(|| panic!("no cells in module {top}"));
+
+    let mut injected = 0usize;
+    let mut unplaced = Vec::new();
+    for (name, cell_json) in cells.iter_mut() {
+        let id = ctx.id(name);
+        let Some(c) = ctx.design.cell_by_name(id) else {
+            panic!("JSON cell {name} is absent from our design")
+        };
+        match ctx.design.cell(c).bel {
+            Some(bel) => {
+                let loc = ctx.chipdb().bel_loc(bel);
+                let bel_name = format!("X{}Y{}/{}", loc.x, loc.y, ctx.chipdb().bel_name(bel));
+                cell_json["attributes"]["NEXTPNR_BEL"] = serde_json::Value::String(bel_name);
+                // Drop any `BEL` constraint, exactly as upstream's
+                // archInfoToAttributes() does. Left in place it is applied a
+                // second time by the placer's constraint pass, which then
+                // errors: "cannot be bound ... already bound to cell".
+                if let Some(a) = cell_json["attributes"].as_object_mut() {
+                    a.remove("BEL");
+                }
+                injected += 1;
+            }
+            None => unplaced.push(name.clone()),
+        }
+    }
+    assert!(unplaced.is_empty(), "cells left unplaced: {unplaced:?}");
+    std::fs::write(out, serde_json::to_string(&root).expect("serialize")).expect("write placement");
+    eprintln!("  (wrote {injected} NEXTPNR_BEL attrs to {out})");
 }
 
 /// Map cell types onto this fabric's bel types, the way the example uarch does.
@@ -158,14 +253,7 @@ fn bound_count(ctx: &Context) -> (usize, usize) {
 
 /// Rebuild nextpnr's placement from the `NEXTPNR_BEL` attributes.
 fn apply_nextpnr_placement(ctx: &mut Context) {
-    let mut by_name: HashMap<String, BelId> = HashMap::new();
-    for bel in ctx.chipdb().bels() {
-        let loc = ctx.chipdb().bel_loc(bel);
-        by_name.insert(
-            format!("X{}Y{}/{}", loc.x, loc.y, ctx.chipdb().bel_name(bel)),
-            bel,
-        );
-    }
+    let by_name = bel_name_map(ctx);
     let bel_attr = ctx.id("NEXTPNR_BEL");
     let bindings: Vec<_> = ctx
         .design
@@ -223,6 +311,9 @@ fn main() {
             let (wl, nets) = score(&ot_ctx);
             let (b, tot) = bound_count(&ot_ctx);
             let os = score_by_class(&ot_ctx);
+            if let Ok(path) = std::env::var("OT_WRITE_PLACEMENT") {
+                write_placement_json(&ot_ctx, bench, &path);
+            }
             println!("opt_trans    : wirelength {wl:>8}   nets {nets:>5}   bound {b}/{tot}   {secs:.1}s");
             report_classes("", os);
             println!(
