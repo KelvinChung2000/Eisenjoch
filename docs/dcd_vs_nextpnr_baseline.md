@@ -110,8 +110,13 @@ high-fanout clock source (fanout 128) far worse than HeAP does. Corrected
 | `mst=4 steiner=1` | 2452 | 2436-2475 | 1.34x |
 
 Superseding the 3958 / 2390 figures in the tables below, which were measured
-with the clock buffer free. Run-to-run spread also drops to under 2% once the
-buffer is pinned.
+with the clock buffer free.
+
+These five runs vary the *seed*, so their spread — 3.7% default, 1.6% tuned — is
+across-seed, not the fixed-seed nondeterminism noted earlier. Both are still
+well below the 2-11% fixed-seed spread measured with the buffer free, which is a
+hint worth following up: whatever is unseeded in the placer appears to interact
+with boundary/IO cell placement.
 
 ## Where the gap is
 
@@ -265,13 +270,16 @@ moves.
    so the round-trip is faithful. It only needs a legal placement to consume.
 4. **Validate `mst_edge_weight` on the real benchmarks** before touching
    defaults.
-4. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
+5. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
    config and `num_threads = 1` still disagree run to run, which makes any
-   single-run opt_trans measurement untrustworthy.
-5. Denser and larger fabrics; this design is IO-bound, which capped LUT
+   single-run opt_trans measurement untrustworthy. Lead: pinning the fanout-128
+   clock buffer dropped the observed spread well below the 2-11% seen with it
+   free, so the unseeded path likely runs through boundary/IO placement.
+6. Denser and larger fabrics; this design is IO-bound, which capped LUT
    utilisation at 14% on the 20x20.
-6. Teach the placer the arch's bel-bucket and validity rules, so `INBUF`/`OUTBUF`
-   need not be retyped to `IOB` by hand in the driver.
+7. Teach the placer the arch's bel-bucket rules, so `INBUF`/`OUTBUF` need not be
+   retyped to `IOB` by hand in the driver. (The validity half of this item is
+   now item 1.)
 
 ## Reproducing
 
