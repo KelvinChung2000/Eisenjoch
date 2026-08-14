@@ -194,6 +194,14 @@ directory's README for setup and regeneration. Three things this turned up:
    was regenerated and grew by exactly 4 bytes — one speed grade, one null
    pointer — with the fixture's `K = 6` and `known_id_count = 0` unchanged.
 
+   The pre-existing benchmark databases (`chip_database/xc7_large.bin`,
+   `xc7_standard.bin`, `xc_ultrascale*.bin`) were built by the *old* generators
+   and so still carry 28-byte speed grades. All four were checked and have
+   exactly **one** speed grade, and nothing reads `extra_data`, so they remain
+   safe to load — only `speed_grades[0]` is touched and its first 28 bytes are
+   identical. They are stale-format nonetheless, and should be regenerated
+   whenever convenient; a second speed grade would misparse from index 1 on.
+
 ### Notes for whoever picks up heap
 
 - `placer/heap/` is currently **hybrid**: `equation_system.rs` is a faithful

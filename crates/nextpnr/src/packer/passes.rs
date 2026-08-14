@@ -151,6 +151,10 @@ pub fn pack_io(ctx: &mut Context) -> Result<(), PackerError> {
 /// cell-type list we do not have here, so it is deliberately omitted; the caller
 /// is expected to have synthesised with matching IO buffer insertion.
 ///
+/// Note that `disconnect_user` blanks the slot to `CellPin::INVALID` rather
+/// than removing it, so the net keeps its user-slot indices (other cells cache
+/// theirs). Anything walking `net.users()` afterwards must skip invalid pins.
+///
 /// Returns the number of pseudo-cells removed.
 pub fn remove_nextpnr_iobs(ctx: &mut Context) -> Result<usize, PackerError> {
     let pseudo_types = [

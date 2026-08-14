@@ -24,15 +24,28 @@ same chipdb and the same netlist; nextpnr's placement is reconstructed from its
 
 ## Result
 
-Total wirelength, `opt_trans` against nextpnr's HeAP:
+Total wirelength, `opt_trans` against nextpnr's HeAP. opt_trans figures are the
+mean of 5 runs (see the nondeterminism note below):
 
-| fabric | LUT util | nextpnr | opt_trans (default) | ratio |
+| fabric | LUT util | nextpnr | opt_trans (default, mean of 5) | ratio |
 |---|---|---|---|---|
-| 7x7, W=16 | 41% | 159 | 484 | 3.04x |
-| 12x12, W=16 | 11% | 203 | 684 | 3.37x |
-| 20x20, W=64 | 14% | 1857 | 3913 | 2.11x |
+| 7x7, W=16 | 41% | 159 | 463 (445-497) | 2.91x |
+| 12x12, W=16 | 11% | 203 | 688 (672-704) | 3.39x |
+| 20x20, W=64 | 14% | 1857 | 3958 (3924-4005) | 2.13x |
 
-Seed-to-seed variance is about 2%, so these gaps are far outside noise.
+### opt_trans is nondeterministic at fixed seed
+
+Repeated runs of the identical binary, config and seed do not agree. Run-to-run
+spread over 5 runs is 2.0% (20x20), 4.7% (12x12), 11.2% (7x7) — larger on
+smaller fabrics. This is **not** thread scheduling: forcing `num_threads = 1`
+does not fix it (single-threaded 20x20 runs gave 4083 / 4003 / 3854, a wider
+spread than the 8-thread runs). Something else in the placer is unseeded.
+
+That is a reproducibility problem for benchmarking in its own right, worth
+chasing independently. It does not threaten the conclusion below: the MST effect
+is ~40%, an order of magnitude above this noise. But single-run comparisons of
+opt_trans against anything should be treated as unreliable, and every number
+here is a 5-run mean.
 
 ## Where the gap is
 
@@ -59,7 +72,8 @@ comments describe precisely this failure mode — the star model is
 "driver-anchored", lacks "sink-sink coupling", and suffers a
 "centroid-stacking pathology". The fix is implemented and switched off.
 
-Turning it on, on the 20x20 fabric:
+Turning it on, on the 20x20 fabric (single runs, so read these as +/-2%; the
+per-config means are in the table after):
 
 | config | wirelength | ratio |
 |---|---|---|
@@ -74,16 +88,16 @@ Turning it on, on the 20x20 fabric:
 Plateaus at `mst≈4`. Raising `max_outer_iters` 50→200 buys almost nothing
 (2410→2347), so this is an objective-shape problem, not a convergence problem.
 
-Holding `mst=4.0 steiner=1.0` across all three fabrics:
+Holding `mst=4.0 steiner=1.0` across all three fabrics, means of 5 runs:
 
-| fabric | default | with MST/Steiner | nextpnr |
-|---|---|---|---|
-| 7x7, W=16 | 484 (3.04x) | 270 (1.70x) | 159 |
-| 12x12, W=16 | 684 (3.37x) | 364 (1.79x) | 203 |
-| 20x20, W=64 | 3913 (2.11x) | 2354 (1.27x) | 1857 |
+| fabric | default | with MST/Steiner | reduction | nextpnr |
+|---|---|---|---|---|
+| 7x7, W=16 | 463 (2.91x) | 275 (1.73x) | 41% | 159 |
+| 12x12, W=16 | 688 (3.39x) | 373 (1.84x) | 46% | 203 |
+| 20x20, W=64 | 3958 (2.13x) | 2390 (1.29x) | 40% | 1857 |
 
-Roughly half the gap, everywhere. The residual is still almost entirely core
-(20x20 excess: core 469, io 28).
+Roughly half the gap, everywhere, against a 2-11% run-to-run spread. The
+residual is still almost entirely core (20x20 excess: core 469, io 28).
 
 **The defaults are deliberately not changed here.** These fabrics are synthetic
 and tiny; prior opt_trans tuning has repeatedly reversed sign between synthetic
@@ -114,9 +128,12 @@ moves.
    by the tool that defines it.
 2. **Validate `mst_edge_weight` on the real benchmarks** before touching
    defaults.
-3. Denser and larger fabrics; this design is IO-bound, which capped LUT
+3. **Find the unseeded source of run-to-run variation.** Fixed seed, fixed
+   config and `num_threads = 1` still disagree run to run, which makes any
+   single-run opt_trans measurement untrustworthy.
+4. Denser and larger fabrics; this design is IO-bound, which capped LUT
    utilisation at 14% on the 20x20.
-4. Teach the placer the arch's bel-bucket and validity rules, so `INBUF`/`OUTBUF`
+5. Teach the placer the arch's bel-bucket and validity rules, so `INBUF`/`OUTBUF`
    need not be retyped to `IOB` by hand in the driver.
 
 ## Reproducing
@@ -128,6 +145,7 @@ OT_MST=4.0 OT_STEINER=1.0 ./target/release/examples/npnr_baseline_placers \
     $O/synth20.bin $F/constids.inc $O/bench64.json $O/placed20_64.json
 ```
 
-Knobs: `OT_MST`, `OT_STEINER`, `OT_ITERS`, `OT_DCD_ITERS`, `OT_SEED`.
+Knobs: `OT_MST`, `OT_STEINER`, `OT_ITERS`, `OT_DCD_ITERS`, `OT_SEED`,
+`OT_THREADS`. Average several runs — see the nondeterminism note.
 Fabrics other than the committed 12x12 are regenerated with
 `tools/npnr_compare/` (see its README); `out/` is scratch and not committed.

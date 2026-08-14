@@ -176,7 +176,7 @@ fn main() {
         std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
     };
     let mut cfg = OptTransPlacerCfg::default();
-    cfg.num_threads = 8;
+    cfg.num_threads = envu("OT_THREADS", 8);
     cfg.max_outer_iters = envu("OT_ITERS", 50);
     cfg.dcd_iters_per_cell = envu("OT_DCD_ITERS", cfg.dcd_iters_per_cell);
     cfg.steiner_weight = envf("OT_STEINER", cfg.steiner_weight);
