@@ -421,6 +421,7 @@ struct SolveAccum {
     /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
     diag_above_sum: u64,
     diag_load_nz_sum: u64,
+    diag_heur_prune_sum: u64,
     diag_load_mat_sum: u64,
     /// Settle-count histogram over nets, bucketed by settled-node count:
     /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
@@ -742,6 +743,7 @@ fn solve_all_nets_with_displacement(
                         out.diag_settle_sum += settle_len;
                         out.diag_above_sum += result.settle_above_sink as u64;
                         out.diag_load_nz_sum += result.load_nonzero as u64;
+                        out.diag_heur_prune_sum += result.heuristic_prunable as u64;
                         out.diag_load_mat_sum += result.load_material as u64;
                         let bucket = match settle_len {
                             0..=99 => 0,
@@ -870,6 +872,7 @@ struct ChunkUsage {
     /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
     diag_above_sum: u64,
     diag_load_nz_sum: u64,
+    diag_heur_prune_sum: u64,
     diag_load_mat_sum: u64,
     /// Settle-count histogram over nets, bucketed by settled-node count:
     /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
@@ -900,6 +903,7 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_above_sum: 0,
         diag_load_nz_sum: 0,
         diag_load_mat_sum: 0,
+        diag_heur_prune_sum: 0,
         diag_hist_nets: [0; 6],
         diag_hist_settles: [0; 6],
         diag_fan_nets: [0; 6],
@@ -918,6 +922,7 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         accum.diag_settle_sum += chunk.diag_settle_sum;
         accum.diag_above_sum += chunk.diag_above_sum;
         accum.diag_load_nz_sum += chunk.diag_load_nz_sum;
+        accum.diag_heur_prune_sum += chunk.diag_heur_prune_sum;
         accum.diag_load_mat_sum += chunk.diag_load_mat_sum;
         for b in 0..6 {
             accum.diag_hist_nets[b] += chunk.diag_hist_nets[b];
@@ -1114,6 +1119,7 @@ impl TemplateAccum {
             diag_above_sum: 0,
             diag_load_nz_sum: 0,
             diag_load_mat_sum: 0,
+            diag_heur_prune_sum: 0,
             diag_hist_nets: [0; 6],
             diag_hist_settles: [0; 6],
             diag_fan_nets: [0; 6],
@@ -5023,6 +5029,15 @@ pub fn run_inner_outer(
                     if settle_avg > 0.0 { 100.0 * nz_avg / settle_avg } else { 0.0 },
                     mat_avg,
                     if settle_avg > 0.0 { 100.0 * mat_avg / settle_avg } else { 0.0 },
+                );
+                let heur_avg = post_solve.diag_heur_prune_sum as f64 / solves as f64;
+                eprintln!(
+                    "    prune_ceiling[outer={}]: settle_avg={:.0} heuristic_prunable_avg={:.0} ({:.1}%) vs oracle_zero_load={:.1}%",
+                    outer,
+                    settle_avg,
+                    heur_avg,
+                    if settle_avg > 0.0 { 100.0 * heur_avg / settle_avg } else { 0.0 },
+                    if settle_avg > 0.0 { 100.0 * (settle_avg - nz_avg) / settle_avg } else { 0.0 },
                 );
                 let total_settles: u64 = post_solve.diag_hist_settles.iter().sum();
                 let labels = ["<100", "<1k", "<5k", "<20k", "<60k", ">=60k"];

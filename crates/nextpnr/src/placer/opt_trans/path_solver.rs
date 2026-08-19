@@ -584,6 +584,10 @@ pub(crate) struct DialLogitResult {
     /// is settling nodes that cannot affect congestion and exist only to fill
     /// `dist_cache` near pins.
     pub load_material: usize,
+    /// Diagnostic: settled nodes an admissible Manhattan A* bound could have
+    /// excluded. The ceiling on search-pruning, to compare against the oracle
+    /// ceiling implied by `load_nonzero`.
+    pub heuristic_prunable: usize,
 }
 
 /// Share of a net's injected demand below which a node's load cannot move the
@@ -1012,13 +1016,39 @@ pub(crate) fn net_path_weight(info: &NetSolveInfo, cfg: &OptTransPlacerCfg) -> f
 /// and outgoing (not-yet-settled) edges in the same adjacency list — each
 /// edge falls into exactly one branch of the dispatch below, so this fuses
 /// Dijkstra + Dial forward into a single pass over the edge set.
+/// Minimum cost of any edge that actually changes tile, cached for the process.
+///
+/// Crossing `M` tiles needs at least `M` tile-changing edges, so
+/// `M * this` lower-bounds the cost of any path covering `M` tiles -- an
+/// admissible A* heuristic. Sampled at first call (outer=0), where congestion
+/// is at its lowest and this is therefore at its smallest; congestion and
+/// history only ever add cost, so later minima cannot fall below it.
+/// Diagnostic use only -- nothing is pruned on this bound.
+fn min_inter_tile_cost(network: &PipeNetwork) -> u32 {
+    static MIN: OnceLock<u32> = OnceLock::new();
+    *MIN.get_or_init(|| {
+        let adj = &network.flat_adjacency;
+        let mut m = u32::MAX;
+        for node in 0..network.nodes.len() {
+            let here = &network.nodes[node];
+            for e in adj.range(node) {
+                let nb = &network.nodes[adj.neighbors[e] as usize];
+                if nb.tile_x != here.tile_x || nb.tile_y != here.tile_y {
+                    m = m.min(adj.cost_int[e]);
+                }
+            }
+        }
+        m
+    })
+}
+
 fn dijkstra_and_forward(
     network: &PipeNetwork,
     source_node: usize,
     sink_nodes: &[usize],
     ws: &mut PathSolverWorkspace,
     use_corridor: bool,
-) -> (usize, bool, usize) {
+) -> (usize, bool, usize, usize) {
     use super::network::DIST_SCALE;
     let inv_scale = 1.0 / DIST_SCALE;
 
@@ -1145,16 +1175,41 @@ fn dijkstra_and_forward(
     // Materialise f64 labels for settled nodes; unvisited ones keep INF.
     // Same sweep counts the above-sink tail (see `settle_above_sink`).
     let mut above_sink = 0usize;
+    let h_unit = min_inter_tile_cost(network);
+    let mut heuristic_prunable = 0usize;
     for &node in settle_order.iter() {
         let d = dist_int[node];
         ws.dist[node] = d as f64 * inv_scale;
         if d > max_sink_dist {
             above_sink += 1;
         }
+        // Could an admissible Manhattan bound have proved this node cannot
+        // reach any sink within the slack budget? Measures the ceiling on
+        // A*-style pruning, against the ~90% oracle ceiling from load support.
+        let here = &network.nodes[node];
+        let mut reachable = false;
+        for &sink in sink_nodes.iter() {
+            let sd = dist_int[sink];
+            if sd == u32::MAX {
+                reachable = true;
+                break;
+            }
+            let s_node = &network.nodes[sink];
+            let manh = (here.tile_x - s_node.tile_x).unsigned_abs()
+                + (here.tile_y - s_node.tile_y).unsigned_abs();
+            let f = d.saturating_add(manh.saturating_mul(h_unit));
+            if f <= sd.saturating_add(LIKELIHOOD_LUT_SIZE as u32) {
+                reachable = true;
+                break;
+            }
+        }
+        if !reachable {
+            heuristic_prunable += 1;
+        }
     }
 
     let cap_armed = max_dist_cap != u32::MAX;
-    (pops, cap_armed, above_sink)
+    (pops, cap_armed, above_sink, heuristic_prunable)
 }
 
 /// Likelihood weighting `exp(-LOGIT_THETA · slack / DIST_SCALE)` where
@@ -1244,6 +1299,7 @@ pub(crate) fn dial_logit_load(
             settle_above_sink: 0,
         load_nonzero: 0,
         load_material: 0,
+        heuristic_prunable: 0,
         };
     };
     ws.mark_corridor(network, &corridor);
@@ -1287,11 +1343,11 @@ fn dial_logit_load_inner(
     }
     ws.sink_nodes_scratch.sort_unstable();
     ws.sink_nodes_scratch.dedup();
-    let (heap_pops, cap_armed, settle_above_sink) = if use_fsm() {
+    let (heap_pops, cap_armed, settle_above_sink, heuristic_prunable) = if use_fsm() {
         // FSM path is unbounded today; sink list stays untyped here so we
         // don't churn that signature until FSM is back on the hot path.
         let pops = super::fsm::fsm_dist_and_forward(network, source_node, ws, use_corridor);
-        (pops, false, 0)
+        (pops, false, 0, 0)
     } else {
         // Borrow split: sink_nodes_scratch lives on `ws`. Take a raw pointer
         // to the slice so the rest of `ws` stays mutable for the inner loop.
@@ -1397,6 +1453,7 @@ fn dial_logit_load_inner(
             settle_above_sink,
         load_nonzero: 0,
         load_material: 0,
+        heuristic_prunable: 0,
         };
     }
 
@@ -1469,6 +1526,7 @@ fn dial_logit_load_inner(
         settle_above_sink,
         load_nonzero,
         load_material,
+        heuristic_prunable,
     }
 }
 
@@ -1620,6 +1678,7 @@ fn dial_logit_displacement(
         settle_above_sink: 0,
     load_nonzero: 0,
     load_material: 0,
+    heuristic_prunable: 0,
     })
 }
 
