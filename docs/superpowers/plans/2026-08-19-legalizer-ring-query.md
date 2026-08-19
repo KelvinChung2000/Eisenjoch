@@ -1013,59 +1013,102 @@ and as the oracle proving the walk emits its exact sequence."
 ### Task 5: Measure on FPGA01
 
 **Files:**
-- Create: `measurements/mem_probe/fpga01_ring_query.log`
+- Write (untracked): `$EISENJOCH/measurements/mem_probe/fpga01_ring_query.log`
+- Modify (tracked): `docs/opt_trans_memory_investigation.md`
+
+`measurements/` lives in the main checkout (`/home/kelvin/side-project/eisenjoch`),
+not in the worktree, and is untracked — the baseline `fpga01_legalize_fix.log`
+is there too. Raw logs are not committed; the numbers go into the investigation
+doc, which is how commit `76d4312` recorded the baseline.
 
 **Interfaces:**
 - Consumes: the legalizer from Task 4.
-- Produces: measured peak RSS and legalization wall time, to compare against 4217 MB / 1167 s.
+- Produces: measured peak RSS and legalization wall time, against 4217 MB / 1167 s.
 
-**Why the run cannot certify correctness:** the branch is not bit-reproducible, so post-legalization HPWL will not match 14234563 and is not expected to. Task 3 is the correctness gate; this is a performance measurement. Judge HPWL only against the ~0.6% run-to-run spread.
+**Why the run cannot certify correctness:** the branch is not bit-reproducible, so
+post-legalization HPWL will not match 14234563 and is not expected to. Task 3 is
+the correctness gate; this is a performance measurement.
 
-- [ ] **Step 1: Locate the FPGA01 invocation used for the baseline**
+- [ ] **Step 1: Build release**
 
-Run: `head -40 measurements/mem_probe/fpga01_legalize_fix.log`
+Run: `cargo build --release --example ot_trace_design` (sandbox disabled).
 
-Reuse whatever command that log records, unchanged except for the output path. Do not invent a new invocation — a changed command makes the comparison meaningless.
+- [ ] **Step 2: Run FPGA01, backgrounded and memory-capped**
 
-- [ ] **Step 2: Build release**
-
-Run: `cargo build --release -p nextpnr`
-Expected: success. (Sandbox disabled — see Global Constraints.)
-
-- [ ] **Step 3: Run FPGA01, backgrounded and memory-capped**
-
-Legalization alone took ~20 minutes at baseline, so this must not run in the foreground. Wrap it exactly as below; the cap is standing policy and being killed at it is a usable result.
+The baseline invocation, recovered from `fpga01_legalize_fix.log`'s header and
+`examples/ot_trace_design.rs` (which reads both paths from the environment).
+Legalization alone took ~20 min at baseline, so do not run this in the
+foreground. The cap is standing policy; being killed at it is a usable result.
 
 ```bash
+ROOT=/home/kelvin/side-project/eisenjoch
+NPNR_OT_TRACE_CHIPDB=$ROOT/chip_database/xc7_large.bin \
+NPNR_OT_TRACE_DESIGN=$ROOT/benchmark/ispd/generated/2016/FPGA01/FPGA01.json \
+NPNR_OT_MAX_ITERS=1 \
 nohup systemd-run --user --scope -p MemoryMax=12G -p MemorySwapMax=0 --collect \
-  <baseline command from Step 1, with NPNR_OT_MAX_ITERS=1> \
-  > measurements/mem_probe/fpga01_ring_query.log 2>&1 &
+  ./target/release/examples/ot_trace_design \
+  > $ROOT/measurements/mem_probe/fpga01_ring_query.log 2>&1 &
 ```
 
-- [ ] **Step 4: Extract the comparison**
+Two traps, both hit once already:
 
-Once it finishes, pull the three numbers that matter:
+- `systemd-run --scope` does not keep the launching shell alive, so a waiter
+  that polls for the *wrapper script* exits immediately and reports nothing.
+  Wait on the `ot_trace_design` PID instead.
+- A `cargo` command issued while this runs will block on the target-dir lock
+  and silently produce nothing within the default timeout. Do not interleave
+  builds or tests with the measurement.
+
+- [ ] **Step 3: Extract the comparison**
 
 ```bash
-grep -n "SortedLegalizer:\|Pre-legalization\|Post-legalization\|RSS_SAMPLE\|Killed" \
-  measurements/mem_probe/fpga01_ring_query.log | tail -40
+L=$ROOT/measurements/mem_probe/fpga01_ring_query.log
+grep -E "SortedLegalizer:|Pre-legalization|Post-legalization|Killed" $L
+grep -o "hwm=[0-9]*MB" $L | tr -dc '0-9\n' | sort -n | tail -1
 ```
 
-Record, against the baseline in the spec's measurement table:
-- peak RSS (baseline 4217 MB; ~600 MiB of shortlist should be gone, ~20 MB of grid added)
-- legalization wall time (baseline 1167 s; no figure is predicted)
-- `shared_mux_rejects` (baseline 21,841,944 — this is *expected to be unchanged*, and a large move in it means the candidate order changed, which would contradict Task 3)
+Baselines to compare against, from `fpga01_legalize_fix.log`:
 
-- [ ] **Step 5: Commit the measurement**
+| Quantity | Baseline |
+| --- | --- |
+| peak RSS | 4217 MB |
+| legalization span | 1167 s |
+| `cluster_rejects` | 406,442 |
+| `shared_mux_rejects` | 21,841,944 |
+| `arch_validity_rejects` | 0 |
+| Pre-legalization HPWL | 14,564,194 |
+| Post-legalization HPWL | 14,234,563 |
+
+**Read the reject counts as a spread, not as an identity.** An earlier draft of
+this plan claimed `shared_mux_rejects` should come back *unchanged* and that a
+move would contradict Task 3. That is wrong. The solver's output differs
+run-to-run (~0.6% at fixed seed, no `e3efbf3`), so cell targets differ, so the
+outer-first `order` differs, so binding order and therefore reject totals
+differ. Task 3 fixes the candidate sequence *for a given cell and target*; it
+says nothing about totals across a non-reproducible run. Same ballpark
+(~20-22M rejects, ~400K cluster rejects) is a pass. Judge HPWL the same way.
+
+The one number that should move decisively is peak RSS: ~600 MiB of shortlist
+should be gone, against ~20 MB of added grid. Wall time should fall by whatever
+the 27,467 full sorts cost; no figure is predicted.
+
+- [ ] **Step 4: Record the numbers in the tracked doc**
+
+Add a section to `docs/opt_trans_memory_investigation.md` with the table above
+plus the measured column. In the same edit, close the stale recommendation: the
+doc still says "the real fix is `placer/fast_bels.rs` ... ring-expanding from
+the target". It shipped as `placer/legalize/bel_grid.rs` instead, because the
+spec rejected `FastBels` on alias-blindness and grid-collapse grounds. Leaving
+that line is exactly the stale-doc trap.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add measurements/mem_probe/fpga01_ring_query.log
-git commit -m "evidence(legalize): FPGA01 under the ring query -- <peak> MB, <time> s
-
-Against 4217 MB / 1167 s. shared_mux_rejects <changed/unchanged> at <n>
-vs 21841944; unchanged is the expected result, since Task 3 fixes the
-candidate order. HPWL is not compared -- the branch is not bit-reproducible."
+git add docs/opt_trans_memory_investigation.md
+git commit -m "evidence(legalize): FPGA01 under the ring query -- <peak> MB, <time> s"
 ```
+
+Do **not** `git add measurements/` — it is untracked and outside the worktree.
 
 ---
 
@@ -1075,6 +1118,14 @@ candidate order. HPWL is not compared -- the branch is not bit-reproducible."
 
 **Deviations from the spec, both applied to the spec in Task 0.** (1) The emit guard is the minimum computed `dist_sq` over ring `R+1`'s axis points, not `(R+0.5)²` — exact in f64 rather than epsilon-dependent. (2) The grid stores bare `u32` enum indices, not `(BelId, u32)`; the spec's own text already says the `BelId` is recovered by indexing, so the pair was redundant. Neither changes design intent.
 
-**Placeholder scan.** No TBD/TODO. Every code step carries the literal code. The one deliberate blank is Task 5's baseline command, which Step 1 reads out of the existing log rather than guessing — inventing it would silently break the comparison.
+**Placeholder scan.** No TBD/TODO. Every code step carries the literal code. Task 5's invocation is now literal, recovered from the baseline log's header and the example's env-var reads.
+
+**Coverage of the region branch.** Task 4's `cell_region.is_some()` arm is not
+reached by FPGA01 (zero region-constrained cells) nor by the oracle test, which
+checks `candidate_list`'s ordering rather than Phase B. It is covered for free
+by `tests/region_tests.rs::heap_respects_region_constraint`, which constrains a
+cell to a 1x1 region and runs `PlacerHeap` -> `HeapState::legalize` ->
+`sorted_legalize`, then asserts the cell landed at (1,1). No new machinery
+needed.
 
 **Type consistency.** `BelGrid::build(&[(BelId, i32, i32, i32)], i32, i32)`, `at(i32, i32) -> &[u32]`, `width()/height() -> i32`, `is_empty() -> bool` are used with those exact types in Tasks 2–4. `RingCandidates::new(&BelGrid, &[(BelId, i32, i32, i32)], f64, f64)` matches Task 4's call. `candidate_list` is three-argument from Task 3 Step 2 onward, and Task 4 Step 4 calls it with three. `try_bind_cell` takes `impl Iterator<Item = BelId>` from Task 4 Step 2; both call sites pass an iterator (`Vec::into_iter`, `RingCandidates`). `buffered()` is `#[cfg(test)]` and used only in Task 2's tests.
