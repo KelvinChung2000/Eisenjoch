@@ -4,6 +4,7 @@
 //! (x, y) positions and produces valid BEL bindings.
 
 pub mod bipartite;
+mod bel_grid;
 pub mod common;
 pub mod greedy;
 pub mod ring;
