@@ -824,6 +824,19 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_settle_max: 0,
         diag_init_count: init_count,
     };
+    {
+        let n_chunks = chunks.len();
+        let total: usize = chunks.iter().map(|c| c.usage.len()).sum();
+        let max_chunk: usize = chunks.iter().map(|c| c.usage.len()).max().unwrap_or(0);
+        eprintln!(
+            "MEM_CHUNKUSAGE: chunks={} total_entries={} max_chunk_entries={} live_mb={:.1} n_pipes={} ratio_vs_dense={:.2}x",
+            n_chunks, total, max_chunk,
+            (total * std::mem::size_of::<(u32, f64)>()) as f64 / (1024.0 * 1024.0),
+            n_pipes,
+            (total * std::mem::size_of::<(u32, f64)>()) as f64
+                / ((n_chunks.max(1) * n_pipes * 8) as f64),
+        );
+    }
     for chunk in chunks {
         for (pipe, flow) in chunk.usage {
             accum.edge_usage[pipe as usize] += flow;
@@ -3905,6 +3918,28 @@ pub fn run_inner_outer(
         "DCD placer: {} cells, {} nodes, outer_iters={}, dcd_iters_per_cell={}, graph_model={:?}",
         n, n_nodes, max_iter, cfg.dcd_iters_per_cell, cfg.graph_model,
     );
+    {
+        let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
+        let adj = &network.flat_adjacency;
+        let pipes_b = network.pipes.capacity() * std::mem::size_of::<super::network::Pipe>();
+        let nodes_b = network.nodes.capacity() * std::mem::size_of::<super::network::Node>();
+        let adj_b = (adj.offsets.capacity() + adj.neighbors.capacity() + adj.pipe_idx.capacity()
+            + adj.cost_int.capacity()) * 4
+            + adj.cost_f.capacity() * 4;
+        let costvecs_b = network.pipe_costs.capacity() * 8
+            + network.pipe_costs_int.capacity() * 4
+            + network.pipe_history.capacity() * 8
+            + network.span_cost_table.pipe_entry.capacity() * 4
+            + network.span_cost_table.costs.capacity() * 8
+            + network.span_cost_table.costs_int.capacity() * 4;
+        eprintln!(
+            "MEM_STATIC: pipes={:.0}MB nodes={:.0}MB adjacency={:.0}MB pipe_cost_vecs={:.0}MB validity_mask={:.0}MB n_pipes={} n_edges={} rss={:.0}MB",
+            mb(pipes_b), mb(nodes_b), mb(adj_b), mb(costvecs_b),
+            mb(validity.heap_bytes()),
+            network.pipes.len(), adj.neighbors.len(),
+            process_rss_kb() as f64 / 1024.0,
+        );
+    }
     if cfg.softmin_enabled {
         eprintln!(
             "Softmin position update: enabled, theta {:.3} -> {:.3} (anneal over {} iters)",
@@ -4028,6 +4063,7 @@ pub fn run_inner_outer(
         } else {
             None
         };
+        eprintln!("PHASE_MARK outer={} enter=pre_solve rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let rss_before_pre_solve = process_rss_kb();
         let pre_solve = solve_distance_cache(
             network,
@@ -4634,6 +4670,7 @@ pub fn run_inner_outer(
             eprintln!("    det_presweep[outer={}]: pos={:016x}", outer, h);
         }
         diag_ctx.sweep_begin(n, outer);
+        eprintln!("PHASE_MARK outer={} enter=dcd_sweep rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let t_dcd = std::time::Instant::now();
         let moved = match cfg.sweep_mode {
             super::config::SweepMode::JacobiFullscan => place_dcd_sweep(
@@ -4836,10 +4873,12 @@ pub fn run_inner_outer(
             }
             eprintln!("    det_postsweep[outer={}]: pos={:016x} moved={}", outer, h, moved);
         }
+        eprintln!("PHASE_MARK outer={} leave=dcd_sweep rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let dcd_ms = t_dcd.elapsed().as_millis();
 
         common::clamp_positions(cell_x, cell_y, phys_max_x, phys_max_y);
 
+        eprintln!("PHASE_MARK outer={} enter=post_refresh rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let t_post_refresh = std::time::Instant::now();
         let post_net_infos = collect_net_infos_simple(
             ctx,

@@ -27,7 +27,41 @@ fn required(var: &str) -> String {
     env::var(var).unwrap_or_else(|_| panic!("{var} must be set"))
 }
 
+/// Background RSS sampler. Prints VmRSS/VmHWM every 250ms on stderr so the
+/// growth curve interleaves with the placer's own phase markers. Diagnostic
+/// only -- this driver is a measurement vehicle, not a shipped path.
+fn spawn_rss_sampler() {
+    std::thread::spawn(|| {
+        let t0 = std::time::Instant::now();
+        loop {
+            let s = std::fs::read_to_string("/proc/self/status")
+                .expect("read /proc/self/status");
+            let field = |name: &str| -> usize {
+                for line in s.lines() {
+                    if let Some(rest) = line.strip_prefix(name) {
+                        return rest
+                            .trim()
+                            .split_whitespace()
+                            .next()
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .expect("parse /proc field");
+                    }
+                }
+                0
+            };
+            eprintln!(
+                "RSS_SAMPLE t={:.1}s rss={:.0}MB hwm={:.0}MB",
+                t0.elapsed().as_secs_f64(),
+                field("VmRSS:") as f64 / 1024.0,
+                field("VmHWM:") as f64 / 1024.0,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    });
+}
+
 fn main() {
+    spawn_rss_sampler();
     let chipdb = required("NPNR_OT_TRACE_CHIPDB");
     let design = required("NPNR_OT_TRACE_DESIGN");
     eprintln!("chipdb: {chipdb}");

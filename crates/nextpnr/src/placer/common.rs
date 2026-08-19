@@ -1793,6 +1793,11 @@ impl CellValidityMask {
         self.height
     }
 
+    /// Heap bytes held by the bitset. Diagnostic only.
+    pub fn heap_bytes(&self) -> usize {
+        self.bits.capacity() * 8
+    }
+
     pub fn n_cells(&self) -> usize {
         self.n_cells
     }
