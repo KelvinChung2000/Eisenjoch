@@ -37,12 +37,68 @@ control reproducing that band at current HEAD rules out code drift from the
 instrumentation. The 32-thread run sits **+5.04 %** above the nearest
 8-thread sample -- outside that spread, and contradicting `steiner=0`.
 
-Mechanism if real: solve chunking is thread-count dependent
-(`auto_batch_size`), so thread count shifts float summation order, and
-`steiner=1` may sit near a different local optimum where that perturbation
-is amplified. The 32-thread figure is a **single draw**, so it is being
-repeated before any conclusion is drawn. Until that lands, `NPNR_OT_THREADS`
-is validated on `steiner=0` only and must not be described as free.
+Repeating the 32-thread run settles it. Two samples per side:
+
+| `steiner=1`, 20 iters | 8 threads | 32 threads |
+|---|---|---|
+| run 1 | 7 291 219 | 7 757 880 |
+| run 2 | 7 385 785 | 7 869 541 |
+| spread within config | +1.30 % | +1.44 % |
+
+The ranges **do not overlap**: worst 8-thread to best 32-thread is +5.04 %,
+and the means differ by +6.48 %. At `steiner=1`, thread count costs ~6.5 %
+HPWL. It is not a bad draw.
+
+Note this cannot be float summation order -- non-associativity is a ~1e-15
+effect, not 6.5 %. Something structural depends on the thread count; the
+mechanism is not yet identified and is the open question here. Until it is,
+**`NPNR_OT_THREADS` is validated on `steiner=0` only** (+0.49 %, inside
+noise). On `steiner=1` the 2x is not free and does not meet a
+hold-HPWL bar.
+
+## The corridor settles ~10x more nodes than can affect congestion
+
+Instrumenting the back-pass (`load_nonzero` / `load_material`, FPGA01,
+`steiner=0`, 4 threads):
+
+| outer | settled/net | any load | >= 1e-6 of demand |
+|---|---|---|---|
+| 0 | 9 921 | 6 157 (62.1 %) | 2 349 (23.7 %) |
+| 1 | 9 017 | 1 208 (13.4 %) | 709 (7.9 %) |
+| 2 | 8 194 | 826 (10.1 %) | 668 (8.2 %) |
+
+Once congestion develops, **~90 % of settled nodes receive exactly zero
+load**. Load reaches only the ancestors of sinks in the shortest-path DAG --
+a tube -- while the corridor admits a geometric Manhattan ellipse. Congestion
+inflates cost-per-tile (`max_util` reaches 475x), which shrinks the tube in
+cost space while leaving the ellipse unchanged: that is why the loaded share
+falls 62 % -> 10 % between outer=0 and outer=2, and why the earlier
+corridor-tightening experiment bought so little (a geometric bound is the
+wrong shape for a cost-shaped tube).
+
+Note this is *not* explained by the logit decay: `LOGIT_THETA` is 0.25, so
+the weight falls only to `exp(-0.25)` = 0.78 per tile of slack. The `theta`
+printed on the DCD line is a different quantity.
+
+### Why this may be exactly prunable
+
+`path_weight[N]` accumulates over upstream neighbours `P` with
+`likelihood > 0`, and the back-pass sends load from `N` to `P` under that
+same condition. So `P` feeds `N`'s normalisation **iff** `P` receives load
+from `N`. A node with zero load therefore contributes nothing to any loaded
+node's `path_weight`, and dropping it changes neither the energy nor the
+booked usage. The natural cutoff is already in the code: `likelihood` is a
+LUT that returns 0 beyond `LIKELIHOOD_LUT_SIZE` slack, so a cost-domain
+slack bound reproduces the current semantics rather than approximating them.
+
+Two caveats before this is worth building. The settled set also fills
+`dist_cache` within `cache_radius_tiles` of the net's own cells, which is a
+separate coverage requirement that pruning must still satisfy. And knowing a
+node's slack needs a lower bound on its distance-to-sink during the forward
+pass -- an admissible A* heuristic -- which is weak exactly where congestion
+is high. The claim above is argued, not measured; the test is a
+bit-identical `DCD` signature (`energy`, `line`, `pops`) across a few
+iterations at fixed thread count.
 
 ## Where the time actually goes
 
