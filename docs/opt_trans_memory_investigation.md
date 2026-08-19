@@ -143,10 +143,17 @@ shortlist cap at all. Both of these had to be fixed; either one alone still
 dies.
 
 1. **Unbounded length.** Phase A built, for every cell, a distance-sorted list
-   of *every* BEL of that cell's type and held them all live at once. A DFF
-   has 1,077,536 BELs on `xc7_large` and `BelId` is 8 bytes, so that is 8.6 MB
-   per cell over ~105k cells: O(cells x bels), ~900 GB even with a perfectly
-   sized allocation.
+   of *every* BEL of that cell's type and held them all live at once. `BelId`
+   is 8 bytes, so one DFF-typed cell costs 8.22 MiB (1,077,536 BELs) and one
+   LUT6-typed cell 4.11 MiB (538,768). Across FPGA01's **76660** cells that is
+   O(cells x bels) -- between 308 GiB (all LUT6) and 615 GiB (all DFF) even
+   with a perfectly sized allocation.
+
+   > Correction: commit `c314843`'s message says "~105k cells" and "~900GB".
+   > 105117 is the **net** count in these logs, not the cell count -- a
+   > conflation inherited from `fc82eb8`'s own message. The authoritative
+   > figure is `n_movable=76660` / "DCD placer: 76660 cells". The numbers here
+   > supersede the commit message.
 2. **Unbounded allocation.** `candidates.into_iter().map(..).collect()` hits
    Rust's in-place collect specialization, which reuses the *source*
    allocation instead of making a new one. The source was `Vec<(BelId, f64)>`
@@ -175,8 +182,9 @@ remainder (the prefix being exactly what it already tried).
 
 | Probe | Before | After |
 | --- | --- | --- |
-| legalization | 2400 -> 12270 MB in 3.5 s, OOM-killed | completed |
-| whole-run peak RSS | hit the 12 GB cap | **4217 MB** |
+| legalization | 2400 -> 12270 MB in 3.5 s, OOM-killed | completed, t=353s -> t=1520s |
+| whole-run peak RSS | hit the 12 GB cap | **4217 MB** (run exited cleanly, no OOM/panic) |
+| legalization wall time | never finished | **1167 s (19.4 min)** |
 | pre-legalization HPWL | 14542255 | 14564194 (0.15 % apart, inside the ~0.6 % spread) |
 | post-legalization HPWL | never reached | 14234563 |
 | `arch_validity_rejects` | -- | 0 |
@@ -192,10 +200,14 @@ carry over.
 
 It is a cost, not a bug -- widening is exhaustive, so the placement matches
 what an uncapped run would produce -- but each rescan rebuilds and sorts a
-~1M-entry list. The knob is also not free in the other direction: shortlist
-memory is `n_cells * k * 8 B`, which at k=1024 is already **861 MB** of the
-4217 MB peak. Raising k to 4096 would cost ~3.4 GB. So k trades memory against
-27k full rescans, and neither end of that trade is good.
+list of up to 1,077,536 entries, and **the bill is measurable**: legalization
+took 1167 s here against the 6 m 16 s `fc82eb8` measured with
+`widened_rescans=0`. Roughly 13 of those 19.4 minutes are rescan.
+
+The knob is not free in the other direction either: shortlist memory is
+`n_cells * k * 8 B`, which at 76660 cells and k=1024 is **599 MiB** of the
+4217 MB peak. Raising k to 4096 would cost ~2.3 GiB. So k trades memory
+against 27k full rescans and neither end of that trade is good.
 
 **This is the argument for the design-database path.** A grid-indexed spatial
 BEL index already exists in the tree -- `placer/fast_bels.rs`, a faithful port
