@@ -114,7 +114,7 @@ Same design, same 12 GB cage, same `NPNR_OT_MAX_ITERS=1`:
 | --- | --- | --- |
 | `enter=post_refresh` | 2450 MB | 2441 MB |
 | post-solve phase cost | > 9.4 GB, still climbing | 2477 -> 3187 MB (**710 MB**) |
-| peak solve staging | `16 B x sum |edge_touched|`, unbounded | `MEM_POOL workspaces=8 dense_usage_mb=313` |
+| peak solve staging | `16 B x sum of edge_touched counts`, unbounded | `MEM_POOL workspaces=8 dense_usage_mb=313` |
 | outcome | OOM-killed at 11823 MB | DCD completed, `Pre-legalization: HPWL=14542255` |
 
 3.2 GB matches the ~3.0 GB `823d2cd` recorded when it was written.
@@ -146,7 +146,10 @@ the second stranded commit, confirming the divergence from the other side.
   That is one 8.7 KB mask duplicated 76660 times.
 
   **Fixed.** Now stores one mask per distinct bucket plus a `u32` index per
-  cell; `is_valid` stays O(1) with one extra indirection. 634 MB -> ~170 KB.
+  cell; `is_valid` stays O(1) with one extra indirection.
+  **Measured on FPGA01: `validity_mask` 634 MB -> 0.3 MB, and the whole static
+  baseline 1677 MB -> 1037 MB.** The build line reports `2 bucket masks` for
+  76660 cells.
   sv3 reports `2 bucket masks` with per-cell counts unchanged at 67346 and
   `unmapped cells=0`, and HPWL stays inside the pre-existing run-to-run spread
   (6834 / 6827 against a pre-fix 6815-6861). Guarded by

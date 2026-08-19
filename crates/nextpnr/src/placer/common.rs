@@ -1670,7 +1670,7 @@ impl TypeAwarePlacement {
 /// costs `n_cells * width * height` bits -- 634 MB on FPGA01 (76660 cells,
 /// 311x223), which is a single 8.7 KB mask duplicated 76660 times. Per bucket
 /// the same information is `n_buckets * width * height` bits plus 4 bytes per
-/// cell: ~170 KB for the same design.
+/// cell: ~320 KB for the same design (measured: 634 MB -> 0.3 MB).
 pub struct CellValidityMask {
     width: i32,
     height: i32,
