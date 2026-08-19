@@ -81,9 +81,15 @@ const CORRIDOR_REL_HALO_DEN_TIGHT: i32 = 8;
 
 /// Hard cap on per-net corridor halo. Without it, halo grows linearly with
 /// pin span (rel_halo = span/rel_den), so a span-200 net gets halo=25 even in
-/// tight mode and the resulting bbox covers a quarter of a large fabric. The
-/// cap bounds DistCache memory: with cap=12, settle counts stay in the low
-/// hundreds even for chip-spanning nets. Override via `NPNR_OT_CORRIDOR_HALO_MAX`.
+/// tight mode and the resulting bbox covers a quarter of a large fabric.
+///
+/// The cap bounds only the ADDITIVE slack. It does not bound the settle count:
+/// `contains_xy` admits any tile with `d(src,n) + d(n,sink) <= stretch*direct
+/// + halo`, and both the multiplicative `stretch*direct` term and the pin bbox
+/// scale with net span. Measured on FPGA01 at stock (stretch 1.35, cap 12):
+/// settle_avg = 9918 nodes and settle_max = 69353 — the entire 69353-node
+/// graph — so chip-spanning nets settle everything regardless of this cap.
+/// Override via `NPNR_OT_CORRIDOR_HALO_MAX`.
 const CORRIDOR_MAX_HALO_DEFAULT: i32 = 12;
 
 /// Distance slack added to `max_sink_dist` when terminating Dijkstra. Once
@@ -562,6 +568,12 @@ pub(crate) struct DialLogitResult {
     /// `settle_order ≈ corridor_size` cost. Lets the solver fold count
     /// how often the bound saves work.
     pub cap_armed: bool,
+    /// Diagnostic: settled nodes whose label exceeds `max_sink_dist`. These
+    /// carry provably zero load — the back-pass only moves flow downhill in
+    /// `dist` from the sinks — so they exist solely to populate `dist_cache`
+    /// near pins. A large share means the post-cap slack, not the Dijkstra
+    /// ball itself, is what the solve is paying for.
+    pub settle_above_sink: usize,
 }
 
 #[derive(Debug)]
@@ -992,7 +1004,7 @@ fn dijkstra_and_forward(
     sink_nodes: &[usize],
     ws: &mut PathSolverWorkspace,
     use_corridor: bool,
-) -> (usize, bool) {
+) -> (usize, bool, usize) {
     use super::network::DIST_SCALE;
     let inv_scale = 1.0 / DIST_SCALE;
 
@@ -1117,12 +1129,18 @@ fn dijkstra_and_forward(
     ws.max_bucket = 0;
 
     // Materialise f64 labels for settled nodes; unvisited ones keep INF.
+    // Same sweep counts the above-sink tail (see `settle_above_sink`).
+    let mut above_sink = 0usize;
     for &node in settle_order.iter() {
-        ws.dist[node] = dist_int[node] as f64 * inv_scale;
+        let d = dist_int[node];
+        ws.dist[node] = d as f64 * inv_scale;
+        if d > max_sink_dist {
+            above_sink += 1;
+        }
     }
 
     let cap_armed = max_dist_cap != u32::MAX;
-    (pops, cap_armed)
+    (pops, cap_armed, above_sink)
 }
 
 /// Likelihood weighting `exp(-LOGIT_THETA · slack / DIST_SCALE)` where
@@ -1209,6 +1227,7 @@ pub(crate) fn dial_logit_load(
             missing_demand: sink_demands.iter().map(|(_, d)| d.abs()).sum(),
             corridor_fallback: false,
             cap_armed: false,
+            settle_above_sink: 0,
         };
     };
     ws.mark_corridor(network, &corridor);
@@ -1252,11 +1271,11 @@ fn dial_logit_load_inner(
     }
     ws.sink_nodes_scratch.sort_unstable();
     ws.sink_nodes_scratch.dedup();
-    let (heap_pops, cap_armed) = if use_fsm() {
+    let (heap_pops, cap_armed, settle_above_sink) = if use_fsm() {
         // FSM path is unbounded today; sink list stays untyped here so we
         // don't churn that signature until FSM is back on the hot path.
         let pops = super::fsm::fsm_dist_and_forward(network, source_node, ws, use_corridor);
-        (pops, false)
+        (pops, false, 0)
     } else {
         // Borrow split: sink_nodes_scratch lives on `ws`. Take a raw pointer
         // to the slice so the rest of `ws` stays mutable for the inner loop.
@@ -1359,6 +1378,7 @@ fn dial_logit_load_inner(
             missing_demand,
             corridor_fallback: false,
             cap_armed,
+            settle_above_sink,
         };
     }
 
@@ -1414,6 +1434,7 @@ fn dial_logit_load_inner(
         missing_demand,
         corridor_fallback: false,
         cap_armed,
+        settle_above_sink,
     }
 }
 
@@ -1561,6 +1582,8 @@ fn dial_logit_displacement(
         missing_demand,
         corridor_fallback: false,
         cap_armed: true,
+        // Displacement fast path never runs Dijkstra, so there is no tail.
+        settle_above_sink: 0,
     })
 }
 

@@ -417,6 +417,21 @@ struct SolveAccum {
     diag_solves: u64,
     diag_settle_sum: u64,
     diag_settle_max: u32,
+    /// Settled nodes above `max_sink_dist`: zero-load tail kept only for
+    /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
+    diag_above_sum: u64,
+    /// Settle-count histogram over nets, bucketed by settled-node count:
+    /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
+    /// bucket, `_settles` the settles they account for — the mean alone
+    /// hides whether a few chip-spanning nets dominate the pass.
+    diag_hist_nets: [u64; 6],
+    diag_hist_settles: [u64; 6],
+    /// Same work split, keyed on FANOUT instead of settle count:
+    /// [1, 2-4, 5-16, 17-64, 65-256, >256] sinks. Distinguishes "a few
+    /// high-fanout nets dominate" from "many long 2-pin nets dominate" —
+    /// the two have completely different fixes.
+    diag_fan_nets: [u64; 6],
+    diag_fan_settles: [u64; 6],
     /// Tally of how many times the rayon fold-init closure ran. With many
     /// splits each init pays a fresh `vec![0.0; n_pipes]` allocation, so
     /// this is the second possible source of large transient memory.
@@ -723,6 +738,27 @@ fn solve_all_nets_with_displacement(
                         let settle_len = ws.settle_order.len() as u64;
                         out.diag_solves += 1;
                         out.diag_settle_sum += settle_len;
+                        out.diag_above_sum += result.settle_above_sink as u64;
+                        let bucket = match settle_len {
+                            0..=99 => 0,
+                            100..=999 => 1,
+                            1_000..=4_999 => 2,
+                            5_000..=19_999 => 3,
+                            20_000..=59_999 => 4,
+                            _ => 5,
+                        };
+                        out.diag_hist_nets[bucket] += 1;
+                        out.diag_hist_settles[bucket] += settle_len;
+                        let fan_bucket = match n_sinks {
+                            0..=1 => 0,
+                            2..=4 => 1,
+                            5..=16 => 2,
+                            17..=64 => 3,
+                            65..=256 => 4,
+                            _ => 5,
+                        };
+                        out.diag_fan_nets[fan_bucket] += 1;
+                        out.diag_fan_settles[fan_bucket] += settle_len;
                         if settle_len as u32 > out.diag_settle_max {
                             out.diag_settle_max = settle_len as u32;
                         }
@@ -826,6 +862,21 @@ struct ChunkUsage {
     diag_solves: u64,
     diag_settle_sum: u64,
     diag_settle_max: u32,
+    /// Settled nodes above `max_sink_dist`: zero-load tail kept only for
+    /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
+    diag_above_sum: u64,
+    /// Settle-count histogram over nets, bucketed by settled-node count:
+    /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
+    /// bucket, `_settles` the settles they account for — the mean alone
+    /// hides whether a few chip-spanning nets dominate the pass.
+    diag_hist_nets: [u64; 6],
+    diag_hist_settles: [u64; 6],
+    /// Same work split, keyed on FANOUT instead of settle count:
+    /// [1, 2-4, 5-16, 17-64, 65-256, >256] sinks. Distinguishes "a few
+    /// high-fanout nets dominate" from "many long 2-pin nets dominate" —
+    /// the two have completely different fixes.
+    diag_fan_nets: [u64; 6],
+    diag_fan_settles: [u64; 6],
 }
 
 /// Sum per-chunk scalar contributions in chunk order. Usage is merged
@@ -840,6 +891,11 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_solves: 0,
         diag_settle_sum: 0,
         diag_settle_max: 0,
+        diag_above_sum: 0,
+        diag_hist_nets: [0; 6],
+        diag_hist_settles: [0; 6],
+        diag_fan_nets: [0; 6],
+        diag_fan_settles: [0; 6],
         diag_init_count: init_count,
     };
     for chunk in chunks {
@@ -852,6 +908,13 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         accum.diag_cap_armed += chunk.diag_cap_armed;
         accum.diag_solves += chunk.diag_solves;
         accum.diag_settle_sum += chunk.diag_settle_sum;
+        accum.diag_above_sum += chunk.diag_above_sum;
+        for b in 0..6 {
+            accum.diag_hist_nets[b] += chunk.diag_hist_nets[b];
+            accum.diag_hist_settles[b] += chunk.diag_hist_settles[b];
+            accum.diag_fan_nets[b] += chunk.diag_fan_nets[b];
+            accum.diag_fan_settles[b] += chunk.diag_fan_settles[b];
+        }
         accum.diag_settle_max = accum.diag_settle_max.max(chunk.diag_settle_max);
     }
     accum
@@ -1038,6 +1101,11 @@ impl TemplateAccum {
             diag_solves: 0,
             diag_settle_sum: 0,
             diag_settle_max: 0,
+            diag_above_sum: 0,
+            diag_hist_nets: [0; 6],
+            diag_hist_settles: [0; 6],
+            diag_fan_nets: [0; 6],
+            diag_fan_settles: [0; 6],
             diag_init_count: 0,
         }
     }
@@ -4915,6 +4983,60 @@ pub fn run_inner_outer(
                 displacement_table.as_ref(),
             );
             let rss_after_post = process_rss_kb();
+            {
+                // The post-solve is the only full solve pass after outer=0
+                // (the pre-solve skips every net), so this is where the
+                // refresh cost actually is.
+                let solves = post_solve.diag_solves.max(1);
+                let settle_avg = post_solve.diag_settle_sum as f64 / solves as f64;
+                let above_avg = post_solve.diag_above_sum as f64 / solves as f64;
+                eprintln!(
+                    "    post_solve_diag[outer={}]: solves={} cap_armed={} ({:.1}%) settle_avg={:.0} above_sink_avg={:.0} ({:.1}%) settle_max={}",
+                    outer,
+                    post_solve.diag_solves,
+                    post_solve.diag_cap_armed,
+                    100.0 * post_solve.diag_cap_armed as f64 / solves as f64,
+                    settle_avg,
+                    above_avg,
+                    if settle_avg > 0.0 { 100.0 * above_avg / settle_avg } else { 0.0 },
+                    post_solve.diag_settle_max,
+                );
+                let total_settles: u64 = post_solve.diag_hist_settles.iter().sum();
+                let labels = ["<100", "<1k", "<5k", "<20k", "<60k", ">=60k"];
+                let hist: Vec<String> = (0..6)
+                    .map(|b| {
+                        format!(
+                            "{}: {}nets/{:.1}%work",
+                            labels[b],
+                            post_solve.diag_hist_nets[b],
+                            if total_settles > 0 {
+                                100.0 * post_solve.diag_hist_settles[b] as f64
+                                    / total_settles as f64
+                            } else {
+                                0.0
+                            }
+                        )
+                    })
+                    .collect();
+                eprintln!("    settle_hist[outer={}]: {}", outer, hist.join("  "));
+                let fan_labels = ["fan1", "fan2-4", "fan5-16", "fan17-64", "fan65-256", "fan>256"];
+                let fan: Vec<String> = (0..6)
+                    .map(|b| {
+                        format!(
+                            "{}: {}nets/{:.1}%work",
+                            fan_labels[b],
+                            post_solve.diag_fan_nets[b],
+                            if total_settles > 0 {
+                                100.0 * post_solve.diag_fan_settles[b] as f64
+                                    / total_settles as f64
+                            } else {
+                                0.0
+                            }
+                        )
+                    })
+                    .collect();
+                eprintln!("    fanout_hist[outer={}]: {}", outer, fan.join("  "));
+            }
             apply_usage_for_next_iter(network, &post_solve.edge_usage, cfg, solve_pool);
             let refresh_ms = pre_refresh_ms + t_post_refresh.elapsed().as_millis();
             eprintln!(

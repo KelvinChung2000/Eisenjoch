@@ -165,7 +165,10 @@ pub struct OptTransPlacerCfg {
     pub lap_max_cells: usize,
     /// Initialization strategy.
     pub init_strategy: InitStrategy,
-    /// Number of Rayon worker threads for per-net solves.
+    /// Number of Rayon worker threads for per-net solves. Defaults to
+    /// `NPNR_OT_THREADS` when set, else 8. Solve chunking is thread-count
+    /// dependent (`auto_batch_size`), so changing this shifts float summation
+    /// order — results move within run-to-run noise, not bit-identically.
     pub num_threads: usize,
     /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
     pub legalization: String,
@@ -296,6 +299,22 @@ pub struct OptTransPlacerCfg {
     pub proximal_weight: f64,
 }
 
+/// Rayon worker count for per-net solves, overridable via `NPNR_OT_THREADS`.
+/// A non-numeric or zero value is a configuration error and panics rather than
+/// silently falling back to the default.
+fn solve_threads_default() -> usize {
+    match std::env::var("NPNR_OT_THREADS") {
+        Ok(v) => {
+            let n: usize = v
+                .parse()
+                .unwrap_or_else(|_| panic!("NPNR_OT_THREADS must be a positive integer, got {v:?}"));
+            assert!(n > 0, "NPNR_OT_THREADS must be > 0, got {n}");
+            n
+        }
+        Err(_) => 8,
+    }
+}
+
 impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
@@ -306,7 +325,7 @@ impl Default for OptTransPlacerCfg {
             report_interval: 5,
             lap_max_cells: 10000,
             init_strategy: InitStrategy::Topological,
-            num_threads: 8,
+            num_threads: solve_threads_default(),
             legalization: "sorted".to_string(),
             max_outer_iters: 50,
             dcd_iters_per_cell: 8,
