@@ -3,8 +3,8 @@
 //! All legalizers implement the [`Legalizer`] trait, which takes continuous
 //! (x, y) positions and produces valid BEL bindings.
 
-pub mod bipartite;
 pub(crate) mod bel_grid;
+pub mod bipartite;
 pub mod common;
 pub mod greedy;
 pub mod ring;

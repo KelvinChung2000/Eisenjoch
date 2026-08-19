@@ -1,6 +1,6 @@
-//! Parallel-sorted nearest-BEL legalization with region support.
+//! Nearest-BEL legalization with region support.
 //!
-//! Phase A (parallel): pre-sort BEL candidates by distance per cell.
+//! Phase A: index each cell type's BELs by tile.
 //! Phase B (sequential): greedy assignment, outer cells first.
 
 use crate::chipdb::BelId;
@@ -8,18 +8,18 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
+use crate::placer::legalize::bel_grid::{BelGrid, RingCandidates};
 use crate::placer::legalize::common::{
     place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
-use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::Legalizer;
 
-/// Parallel-sorted nearest-BEL legalization with region support.
+/// Nearest-BEL legalization with region support.
 ///
-/// Phase A (parallel): pre-sort BEL candidates by distance per cell.
+/// Phase A: index each cell type's BELs by tile.
 /// Phase B (sequential): greedy assignment, outer cells first.
 pub struct SortedLegalizer;
 
@@ -36,7 +36,7 @@ impl Legalizer for SortedLegalizer {
     }
 }
 
-/// Per-cell info gathered before the parallel sort phase.
+/// Per-cell info gathered before assignment.
 struct CellLegalizeInfo {
     cell_idx: CellId,
     cell_type_id: IdString,
@@ -51,15 +51,6 @@ struct CellLegalizeInfo {
     /// Each entry is (child_id, child_type, constr_x, constr_y, constr_z, abs_z).
     cluster_children: Vec<(CellId, IdString, i32, i32, i32, bool)>,
 }
-
-/// How many nearest BELs Phase A keeps per cell.
-///
-/// Phase B walks the list in distance order and stops at the first legal BEL,
-/// so it almost always binds within the first handful. The shortlist only has
-/// to be deep enough that exhausting it is rare, because exhausting it costs
-/// one full re-scan for that cell. It must NOT be sized to "always enough" --
-/// that is the O(cells * bels) blowup this exists to avoid.
-const CAND_SHORTLIST: usize = 1024;
 
 /// Every BEL of `info`'s type, sorted by `(dist_sq, enum_index)`.
 ///
@@ -123,21 +114,23 @@ fn candidate_list(
 /// a shared mux node, and that the architecture accepts.
 ///
 /// Returns the squared displacement of the BEL it bound, or `None` if every
-/// candidate was rejected. Split out of the Phase B loop so the same checks
-/// can run against a cell's shortlist and then, only if that is exhausted,
-/// against the remainder of its full candidate list.
+/// candidate was rejected.
+///
+/// Takes an iterator rather than a slice so the candidate sequence can be
+/// produced lazily: the common case rejects a few hundred BELs and binds,
+/// having materialized nothing.
 #[allow(clippy::too_many_arguments)]
 fn try_bind_cell(
     ctx: &mut Context,
     info: &CellLegalizeInfo,
     bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     registry: &mut DriverNodeRegistry,
-    candidates: &[BelId],
+    candidates: impl Iterator<Item = BelId>,
     cluster_footprint_rejects: &mut u64,
     shared_mux_rejects: &mut u64,
     arch_validity_rejects: &mut u64,
 ) -> Result<Option<f64>, PlacerError> {
-    'outer: for &bel in candidates {
+    'outer: for bel in candidates {
         let bel_view = ctx.bel(bel);
         if !bel_view.is_available() {
             continue;
@@ -247,13 +240,13 @@ fn try_bind_cell(
     Ok(None)
 }
 
-/// Parallel-sorted nearest-BEL legalization.
+/// Nearest-BEL legalization.
 ///
 /// 1. Unbinds all movable cells.
-/// 2. Builds BEL candidate lists per cell type.
-/// 3. Sorts candidates by distance to target position (parallel, per cell).
-/// 4. Assigns cells sequentially (outer-first), skipping cluster children.
-/// 5. Calls `place_cluster_children` for cluster roots.
+/// 2. Builds BEL data and a tile index per cell type.
+/// 3. Assigns cells sequentially (outer-first), skipping cluster children,
+///    walking each cell's BELs nearest-first until one is legal.
+/// 4. Calls `place_cluster_children` for cluster roots.
 ///
 /// Returns total squared displacement.
 pub fn sorted_legalize(
@@ -271,8 +264,9 @@ pub fn sorted_legalize(
     // Unbind all movable cells.
     unbind_movable_cells(ctx, idx_to_cell);
 
-    // Pre-collect BEL data per cell type into plain data (BelId, x, y, z)
-    // so we can share across rayon threads without lifetime issues.
+    // Pre-collect BEL data per cell type into plain data (BelId, x, y, z).
+    // Detaching it from `ctx` is what lets Phase B hold it while binding, and
+    // its enumeration order is the tie-break both candidate paths sort on.
     let mut bel_data_cache: FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>> = FxHashMap::default();
     for &cell_idx in idx_to_cell {
         let cell_type_id = ctx.cell(cell_idx).cell_type_id();
@@ -332,7 +326,7 @@ pub fn sorted_legalize(
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Gather per-cell info for parallel phase.
+    // Gather per-cell info up front.
     // Read region from the cell directly via ctx.design.
     let cell_infos: Vec<CellLegalizeInfo> = order
         .iter()
@@ -404,19 +398,21 @@ pub fn sorted_legalize(
         map
     };
 
-    // Phase A (parallel): distance-sorted BEL candidate shortlists.
+    // Phase A: one spatial index per cell type, replacing the per-cell
+    // shortlists.
     //
-    // Bounded to CAND_SHORTLIST per cell. The unbounded version held, for
-    // every cell, a sorted list of every BEL of that cell's type -- all of
-    // them live at once. On xc7_large a DFF has 1,077,536 BELs and BelId is 8
-    // bytes, so that is 8.6MB per cell over ~105k cells: O(cells * bels), and
-    // ~900GB even with an exactly-sized allocation. Capping the length and
-    // fixing the allocation are both required.
-    let sorted_candidates: Vec<Vec<BelId>> = cell_infos
-        .par_iter()
-        .map(|info| {
-            candidate_list(info, &bel_data_cache, &region_bel_sets)
-        })
+    // The old Phase A held a distance-sorted list per cell: O(cells * bels),
+    // bounded to 1024 entries only by capping, which bounded work and not
+    // legality -- 25% of FPGA01's cells exhausted the cap and paid a full
+    // re-scan and re-sort of up to 1.08M entries. Indexing per *type* instead
+    // is O(bels) once, and the walk keeps one cell's candidates live.
+    //
+    // Built from `bel_data_cache`, so the candidate universe is identical to
+    // `candidate_list`'s by construction: same alias resolution via
+    // `bels_for_bucket`, same filtering, same enumeration order.
+    let bel_grids: FxHashMap<IdString, BelGrid> = bel_data_cache
+        .iter()
+        .map(|(&type_id, bels)| (type_id, BelGrid::build(bels, grid_w, grid_h)))
         .collect();
 
     // Seed the shared-mux registry from already-bound cells (packer-placed
@@ -426,7 +422,6 @@ pub fn sorted_legalize(
     let mut shared_mux_rejects: u64 = 0;
     let mut arch_validity_rejects: u64 = 0;
     let mut cluster_footprint_rejects: u64 = 0;
-    let mut widened_rescans: u64 = 0;
 
     // Phase B (sequential): assign cells to nearest available BEL that
     //   1. is itself available,
@@ -434,49 +429,55 @@ pub fn sorted_legalize(
     //   3. doesn't collide with already-placed cells on a shared-mux node.
     let mut total_displacement = 0.0;
 
-    for (i, info) in cell_infos.iter().enumerate() {
+    for info in &cell_infos {
         if info.is_cluster_child {
             continue;
         }
 
-        let shortlist = &sorted_candidates[i];
-
-        if shortlist.is_empty() {
-            return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
-        }
-
-        let mut disp = try_bind_cell(
-            ctx,
-            info,
-            &bel_by_loc,
-            &mut registry,
-            shortlist,
-            &mut cluster_footprint_rejects,
-            &mut shared_mux_rejects,
-            &mut arch_validity_rejects,
-        )?;
-
-        // The shortlist bounds work, not legality: if all k nearest BELs were
-        // rejected the cell may still have a legal home further out. Rebuild
-        // its full list and try the remainder. Both lists share one total
-        // order, so the full list's first `shortlist.len()` entries are
-        // exactly the ones already tried.
-        if disp.is_none() {
-            widened_rescans += 1;
-            let full = candidate_list(info, &bel_data_cache, &region_bel_sets);
-            if full.len() > shortlist.len() {
-                disp = try_bind_cell(
-                    ctx,
-                    info,
-                    &bel_by_loc,
-                    &mut registry,
-                    &full[shortlist.len()..],
-                    &mut cluster_footprint_rejects,
-                    &mut shared_mux_rejects,
-                    &mut arch_validity_rejects,
-                )?;
+        // Region-constrained cells keep the materialized path. Ring-walking a
+        // cell whose region sits far from its target would scan outward across
+        // the whole device before finding anything; bounding rings by the
+        // region bbox is a separate geometry problem and a documented
+        // follow-up. FPGA01 has no region-constrained cells.
+        let disp = if info.cell_region.is_some() {
+            let candidates = candidate_list(info, &bel_data_cache, &region_bel_sets);
+            if candidates.is_empty() {
+                return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
             }
-        }
+            try_bind_cell(
+                ctx,
+                info,
+                &bel_by_loc,
+                &mut registry,
+                candidates.into_iter(),
+                &mut cluster_footprint_rejects,
+                &mut shared_mux_rejects,
+                &mut arch_validity_rejects,
+            )?
+        } else {
+            let (Some(grid), Some(bels)) = (
+                bel_grids.get(&info.cell_type_id),
+                bel_data_cache.get(&info.cell_type_id),
+            ) else {
+                return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
+            };
+            if grid.is_empty() {
+                return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
+            }
+            // Exhaustive by construction, so there is no shortlist to widen
+            // from: "try the near ones, then re-scan for the rest" collapses
+            // into this one call.
+            try_bind_cell(
+                ctx,
+                info,
+                &bel_by_loc,
+                &mut registry,
+                RingCandidates::new(grid, bels, info.target_x, info.target_y),
+                &mut cluster_footprint_rejects,
+                &mut shared_mux_rejects,
+                &mut arch_validity_rejects,
+            )?
+        };
 
         match disp {
             Some(d) => total_displacement += d,
@@ -494,8 +495,8 @@ pub fn sorted_legalize(
     }
 
     eprintln!(
-        "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={} arch_validity_rejects={} widened_rescans={}",
-        cluster_footprint_rejects, shared_mux_rejects, arch_validity_rejects, widened_rescans,
+        "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={} arch_validity_rejects={}",
+        cluster_footprint_rejects, shared_mux_rejects, arch_validity_rejects,
     );
 
     Ok(total_displacement)
@@ -504,7 +505,6 @@ pub fn sorted_legalize(
 #[cfg(test)]
 mod candidate_list_tests {
     use super::*;
-    use crate::placer::legalize::bel_grid::{BelGrid, RingCandidates};
 
     /// A grid of BELs with `per_tile` slots at every (x, y), so equidistant
     /// candidates are the common case rather than the exception.
