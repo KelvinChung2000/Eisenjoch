@@ -173,6 +173,22 @@ pub struct OptTransPlacerCfg {
     /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
     pub legalization: String,
 
+    // --- Stratified refresh ---
+    /// Net pin-span (tiles) above which a net joins the SLOW stratum and is
+    /// re-solved only every `strata_period` outer iterations instead of every
+    /// one. Per-net solve cost is the corridor ellipse area, which grows
+    /// roughly quadratically in span, so span is a direct proxy for cost:
+    /// measured on FPGA01, 17% of nets account for 78% of refresh time and
+    /// they are long low-fanout nets, not high-fanout ones.
+    ///
+    /// `0` disables stratification (every net solved every iteration).
+    /// Set via `NPNR_OT_STRATA_SPAN`.
+    pub strata_span_tiles: i32,
+    /// Outer-iteration period for re-solving the slow stratum. `1` disables
+    /// (equivalent to `strata_span_tiles = 0`). Set via
+    /// `NPNR_OT_STRATA_PERIOD`.
+    pub strata_period: usize,
+
     // --- DCD optimizer ---
     /// Maximum freeze-and-refresh DCD outer iterations.
     pub max_outer_iters: usize,
@@ -299,6 +315,17 @@ pub struct OptTransPlacerCfg {
     pub proximal_weight: f64,
 }
 
+/// Parse a non-negative integer env override, panicking on a malformed value
+/// rather than silently falling back to the default.
+fn env_i32(key: &str, default: i32) -> i32 {
+    match std::env::var(key) {
+        Ok(v) => v
+            .parse()
+            .unwrap_or_else(|_| panic!("{key} must be an integer, got {v:?}")),
+        Err(_) => default,
+    }
+}
+
 /// Rayon worker count for per-net solves, overridable via `NPNR_OT_THREADS`.
 /// A non-numeric or zero value is a configuration error and panics rather than
 /// silently falling back to the default.
@@ -327,6 +354,8 @@ impl Default for OptTransPlacerCfg {
             init_strategy: InitStrategy::Topological,
             num_threads: solve_threads_default(),
             legalization: "sorted".to_string(),
+            strata_span_tiles: env_i32("NPNR_OT_STRATA_SPAN", 0),
+            strata_period: env_i32("NPNR_OT_STRATA_PERIOD", 1).max(1) as usize,
             max_outer_iters: 50,
             dcd_iters_per_cell: 8,
             jacobi_alpha: 1.0,
