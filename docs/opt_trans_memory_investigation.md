@@ -129,11 +129,84 @@ the second stranded commit, confirming the divergence from the other side.
   workspace's dense `usage_accum`, drained from the pool after the parallel
   section. `MEM_POOL` probe confirms the new peak is bounded:
   `workspaces=8 dense_usage_mb=313`.
-- `fc82eb8` **not** applied: it conflicts against 85 lines of Phase B
-  shared-mux / arch-validity logic that exists only on this branch, plus two
-  feature files (`spreading.rs`, `probe_electro_vs_ot_sv3.rs`) that do not.
-  Merging two divergent legalizer implementations by hand risks silently
-  illegal placements -- that needs a real merge, not a cherry-pick.
+- `fc82eb8` **ported by hand**, not cherry-picked (`c314843`). The commit
+  itself does not apply: it conflicts against 85 lines of Phase B shared-mux /
+  arch-validity logic that exists only on this branch, plus two feature files
+  (`spreading.rs`, `probe_electro_vs_ot_sv3.rs`) that do not. Merging two
+  divergent legalizer implementations wholesale risks silently illegal
+  placements, so only the semantics were carried across. See below.
+
+## The legalization OOM: two defects, not one
+
+This branch was worse than `flow/spreading-field` had been, because it had no
+shortlist cap at all. Both of these had to be fixed; either one alone still
+dies.
+
+1. **Unbounded length.** Phase A built, for every cell, a distance-sorted list
+   of *every* BEL of that cell's type and held them all live at once. A DFF
+   has 1,077,536 BELs on `xc7_large` and `BelId` is 8 bytes, so that is 8.6 MB
+   per cell over ~105k cells: O(cells x bels), ~900 GB even with a perfectly
+   sized allocation.
+2. **Unbounded allocation.** `candidates.into_iter().map(..).collect()` hits
+   Rust's in-place collect specialization, which reuses the *source*
+   allocation instead of making a new one. The source was `Vec<(BelId, f64)>`
+   sized for every BEL of the type -- 17 MB for DFF -- so each list held a
+   17 MB buffer whatever its length. `truncate` sets a vec's length and never
+   its capacity, which is why capping alone would not have been enough.
+
+The fix caps to the 1024 nearest via `select_nth_unstable_by` and collects
+through a *borrowing* iterator so the result allocates exactly `len`.
+
+**The tie-break is load-bearing.** Capping needs a total order. The old full
+`sort_by` was stable, so ties kept enumeration order for free;
+`select_nth_unstable_by` does not. Equidistant BELs are the common case -- a
+tile holds many slots at identical x/y -- and which one Phase B binds decides
+the placement. `candidate_list` therefore carries each candidate's enumeration
+index and breaks distance ties on it, so the shortlist and the full list agree
+on their common prefix. That agreement is what makes widening safe, and it is
+tested rather than asserted: removing the tie-break fails
+`shortlist_is_a_prefix_of_the_full_list` at dim=10 per_tile=4 k=17.
+
+Because a shortlist bounds *work* and not *legality*, Phase B widens: if all
+1024 candidates were rejected it rebuilds the cell's full list and retries the
+remainder (the prefix being exactly what it already tried).
+
+### Measured, FPGA01, same 12 GB cage
+
+| Probe | Before | After |
+| --- | --- | --- |
+| legalization | 2400 -> 12270 MB in 3.5 s, OOM-killed | completed |
+| whole-run peak RSS | hit the 12 GB cap | **4217 MB** |
+| pre-legalization HPWL | 14542255 | 14564194 (0.15 % apart, inside the ~0.6 % spread) |
+| post-legalization HPWL | never reached | 14234563 |
+| `arch_validity_rejects` | -- | 0 |
+| `widened_rescans` | -- | **27467** |
+
+### `widened_rescans=27467` is a real signal, not noise
+
+`fc82eb8` measured `widened_rescans=0` on FPGA01. Here about a quarter of all
+cells exhaust their 1024-BEL shortlist, driven by **21,841,944 shared-mux
+rejections** (arch-validity rejected nothing). That rejection pressure is
+specific to this branch's Phase B, so the sister branch's figure does not
+carry over.
+
+It is a cost, not a bug -- widening is exhaustive, so the placement matches
+what an uncapped run would produce -- but each rescan rebuilds and sorts a
+~1M-entry list. The knob is also not free in the other direction: shortlist
+memory is `n_cells * k * 8 B`, which at k=1024 is already **861 MB** of the
+4217 MB peak. Raising k to 4096 would cost ~3.4 GB. So k trades memory against
+27k full rescans, and neither end of that trade is good.
+
+**This is the argument for the design-database path.** A grid-indexed spatial
+BEL index already exists in the tree -- `placer/fast_bels.rs`, a faithful port
+of upstream's `FastBels`, `[type][x][y] -> Vec<BelId>` -- and is used by the
+SA placer (`place_common.rs`) and the refiner, but *not* by the sorted
+legalizer, which is why the legalizer materializes candidate lists at all.
+Expanding rings outward from the target and stopping at the first legal BEL
+would make the per-cell cost O(k) in both time and memory, delete the
+shortlist heuristic and its widen path, and remove the k trade-off entirely.
+That is wiring an existing structure, not new infrastructure -- but it changes
+which BEL ties resolve to, so it needs its own equivalence check.
 
 ## Still open, separate from the above
 
