@@ -111,9 +111,15 @@ carries a known synthetic-vs-real reversal risk.
 ## Caveats
 
 - **One design.** `stereovision3` is small. Nothing here is confirmed at scale.
-- **FPGA01 was abandoned.** It needs ~50 GB RSS in this placer even with
-  `CORRIDOR_TIGHT=1 HALO_MAX=3 CACHE_SLACK=1 CACHE_RADIUS=3`; it OOM'd a 61 GB
-  box. The gitignore issue was never the blocker — memory is.
+- **FPGA01 was abandoned — no longer.** It needed ~50 GB RSS in this placer
+  even with `CORRIDOR_TIGHT=1 HALO_MAX=3 CACHE_SLACK=1 CACHE_RADIUS=3`, and
+  OOM'd a 61 GB box. As of 2026-08-19 it completes at **2948 MB peak, 2492 s**,
+  at `NPNR_OT_MAX_ITERS=20` and **stock settings** — none of those four tuning
+  vars set, i.e. a strictly harder configuration than the one that OOM'd. Three
+  fixes did it: `ChunkUsage` bounded by concurrency rather than total work
+  (`cd9ed31`), the per-cell validity mask (`2bf83b6`), and the legalizer ring
+  query (`fec5cb1`). The caveats below that rest on "one small design" can now
+  be retested at scale.
 - **Union accounting runs, but is not calibrated.** One end-to-end sv3 run
   (`NPNR_OT_UNION_USAGE=1`) completes cleanly, and shows exactly the predicted
   effect: `max_util` reaches **4.03** against ~1.5 under the 1/K split, cong

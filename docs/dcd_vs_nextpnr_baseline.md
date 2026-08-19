@@ -377,6 +377,57 @@ Both move paths are exercised: the paired runs report `233 cells 128 chains`,
 so `try_swap_chain` is moving every one of the 128 LUT→FF clusters, matching
 nextpnr's own "Constrained 128 LUTFF pairs".
 
+### Re-measured after the legalizer ring query (2026-08-19)
+
+`fec5cb1` replaced the legalizer's shortlist-and-widen candidate search with a
+lazy nearest-BEL ring walk. A unit test proves the new walk emits
+`candidate_list`'s exact sequence, but the tree is not bit-reproducible, so the
+end-to-end check is this harness re-run from scratch. 5 seeds per config, ours
+refined, routed at router seed 1, `NPNR_NO_LUTFF_PACK=1` on both sides.
+
+The references reproduce exactly — unpacked 1825 / 44.07 MHz and packed 1857 /
+46.67 MHz at seed 1 — so the harness is measuring the same thing it was.
+
+| config | metric | before (documented) | after | delta |
+| --- | --- | --- | --- | --- |
+| filter | HPWL | 2029.6 | 2016.8 (1981–2040) | −0.63 % |
+| filter | Fmax | 42.81 MHz | 42.05 MHz (40.8–43.2) | −1.78 % |
+| paired | HPWL | 1937.0 | 1944.4 (1921–1974) | +0.38 % |
+| paired | Fmax | 43.66 MHz | 42.38 MHz (40.5–46.0) | −2.94 % |
+
+**10/10 legal, 10/10 routed.** HPWL is the low-noise metric here and it
+reproduces to within ±0.6 %; the Fmax deltas sit inside the ~4 MHz seed spread
+this document warns about throughout. No regression is detectable.
+
+#### The reference is a distribution too, and it is a wide one
+
+Every "vs ref" HPWL ratio above this section divides by a **single** seed-1
+reference (1825 / 1857). Running nextpnr itself at 5 seeds shows that is
+optimistic about its own stability:
+
+| reference | HPWL | Fmax |
+| --- | --- | --- |
+| unpacked, 5 seeds | 1831.0 (1694–1916) | 46.32 MHz (44.07–49.49) |
+| packed, 5 seeds | 1818.4 (1770–1856) | 46.03 MHz (43.81–46.76) |
+
+nextpnr's own unpacked Fmax spans 5.4 MHz across seeds — wider than the gap
+being measured. Against these means the ratios become:
+
+| config | HPWL | Fmax | routed wires | pips |
+| --- | --- | --- | --- | --- |
+| filter | 1.101x | **1.102x** | 1.034x | 1.035x |
+| paired | 1.069x | **1.086x** | 1.043x | 1.040x |
+
+The paired HPWL ratio reads 1.069x rather than the 1.043x above purely because
+the denominator is now a mean instead of one draw. The Fmax reference means
+match what the earlier table used (46.32 / 46.03), so those ratios are
+unaffected.
+
+The shape of the gap is unchanged and still says what item 2b says: **we consume
+3–4 % more routing and lose 9–10 % of Fmax.** Critical paths, not total wire.
+
+Raw per-seed data: `measurements/npnr_20x20/` (untracked).
+
 ### Routed wirelength, and where the gap actually is
 
 HPWL is an estimate. Counting what the router really consumed — wires and pips

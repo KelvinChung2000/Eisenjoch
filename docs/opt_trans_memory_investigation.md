@@ -277,9 +277,60 @@ the 599 MiB of shortlists it used to hold plus the ~1 M-element allocate-and-
 free sawtooth of each rescan. The `widened_rescans` counter is gone with the
 mechanism it counted.
 
-The 21.8 M shared-mux rejections are untouched and are now the dominant
-remaining cost in the phase. That is a separate question about Phase B's
-ordering and packing.
+### Measured: FPGA01 at full iterations
+
+The 6.2 s / 2534 MB figures above were taken at `NPNR_OT_MAX_ITERS=1`, which
+tests the legalizer but not the claim that mattered: that the placer as a whole
+now fits. Re-run at **20 outer iterations** — the configuration that needed
+~50 GB and OOM'd a 61 GB box — at stock settings, in the same 12 GB cage
+(`measurements/mem_probe/fpga01_ring_query_20iter.log`, untracked):
+
+| Quantity | 1 iteration | 20 iterations |
+| --- | --- | --- |
+| outcome | completes | **completes, rc=0** |
+| peak RSS | 2534 MB | **2948 MB** |
+| wall time | 342 s | 2492 s |
+| legalization span | 6.2 s | **2.5 s** |
+| `cluster_rejects` | 374,723 | 200,969 |
+| `shared_mux_rejects` | 21,834,629 | **7,214,228** |
+| pre-legalization HPWL | 14,565,030 | 10,882,605 |
+| post-legalization HPWL | 14,228,478 | **10,670,244** |
+
+**Memory is bounded in the iteration count, which is the whole claim.** Twenty
+times the work costs 414 MB more resident, not twenty times the resident. That
+is what `cd9ed31` was for — `ChunkUsage` sized by concurrency, not by total
+work — and this is the first run that actually tests it.
+
+**Correcting the note above: the 21.8 M shared-mux rejections were an artifact
+of the one-iteration placement, not a standing cost.** A single iteration leaves
+cells badly spread, so legalization has to fight for slots. Run the real
+schedule and rejections fall to 7.2 M and the phase takes 2.5 s of a 2492 s run
+— 0.1%. Legalization is finished as a performance topic; nothing further should
+be spent on it.
+
+**The cost is now `refresh`, overwhelmingly.** Summing the per-iteration
+counters:
+
+| stage | total | share of the DCD loop |
+| --- | --- | --- |
+| `refresh` | 2242.5 s | **92.3 %** |
+| `dcd` solve | 138.1 s | 5.7 % |
+| other in-iteration | 50.0 s | 2.1 % |
+
+Any further runtime work on this design belongs in `refresh`. The solver itself
+is 5.7 %.
+
+**Quality moves with the schedule, as it should.** `line` falls monotonically
+17,507,007 → 13,299,527 (−24.0 %) across the 20 iterations, and
+post-legalization HPWL is 25 % better than the single-iteration run. No routing
+or timing was run on FPGA01 — there is no routing path for it in this tree — so
+this is HPWL only and says nothing about Fmax.
+
+**The energy trace is not healthy.** `energy` swings between 1.4e9 and 4.9e10
+with `dE` changing sign on most iterations, and `excess` bounces 96–685 while
+`bins` sits pinned at 2.0x. That is the limit cycle documented in
+`congestion_composite_measured.md`, now visible at scale and over a long run.
+Memory and legalization no longer hide it.
 
 ## Still open, separate from the above
 
