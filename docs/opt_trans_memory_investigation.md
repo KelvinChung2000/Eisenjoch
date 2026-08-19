@@ -326,6 +326,53 @@ post-legalization HPWL is 25 % better than the single-iteration run. No routing
 or timing was run on FPGA01 — there is no routing path for it in this tree — so
 this is HPWL only and says nothing about Fmax.
 
+### What the 2492 s is worth: HeAP on the same design
+
+"41 minutes" only means something against the algorithm `opt_trans` stands in
+for. Stock nextpnr cannot read `xc7_large.bin` — it is our own generated fabric
+— but HeAP is ported in this tree, so `examples/heap_trace_design.rs` runs it
+through the *identical* load path (`ChipDb::load` → `parse_json` →
+`packer::pack`) on the identical chipdb and design. Both placers default to 20
+outer iterations. Same 12 GB cage, seed 42.
+
+| | HeAP | opt_trans | ratio |
+| --- | --- | --- | --- |
+| place wall time | **52.8 s** | 2492 s | **47.2x slower** |
+| peak RSS | 1163 MB | 2948 MB | 2.5x |
+| `total_hpwl` | **4,533,609** | 10,670,244 | **2.353x worse** |
+| `line` | 6,430,025 | 13,315,640 | 2.071x worse |
+
+Three guards on that table, because it is a large claim:
+
+- **The metrics are the same function.** `opt_trans`'s post-legalization line
+  reports `metrics::total_hpwl`; the probe prints that *and*
+  `get_net_metric(WIRELENGTH)`, the referee validated against upstream. On this
+  placement they agree exactly — both 4,533,609 — so the comparison is not a
+  metric artifact.
+- **HeAP placed everything.** `placed=105119, unplaced=0`, asserted in the
+  probe. An unplaced or origin-stacked cell would have made HeAP's HPWL look
+  better, not worse.
+- **This is our *port* of HeAP, not upstream's C++ binary.** It is an
+  algorithmic reference, not a vendor benchmark.
+
+**This is a much larger gap than the 20x20 synthetic shows.** There,
+`opt_trans` is at runtime parity (0.48 s vs 0.51 s) and 1.07-1.10x on quality.
+Here it is 47x slower and 2.35x worse. The "one small design is not enough"
+caveat in `congestion_composite_measured.md` was not a formality — the small
+fabric was hiding both gaps.
+
+**The runtime gap has a single named owner: `refresh`, at 92.3%.** The solver
+is 138.1 s, which is 2.6x HeAP's *entire* placement — expensive but the same
+order. Nothing else needs attention until refresh does.
+
+**Read the quality gap with one caveat: the centroid lever was off.** This run
+used stock defaults, and `steiner_weight` defaults to 0.0 — the term measured
+at **-17.5%** on stereovision3 and never tested at scale, because FPGA01 could
+not be run. Even taking that discount at face value the gap would be ~1.94x, so
+the lever cannot explain it away, but the honest comparison is `NPNR_OT_STEINER=1`
+against HeAP and that arm belongs in this table before anyone concludes how big
+the real gap is.
+
 **The energy trace is not healthy.** `energy` swings between 1.4e9 and 4.9e10
 with `dE` changing sign on most iterations, and `excess` bounces 96–685 while
 `bins` sits pinned at 2.0x. That is the limit cycle documented in
