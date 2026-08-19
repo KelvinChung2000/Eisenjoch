@@ -68,7 +68,7 @@ frequent.
 
 ### A. Legalizer-owned ring index built from `bel_data_cache` -- RECOMMENDED
 
-Build a per-type `[x][y] -> Vec<(BelId, enum_index)>` grid directly from the
+Build a per-type `[x][y] -> [enum_index]` grid directly from the
 `bel_data_cache` the legalizer already builds, then walk outward from the
 target and stop at the first BEL `try_bind_cell` accepts.
 
@@ -140,6 +140,10 @@ ascending raw `BelId` and the tie-break could be free. That equivalence is a
 property of two files that have no reason to stay coupled. 6.5 MB buys not
 depending on it.
 
+The grid stores *only* `enum_index`, not `(BelId, enum_index)`: the `BelId` is
+recovered by indexing `bel_data_cache[type]`, so keeping it in the grid too
+would double the structure for nothing.
+
 Ordering is made total without a float-comparator by keying the heap on
 `(dist_sq.to_bits(), enum_index)`. For non-negative finite f64 the IEEE-754 bit
 pattern is monotonic in value, and `dx*dx + dy*dy` on finite inputs is always
@@ -161,15 +165,43 @@ ring r = { (x, y) : max(|x - cx|, |y - cy|) == r }
 ```
 
 The metric is Euclidean but the rings are square, so a BEL found in ring `r` is
-**not** necessarily nearer than one still unexplored in ring `r+1`. The guard:
+**not** necessarily nearer than one still unexplored in ring `r+1`. Candidates
+are therefore buffered in a heap and released only once nothing unexplored can
+beat them.
 
-> After exploring rings `0..=R`, any unexplored BEL has Chebyshev distance
-> `>= R+1` from `(cx, cy)`. Since `|cx - target_x| <= 0.5`, its Euclidean
-> distance from the target is `>= R + 0.5`.
+The bound must be exact in f64, not merely true in the reals: the values being
+compared are computed `dist_sq` values, so a bound like `(R + 0.5)^2` -- correct
+for true distances -- can be cleared by an ulp, emitting a candidate ahead of an
+equal-distance BEL with a lower `enum_index`. Instead, evaluate the bound with
+the *same expression as the candidates*:
 
-So a buffered candidate may be emitted only while `dist_sq < (R + 0.5)^2`. On
-exact equality we expand one more ring first: an unexplored BEL could tie on
-distance and win on the lower `enum_index`.
+> After exploring rings `0..=R`, `guard` is the minimum `dist_sq` over ring
+> `R+1`'s four axis points `(cx +/- (R+1), cy)` and `(cx, cy +/- (R+1))`. A
+> buffered candidate may be emitted while `dist_sq < guard`.
+
+Those four points are ring `R+1`'s closest cells to the target. The closest
+point of a square ring is the perpendicular foot on its nearest side, and
+because `|cx - target_x| <= 0.5` the nearest integer cell to that foot is the
+side's midpoint.
+
+The bound holds for *every* unexplored cell, not just ring `R+1`, and the
+argument needs no epsilons. Round-to-nearest is sign-symmetric and weakly
+monotone, so `fl(fl(fl(x-tx)^2) + fl(fl(y-ty)^2))` is weakly monotone in
+`(|x-tx|, |y-ty|)` componentwise. For any cell at Chebyshev radius `>= R+1`,
+WLOG `|x - cx| >= R+1`; take the same-side axis point `a = (cx +/- (R+1), cy)`.
+Since `|target_x - cx| <= 0.5`, `x` and `a.x` lie on the same side of
+`target_x`, so `|x - target_x| >= |a.x - target_x|`; and
+`|y - target_y| >= |cy - target_y|` (equal at `y = cy`, otherwise `>= 0.5`).
+Componentwise domination plus monotonicity gives
+`dist_sq(x, y) >= dist_sq(a) >= guard`, in computed f64.
+
+The same domination makes `guard` monotone nondecreasing in `R` -- ring `R+2`'s
+axis points dominate ring `R+1`'s -- so expanding on equality terminates.
+Out-of-grid axis points remain valid bounds for the same reason.
+
+**Expanding on exact equality is load-bearing.** A whole tile shares one
+`dist_sq`, so computed ties are the common case, not an edge case; an
+unexplored BEL can tie on distance and win on the lower `enum_index`.
 
 This is the one place the design can silently go wrong, so it gets its own
 test (see Testing).
@@ -179,11 +211,12 @@ test (see Testing).
 ```rust
 /// Nearest-BEL walk for one cell, in `(dist_sq, enum_index)` order.
 struct RingCandidates<'a> {
-    grid: &'a TypeGrid,          // ragged [x][y] -> &[(BelId, u32)]
+    grid: &'a BelGrid,           // CSR [y * w + x] -> &[enum_index]
     bels: &'a [(BelId, i32, i32, i32)],  // bel_data_cache[type], indexed by enum_index
     target_x: f64, target_y: f64,
     cx: i32, cy: i32,
     radius: i32,                 // rings 0..=radius explored
+    guard: f64,                  // min dist_sq of any unexplored cell
     exhausted: bool,             // radius covers the whole grid
     heap: BinaryHeap<Reverse<(u64, u32)>>,  // (dist_sq bits, enum_index)
 }
@@ -250,7 +283,7 @@ for the region path and doubles as the oracle. Parameterized over grid shapes,
 BELs-per-tile, and targets (including fractional and out-of-bounds ones):
 
 ```
-assert!(RingCandidates::new(..).collect::<Vec<_>>() == candidate_list(.., None));
+assert!(RingCandidates::new(..).collect::<Vec<_>>() == candidate_list(..));
 ```
 
 Full-sequence equality, not just the first element. This makes the refactor
@@ -259,9 +292,15 @@ into a performance measurement rather than a judgement call.
 
 **2. Emit-guard regression.** A grid with a BEL at Chebyshev radius `r` that is
 Euclidean-farther than one at radius `r+1`, plus a fractional target, plus an
-exact-tie case where the lower `enum_index` sits in the *outer* ring. Each must
-fail if the `(R + 0.5)^2` guard is weakened to `R^2` or the equality case stops
-expanding.
+exact-tie case where the lower `enum_index` sits in the *outer* ring, plus
+sparse layouts where whole rings are empty (a dense grid binds in ring 0 and
+never exercises the guard at all).
+
+The suite is only meaningful if it detects a weakened guard, so mutate it and
+confirm: computing `guard` from ring `R` instead of ring `R+1` must fail the
+ring-order and sparse cases, and relaxing the emit condition from `<` to `<=`
+must fail the exact-tie case. A mutation that leaves the suite green means the
+tests do not cover the guard.
 
 **3. Existing suite.** `cargo test -p nextpnr` stays green (132 lib tests).
 `shortlist_is_a_prefix_of_the_full_list` and
@@ -287,7 +326,7 @@ the live run cannot.
 
 | Risk | Mitigation |
 | --- | --- |
-| Emit guard subtly wrong -> different BEL chosen | Test 2, plus full-sequence oracle equality in test 1 |
+| Emit guard subtly wrong -> different BEL chosen | Bound evaluated with the candidates' own expression (exact in f64); test 2, plus full-sequence oracle equality in test 1 |
 | A pathological cell buffers its whole type | Bounded by one cell at a time; same worst case as today's rescan, without the sort |
 | Losing Phase A parallelism | replaced by one linear grid build; if it profiles hot, parallelize per type |
 | Region path left on the old mechanism | Explicit, tested by the same oracle, and off FPGA01's hot path |
