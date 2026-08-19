@@ -5077,10 +5077,21 @@ pub fn run_inner_outer(
                 r_sat += 1;
             }
         }
+        // `beckmann` is the potential the iteration ought to be descending;
+        // `base`/`max_util` are the congestion-free wirelength cost and the
+        // real occupancy peak. None of the three contains the hardening term,
+        // so they stay comparable across congestion arms — unlike
+        // `cong_share`, which rises by construction once history is on.
+        let beckmann = super::congestion::compute_beckmann_potential(network);
+        let hist_total: f64 = network.pipe_history.iter().sum();
         eprintln!(
             "    E_decomp: base={:.1} eff={:.1} cong={:.1} cong_share={:.1}% sat_pipes={} max_util={:.2}  R_buckets: 1-2x={} 2-10x={} 10-100x={} >=100x={}",
             sum_base, sum_eff, sum_eff - sum_base, cong_share * 100.0, n_sat, max_util,
             r_lo, r_med, r_hi, r_sat,
+        );
+        eprintln!(
+            "    E_potential: beckmann={:.1} history_total={:.1}",
+            beckmann, hist_total,
         );
         if network.span_cost_table.enabled {
             let s = &network.span_cost_table.stats;

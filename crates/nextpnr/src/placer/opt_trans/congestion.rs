@@ -62,6 +62,42 @@ pub fn compute_friction_energy(network: &PipeNetwork) -> f64 {
     friction
 }
 
+/// Beckmann's potential — the functional whose stationary point IS the
+/// user-equilibrium assignment:
+///
+/// `Φ_total = Σ_pipe ∫₀^u t(w) dw = Σ base·(u + α·u^(β+1) / ((β+1)·c_eff^β))`
+///
+/// The placer's own `energy` is `Σ demand·label`, i.e. `u·t(u)` — the same
+/// integrand evaluated at the endpoint rather than integrated, so it misses
+/// the `β+1` divisor and overstates the congestion part by a factor of 5 at
+/// the default β=4. Worse, its `u` comes from the new loading while its `t`
+/// comes from the previous iteration's frozen usage, so it is a Lyapunov
+/// function of nothing.
+///
+/// This is monitor-only: it is the scalar that *should* descend, reported so
+/// a run can be judged against the right quantity instead of against a
+/// mixed one.
+pub fn compute_beckmann_potential(network: &PipeNetwork) -> f64 {
+    use super::resistance::{bpr_alpha, bpr_beta, effective_capacity};
+    let alpha = bpr_alpha();
+    let beta = bpr_beta();
+    let mut total = 0.0f64;
+    for pipe in &network.pipes {
+        let u = pipe.net_count.max(0.0);
+        if u <= 0.0 {
+            continue;
+        }
+        let eff_cap = effective_capacity(pipe);
+        let congested = if eff_cap > 0.0 {
+            alpha * u.powf(beta + 1.0) / ((beta + 1.0) * eff_cap.powf(beta))
+        } else {
+            0.0
+        };
+        total += pipe.base_resistance * (u + congested);
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

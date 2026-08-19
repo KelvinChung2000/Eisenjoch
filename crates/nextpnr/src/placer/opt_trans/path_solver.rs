@@ -44,6 +44,25 @@ static LIKELIHOOD_LUT: LazyLock<[f32; LIKELIHOOD_LUT_SIZE]> = LazyLock::new(|| {
     table
 });
 
+/// Cached once per process from `NPNR_OT_UNION_USAGE=1`. When set, per-net
+/// pipe usage is booked as the **union of the shortest-path tree's edges**,
+/// one unit per edge, instead of the Dial-logit fractional split.
+///
+/// Why: a net is one driver broadcasting to K sinks. Flow conservation says
+/// the trunk carries what the branches carry, but a Steiner branch is 1-in /
+/// 2-out — Kirchhoff forbids it. Injecting 1 unit and splitting `1/K` gets
+/// shared trunks right and under-counts every dedicated branch by K;
+/// injecting K gets branches right and over-prices shared trunks by K. No
+/// injection value gets both. The union sidesteps the choice: a net's routed
+/// wire usage simply *is* its routing tree's edge set, each edge counted once.
+///
+/// Dial-logit still produces the distance labels — only the occupancy
+/// accounting changes.
+fn use_union_usage() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NPNR_OT_UNION_USAGE").ok().as_deref() == Some("1"))
+}
+
 /// Cached once per process from `NPNR_OT_USE_FSM=1`. When set, `dial_logit_load`
 /// routes through `fsm::fsm_dist_and_forward` instead of the fused Dijkstra.
 fn use_fsm() -> bool {
@@ -413,6 +432,17 @@ impl PathSolverWorkspace {
                 }
             }
         }
+    }
+
+    /// Book one unit on `pipe_idx` if this net has not already used it.
+    /// Idempotent within a net — that idempotence *is* the union.
+    fn record_edge_union(&mut self, pipe_idx: usize) -> bool {
+        if self.edge_load[pipe_idx] != 0.0 {
+            return false;
+        }
+        self.edge_touched.push(pipe_idx);
+        self.edge_load[pipe_idx] = 1.0;
+        true
     }
 
     /// Accumulate this net's flow on `pipe_idx`. Usage lands only in the
@@ -1132,7 +1162,15 @@ pub(crate) fn dial_logit_load(
         };
     };
     ws.mark_corridor(network, &corridor);
-    dial_logit_load_inner(network, source_node, sink_demands, ws, collect_usage, true)
+    dial_logit_load_inner(
+        network,
+        source_node,
+        sink_demands,
+        ws,
+        collect_usage,
+        true,
+        use_union_usage(),
+    )
 }
 
 fn dial_logit_load_inner(
@@ -1142,6 +1180,7 @@ fn dial_logit_load_inner(
     ws: &mut PathSolverWorkspace,
     collect_usage: bool,
     use_corridor: bool,
+    union_usage: bool,
 ) -> DialLogitResult {
     // Dijkstra + Dial forward pass are fused: `path_weight` and `dist` are
     // already populated for every settled node when this returns. Under the
@@ -1202,6 +1241,66 @@ fn dial_logit_load_inner(
         }
         ws.node_load[node] += demand;
         energy += demand * label;
+    }
+
+    if collect_usage && union_usage {
+        // Union accounting: walk each sink back to the source along tight
+        // predecessors and book one unit per distinct edge. `sink_nodes_
+        // scratch` is already deduped, so a node shared by several pins is
+        // walked once regardless.
+        //
+        // Termination is not just an optimisation: the predecessor choice is
+        // canonical (first tight edge in adjacency order), so each node has
+        // exactly one parent. Meeting an already-booked edge therefore means
+        // the whole remaining path to the source is already booked.
+        let sink_ptr = ws.sink_nodes_scratch.as_ptr();
+        let sink_len = ws.sink_nodes_scratch.len();
+        let sinks: &[usize] = unsafe { std::slice::from_raw_parts(sink_ptr, sink_len) };
+        for &sink in sinks {
+            if !ws.dist[sink].is_finite() {
+                continue;
+            }
+            let mut node = sink;
+            while node != source_node {
+                let node_dist = ws.dist_int[node];
+                if node_dist == u32::MAX {
+                    break;
+                }
+                let edge_start = adj_offsets[node] as usize;
+                let edge_end = adj_offsets[node + 1] as usize;
+                let mut parent = None;
+                for e in edge_start..edge_end {
+                    let pred = adj_neighbors[e] as usize;
+                    if use_corridor && !ws.in_corridor[pred] {
+                        continue;
+                    }
+                    let pred_dist = ws.dist_int[pred];
+                    // Tight edge: this predecessor is on a shortest path.
+                    // Integer costs make the test exact, so a settled node
+                    // reached by relaxation always has one.
+                    if pred_dist != u32::MAX && pred_dist + adj_cost_int[e] == node_dist {
+                        parent = Some((pred, adj_pipe_idx[e] as usize));
+                        break;
+                    }
+                }
+                let Some((pred, pipe_idx)) = parent else {
+                    debug_assert!(false, "settled node {node} has no tight predecessor");
+                    break;
+                };
+                if !ws.record_edge_union(pipe_idx) {
+                    break;
+                }
+                node = pred;
+            }
+        }
+
+        return DialLogitResult {
+            heap_pops,
+            energy,
+            missing_demand,
+            corridor_fallback: false,
+            cap_armed,
+        };
     }
 
     // Backward pass: distribute loaded demand back along predecessor edges.
@@ -1569,6 +1668,118 @@ mod tests {
     use super::*;
     use crate::placer::opt_trans::network::{Direction, Node, PipeType};
     use rustc_hash::FxHashMap;
+
+
+    /// Y-shaped net: driver at 0, trunk 0->1, then branches 1->2 and 1->3.
+    /// Pipe indices are the edge order below: 0=trunk, 1=left, 2=right.
+    fn y_network() -> PipeNetwork {
+        test_network(4, &[(0, 1, 1.0), (1, 2, 1.0), (1, 3, 1.0)])
+    }
+
+    fn solve_y(union_usage: bool) -> Vec<f64> {
+        let network = y_network();
+        let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+        ws.begin_net();
+        // Two sinks, conserved injection split 1/K as the flow model requires.
+        let sinks = [(2usize, 0.5f64), (3usize, 0.5f64)];
+        dial_logit_load_inner(&network, 0, &sinks, &mut ws, true, false, union_usage);
+        let mut usage = vec![0.0; network.num_pipes()];
+        let mut pairs = Vec::new();
+        ws.drain_edge_usage(&mut pairs);
+        for (pipe, load) in pairs {
+            usage[pipe as usize] += load;
+        }
+        usage
+    }
+
+    /// The broadcast paradox, made concrete. Under conserved flow the trunk
+    /// is right and both branches are under-counted by K=2. The union books
+    /// what the router will actually consume: three wires, one each.
+    #[test]
+    fn union_counts_every_tree_edge_once() {
+        let flow = solve_y(false);
+        let union = solve_y(true);
+
+        // Conserved flow: trunk carries the whole net, each branch half of it.
+        assert!((flow[0] - 1.0).abs() < 1e-9, "trunk under flow = {}", flow[0]);
+        assert!((flow[1] - 0.5).abs() < 1e-9, "branch under flow = {}", flow[1]);
+        assert!((flow[2] - 0.5).abs() < 1e-9, "branch under flow = {}", flow[2]);
+
+        // Union: every edge of the tree is one physical wire.
+        for (pipe, u) in union.iter().enumerate() {
+            assert!(
+                (u - 1.0).abs() < 1e-9,
+                "pipe {} booked {} under union, expected 1.0",
+                pipe,
+                u
+            );
+        }
+    }
+
+    /// The trunk is on the path of BOTH sinks. Union means once, not twice —
+    /// otherwise the shared segment would be over-priced by K, which is the
+    /// opposite failure of the same paradox.
+    #[test]
+    fn shared_trunk_is_not_double_booked() {
+        let union = solve_y(true);
+        assert!(
+            (union[0] - 1.0).abs() < 1e-9,
+            "trunk booked {} for a 2-sink net; union must count it once",
+            union[0]
+        );
+    }
+
+    /// Union usage must not depend on how the demand was split across sinks:
+    /// occupancy is a property of the tree, not of the injection value. This
+    /// is exactly the choice the audit showed has no right answer under flow.
+    #[test]
+    fn union_usage_is_independent_of_injection_value() {
+        let network = y_network();
+        let mut out = Vec::new();
+        for per_sink in [0.5, 1.0, 7.0] {
+            let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+            ws.begin_net();
+            let sinks = [(2usize, per_sink), (3usize, per_sink)];
+            dial_logit_load_inner(&network, 0, &sinks, &mut ws, true, false, true);
+            let mut usage = vec![0.0; network.num_pipes()];
+            let mut pairs = Vec::new();
+            ws.drain_edge_usage(&mut pairs);
+            for (pipe, load) in pairs {
+                usage[pipe as usize] += load;
+            }
+            out.push(usage);
+        }
+        assert_eq!(out[0], out[1], "injection 0.5 vs 1.0 changed union usage");
+        assert_eq!(out[1], out[2], "injection 1.0 vs 7.0 changed union usage");
+    }
+
+    /// A single-sink net is the K=1 case where flow and union agree exactly.
+    #[test]
+    fn union_and_flow_agree_at_fanout_one() {
+        let network = test_network(3, &[(0, 1, 1.0), (1, 2, 1.0)]);
+        let mut results = Vec::new();
+        for union_usage in [false, true] {
+            let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+            ws.begin_net();
+            dial_logit_load_inner(&network, 0, &[(2usize, 1.0f64)], &mut ws, true, false, union_usage);
+            let mut usage = vec![0.0; network.num_pipes()];
+            let mut pairs = Vec::new();
+            ws.drain_edge_usage(&mut pairs);
+            for (pipe, load) in pairs {
+                usage[pipe as usize] += load;
+            }
+            results.push(usage);
+        }
+        for pipe in 0..2 {
+            assert!(
+                (results[0][pipe] - results[1][pipe]).abs() < 1e-9,
+                "pipe {}: flow {} != union {} at fanout 1",
+                pipe,
+                results[0][pipe],
+                results[1][pipe]
+            );
+        }
+    }
 
     fn test_network(n_nodes: usize, edges: &[(usize, usize, f64)]) -> PipeNetwork {
         let nodes: Vec<Node> = (0..n_nodes)
