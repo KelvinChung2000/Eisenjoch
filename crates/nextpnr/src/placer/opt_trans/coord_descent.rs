@@ -5603,3 +5603,165 @@ mod hardening_tests {
         assert_eq!(net.pipe_history[0], 0.0);
     }
 }
+
+#[cfg(test)]
+mod driver_hole_tests {
+    use super::*;
+    use crate::placer::opt_trans::network::{Direction, FlatAdjacency, Node, Pipe, PipeType, TileGrid};
+    use crate::placer::opt_trans::tile_cache::SpanCostTable;
+
+    const W: i32 = 8;
+    const H: i32 = 1;
+
+    fn line_network() -> PipeNetwork {
+        let n = (W * H) as usize;
+        let nodes: Vec<Node> = (0..n)
+            .map(|i| Node { tile_x: i as i32, tile_y: 0, pressure: 0.0 })
+            .collect();
+        let pipes: Vec<Pipe> = (0..n - 1)
+            .map(|i| Pipe {
+                from: i,
+                to: i + 1,
+                base_resistance: 1.0,
+                capacity: 10.0,
+                flow: 0.0,
+                net_count: 0.0,
+                raw_cell_density: 0.0,
+                cell_density: 0.0,
+                eff_conductance: 1.0,
+                pipe_type: PipeType::InterTile(Direction::East),
+            })
+            .collect();
+        let mut node_pipes = vec![Vec::new(); n];
+        for (i, p) in pipes.iter().enumerate() {
+            node_pipes[p.from].push(i);
+            node_pipes[p.to].push(i);
+        }
+        let n_pipes = pipes.len();
+        let pipe_costs = vec![1.0; n_pipes];
+        let pipe_costs_int = vec![100u32; n_pipes];
+        let tile_grid = TileGrid::build(&pipes, &nodes, W, H);
+        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        PipeNetwork {
+            nodes,
+            pipes,
+            node_pipes,
+            pipe_history: vec![0.0; n_pipes],
+            pipe_costs,
+            pipe_costs_int,
+            span_cost_table: SpanCostTable::disabled(n_pipes),
+            flat_adjacency,
+            tile_templates: std::sync::Arc::new(Vec::new()),
+            tile_grid,
+            pipe_lookup: FxHashMap::default(),
+            tile_type_by_node: vec![0; n],
+            width: W,
+            height: H,
+            x0: 0,
+            y0: 0,
+            zero_bel_tiles: 0,
+            total_bels: n,
+            coarsen: 1,
+        }
+    }
+
+    /// One net: cell 0 drives, two fixed sinks parked at x=6 and x=7.
+    fn driver_net() -> Vec<NetInfo> {
+        vec![NetInfo {
+            net_id: NetId::from_raw(0),
+            debug_name: "n".to_string(),
+            pins: vec![
+                PinNode { node: 0, cell_idx: Some(0), is_driver: true, is_fixed: false },
+                PinNode { node: 6, cell_idx: None, is_driver: false, is_fixed: true },
+                PinNode { node: 7, cell_idx: None, is_driver: false, is_fixed: true },
+            ],
+            has_fixed_pin: true,
+        }]
+    }
+
+    fn driver_cost_profile(mst_w: f64) -> Vec<f64> {
+        let network = line_network();
+        let net_infos = driver_net();
+        let mut dist_cache = DistCache::new(1, network.num_nodes());
+        // Driver-rooted labels exist but the driver's own cost never reads
+        // them -- that is precisely the hole under test.
+        for node in 0..network.num_nodes() {
+            dist_cache.row_mut(0).insert(node as u32, node as f32);
+        }
+        let mut cfg = OptTransPlacerCfg::default();
+        cfg.mst_edge_weight = mst_w;
+        cfg.locked_pin_weight = 1.0;
+        if mst_w > 0.0 {
+            compute_mst_neighbors(&mut dist_cache, &net_infos, &network);
+        }
+        let validity = CellValidityMask::all_valid(1, W, H);
+        let cell_nets = [(0usize, 0usize)];
+        (0..W)
+            .map(|gx| {
+                evaluate_cell_at(0, gx, 0, &cell_nets, &net_infos, &dist_cache, &network, &cfg, &validity)
+            })
+            .collect()
+    }
+
+    /// THE DRIVER HOLE. `evaluate_cell_at` charges `weight * d` only for
+    /// non-driver pins, so a cell's own fanout exerts zero pull on it: the
+    /// driver's cost is identical at every legal position, and the argmin is
+    /// whatever the tie-break happens to pick. This is the mechanism behind
+    /// LUT->FF pairs only ever being tightened from the FF side.
+    #[test]
+    fn driver_cost_is_flat_without_a_tension_term() {
+        let profile = driver_cost_profile(0.0);
+        let first = profile[0];
+        for (gx, &c) in profile.iter().enumerate() {
+            assert!(
+                (c - first).abs() < 1e-12,
+                "driver cost at x={} is {}, expected flat {} -- hole is closed unexpectedly",
+                gx,
+                c,
+                first
+            );
+        }
+    }
+
+    /// With the tension term on, the driver is pulled onto its MST
+    /// neighbour. The MST over pins at x=0/6/7 is 0-6-7, so the driver's
+    /// only tension edge is to the sink at x=6: cost falls monotonically up
+    /// to x=6 and rises past it, a V with the minimum on the neighbour
+    /// rather than a flat line with an arbitrary tie-break.
+    #[test]
+    fn tension_term_pulls_the_driver_onto_its_mst_neighbour() {
+        let profile = driver_cost_profile(1.0);
+        let argmin = profile
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(argmin, 6, "driver settled at x={}, profile {:?}", argmin, profile);
+        for w in profile[..=argmin].windows(2) {
+            assert!(w[1] < w[0], "not decreasing up to the neighbour: {:?}", profile);
+        }
+        for w in profile[argmin..].windows(2) {
+            assert!(w[1] > w[0], "not increasing past the neighbour: {:?}", profile);
+        }
+    }
+
+    /// The pull scales with the weight -- the term is a real lever, not a
+    /// tie-break nudge.
+    #[test]
+    fn tension_gradient_scales_with_weight() {
+        let spread = |w: f64| {
+            let p = driver_cost_profile(w);
+            p[0] - p[(W - 1) as usize]
+        };
+        let s1 = spread(1.0);
+        let s4 = spread(4.0);
+        assert!(s1 > 0.0, "no gradient at w=1");
+        assert!(
+            (s4 / s1 - 4.0).abs() < 1e-9,
+            "spread {} at w=4 vs {} at w=1 is not 4x",
+            s4,
+            s1
+        );
+    }
+}

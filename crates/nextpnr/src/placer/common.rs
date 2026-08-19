@@ -1759,6 +1759,19 @@ impl CellValidityMask {
 
     /// O(1) check. Returns false for out-of-bounds or invalid-for-cell positions.
     #[inline(always)]
+    /// Mask that permits every cell at every location. Used by cost-model
+    /// tests and probes that want to isolate the objective from arch
+    /// legality; production callers build from a `TypeAwarePlacement`.
+    pub fn all_valid(n_cells: usize, width: i32, height: i32) -> Self {
+        let bits_needed = n_cells * (width as usize) * (height as usize);
+        Self {
+            width,
+            height,
+            n_cells,
+            bits: vec![u64::MAX; bits_needed.div_ceil(64).max(1)],
+        }
+    }
+
     pub fn is_valid(&self, cell_idx: usize, gx: i32, gy: i32) -> bool {
         if cell_idx >= self.n_cells {
             return false;
