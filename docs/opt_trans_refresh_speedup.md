@@ -21,6 +21,29 @@ unchanged. Note the box is a **16-core** 7950X with 2 threads/core: 8 -> 32
 threads is only 2x the physical cores plus SMT, which is exactly the 2.03x
 observed. There is no further headroom on this axis.
 
+### The thread win is config-dependent: `steiner=1` is not settled
+
+The +0.49 % above is `steiner=0`. On `steiner=1` -- the likelier shipping
+config -- the same thread change does **not** reproduce that clean result:
+
+| FPGA01, 20 iters, `steiner=1` | wall | post-leg HPWL |
+|---|---|---|
+| 8 threads, HEAD `9bf49cd`~ | 2819 s | 7 291 219 |
+| 8 threads, HEAD `0429c3b` (control) | 2898 s | 7 385 785 |
+| 32 threads, HEAD `0429c3b` | 1508 s | 7 757 880 |
+
+The two 8-thread runs bracket the same-config spread at **+1.30 %**, and the
+control reproducing that band at current HEAD rules out code drift from the
+instrumentation. The 32-thread run sits **+5.04 %** above the nearest
+8-thread sample -- outside that spread, and contradicting `steiner=0`.
+
+Mechanism if real: solve chunking is thread-count dependent
+(`auto_batch_size`), so thread count shifts float summation order, and
+`steiner=1` may sit near a different local optimum where that perturbation
+is amplified. The 32-thread figure is a **single draw**, so it is being
+repeated before any conclusion is drawn. Until that lands, `NPNR_OT_THREADS`
+is validated on `steiner=0` only and must not be described as free.
+
 ## Where the time actually goes
 
 FPGA01's network is 69 353 nodes / 2 562 403 pipes (~37 edges per node).
