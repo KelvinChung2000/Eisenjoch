@@ -574,7 +574,21 @@ pub(crate) struct DialLogitResult {
     /// near pins. A large share means the post-cap slack, not the Dijkstra
     /// ball itself, is what the solve is paying for.
     pub settle_above_sink: usize,
+    /// Diagnostic: settled nodes the back-pass gave any nonzero load.
+    pub load_nonzero: usize,
+    /// Diagnostic: settled nodes carrying at least `LOAD_MATERIAL_FRAC` of the
+    /// net's injected demand. The logit weight is `exp(-theta*slack/DIST_SCALE)`
+    /// with theta 2.7-5.0, so load decays by ~e^-theta per tile of slack and
+    /// its support should be a narrow tube around the shortest path. If
+    /// `load_material` is a small share of `settle_order`, the corridor ellipse
+    /// is settling nodes that cannot affect congestion and exist only to fill
+    /// `dist_cache` near pins.
+    pub load_material: usize,
 }
+
+/// Share of a net's injected demand below which a node's load cannot move the
+/// congestion field. Diagnostic only — nothing is pruned on this threshold.
+const LOAD_MATERIAL_FRAC: f64 = 1e-6;
 
 #[derive(Debug)]
 struct Corridor {
@@ -1228,6 +1242,8 @@ pub(crate) fn dial_logit_load(
             corridor_fallback: false,
             cap_armed: false,
             settle_above_sink: 0,
+        load_nonzero: 0,
+        load_material: 0,
         };
     };
     ws.mark_corridor(network, &corridor);
@@ -1379,15 +1395,31 @@ fn dial_logit_load_inner(
             corridor_fallback: false,
             cap_armed,
             settle_above_sink,
+        load_nonzero: 0,
+        load_material: 0,
         };
     }
 
     // Backward pass: distribute loaded demand back along predecessor edges.
     // Operates in integer-slack domain so the likelihood is a single LUT hit
     // per edge — no libm exp on this critical path either.
+    let material_cut = LOAD_MATERIAL_FRAC
+        * sink_demands
+            .iter()
+            .map(|&(_, d)| d.abs())
+            .sum::<f64>();
+    let mut load_nonzero = 0usize;
+    let mut load_material = 0usize;
+
     for i in (0..n_settled).rev() {
         let node = ws.settle_order[i];
         let load = ws.node_load[node];
+        if load != 0.0 {
+            load_nonzero += 1;
+            if load.abs() >= material_cut {
+                load_material += 1;
+            }
+        }
         let node_weight = ws.path_weight[node];
         if load == 0.0 || node_weight <= 0.0 || !node_weight.is_finite() {
             continue;
@@ -1435,6 +1467,8 @@ fn dial_logit_load_inner(
         corridor_fallback: false,
         cap_armed,
         settle_above_sink,
+        load_nonzero,
+        load_material,
     }
 }
 
@@ -1584,6 +1618,8 @@ fn dial_logit_displacement(
         cap_armed: true,
         // Displacement fast path never runs Dijkstra, so there is no tail.
         settle_above_sink: 0,
+    load_nonzero: 0,
+    load_material: 0,
     })
 }
 

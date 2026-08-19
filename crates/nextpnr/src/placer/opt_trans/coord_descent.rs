@@ -420,6 +420,8 @@ struct SolveAccum {
     /// Settled nodes above `max_sink_dist`: zero-load tail kept only for
     /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
     diag_above_sum: u64,
+    diag_load_nz_sum: u64,
+    diag_load_mat_sum: u64,
     /// Settle-count histogram over nets, bucketed by settled-node count:
     /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
     /// bucket, `_settles` the settles they account for — the mean alone
@@ -739,6 +741,8 @@ fn solve_all_nets_with_displacement(
                         out.diag_solves += 1;
                         out.diag_settle_sum += settle_len;
                         out.diag_above_sum += result.settle_above_sink as u64;
+                        out.diag_load_nz_sum += result.load_nonzero as u64;
+                        out.diag_load_mat_sum += result.load_material as u64;
                         let bucket = match settle_len {
                             0..=99 => 0,
                             100..=999 => 1,
@@ -865,6 +869,8 @@ struct ChunkUsage {
     /// Settled nodes above `max_sink_dist`: zero-load tail kept only for
     /// `dist_cache`. See `DialLogitResult::settle_above_sink`.
     diag_above_sum: u64,
+    diag_load_nz_sum: u64,
+    diag_load_mat_sum: u64,
     /// Settle-count histogram over nets, bucketed by settled-node count:
     /// [<100, <1k, <5k, <20k, <60k, >=60k]. `_nets` counts nets in the
     /// bucket, `_settles` the settles they account for — the mean alone
@@ -892,6 +898,8 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_settle_sum: 0,
         diag_settle_max: 0,
         diag_above_sum: 0,
+        diag_load_nz_sum: 0,
+        diag_load_mat_sum: 0,
         diag_hist_nets: [0; 6],
         diag_hist_settles: [0; 6],
         diag_fan_nets: [0; 6],
@@ -909,6 +917,8 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         accum.diag_solves += chunk.diag_solves;
         accum.diag_settle_sum += chunk.diag_settle_sum;
         accum.diag_above_sum += chunk.diag_above_sum;
+        accum.diag_load_nz_sum += chunk.diag_load_nz_sum;
+        accum.diag_load_mat_sum += chunk.diag_load_mat_sum;
         for b in 0..6 {
             accum.diag_hist_nets[b] += chunk.diag_hist_nets[b];
             accum.diag_hist_settles[b] += chunk.diag_hist_settles[b];
@@ -1102,6 +1112,8 @@ impl TemplateAccum {
             diag_settle_sum: 0,
             diag_settle_max: 0,
             diag_above_sum: 0,
+            diag_load_nz_sum: 0,
+            diag_load_mat_sum: 0,
             diag_hist_nets: [0; 6],
             diag_hist_settles: [0; 6],
             diag_fan_nets: [0; 6],
@@ -5000,6 +5012,17 @@ pub fn run_inner_outer(
                     above_avg,
                     if settle_avg > 0.0 { 100.0 * above_avg / settle_avg } else { 0.0 },
                     post_solve.diag_settle_max,
+                );
+                let nz_avg = post_solve.diag_load_nz_sum as f64 / solves as f64;
+                let mat_avg = post_solve.diag_load_mat_sum as f64 / solves as f64;
+                eprintln!(
+                    "    load_support[outer={}]: settle_avg={:.0} load_nz_avg={:.0} ({:.1}%) load_material_avg={:.0} ({:.1}%)",
+                    outer,
+                    settle_avg,
+                    nz_avg,
+                    if settle_avg > 0.0 { 100.0 * nz_avg / settle_avg } else { 0.0 },
+                    mat_avg,
+                    if settle_avg > 0.0 { 100.0 * mat_avg / settle_avg } else { 0.0 },
                 );
                 let total_settles: u64 = post_solve.diag_hist_settles.iter().sum();
                 let labels = ["<100", "<1k", "<5k", "<20k", "<60k", ">=60k"];
