@@ -1665,15 +1665,22 @@ impl TypeAwarePlacement {
 /// `is_valid(ci, gx, gy)` is true iff `(gx, gy)` is a valid position for the
 /// bucket of cell `cell_ids[ci]`.
 ///
-/// Memory cost: `n_cells * width * height` bits, e.g. ~4 MB for 300 cells on a
-/// 350×350 grid.
+/// Validity depends only on a cell's *bucket*, never on the cell, so one mask
+/// is stored per distinct bucket and cells index into it. A per-cell bitset
+/// costs `n_cells * width * height` bits -- 634 MB on FPGA01 (76660 cells,
+/// 311x223), which is a single 8.7 KB mask duplicated 76660 times. Per bucket
+/// the same information is `n_buckets * width * height` bits plus 4 bytes per
+/// cell: ~170 KB for the same design.
 pub struct CellValidityMask {
     width: i32,
     height: i32,
     n_cells: usize,
-    // bits[idx] bit `b`: (cell_idx * W*H + gy*W + gx) where idx = bit >> 6,
-    // b = bit & 63.
-    bits: Vec<u64>,
+    /// One bitmask per distinct bucket. Bit `gy*W + gx` is set iff the bucket
+    /// may occupy that position.
+    bucket_masks: Vec<Vec<u64>>,
+    /// `cell_bucket[ci]` indexes `bucket_masks`. `u32::MAX` means the cell has
+    /// no valid position at all (not in the type-aware tables).
+    cell_bucket: Vec<u32>,
 }
 
 impl CellValidityMask {
@@ -1695,29 +1702,30 @@ impl CellValidityMask {
     ) -> Self {
         let n_cells = cell_ids.len();
         let bits_per_cell = (width as usize) * (height as usize);
-        let total_bits = n_cells * bits_per_cell;
-        let n_words = (total_bits + 63) / 64;
-        let mut bits = vec![0u64; n_words];
-        let stride = bits_per_cell;
+        let words_per_mask = bits_per_cell.div_ceil(64);
 
-        let mut n_unmapped = 0usize;
-        let mut per_cell_counts = Vec::with_capacity(n_cells);
+        let mut bucket_masks: Vec<Vec<u64>> = Vec::new();
+        let mut bucket_counts: Vec<usize> = Vec::new();
+        let mut bucket_index: FxHashMap<IdString, u32> = FxHashMap::default();
+        let mut cell_bucket = vec![u32::MAX; n_cells];
+
         for (ci, &cell_id) in cell_ids.iter().enumerate() {
             let bucket = ctx.resolve_bucket(ctx.design.cell(cell_id).cell_type);
+            if let Some(&bi) = bucket_index.get(&bucket) {
+                cell_bucket[ci] = bi;
+                continue;
+            }
+
             let xs = match type_aware.valid_xs.get(&bucket) {
                 Some(xs) if !xs.is_empty() => xs,
-                _ => {
-                    n_unmapped += 1;
-                    per_cell_counts.push(0usize);
-                    continue; // no valid positions (e.g. fixed/non-placeable); leave all bits 0
-                }
+                // no valid positions (e.g. fixed/non-placeable); leave unmapped
+                _ => continue,
             };
-            let ys_map = match type_aware.valid_ys.get(&bucket) {
-                Some(m) => m,
-                None => continue,
+            let Some(ys_map) = type_aware.valid_ys.get(&bucket) else {
+                continue;
             };
 
-            let base = (ci * stride) as u64;
+            let mut mask = vec![0u64; words_per_mask];
             let mut set_count = 0usize;
             for &xf in xs {
                 let gx = xf.round() as i32;
@@ -1730,30 +1738,44 @@ impl CellValidityMask {
                     if gy < 0 || gy >= height {
                         continue;
                     }
-                    let bit = base + (gy as u64) * (width as u64) + (gx as u64);
-                    let word = (bit >> 6) as usize;
-                    let shift = (bit & 63) as u32;
-                    bits[word] |= 1u64 << shift;
+                    let bit = (gy as usize) * (width as usize) + (gx as usize);
+                    mask[bit >> 6] |= 1u64 << (bit & 63);
                     set_count += 1;
                 }
             }
-            per_cell_counts.push(set_count);
+
+            let bi = bucket_masks.len() as u32;
+            bucket_masks.push(mask);
+            bucket_counts.push(set_count);
+            bucket_index.insert(bucket, bi);
+            cell_bucket[ci] = bi;
         }
 
-        let min_set = per_cell_counts.iter().copied().min().unwrap_or(0);
-        let max_set = per_cell_counts.iter().copied().max().unwrap_or(0);
+        let n_unmapped_cells = cell_bucket.iter().filter(|&&b| b == u32::MAX).count();
+
+        let counts = |ci: usize| -> usize {
+            let b = cell_bucket[ci];
+            if b == u32::MAX {
+                0
+            } else {
+                bucket_counts[b as usize]
+            }
+        };
+        let min_set = (0..n_cells).map(counts).min().unwrap_or(0);
+        let max_set = (0..n_cells).map(counts).max().unwrap_or(0);
         let avg_set: f64 =
-            per_cell_counts.iter().copied().sum::<usize>() as f64 / n_cells.max(1) as f64;
+            (0..n_cells).map(counts).sum::<usize>() as f64 / n_cells.max(1) as f64;
         eprintln!(
-            "CellValidityMask: {} cells, {}x{} grid, per-cell valid positions: min={} avg={:.1} max={}, unmapped cells={}",
-            n_cells, width, height, min_set, avg_set, max_set, n_unmapped,
+            "CellValidityMask: {} cells, {}x{} grid, {} bucket masks, per-cell valid positions: min={} avg={:.1} max={}, unmapped cells={}",
+            n_cells, width, height, bucket_masks.len(), min_set, avg_set, max_set, n_unmapped_cells,
         );
 
         Self {
             width,
             height,
             n_cells,
-            bits,
+            bucket_masks,
+            cell_bucket,
         }
     }
 
@@ -1763,12 +1785,13 @@ impl CellValidityMask {
     /// tests and probes that want to isolate the objective from arch
     /// legality; production callers build from a `TypeAwarePlacement`.
     pub fn all_valid(n_cells: usize, width: i32, height: i32) -> Self {
-        let bits_needed = n_cells * (width as usize) * (height as usize);
+        let words = ((width as usize) * (height as usize)).div_ceil(64).max(1);
         Self {
             width,
             height,
             n_cells,
-            bits: vec![u64::MAX; bits_needed.div_ceil(64).max(1)],
+            bucket_masks: vec![vec![u64::MAX; words]],
+            cell_bucket: vec![0u32; n_cells],
         }
     }
 
@@ -1779,9 +1802,12 @@ impl CellValidityMask {
         if gx < 0 || gy < 0 || gx >= self.width || gy >= self.height {
             return false;
         }
-        let stride = (self.width as u64) * (self.height as u64);
-        let bit = (cell_idx as u64) * stride + (gy as u64) * (self.width as u64) + (gx as u64);
-        let word = self.bits[(bit >> 6) as usize];
+        let bucket = self.cell_bucket[cell_idx];
+        if bucket == u32::MAX {
+            return false;
+        }
+        let bit = (gy as usize) * (self.width as usize) + (gx as usize);
+        let word = self.bucket_masks[bucket as usize][bit >> 6];
         ((word >> (bit & 63)) & 1) == 1
     }
 
@@ -1795,7 +1821,8 @@ impl CellValidityMask {
 
     /// Heap bytes held by the bitset. Diagnostic only.
     pub fn heap_bytes(&self) -> usize {
-        self.bits.capacity() * 8
+        self.bucket_masks.iter().map(|m| m.capacity() * 8).sum::<usize>()
+            + self.cell_bucket.capacity() * 4
     }
 
     pub fn n_cells(&self) -> usize {
@@ -2202,4 +2229,56 @@ fn node_root(ctx: &Context, wire: WireId) -> WireId {
         }
     });
     root
+}
+
+#[cfg(test)]
+mod cell_validity_mask_tests {
+    use super::CellValidityMask;
+
+    /// Validity is a property of a cell's bucket, so storage must not grow
+    /// with the cell count beyond the one index per cell. The per-cell bitset
+    /// this replaced cost `n_cells * W * H` bits -- 634 MB on FPGA01.
+    #[test]
+    fn storage_does_not_scale_with_cell_count() {
+        const W: i32 = 311;
+        const H: i32 = 223;
+        for &(small, large) in &[(10usize, 10_000usize), (100, 100_000)] {
+            let a = CellValidityMask::all_valid(small, W, H).heap_bytes();
+            let b = CellValidityMask::all_valid(large, W, H).heap_bytes();
+
+            // Only the u32 index per cell may grow.
+            assert_eq!(
+                b - a,
+                (large - small) * 4,
+                "storage grew by more than one u32 per cell ({small} -> {large})"
+            );
+
+            // And it must be nowhere near the old per-cell bitset.
+            let per_cell_bitset = large * (W as usize) * (H as usize) / 8;
+            assert!(
+                b < per_cell_bitset / 1000,
+                "storage {b} is within 1000x of the per-cell bitset {per_cell_bitset}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_valid_accepts_in_bounds_and_rejects_outside() {
+        const W: i32 = 8;
+        const H: i32 = 5;
+        let mask = CellValidityMask::all_valid(4, W, H);
+
+        for ci in 0..4usize {
+            for gy in 0..H {
+                for gx in 0..W {
+                    assert!(mask.is_valid(ci, gx, gy), "cell {ci} at ({gx},{gy})");
+                }
+            }
+        }
+
+        for &(gx, gy) in &[(-1, 0), (0, -1), (W, 0), (0, H)] {
+            assert!(!mask.is_valid(0, gx, gy), "out of bounds ({gx},{gy})");
+        }
+        assert!(!mask.is_valid(4, 0, 0), "cell index past n_cells");
+    }
 }
