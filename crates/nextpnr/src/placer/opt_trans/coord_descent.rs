@@ -1559,7 +1559,6 @@ fn solve_usage_and_energy(
     solve_pool: &rayon::ThreadPool,
     ws_pool: &WorkspacePool,
     dist_cache: &mut DistCache,
-    skip_mask: Option<&[bool]>,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
     solve_all_nets_with_displacement(
@@ -1570,7 +1569,7 @@ fn solve_usage_and_energy(
         ws_pool,
         dist_cache,
         true,
-        skip_mask,
+        None,
         displacement,
     )
 }
@@ -4045,14 +4044,6 @@ pub fn run_inner_outer(
     // iter's post-solve. Compared against the current iter's pre-solve pin
     // layout to decide which nets' `dist_cache` rows can be reused.
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
-    // Stratified refresh carry: the slow stratum's aggregate edge usage and
-    // energy from the last iteration it was solved on. Between refreshes the
-    // fast stratum is solved fresh and these are added in unchanged, so both
-    // the EMA blend and the (monotone) pipe-history dual still see every net's
-    // contribution every iteration -- only its age differs.
-    let strata_on = cfg.strata_span_tiles > 0 && cfg.strata_period > 1;
-    let mut strata_slow_usage: Vec<f64> = Vec::new();
-    let mut strata_slow_energy = 0.0f64;
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
 
@@ -4982,112 +4973,15 @@ pub fn run_inner_outer(
         } else {
             dist_cache.ensure_shape(post_net_infos.len(), n_nodes);
             let rss_before_post = process_rss_kb();
-
-            // Stratified refresh. Per-net solve cost is the corridor ellipse
-            // area, which grows ~quadratically in pin span, so span selects
-            // the expensive nets directly. The slow stratum is re-solved on
-            // every `strata_period`-th iteration; in between, the fast
-            // stratum is solved fresh and the slow stratum's last usage and
-            // energy are carried forward.
-            let slow_mask: Option<Vec<bool>> = if strata_on {
-                let width_n = network.width as usize;
-                let thresh = cfg.strata_span_tiles;
-                Some(
-                    post_net_infos
-                        .iter()
-                        .map(|info| {
-                            let (mut min_x, mut max_x) = (i32::MAX, i32::MIN);
-                            let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
-                            for pin in &info.pins {
-                                let x = (pin.node % width_n) as i32;
-                                let y = (pin.node / width_n) as i32;
-                                min_x = min_x.min(x);
-                                max_x = max_x.max(x);
-                                min_y = min_y.min(y);
-                                max_y = max_y.max(y);
-                            }
-                            // Empty-pin nets get span 0 and stay in the fast
-                            // stratum, where they cost nothing anyway.
-                            if min_x > max_x {
-                                return false;
-                            }
-                            (max_x - min_x) + (max_y - min_y) > thresh
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
-            let refresh_slow = match &slow_mask {
-                // Iteration 0 must solve everything: there is no carry yet.
-                Some(_) => outer % cfg.strata_period == 0,
-                None => true,
-            };
-
-            // Pass A: everything except the deferred slow stratum. With
-            // stratification off this is the single full solve as before.
-            let mut post_solve = solve_usage_and_energy(
+            let post_solve = solve_usage_and_energy(
                 network,
                 &post_net_infos,
                 cfg,
                 solve_pool,
                 &ws_pool,
                 &mut dist_cache,
-                slow_mask.as_deref(),
                 displacement_table.as_ref(),
             );
-
-            // Pass B: on refresh iterations, re-measure the slow stratum on
-            // its own so its contribution can be snapshotted for the
-            // iterations that skip it.
-            if let Some(mask) = &slow_mask {
-                if refresh_slow {
-                    let fast_mask: Vec<bool> = mask.iter().map(|b| !b).collect();
-                    let slow = solve_usage_and_energy(
-                        network,
-                        &post_net_infos,
-                        cfg,
-                        solve_pool,
-                        &ws_pool,
-                        &mut dist_cache,
-                        Some(&fast_mask),
-                        displacement_table.as_ref(),
-                    );
-                    strata_slow_usage = slow.edge_usage;
-                    strata_slow_energy = slow.energy;
-                    let n_slow = mask.iter().filter(|b| **b).count();
-                    eprintln!(
-                        "    strata[outer={}]: REFRESH slow={} fast={} slow_energy={:.1}",
-                        outer,
-                        n_slow,
-                        mask.len() - n_slow,
-                        strata_slow_energy,
-                    );
-                } else {
-                    eprintln!(
-                        "    strata[outer={}]: carry slow_energy={:.1}",
-                        outer, strata_slow_energy,
-                    );
-                }
-                // Fold the slow stratum in so usage and energy always account
-                // for every net exactly once: pass A never solves a slow net,
-                // so the snapshot is the sole source of their contribution --
-                // fresh on refresh iterations, carried in between.
-                assert_eq!(
-                    strata_slow_usage.len(),
-                    post_solve.edge_usage.len(),
-                    "slow-stratum usage must be one entry per pipe",
-                );
-                for (dst, src) in post_solve
-                    .edge_usage
-                    .iter_mut()
-                    .zip(strata_slow_usage.iter())
-                {
-                    *dst += *src;
-                }
-                post_solve.energy += strata_slow_energy;
-            }
-            let post_solve = post_solve;
             let rss_after_post = process_rss_kb();
             {
                 // The post-solve is the only full solve pass after outer=0
