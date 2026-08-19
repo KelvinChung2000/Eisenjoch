@@ -61,18 +61,17 @@ struct CellLegalizeInfo {
 /// that is the O(cells * bels) blowup this exists to avoid.
 const CAND_SHORTLIST: usize = 1024;
 
-/// Distance-sorted BEL candidates for one cell.
+/// Every BEL of `info`'s type, sorted by `(dist_sq, enum_index)`.
 ///
-/// With `limit = Some(k)` this returns the k nearest, selected in O(m) and
-/// then sorted among themselves. With `limit = None` it returns every
-/// candidate, fully sorted. Both orderings agree on their common prefix,
-/// which is what lets Phase B widen from one to the other without changing
-/// which BEL it picks.
+/// Distance ties are broken on enumeration order because they are the common
+/// case -- a tile holds many slots at identical x/y -- and the order among
+/// them decides which BEL Phase B binds. `RingCandidates` reproduces this
+/// exact sequence lazily; this function is the region-constrained path and
+/// the oracle that test proves it against.
 fn candidate_list(
     info: &CellLegalizeInfo,
     bel_data_cache: &FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>>,
     region_bel_sets: &FxHashMap<u32, FxHashSet<BelId>>,
-    limit: Option<usize>,
 ) -> Vec<BelId> {
     let Some(bels) = bel_data_cache.get(&info.cell_type_id) else {
         return Vec::new();
@@ -81,11 +80,10 @@ fn candidate_list(
     // Carry each candidate's position in the BEL enumeration and break
     // distance ties on it. Equidistant BELs are common (a tile holds many
     // slots at identical x/y) and the order among them decides which one
-    // Phase B binds. The previous full `sort_by` was stable, so it preserved
-    // enumeration order for free; `select_nth_unstable_by` does not. Making
-    // the comparison total is what keeps the shortlist and the full list
-    // agreeing on their common prefix -- and keeps both agreeing with the
-    // original stable sort.
+    // Phase B binds. Making the comparison total is what lets `RingCandidates`
+    // reproduce this sequence from a heap keyed on
+    // `(dist_sq.to_bits(), enum_index)` -- an unstable sort and a heap agree
+    // only when the order is total.
     let mut candidates: Vec<(BelId, f64, usize)> = bels
         .iter()
         .enumerate()
@@ -111,23 +109,12 @@ fn candidate_list(
             .then(a.2.cmp(&b.2))
     };
 
-    match limit {
-        Some(k) if k < candidates.len() => {
-            // Partition so the k nearest are in front, then order just those.
-            candidates.select_nth_unstable_by(k, cmp);
-            candidates.truncate(k);
-            candidates.sort_unstable_by(cmp);
-        }
-        _ => candidates.sort_unstable_by(cmp),
-    }
+    candidates.sort_unstable_by(cmp);
 
     // Iterate by reference, NOT `into_iter()`. Consuming the vec would hit the
-    // in-place collect specialization, which reuses the SOURCE allocation --
-    // one buffer sized for every BEL of the type (17MB for DFF on this device)
-    // kept alive per cell to hold at most `CAND_SHORTLIST` ids. `truncate`
-    // sets a vec's length and never its capacity, so capping the shortlist
-    // alone does not bound the memory; building a fresh, exactly-sized vec is
-    // what does.
+    // in-place collect specialization, which reuses the SOURCE allocation: a
+    // 24-byte-per-element buffer kept alive to hold 8-byte ids. Building a
+    // fresh, exactly-sized vec is what bounds it.
     candidates.iter().map(|&(id, _, _)| id).collect()
 }
 
@@ -428,12 +415,7 @@ pub fn sorted_legalize(
     let sorted_candidates: Vec<Vec<BelId>> = cell_infos
         .par_iter()
         .map(|info| {
-            candidate_list(
-                info,
-                &bel_data_cache,
-                &region_bel_sets,
-                Some(CAND_SHORTLIST),
-            )
+            candidate_list(info, &bel_data_cache, &region_bel_sets)
         })
         .collect();
 
@@ -481,7 +463,7 @@ pub fn sorted_legalize(
         // exactly the ones already tried.
         if disp.is_none() {
             widened_rescans += 1;
-            let full = candidate_list(info, &bel_data_cache, &region_bel_sets, None);
+            let full = candidate_list(info, &bel_data_cache, &region_bel_sets);
             if full.len() > shortlist.len() {
                 disp = try_bind_cell(
                     ctx,
@@ -522,6 +504,7 @@ pub fn sorted_legalize(
 #[cfg(test)]
 mod candidate_list_tests {
     use super::*;
+    use crate::placer::legalize::bel_grid::{BelGrid, RingCandidates};
 
     /// A grid of BELs with `per_tile` slots at every (x, y), so equidistant
     /// candidates are the common case rather than the exception.
@@ -559,56 +542,70 @@ mod candidate_list_tests {
         m
     }
 
-    /// The shortlist must be a prefix of the full list.
-    ///
-    /// Phase B widens by trying the shortlist and then the full list's
-    /// remainder, skipping `shortlist.len()` entries it believes it already
-    /// tried. If the two disagree on that prefix, widening silently skips
-    /// untried BELs and binds a different one than an uncapped run would.
-    /// `select_nth_unstable_by` is not stable, so this holds only because
-    /// the comparison breaks distance ties on enumeration order.
-    #[test]
-    fn shortlist_is_a_prefix_of_the_full_list() {
-        let regions = FxHashMap::default();
-        for &(dim, per_tile) in &[(10, 4), (20, 8), (7, 1)] {
-            let c = cache(grid_bels(dim, per_tile));
-            let total = (dim * dim * per_tile) as usize;
-            for &(tx, ty) in &[(0.0, 0.0), (4.5, 4.5), (3.0, 7.0)] {
-                let info = info_at(tx, ty);
-                let full = candidate_list(&info, &c, &regions, None);
-                assert_eq!(full.len(), total, "full list must keep every candidate");
-
-                for &k in &[1usize, 17, 256, total, total + 100] {
-                    let short = candidate_list(&info, &c, &regions, Some(k));
-                    let want = k.min(total);
-                    assert_eq!(short.len(), want, "dim={dim} per_tile={per_tile} k={k}");
-                    assert_eq!(
-                        short[..],
-                        full[..want],
-                        "shortlist diverged from the full list's prefix \
-                         (dim={dim} per_tile={per_tile} target=({tx},{ty}) k={k})"
-                    );
+    /// Sparse islands: most tiles empty, so the walk actually expands.
+    fn sparse_bels(dim: i32, stride: i32, per_tile: i32) -> Vec<(BelId, i32, i32, i32)> {
+        let mut bels = Vec::new();
+        let mut tile = 0;
+        let mut x = 0;
+        while x < dim {
+            let mut y = 0;
+            while y < dim {
+                for z in 0..per_tile {
+                    bels.push((BelId::new(tile, z), x, y, z));
                 }
+                tile += 1;
+                y += stride;
             }
+            x += stride;
         }
+        bels
     }
 
-    /// The capped list must not carry the oversized source allocation.
+    /// The walk must emit exactly the sequence `candidate_list` builds --
+    /// every element, in order, not merely the same first pick.
     ///
-    /// `truncate` sets a vec's length and never its capacity, so a shortlist
-    /// built by consuming the candidate vec would hold one buffer sized for
-    /// every BEL of the type -- the FPGA01 legalization OOM.
+    /// This is what makes the ring query a data-structure change rather than
+    /// a heuristic one. It has to be full-sequence because Phase B walks
+    /// deep: FPGA01 averages ~285 rejected candidates per cell, so the 200th
+    /// element matters as much as the first.
+    ///
+    /// It is also the only thing that certifies the swap. Nothing on this
+    /// branch is bit-reproducible (`e3efbf3` is not merged), so a live run
+    /// cannot tell a legalizer regression from ordinary run-to-run spread.
     #[test]
-    fn shortlist_allocation_is_bounded_by_the_cap() {
+    fn the_walk_emits_candidate_lists_exact_sequence() {
         let regions = FxHashMap::default();
-        let c = cache(grid_bels(40, 8)); // 12,800 candidates
-        let info = info_at(20.0, 20.0);
-        let short = candidate_list(&info, &c, &regions, Some(64));
-        assert_eq!(short.len(), 64);
-        assert!(
-            short.capacity() < 256,
-            "shortlist kept an oversized buffer: capacity {} for 64 ids",
-            short.capacity()
-        );
+        let layouts: Vec<(&str, i32, Vec<(BelId, i32, i32, i32)>)> = vec![
+            ("dense 10x10 x4", 10, grid_bels(10, 4)),
+            ("dense 7x7 x1", 7, grid_bels(7, 1)),
+            ("dense 20x20 x8", 20, grid_bels(20, 8)),
+            ("sparse stride 3", 21, sparse_bels(21, 3, 2)),
+            ("sparse stride 7", 28, sparse_bels(28, 7, 1)),
+        ];
+        for (label, dim, bels) in &layouts {
+            let c = cache(bels.clone());
+            let grid = BelGrid::build(bels, *dim, *dim);
+            for &(tx, ty) in &[
+                (0.0, 0.0),
+                (4.5, 4.5),
+                (3.0, 7.0),
+                (2.25, 6.75),
+                (*dim as f64 - 1.0, *dim as f64 - 1.0),
+                (-1.5, 2.0),
+                (*dim as f64 + 1.5, *dim as f64 + 0.5),
+            ] {
+                let info = info_at(tx, ty);
+                let want = candidate_list(&info, &c, &regions);
+                let got: Vec<BelId> = RingCandidates::new(&grid, bels, tx, ty).collect();
+                assert_eq!(
+                    got.len(),
+                    want.len(),
+                    "{label} target=({tx},{ty}): walk emitted {} of {} candidates",
+                    got.len(),
+                    want.len()
+                );
+                assert_eq!(got, want, "{label} target=({tx},{ty}): order diverged");
+            }
+        }
     }
 }
