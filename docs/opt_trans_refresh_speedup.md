@@ -87,11 +87,18 @@ printed on the DCD line is a different quantity.
 same condition. So `P` feeds `N`'s normalisation **iff** `P` receives load
 from `N`. A node with zero load therefore contributes nothing to any loaded
 node's `path_weight`, and dropping it changes neither the energy nor the
-booked usage. The natural cutoff is already in the code: `likelihood` is a
-LUT that returns 0 beyond `LIKELIHOOD_LUT_SIZE` slack, so a cost-domain
-slack bound reproduces the current semantics rather than approximating them.
+booked usage. Nor can a zero-load node sit on a shortest path to a loaded
+one: a tight edge has slack 0 and `LUT[0] = 1 > 0`, so it would be loaded.
 
-Two caveats before this is worth building. The settled set also fills
+**But no forward-pass criterion identifies that set.** The LUT zeroes
+*per-edge* slack at `LIKELIHOOD_LUT_SIZE`, not *path* slack -- a node whose
+accumulated path slack exceeds the table can still take nonzero load through
+a chain of small-slack edges. So a path-slack bound prunes a set that is not
+the zero-load set, and would fail the bit-identical test. The honest
+statement: the zero-load set is exactly removable in principle, and every
+*implementable* bound is an approximation whose error has to be measured.
+
+Two further caveats before this is worth building. The settled set also fills
 `dist_cache` within `cache_radius_tiles` of the net's own cells, which is a
 separate coverage requirement that pruning must still satisfy. And knowing a
 node's slack needs a lower bound on its distance-to-sink during the forward
