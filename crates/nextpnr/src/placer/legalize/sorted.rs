@@ -542,6 +542,48 @@ mod candidate_list_tests {
         m
     }
 
+    /// Region-constrained cells must see only their region's BELs.
+    ///
+    /// This is the one path the ring walk does NOT take -- walking outward from
+    /// a cell whose region sits far from its target would scan the device
+    /// before finding anything -- so it stays on `candidate_list`, and this is
+    /// what holds that filter in place. Every other test here leaves
+    /// `cell_region` unset, so without this the filter was unguarded.
+    #[test]
+    fn a_region_constrained_cell_sees_only_its_regions_bels() {
+        let bels = grid_bels(6, 2);
+        let c = cache(bels.clone());
+
+        // The region is the single tile (5, 5) -- the far corner from the
+        // target, so an unfiltered list would put other BELs first.
+        let in_region: FxHashSet<BelId> = bels
+            .iter()
+            .filter(|&&(_, x, y, _)| (x, y) == (5, 5))
+            .map(|&(id, _, _, _)| id)
+            .collect();
+        assert_eq!(in_region.len(), 2, "fixture: (5,5) should hold 2 BELs");
+
+        let mut regions = FxHashMap::default();
+        regions.insert(7u32, in_region.clone());
+
+        let mut info = info_at(0.0, 0.0);
+        info.cell_region = Some(7);
+
+        let got = candidate_list(&info, &c, &regions);
+        assert_eq!(got.len(), 2, "region cell got {} candidates", got.len());
+        for id in &got {
+            assert!(in_region.contains(id), "candidate {id} is outside the region");
+        }
+
+        // And with no region set, the same cell sees everything, nearest first.
+        let unconstrained = candidate_list(&info_at(0.0, 0.0), &c, &regions);
+        assert_eq!(unconstrained.len(), bels.len());
+        assert_ne!(
+            unconstrained[0], got[0],
+            "fixture is not discriminating: nearest BEL is already in the region"
+        );
+    }
+
     /// Sparse islands: most tiles empty, so the walk actually expands.
     fn sparse_bels(dim: i32, stride: i32, per_tile: i32) -> Vec<(BelId, i32, i32, i32)> {
         let mut bels = Vec::new();

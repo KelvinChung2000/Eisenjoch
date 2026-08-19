@@ -1122,10 +1122,24 @@ Do **not** `git add measurements/` — it is untracked and outside the worktree.
 
 **Coverage of the region branch.** Task 4's `cell_region.is_some()` arm is not
 reached by FPGA01 (zero region-constrained cells) nor by the oracle test, which
-checks `candidate_list`'s ordering rather than Phase B. It is covered for free
-by `tests/region_tests.rs::heap_respects_region_constraint`, which constrains a
-cell to a 1x1 region and runs `PlacerHeap` -> `HeapState::legalize` ->
-`sorted_legalize`, then asserts the cell landed at (1,1). No new machinery
-needed.
+checks `candidate_list`'s ordering rather than Phase B.
+
+`tests/region_tests.rs::heap_respects_region_constraint` looked like free
+coverage and is not: forcing region cells down the ring walk (`if false`)
+leaves it green. The synthetic chipdb has only 4 BELs on a 2x2 grid, so the
+cell lands at (1,1) whether or not the region is honoured. Two further traps
+found here -- that suite needs `--features test-utils`, so a plain
+`cargo test -p nextpnr` never builds it, and `router2_tests` fails to compile
+under that feature for reasons predating this work (`Router2Cfg` fields).
+
+What *is* now guarded is the filter itself:
+`a_region_constrained_cell_sees_only_its_regions_bels` pins a region to the far
+corner from the target and asserts `candidate_list` returns only its 2 BELs;
+dropping the filter returns 72 and fails it. Before this, every test in the
+module left `cell_region` unset, so the filter was completely unguarded.
+
+The remaining uncovered thing is the one-line dispatch (`if
+info.cell_region.is_some()`) -- inverting it would need an end-to-end case the
+4-BEL synthetic device cannot express. Stated rather than papered over.
 
 **Type consistency.** `BelGrid::build(&[(BelId, i32, i32, i32)], i32, i32)`, `at(i32, i32) -> &[u32]`, `width()/height() -> i32`, `is_empty() -> bool` are used with those exact types in Tasks 2–4. `RingCandidates::new(&BelGrid, &[(BelId, i32, i32, i32)], f64, f64)` matches Task 4's call. `candidate_list` is three-argument from Task 3 Step 2 onward, and Task 4 Step 4 calls it with three. `try_bind_cell` takes `impl Iterator<Item = BelId>` from Task 4 Step 2; both call sites pass an iterator (`Vec::into_iter`, `RingCandidates`). `buffered()` is `#[cfg(test)]` and used only in Task 2's tests.

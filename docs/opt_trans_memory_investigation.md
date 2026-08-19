@@ -209,16 +209,77 @@ The knob is not free in the other direction either: shortlist memory is
 4217 MB peak. Raising k to 4096 would cost ~2.3 GiB. So k trades memory
 against 27k full rescans and neither end of that trade is good.
 
-**This is the argument for the design-database path.** A grid-indexed spatial
-BEL index already exists in the tree -- `placer/fast_bels.rs`, a faithful port
-of upstream's `FastBels`, `[type][x][y] -> Vec<BelId>` -- and is used by the
-SA placer (`place_common.rs`) and the refiner, but *not* by the sorted
-legalizer, which is why the legalizer materializes candidate lists at all.
-Expanding rings outward from the target and stopping at the first legal BEL
-would make the per-cell cost O(k) in both time and memory, delete the
-shortlist heuristic and its widen path, and remove the k trade-off entirely.
-That is wiring an existing structure, not new infrastructure -- but it changes
-which BEL ties resolve to, so it needs its own equivalence check.
+**This was the argument for the design-database path, and it is now done.**
+
+It did *not* ship by reusing `placer/fast_bels.rs`. That file is a faithful
+port of upstream's `FastBels` and adding a query upstream lacks works against
+the reason this branch exists; worse, both its entry points filter on
+`Bel::is_valid_for_cell_type`, which compares `bel_type == cell_type_str` with
+**no alias resolution** (`context/views/hardware.rs:93`), while the legalizer
+reaches BELs through `ctx.bels_for_bucket`, which *does* resolve aliases. Any
+registered alias would have silently changed the candidate set. Its
+`min_bels_for_grid_pick` also collapses a rare type's whole grid into cell
+`(0,0)`, which would make ring expansion meaningless. (Correcting this
+section's earlier claim: only the SA placer consumes `FastBels`, not the
+refiner.)
+
+What shipped instead is `placer/legalize/bel_grid.rs`: a CSR
+`(x, y) -> [enum_index]` index built directly from the `bel_data_cache` the
+legalizer already assembles -- so the candidate universe is identical *by
+construction* -- plus `RingCandidates`, a lazy walk that expands Chebyshev
+rings and emits in ascending `(dist_sq, enum_index)`.
+
+Equivalence is by construction rather than by judgement, which matters because
+nothing on this branch is bit-reproducible (`e3efbf3` is not merged), so a live
+run cannot separate a legalizer regression from run-to-run spread.
+`candidate_list` therefore stays live -- it is the region-constrained path and
+the property-test oracle -- and `the_walk_emits_candidate_lists_exact_sequence`
+asserts full-sequence equality over dense and sparse layouts, fractional and
+off-grid targets.
+
+The subtle part is the emit guard. Rings are square but the metric is
+Euclidean, so a BEL in ring `r` is not necessarily nearer than one in ring
+`r+1`. The bound is the minimum `dist_sq` over ring `R+1`'s four axis points,
+evaluated with the candidates' own `dx*dx + dy*dy` -- exact in f64, rather than
+the `(R+0.5)^2` a true-distance argument gives, which a computed value can
+clear by an ulp. Equality expands one more ring, because a whole tile shares
+one `dist_sq` and an unexplored BEL can tie and win on the lower index.
+
+### Measured: FPGA01 under the ring query
+
+Same invocation, same 12 GB cage, `NPNR_OT_MAX_ITERS=1`
+(`measurements/mem_probe/fpga01_ring_query.log`, untracked):
+
+| Quantity | Shortlist + widen | Ring query | Change |
+| --- | --- | --- | --- |
+| legalization wall time | 1167 s | **6.2 s** (t=336.2 -> 342.4) | **-99.5 %** |
+| whole-run peak RSS | 4217 MB | **2534 MB** | -1683 MB (-39.9 %) |
+| whole-run wall time | >1520 s | 342 s | -78 % |
+| `cluster_rejects` | 406,442 | 374,723 | -7.8 % |
+| `shared_mux_rejects` | 21,841,944 | 21,834,629 | -0.03 % |
+| `arch_validity_rejects` | 0 | 0 | -- |
+| pre-legalization HPWL | 14,564,194 | 14,565,030 | +0.006 % |
+| post-legalization HPWL | 14,234,563 | 14,228,478 | -0.04 % |
+
+Two things worth reading carefully.
+
+**The reject counts are a spread, not an identity.** They are close here, but
+they are not *supposed* to be equal: the solver's output varies run-to-run, so
+targets differ, so the outer-first `order` differs, so binding order and reject
+totals differ. The oracle test fixes the candidate sequence for a given cell and
+target; it says nothing about totals across a non-reproducible run. Same for
+HPWL -- judge against the ~0.6 % spread, not against bit-identity.
+
+**Legalization is no longer the memory peak.** The 2534 MB high-water mark is
+set during DCD (`cache_stats ... rss_mb=2522`), before legalization starts.
+The phase itself now moves RSS from 1964 to 2062 MB -- about 100 MB, against
+the 599 MiB of shortlists it used to hold plus the ~1 M-element allocate-and-
+free sawtooth of each rescan. The `widened_rescans` counter is gone with the
+mechanism it counted.
+
+The 21.8 M shared-mux rejections are untouched and are now the dominant
+remaining cost in the phase. That is a separate question about Phase B's
+ordering and packing.
 
 ## Still open, separate from the above
 
