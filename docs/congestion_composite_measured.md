@@ -10,7 +10,7 @@ nets, via `cargo run --release --example ot_trace_design`.
 
 ## Read the noise floor first
 
-Nine runs of the **identical configuration** span **7650–7891 (3.1%)**, and
+Twelve runs of the **identical configuration** span **7650–7901 (3.3%)**, and
 repeat runs at a *fixed seed* still differ. Nothing under ~3% on this design is
 a result. This is the documented `opt_trans` nondeterminism, not new.
 
@@ -23,6 +23,13 @@ a result. This is the documented `opt_trans` nondeterminism, not new.
 | 3 | tension / driver hole | hole **confirmed**; closed by the *centroid*, not MST — **−17.5%** |
 | 4 | proximal `mu·\|Δx\|` | doesn't damp; **protects** quality from the swing — **−10%** |
 
+Step 4 as originally scoped had a second half — replacing the no-rollback
+anneal with converge-at-each-θ. **That was left out**, deliberately: the
+measurements above show the limit cycle is driven by the BPR channel's scale
+and is not damped by move-level mechanics, so an iteration-schedule change
+targets a mechanism that has now been measured not to be the problem, at a
+large runtime cost. It remains available if the scale issue is fixed first.
+
 ## Step 1: the gate failed
 
 The hypothesis was that the missing PathFinder `h` causes the limit cycle. The
@@ -32,8 +39,8 @@ with up to **120 pipes past 100× base**.
 | arm | base swing | util swing | pipes ≥100× | HPWL |
 |---|---|---|---|---|
 | A  BPR only (default) | 4.9% | 79.1% | 120 | 7726 |
-| B  hardening only | 7.1% | 50.5% | **0** | 7562 |
-| C  BPR + hardening | 5.9% | 89.1% | 204 | 7728 |
+| B  hardening only (step 0.1) | 7.1% | 50.5% | **0** | 7562 |
+| C  BPR + hardening (step 0.1) | 5.9% | 89.1% | 204 | 7728 |
 | D  **neither (null)** | 6.1% | 70.6% | 0 | 7533 |
 
 Arm **D is the one that matters**. Hardening-only ≈ no congestion pricing at
@@ -43,8 +50,19 @@ against a cost scale of ~16000 — 0.1%, i.e. inert. My arm was under-dosed by
 
 At step=100 (`history_total` 2483, ~15% of scale) it is *not* inert: peak
 occupancy falls 1.73 → 1.29 and final 1.68 → 0.77. So the mechanism works. But
-the trace still does not go monotone (util swing 76.8%), and arm C shows
-hardening does **not** tame BPR when BPR is on — 191% vs the control's 193%.
+the trace still does not go monotone (util swing 76.8%).
+
+Arm C above is at step=0.1 and therefore proves nothing on its own — it was run
+before the dose problem was understood. Rerun at step=100, where
+`history_total` reaches **33206**, roughly twice the base cost scale:
+
+| arm | cong swing | pipes ≥100× | HPWL | `history_total` |
+|---|---|---|---|---|
+| A  BPR only | 193.0% | 120 | 7726 | — |
+| C  BPR + hardening, step 0.1 | 191.2% | 204 | 7728 | ~0 |
+| C  BPR + hardening, **step 100** | **187.9%** | 110 | 7787 | 33206 |
+
+Even a dual twice the size of the base cost scale leaves the cycle intact.
 
 **Conclusion: the binding oscillation driver is the BPR channel's unbounded
 scale, not the missing history.** Deleting BPR removes the blow-up entirely
@@ -96,7 +114,10 @@ carries a known synthetic-vs-real reversal risk.
 - **FPGA01 was abandoned.** It needs ~50 GB RSS in this placer even with
   `CORRIDOR_TIGHT=1 HALO_MAX=3 CACHE_SLACK=1 CACHE_RADIUS=3`; it OOM'd a 61 GB
   box. The gitignore issue was never the blocker — memory is.
-- **Union accounting is unmeasured end-to-end.** It is correct per unit test
-  but raises per-pipe occupancy vs the 1/K split, so the BPR knee moves and
-  `alpha`/`beta` need recalibrating before the default can flip.
+- **Union accounting runs, but is not calibrated.** One end-to-end sv3 run
+  (`NPNR_OT_UNION_USAGE=1`) completes cleanly, and shows exactly the predicted
+  effect: `max_util` reaches **4.03** against ~1.5 under the 1/K split, cong
+  swing 207.9%, HPWL 7836. Counting each tree edge once is the correct
+  accounting, but it moves the BPR knee, so `alpha`/`beta` must be recalibrated
+  before the default can flip. That calibration was not done.
 - HPWL only. No routing or timing was run.

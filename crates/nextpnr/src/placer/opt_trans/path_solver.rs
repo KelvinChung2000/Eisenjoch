@@ -1284,8 +1284,17 @@ fn dial_logit_load_inner(
                     }
                 }
                 let Some((pred, pipe_idx)) = parent else {
-                    debug_assert!(false, "settled node {node} has no tight predecessor");
-                    break;
+                    // Costs are integers and Dijkstra sets
+                    // `dist_int[node] = dist_int[pred] + cost_int`, so any
+                    // settled node reached by relaxation has an exact tight
+                    // predecessor. Reaching here means the labels and the
+                    // graph disagree; breaking would silently book a partial
+                    // path and under-count the net's occupancy.
+                    panic!(
+                        "union backtrack: settled node {node} (dist_int {}) has no tight \
+                         predecessor while walking from sink {sink}",
+                        ws.dist_int[node]
+                    );
                 };
                 if !ws.record_edge_union(pipe_idx) {
                     break;
