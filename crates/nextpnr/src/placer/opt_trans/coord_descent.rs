@@ -1610,6 +1610,31 @@ fn evaluate_cell_at(
         cost += tp_w * dist_cache.tile_pressure[node];
     }
 
+    // Proximal term: `mu * |x - x_k|`, the displacement from where this cell
+    // already sits. Two things at once.
+    //
+    // As optimisation, it turns each sweep into a proximal-point step —
+    // minimise `f(x) + mu*|x - x_k|` rather than `f(x)` — which is the
+    // standard way to make an iteration a descent on a surface you only
+    // trust locally. The frozen dist_cache is exactly such a surface: it was
+    // computed for the *previous* configuration.
+    //
+    // As mechanics, it damps the Jacobi swap. Every cell picks its argmin
+    // against the same frozen field and all moves commit at once, so two
+    // cells can trade places and re-create the configuration they left —
+    // the move-level twin of the usage-level limit cycle. Charging for
+    // distance travelled makes a swap cost something.
+    //
+    // Zero at the current tile by construction, so mu only ever breaks ties
+    // in favour of staying put.
+    let prox_w = cfg.proximal_weight;
+    if prox_w > 0.0 {
+        let cur_node = current_cell_node(cell_idx, cell_nets, net_infos);
+        let cur_x = (cur_node % width) as f64;
+        let cur_y = (cur_node / width) as f64;
+        cost += prox_w * ((cand_nx - cur_x).abs() + (cand_ny - cur_y).abs());
+    }
+
     cost
 }
 
@@ -5610,11 +5635,11 @@ mod driver_hole_tests {
     use crate::placer::opt_trans::network::{Direction, FlatAdjacency, Node, Pipe, PipeType, TileGrid};
     use crate::placer::opt_trans::tile_cache::SpanCostTable;
 
-    const W: i32 = 8;
+    pub(super) const GRID_W: i32 = 8;
     const H: i32 = 1;
 
-    fn line_network() -> PipeNetwork {
-        let n = (W * H) as usize;
+    pub(super) fn line_network() -> PipeNetwork {
+        let n = (GRID_W * H) as usize;
         let nodes: Vec<Node> = (0..n)
             .map(|i| Node { tile_x: i as i32, tile_y: 0, pressure: 0.0 })
             .collect();
@@ -5640,7 +5665,7 @@ mod driver_hole_tests {
         let n_pipes = pipes.len();
         let pipe_costs = vec![1.0; n_pipes];
         let pipe_costs_int = vec![100u32; n_pipes];
-        let tile_grid = TileGrid::build(&pipes, &nodes, W, H);
+        let tile_grid = TileGrid::build(&pipes, &nodes, GRID_W, H);
         let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
         PipeNetwork {
             nodes,
@@ -5655,7 +5680,7 @@ mod driver_hole_tests {
             tile_grid,
             pipe_lookup: FxHashMap::default(),
             tile_type_by_node: vec![0; n],
-            width: W,
+            width: GRID_W,
             height: H,
             x0: 0,
             y0: 0,
@@ -5666,7 +5691,7 @@ mod driver_hole_tests {
     }
 
     /// One net: cell 0 drives, two fixed sinks parked at x=6 and x=7.
-    fn driver_net() -> Vec<NetInfo> {
+    pub(super) fn driver_net() -> Vec<NetInfo> {
         vec![NetInfo {
             net_id: NetId::from_raw(0),
             debug_name: "n".to_string(),
@@ -5694,9 +5719,9 @@ mod driver_hole_tests {
         if mst_w > 0.0 {
             compute_mst_neighbors(&mut dist_cache, &net_infos, &network);
         }
-        let validity = CellValidityMask::all_valid(1, W, H);
+        let validity = CellValidityMask::all_valid(1, GRID_W, H);
         let cell_nets = [(0usize, 0usize)];
-        (0..W)
+        (0..GRID_W)
             .map(|gx| {
                 evaluate_cell_at(0, gx, 0, &cell_nets, &net_infos, &dist_cache, &network, &cfg, &validity)
             })
@@ -5752,7 +5777,7 @@ mod driver_hole_tests {
     fn tension_gradient_scales_with_weight() {
         let spread = |w: f64| {
             let p = driver_cost_profile(w);
-            p[0] - p[(W - 1) as usize]
+            p[0] - p[(GRID_W - 1) as usize]
         };
         let s1 = spread(1.0);
         let s4 = spread(4.0);
@@ -5763,5 +5788,84 @@ mod driver_hole_tests {
             s4,
             s1
         );
+    }
+}
+
+#[cfg(test)]
+mod proximal_tests {
+    use super::driver_hole_tests::{driver_net, line_network, GRID_W};
+    use super::*;
+
+    /// Cost of placing the (single) movable cell at each x, with the net's
+    /// other pins fixed far away, for a given proximal weight.
+    fn profile(prox_w: f64) -> Vec<f64> {
+        let network = line_network();
+        let net_infos = driver_net();
+        let mut dist_cache = DistCache::new(1, network.num_nodes());
+        for node in 0..network.num_nodes() {
+            dist_cache.row_mut(0).insert(node as u32, node as f32);
+        }
+        let mut cfg = OptTransPlacerCfg::default();
+        cfg.locked_pin_weight = 1.0;
+        cfg.proximal_weight = prox_w;
+        let validity = CellValidityMask::all_valid(1, GRID_W, 1);
+        let cell_nets = [(0usize, 0usize)];
+        (0..GRID_W)
+            .map(|gx| {
+                evaluate_cell_at(
+                    0, gx, 0, &cell_nets, &net_infos, &dist_cache, &network, &cfg, &validity,
+                )
+            })
+            .collect()
+    }
+
+    /// The cell sits at node 0. Staying put must cost exactly what it cost
+    /// before the term existed — otherwise mu shifts the whole surface
+    /// instead of only pricing movement.
+    #[test]
+    fn proximal_is_zero_at_the_current_position() {
+        let off = profile(0.0);
+        let on = profile(2.5);
+        assert!(
+            (on[0] - off[0]).abs() < 1e-12,
+            "staying put changed cost: {} -> {}",
+            off[0],
+            on[0]
+        );
+    }
+
+    /// Away from the current tile the charge is exactly `mu * manhattan`.
+    #[test]
+    fn proximal_charges_exactly_mu_times_displacement() {
+        for mu in [0.5, 2.0, 10.0] {
+            let off = profile(0.0);
+            let on = profile(mu);
+            for gx in 0..GRID_W as usize {
+                let expected = mu * gx as f64;
+                let charged = on[gx] - off[gx];
+                assert!(
+                    (charged - expected).abs() < 1e-9,
+                    "mu={} at x={}: charged {} expected {}",
+                    mu,
+                    gx,
+                    charged,
+                    expected
+                );
+            }
+        }
+    }
+
+    /// A large enough mu pins the cell in place — the trust region has shrunk
+    /// to a single tile. This is what makes it a damping knob.
+    #[test]
+    fn large_mu_pins_the_cell_where_it_is() {
+        let p = profile(1000.0);
+        let argmin = p
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap()
+            .0;
+        assert_eq!(argmin, 0, "cell moved despite a huge proximal weight: {:?}", p);
     }
 }

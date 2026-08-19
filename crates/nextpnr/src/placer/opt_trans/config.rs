@@ -278,6 +278,22 @@ pub struct OptTransPlacerCfg {
     /// schemes flip between mirror-image congestion patterns forever. Default
     /// 0.0 (disabled) — the term is opt-in so it can be A/B'd on one variable.
     pub hardening_step: f64,
+
+    // --- Proximal (trust-region) term ---
+    /// Weight `mu` on `|x - x_k|` in `evaluate_cell_at`: what a cell is
+    /// charged for moving away from where it currently sits.
+    ///
+    /// Makes the sweep a proximal-point step on a cost surface that is only
+    /// locally trustworthy — the dist_cache is frozen from the previous
+    /// configuration — and simultaneously damps the Jacobi swap, where two
+    /// cells argmin against the same frozen field, trade places, and
+    /// reproduce the configuration they left.
+    ///
+    /// Unlike `jacobi_alpha`, which shrinks every move by a constant factor
+    /// including the good ones, this prices distance so a move only happens
+    /// when it buys more than it costs. Zero at the current tile, so it can
+    /// only ever break ties toward staying. Default 0.0 (disabled).
+    pub proximal_weight: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -314,6 +330,7 @@ impl Default for OptTransPlacerCfg {
             tile_pressure_decay: 0.8,
             tile_pressure_step: 0.1,
             hardening_step: 0.0,
+            proximal_weight: 0.0,
         }
     }
 }
@@ -459,6 +476,12 @@ impl OptTransPlacerCfg {
             .and_then(|s| s.parse::<f64>().ok())
         {
             self.hardening_step = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_PROXIMAL")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.proximal_weight = v.max(0.0);
         }
     }
 }
