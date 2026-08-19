@@ -315,11 +315,31 @@ fn solve_threads_default() -> usize {
     }
 }
 
+/// Lower bound on the per-net solve chunk, overridable via `NPNR_OT_BATCH`.
+/// `auto_batch_size` takes `max(n_nets / (threads * 8), this)`, so raising it
+/// pins a larger thread count to a smaller thread count's chunk size. That
+/// separates "chunk size changed the result" from "thread count changed the
+/// result" -- the two are otherwise confounded, since chunking is derived from
+/// the worker count. A non-numeric or zero value panics rather than silently
+/// falling back.
+fn batch_min_default() -> usize {
+    match std::env::var("NPNR_OT_BATCH") {
+        Ok(v) => {
+            let n: usize = v
+                .parse()
+                .unwrap_or_else(|_| panic!("NPNR_OT_BATCH must be a positive integer, got {v:?}"));
+            assert!(n > 0, "NPNR_OT_BATCH must be > 0, got {n}");
+            n
+        }
+        Err(_) => 4,
+    }
+}
+
 impl Default for OptTransPlacerCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            net_parallel_batch_size: 4,
+            net_parallel_batch_size: batch_min_default(),
             timing_weight: 0.0,
             timing_criticality: FxHashMap::default(),
             report_interval: 5,
