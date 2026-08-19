@@ -291,6 +291,15 @@ impl WorkspacePool {
     /// Call this only after the parallel section has finished: guards return
     /// their workspace to the pool on drop, so until then some totals are
     /// still checked out and would be missed.
+    /// Number of pooled workspaces and the bytes their dense per-pipe arrays
+    /// hold. Peak solve memory is this, so a probe on it is the direct check
+    /// that usage accounting stays bounded by concurrency.
+    pub(crate) fn pool_stats(&self) -> (usize, usize) {
+        let free = self.free.lock().expect("workspace pool mutex poisoned");
+        let n = free.len();
+        (n, n * (self.n_pipes * 8 * 2))
+    }
+
     pub(crate) fn drain_usage_into(&self, out: &mut [f64]) {
         let mut free = self.free.lock().expect("workspace pool mutex poisoned");
         for ws in free.iter_mut() {

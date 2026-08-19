@@ -798,6 +798,15 @@ fn solve_all_nets_with_displacement(
     // their running totals are complete.
     if collect_usage {
         ws_pool.drain_usage_into(&mut accum.edge_usage);
+        {
+            let (n_ws, bytes) = ws_pool.pool_stats();
+            eprintln!(
+                "MEM_POOL: workspaces={} dense_usage_mb={:.0} n_pipes={}",
+                n_ws,
+                bytes as f64 / (1024.0 * 1024.0),
+                n_pipes,
+            );
+        }
     }
     accum
 }
@@ -833,19 +842,6 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_settle_max: 0,
         diag_init_count: init_count,
     };
-    {
-        let n_chunks = chunks.len();
-        let total: usize = chunks.iter().map(|c| c.usage.len()).sum();
-        let max_chunk: usize = chunks.iter().map(|c| c.usage.len()).max().unwrap_or(0);
-        eprintln!(
-            "MEM_CHUNKUSAGE: chunks={} total_entries={} max_chunk_entries={} live_mb={:.1} n_pipes={} ratio_vs_dense={:.2}x",
-            n_chunks, total, max_chunk,
-            (total * std::mem::size_of::<(u32, f64)>()) as f64 / (1024.0 * 1024.0),
-            n_pipes,
-            (total * std::mem::size_of::<(u32, f64)>()) as f64
-                / ((n_chunks.max(1) * n_pipes * 8) as f64),
-        );
-    }
     for chunk in chunks {
         accum.energy += chunk.energy;
         accum.stats.total_solves += chunk.stats.total_solves;
