@@ -1491,12 +1491,37 @@ fn solve_usage_and_energy(
     )
 }
 
+/// Dual ascent on the per-pipe capacity constraint (PathFinder's `h`).
+///
+/// Driven by the **raw** per-iter usage rather than the EMA-blended
+/// `net_count`: the EMA deliberately forgets, and an overflow that is smoothed
+/// away before it is priced never enters the dual. Monotone by construction —
+/// there is no decay term, and there must not be one.
+fn update_pipe_history(network: &mut PipeNetwork, usage: &[f64], step: f64) {
+    if step <= 0.0 {
+        return;
+    }
+    let hist = &mut network.pipe_history;
+    for (pipe_idx, pipe) in network.pipes.iter().enumerate() {
+        let eff_cap = super::resistance::effective_capacity(pipe);
+        if eff_cap <= 0.0 {
+            continue;
+        }
+        let overflow = usage[pipe_idx] - eff_cap;
+        if overflow > 0.0 {
+            hist[pipe_idx] += step * pipe.base_resistance * (overflow / eff_cap);
+        }
+    }
+}
+
 fn apply_usage_for_next_iter(
     network: &mut PipeNetwork,
     usage: &[f64],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
 ) {
+    // History first: it reads the raw usage, before the EMA folds it away.
+    update_pipe_history(network, usage, cfg.hardening_step);
     update_net_count_from_usage(network, usage, cfg.blend_alpha, solve_pool);
 }
 
@@ -5364,5 +5389,206 @@ mod softmin_tests {
         let (fx, fy) = acc.softmin_continuous();
         assert!((fx - ref_fx).abs() < 1e-9, "fx={} ref={}", fx, ref_fx);
         assert!((fy - ref_fy).abs() < 1e-9, "fy={} ref={}", fy, ref_fy);
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    use crate::placer::opt_trans::network::{
+        hist_to_int, Direction, FlatAdjacency, Node, Pipe, PipeType, TileGrid, DIST_SCALE,
+    };
+    use crate::placer::opt_trans::tile_cache::{rebuild_span_cost_table, SpanCostTable};
+
+    /// `n`-node horizontal chain with one pipe per adjacent pair. Every pipe
+    /// shares tile type, span, capacity and base cost, so they all collapse
+    /// into a single `SpanCostTable` bucket — which is exactly the condition
+    /// under which a per-pipe term can silently vanish.
+    fn chain(n: usize, capacity: f64, net_count: f64) -> PipeNetwork {
+        let nodes: Vec<Node> = (0..n)
+            .map(|i| Node {
+                tile_x: i as i32,
+                tile_y: 0,
+                pressure: 0.0,
+            })
+            .collect();
+        let pipes: Vec<Pipe> = (0..n - 1)
+            .map(|i| Pipe {
+                from: i,
+                to: i + 1,
+                base_resistance: 1.0,
+                capacity,
+                flow: 0.0,
+                net_count,
+                raw_cell_density: 0.0,
+                cell_density: 0.0,
+                eff_conductance: 1.0,
+                pipe_type: PipeType::InterTile(Direction::East),
+            })
+            .collect();
+        let mut node_pipes = vec![Vec::new(); n];
+        for (i, p) in pipes.iter().enumerate() {
+            node_pipes[p.from].push(i);
+            node_pipes[p.to].push(i);
+        }
+        let pipe_costs: Vec<f64> = pipes.iter().map(|p| p.base_resistance).collect();
+        let pipe_costs_int: Vec<u32> = pipe_costs
+            .iter()
+            .map(|&c| ((c * DIST_SCALE).round() as u32).max(1))
+            .collect();
+        let n_pipes = pipes.len();
+        let tile_grid = TileGrid::build(&pipes, &nodes, n as i32, 1);
+        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        PipeNetwork {
+            nodes,
+            pipes,
+            node_pipes,
+            pipe_history: vec![0.0; n_pipes],
+            pipe_costs,
+            pipe_costs_int,
+            span_cost_table: SpanCostTable::disabled(n_pipes),
+            flat_adjacency,
+            tile_templates: std::sync::Arc::new(Vec::new()),
+            tile_grid,
+            pipe_lookup: FxHashMap::default(),
+            tile_type_by_node: vec![0; n],
+            width: n as i32,
+            height: 1,
+            x0: 0,
+            y0: 0,
+            zero_bel_tiles: 0,
+            total_bels: 0,
+            coarsen: 1,
+        }
+    }
+
+    /// `eff_capacity` for a span-1 pipe: nominal × borrow_slack(1) = ×1.25.
+    const SPAN1_SLACK: f64 = 1.25;
+
+    #[test]
+    fn history_grows_only_above_effective_capacity() {
+        // eff_cap = 10 × 1.25 = 12.5. Raw usage below that must not register.
+        let cases: &[(f64, bool)] = &[
+            (0.0, false),
+            (10.0, false),
+            (12.5, false),
+            (12.6, true),
+            (25.0, true),
+        ];
+        for &(usage, expect_growth) in cases {
+            let mut net = chain(2, 10.0, usage);
+            update_pipe_history(&mut net, &[usage], 0.1);
+            let h = net.pipe_history[0];
+            assert_eq!(
+                h > 0.0,
+                expect_growth,
+                "usage={} eff_cap={} gave h={}",
+                usage,
+                10.0 * SPAN1_SLACK,
+                h
+            );
+        }
+    }
+
+    #[test]
+    fn history_is_monotone_and_never_decays() {
+        // Alternating overflow / no-overflow iters. History must be
+        // non-decreasing throughout and strictly greater at the end than
+        // after the first overflow — a decaying term would fail both.
+        let mut net = chain(2, 10.0, 0.0);
+        let schedule = [25.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0];
+        let mut prev = 0.0;
+        let mut after_first_overflow = None;
+        for (i, &u) in schedule.iter().enumerate() {
+            update_pipe_history(&mut net, &[u], 0.1);
+            let h = net.pipe_history[0];
+            assert!(h >= prev, "iter {}: history fell {} -> {}", i, prev, h);
+            if i == 0 {
+                after_first_overflow = Some(h);
+            }
+            prev = h;
+        }
+        let first = after_first_overflow.unwrap();
+        assert!(first > 0.0);
+        // Six quiet-or-overflow iters later it must have grown, not decayed.
+        assert!(prev > first, "final {} did not exceed first {}", prev, first);
+    }
+
+    #[test]
+    fn zero_step_disables_the_term_entirely() {
+        let mut net = chain(2, 1.0, 100.0);
+        update_pipe_history(&mut net, &[100.0], 0.0);
+        assert_eq!(net.pipe_history[0], 0.0);
+    }
+
+    /// The load-bearing test: two pipes that are IDENTICAL in every
+    /// `TileSpanCostKey` field share one `SpanCostTable` entry. If history
+    /// were folded into the bucketed cost it would collide; it must instead
+    /// survive as a per-pipe addend on the packed edge arrays that Dijkstra
+    /// actually reads.
+    #[test]
+    fn history_survives_span_cost_table_bucketing() {
+        for enable_table in [false, true] {
+            let mut net = chain(3, 10.0, 4.0);
+            net.pipe_history[0] = 0.7;
+            net.pipe_history[1] = 0.0;
+            if enable_table {
+                rebuild_span_cost_table(&mut net, &ResistanceModel);
+                // Precondition: both pipes really did land in one bucket.
+                assert_eq!(
+                    net.span_cost_table.pipe_entry[0], net.span_cost_table.pipe_entry[1],
+                    "fixture no longer collides; the test has stopped testing anything"
+                );
+            }
+            net.refresh_flat_edge_costs();
+
+            let c0 = net.pipe_cost(0);
+            let c1 = net.pipe_cost(1);
+            assert!(
+                (c0 - c1 - 0.7).abs() < 1e-9,
+                "table={}: pipe_cost gap {} != 0.7",
+                enable_table,
+                c0 - c1
+            );
+
+            // And the same gap must appear in the packed per-edge arrays.
+            let edge_of = |pidx: u32| {
+                net.flat_adjacency
+                    .pipe_idx
+                    .iter()
+                    .position(|&p| p == pidx)
+                    .expect("pipe missing from flat adjacency")
+            };
+            let e0 = edge_of(0);
+            let e1 = edge_of(1);
+            let gap_int =
+                net.flat_adjacency.cost_int[e0] as i64 - net.flat_adjacency.cost_int[e1] as i64;
+            assert_eq!(
+                gap_int,
+                hist_to_int(0.7) as i64,
+                "table={}: edge cost_int gap {} != {}",
+                enable_table,
+                gap_int,
+                hist_to_int(0.7)
+            );
+        }
+    }
+
+    #[test]
+    fn zero_history_adds_exactly_zero_cost() {
+        // No `max(1)` floor on the history quantization — otherwise every
+        // edge in the graph would silently gain a unit of cost.
+        assert_eq!(hist_to_int(0.0), 0);
+        assert_eq!(hist_to_int(-1.0), 0);
+        assert_eq!(hist_to_int(1.0), DIST_SCALE as u32);
+    }
+
+    #[test]
+    fn network_reset_clears_history() {
+        let mut net = chain(2, 10.0, 0.0);
+        update_pipe_history(&mut net, &[25.0], 0.1);
+        assert!(net.pipe_history[0] > 0.0);
+        net.reset();
+        assert_eq!(net.pipe_history[0], 0.0);
     }
 }

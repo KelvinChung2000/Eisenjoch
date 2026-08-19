@@ -1617,6 +1617,7 @@ mod tests {
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
             span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
                 n_pipe_entries,
@@ -1691,6 +1692,7 @@ mod tests {
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
             span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
                 n_pipe_entries,

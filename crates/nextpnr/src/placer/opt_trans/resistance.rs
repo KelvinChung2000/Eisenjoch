@@ -86,6 +86,15 @@ pub(crate) fn borrow_slack(span: i32) -> f64 {
     }
 }
 
+/// Effective capacity of a pipe: nominal capacity inflated by the
+/// short-span borrowing allowance. Shared by the BPR term and the
+/// PathFinder-style hardening update so both measure overflow against the
+/// same denominator.
+#[inline(always)]
+pub(crate) fn effective_capacity(pipe: &Pipe) -> f64 {
+    pipe.capacity * borrow_slack(pipe_span(&pipe.pipe_type))
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct ResistanceModel;
 
@@ -97,8 +106,7 @@ impl ResistanceModel {
         if cap <= 0.0 {
             return base;
         }
-        let slack = borrow_slack(pipe_span(&pipe.pipe_type));
-        let eff_cap = cap * slack;
+        let eff_cap = effective_capacity(pipe);
         let usage = pipe.net_count.max(0.0);
         let ratio = usage / eff_cap;
         base * (1.0 + bpr_alpha() * ratio.powf(bpr_beta()))

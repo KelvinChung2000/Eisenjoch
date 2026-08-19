@@ -262,6 +262,22 @@ pub struct OptTransPlacerCfg {
     /// Step size on the dual ascent — each rejected commit adds
     /// `step * 1` to its tile's pressure. Default 0.1.
     pub tile_pressure_step: f64,
+
+    // --- Congestion hardening (PathFinder `h`) ---
+    /// Dual-ascent step on the per-pipe capacity constraint. Each outer iter
+    /// every over-capacity pipe accumulates
+    /// `base_resistance * step * (usage - eff_capacity) / eff_capacity`
+    /// into `PipeNetwork::pipe_history`, which is added to the pipe's cost and
+    /// **never decays**. Normalising by `eff_capacity` and scaling by
+    /// `base_resistance` keeps the step dimensionless and comparable across
+    /// pipe classes, unlike PathFinder's raw `occupancy - capacity`, whose
+    /// capacities are small integers.
+    ///
+    /// The permanence is what separates this from `blend_alpha`'s EMA: the EMA
+    /// smooths the *load* and forgets geometrically, so present-cost-only
+    /// schemes flip between mirror-image congestion patterns forever. Default
+    /// 0.0 (disabled) — the term is opt-in so it can be A/B'd on one variable.
+    pub hardening_step: f64,
 }
 
 impl Default for OptTransPlacerCfg {
@@ -297,6 +313,7 @@ impl Default for OptTransPlacerCfg {
             tile_pressure_weight: 0.0,
             tile_pressure_decay: 0.8,
             tile_pressure_step: 0.1,
+            hardening_step: 0.0,
         }
     }
 }
@@ -436,6 +453,12 @@ impl OptTransPlacerCfg {
             .and_then(|s| s.parse::<f64>().ok())
         {
             self.tile_pressure_step = v.max(0.0);
+        }
+        if let Some(v) = env::var("NPNR_OT_HARDEN_STEP")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+        {
+            self.hardening_step = v.max(0.0);
         }
     }
 }

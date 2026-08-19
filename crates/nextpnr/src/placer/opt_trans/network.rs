@@ -72,6 +72,22 @@ pub struct Pipe {
 /// of 0.01 are distinguishable) and typical paths fit comfortably in u32.
 pub const DIST_SCALE: f64 = 100.0;
 
+/// Quantize a hardening-history value into the integer cost domain. Unlike
+/// `pipe_costs_int` there is no `max(1)` floor: a pipe with no history must
+/// add exactly zero, or every edge would silently gain a unit of cost.
+#[inline]
+pub fn hist_to_int(h: f64) -> u32 {
+    if h <= 0.0 {
+        return 0;
+    }
+    let scaled = (h * DIST_SCALE).round();
+    if scaled >= u32::MAX as f64 {
+        u32::MAX - 1
+    } else {
+        scaled as u32
+    }
+}
+
 /// Grid-structured view over the pipe set used by the Fast Sweeping solver.
 ///
 /// The pipe network is a regular WxH tile grid plus a sparse set of long-range
@@ -266,6 +282,15 @@ pub struct PipeNetwork {
     /// `eff_conductance` in `update_effective_conductance`. Hot Dijkstra loop
     /// reads this directly instead of recomputing `1.0 / g` per edge visit.
     pub pipe_costs: Vec<f64>,
+    /// Per-pipe congestion **history** — PathFinder's `h` term. Grows by
+    /// `step * base * overflow / eff_capacity` each outer iter for every pipe
+    /// over capacity and **never decays**; that permanence is the whole point.
+    /// The EMA on `net_count` smooths the *load*; this prices the *dual* of the
+    /// capacity constraint, so present-cost-only limit cycles cannot re-form.
+    /// Added to `pipe_cost`/`pipe_cost_int` on top of the BPR term, so it flows
+    /// into the span-cost table path and the flat path alike. Zero everywhere
+    /// when `hardening_step == 0.0`.
+    pub pipe_history: Vec<f64>,
     /// u32-quantized copy of `pipe_costs` used by the bucket-Dial Dijkstra.
     /// `int = max(1, (pipe_costs * DIST_SCALE).round() as u32)`; the `max(1)`
     /// guarantees strictly-positive integer weights (required for Dial).
@@ -650,6 +675,7 @@ impl PipeNetwork {
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
             span_cost_table,
             flat_adjacency,
@@ -710,26 +736,42 @@ impl PipeNetwork {
         (to.tile_x - from.tile_x, to.tile_y - from.tile_y)
     }
 
+    /// Hardening history for a pipe, or 0.0 when the term is disabled.
+    /// Read through this so the span-cost table (which buckets pipes by
+    /// *type*, not identity) cannot silently drop the per-pipe component.
+    #[inline]
+    pub fn pipe_hist(&self, pipe_idx: usize) -> f64 {
+        self.pipe_history.get(pipe_idx).copied().unwrap_or(0.0)
+    }
+
     #[inline]
     pub fn pipe_cost(&self, pipe_idx: usize) -> f64 {
-        if self.span_cost_table.enabled {
+        let bpr = if self.span_cost_table.enabled {
             let entry = self.span_cost_table.pipe_entry[pipe_idx] as usize;
             if entry < self.span_cost_table.costs.len() {
-                return self.span_cost_table.costs[entry];
+                self.span_cost_table.costs[entry]
+            } else {
+                self.pipe_costs[pipe_idx]
             }
-        }
-        self.pipe_costs[pipe_idx]
+        } else {
+            self.pipe_costs[pipe_idx]
+        };
+        bpr + self.pipe_hist(pipe_idx)
     }
 
     #[inline]
     pub fn pipe_cost_int(&self, pipe_idx: usize) -> u32 {
-        if self.span_cost_table.enabled {
+        let bpr = if self.span_cost_table.enabled {
             let entry = self.span_cost_table.pipe_entry[pipe_idx] as usize;
             if entry < self.span_cost_table.costs_int.len() {
-                return self.span_cost_table.costs_int[entry];
+                self.span_cost_table.costs_int[entry]
+            } else {
+                self.pipe_costs_int[pipe_idx]
             }
-        }
-        self.pipe_costs_int[pipe_idx]
+        } else {
+            self.pipe_costs_int[pipe_idx]
+        };
+        bpr.saturating_add(hist_to_int(self.pipe_hist(pipe_idx)))
     }
 
     /// Populate the per-edge cost arrays in `flat_adjacency` from the current
@@ -744,6 +786,7 @@ impl PipeNetwork {
         let pipe_idx = self.flat_adjacency.pipe_idx.as_slice();
         let cost_int_dst = self.flat_adjacency.cost_int.as_mut_slice();
         let cost_f_dst = self.flat_adjacency.cost_f.as_mut_slice();
+        let hist = self.pipe_history.as_slice();
         if self.span_cost_table.enabled {
             let entries = self.span_cost_table.pipe_entry.as_slice();
             let costs = self.span_cost_table.costs.as_slice();
@@ -758,16 +801,18 @@ impl PipeNetwork {
                 } else {
                     (fallback_f[pidx], fallback_int[pidx])
                 };
-                cost_int_dst[e] = ci;
-                cost_f_dst[e] = cf as f32;
+                let h = hist[pidx];
+                cost_int_dst[e] = ci.saturating_add(hist_to_int(h));
+                cost_f_dst[e] = (cf + h) as f32;
             }
         } else {
             let src_f = self.pipe_costs.as_slice();
             let src_i = self.pipe_costs_int.as_slice();
             for e in 0..n_edges {
                 let pidx = pipe_idx[e] as usize;
-                cost_int_dst[e] = src_i[pidx];
-                cost_f_dst[e] = src_f[pidx] as f32;
+                let h = hist[pidx];
+                cost_int_dst[e] = src_i[pidx].saturating_add(hist_to_int(h));
+                cost_f_dst[e] = (src_f[pidx] + h) as f32;
             }
         }
     }
@@ -782,6 +827,7 @@ impl PipeNetwork {
             p.net_count = 0.0;
             p.cell_density = 0.0;
         });
+        self.pipe_history.iter_mut().for_each(|h| *h = 0.0);
     }
 
     /// Maximum utilization ratio |flow|/capacity across all pipes.
@@ -967,6 +1013,7 @@ impl PipeNetwork {
             pipes,
             node_pipes,
             pipe_costs,
+            pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
             span_cost_table,
             flat_adjacency,
