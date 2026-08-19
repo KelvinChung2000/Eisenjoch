@@ -106,6 +106,23 @@ Post-fix values sit entirely inside the pre-fix spread, same ~0.6 % magnitude.
 The fix is equivalence-preserving to within pre-existing run-to-run noise; it
 does not introduce the nondeterminism.
 
+## Verified after applying `823d2cd`
+
+Same design, same 12 GB cage, same `NPNR_OT_MAX_ITERS=1`:
+
+| Probe | Before | After |
+| --- | --- | --- |
+| `enter=post_refresh` | 2450 MB | 2441 MB |
+| post-solve phase cost | > 9.4 GB, still climbing | 2477 -> 3187 MB (**710 MB**) |
+| peak solve staging | `16 B x sum |edge_touched|`, unbounded | `MEM_POOL workspaces=8 dense_usage_mb=313` |
+| outcome | OOM-killed at 11823 MB | DCD completed, `Pre-legalization: HPWL=14542255` |
+
+3.2 GB matches the ~3.0 GB `823d2cd` recorded when it was written.
+
+The run then jumps to 12270 MB **in legalization** and hits the cap -- exactly
+the 33.5 GB bug `823d2cd`'s own message predicted and `fc82eb8` fixes. That is
+the second stranded commit, confirming the divergence from the other side.
+
 ## Applied here
 
 - `823d2cd` cherry-picked (clean). Usage now folds into the pooled
@@ -126,9 +143,14 @@ does not introduce the nondeterminism.
   `ctx.resolve_bucket(cell_type)`, so contents are a function of the bucket,
   never of the cell -- and the log confirms it
   (`per-cell valid positions: min=67346 avg=67346.0 max=67346`, two buckets).
-  That is one 8.7 KB mask duplicated 76660 times. Storing
-  `bucket_masks: Vec<Vec<u64>>` + `cell_bucket: Vec<u16>` keeps the O(1)
-  `is_valid` and costs ~170 KB.
+  That is one 8.7 KB mask duplicated 76660 times.
+
+  **Fixed.** Now stores one mask per distinct bucket plus a `u32` index per
+  cell; `is_valid` stays O(1) with one extra indirection. 634 MB -> ~170 KB.
+  sv3 reports `2 bucket masks` with per-cell counts unchanged at 67346 and
+  `unmapped cells=0`, and HPWL stays inside the pre-existing run-to-run spread
+  (6834 / 6827 against a pre-fix 6815-6861). Guarded by
+  `storage_does_not_scale_with_cell_count`, which fails on the old layout.
 - **The sparse-usage regression is latent elsewhere.** The Bresenham variants
   still run the old `fold(|| vec![0.0; n_pipes]) ... reduce` shape
   (`coord_descent.rs:877/926/959/993`, `path_solver.rs:765/791`), and
