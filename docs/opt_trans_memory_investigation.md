@@ -373,6 +373,42 @@ the lever cannot explain it away, but the honest comparison is `NPNR_OT_STEINER=
 against HeAP and that arm belongs in this table before anyone concludes how big
 the real gap is.
 
+### The centroid lever, finally tested at scale — and it is worth MORE here
+
+`NPNR_OT_STEINER=1`, everything else identical (20 iterations, same cage, same
+seed). This is the arm the composite work could never run, because FPGA01 would
+not fit in memory.
+
+| | default | `steiner=1` | HeAP |
+| --- | --- | --- | --- |
+| post-legalization HPWL | 10,670,244 | **7,291,219** | 4,533,609 |
+| — vs default | — | **−31.7 %** | — |
+| — vs HeAP | 2.353x | **1.608x** | — |
+| `line` | 13,315,640 | 9,588,189 | 6,430,025 |
+| wall time | 2492 s | 2819 s (+13.1 %) | 52.8 s |
+| peak RSS | 2948 MB | 3187 MB (+8.1 %) | 1163 MB |
+| `cluster_rejects` | 200,969 | 91,011 | — |
+| `shared_mux_rejects` | 7,214,228 | 4,648,720 | — |
+
+**The lever is worth roughly twice as much here as on stereovision3** — −31.7 %
+against the −17.5 % measured there. `congestion_composite_measured.md` withheld
+a default change partly on "synthetic-vs-real reversal risk"; the reversal
+happened in our favour. It also converges far harder: `line` falls −44.3 % over
+the 20 iterations against −24.0 % at default, and legalization gets a visibly
+better-spread placement to work with (cluster rejects less than half, shared-mux
+rejects down 36 %).
+
+That closes most of the quality gap — **2.353x → 1.608x against HeAP** — for
++13 % runtime. Two designs now agree on the sign and the real one is larger, so
+flipping `steiner_weight`'s default off 0.0 is a live proposal rather than a
+guess. It is still one real design, and no routing or timing has been run on
+FPGA01, so the decision wants a second large benchmark (FPGA12 is in the tree).
+
+What it does **not** fix: `refresh` is still 93.3 % of the loop, the runtime gap
+widens slightly to 53.4x, and `energy` still swings 3e9–3.8e10 with `dE`
+flipping sign. The limit cycle is untouched — as the composite work predicted,
+since this term was never aimed at it.
+
 **The energy trace is not healthy.** `energy` swings between 1.4e9 and 4.9e10
 with `dE` changing sign on most iterations, and `excess` bounces 96–685 while
 `bins` sits pinned at 2.0x. That is the limit cycle documented in
