@@ -195,6 +195,21 @@ close to free: DCD totals 131 s of 1465 s (9 %) against ~140 s for the racy
 path, so 19 barriers per sweep cost nothing measurable. `refresh` is still
 83.5 % of the time.
 
+### Generalisation: `steiner=0`, chunk not re-tuned
+
+| `steiner=0`, 20 iters | wall | HPWL |
+|---|---|---|
+| racy, 8 threads | 2492 s | 10 670 244 |
+| racy, 32 threads | 1226 s | 10 722 928 |
+| det, chunk 4096, 32 threads | 1206 s | 10 767 033 |
+
+**2.07x at +0.91 %** against the 8-thread baseline. Weaker than the +0.006 %
+on `steiner=1`, which is expected: 4096 was tuned there. Two caveats -- the
+racy `steiner=0` figures are single samples of unknown spread (the comparable
+`steiner=1` spreads were 2.48 % and 10.2 %), so +0.91 % may well be inside
+noise; and the optimal chunk is likely config-specific, so re-tune before
+relying on it elsewhere. Only FPGA01 has been tested at all.
+
 ## Where this leaves the HeAP gap
 
 Runtime roughly halved at unchanged quality, so the ordering the goal asked
