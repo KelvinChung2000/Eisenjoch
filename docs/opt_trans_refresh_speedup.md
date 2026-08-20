@@ -81,13 +81,26 @@ spread but is not itself the variable that differs between the 8- and
 
 Consequences, in order of importance:
 
-1. **The ~6.5 % thread penalty is not established.** With n=2 per side,
-   a perfectly separated grouping arises by chance with probability 1/3
-   under the null. The effect size is suggestive -- the gap is ~4x the
-   within-pair spread -- but 20-iteration outcomes compound from a chaotic
-   process, so the distribution may simply be wide. Three more 32-thread
-   draws take that side to n=5; if all five still exceed both 8-thread runs,
-   p = 1/C(7,2) = 0.048.
+1. **The thread penalty, re-measured at n=4/n=5, is real.**
+
+   | `steiner=1`, 20 iters | n | min | max | mean | spread |
+   |---|---|---|---|---|---|
+   | 8 threads | 4 | 7 291 219 | 7 472 217 | 7 387 340 | 2.48 % |
+   | 32 threads | 5 | 7 757 880 | 8 549 040 | 8 084 121 | 10.20 % |
+
+   Every 32-thread run exceeds every 8-thread run: exact rank-sum
+   p = 1/C(9,4) = 0.008. The cost is **+9.4 % on the means**, and the best
+   32-thread run is still 3.8 % worse than the worst 8-thread run. Note the
+   two-sample estimates this replaces were badly wrong in both directions --
+   the 32-thread spread is 10.2 %, not the 1.44 % two draws suggested.
+
+   32 threads is worse on mean *and* variance, which looks like contention.
+   But the sweep's `into_par_iter()` runs on the global rayon pool -- 32
+   threads in **both** configs -- so sweep contention cannot be the
+   difference. Mechanism remains open: solve chunk size (410 vs 1642) and
+   `set_solver_threads(cfg.num_threads)` are the surviving candidates. The
+   3-iteration chunk probe did not clear chunking; at 3 iterations nothing
+   was resolvable.
 2. **A bit-identical `DCD` signature is not an available test on this
    codebase.** Identical configurations diverge, so no code change can be
    validated by signature comparison until the sweep is made deterministic.
