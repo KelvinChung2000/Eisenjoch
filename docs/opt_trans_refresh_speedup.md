@@ -50,11 +50,57 @@ and the means differ by +6.48 %. At `steiner=1`, thread count costs ~6.5 %
 HPWL. It is not a bad draw.
 
 Note this cannot be float summation order -- non-associativity is a ~1e-15
-effect, not 6.5 %. Something structural depends on the thread count; the
-mechanism is not yet identified and is the open question here. Until it is,
-**`NPNR_OT_THREADS` is validated on `steiner=0` only** (+0.49 %, inside
-noise). On `steiner=1` the 2x is not free and does not meet a
-hold-HPWL bar.
+effect, not 6.5 %.
+
+### The placer is nondeterministic at fixed seed, and that undercuts the claim
+
+Probing at 3 iterations, `steiner=1`, comparing the per-iteration `DCD`
+signature -- A1/A2 identical config, B pinned to the 8-thread chunk via
+`NPNR_OT_BATCH`, C at 8 threads:
+
+| arm | threads | chunk | `line` @ outer=2 |
+|---|---|---|---|
+| A1 | 32 | 410 | 15 880 736 |
+| A2 | 32 | 410 | 15 910 166 |
+| B | 32 | 1642 | 15 886 360 |
+| C | 8 | 1642 | 15 894 100 |
+
+**A1 and A2 are the same configuration and do not agree** -- they already
+differ by 0.21 % at outer=0. All four arms span 0.19 % at outer=2, so B and C
+both land inside the A1-A2 same-config band: at 3 iterations neither chunk
+size nor thread count is separable from run-to-run noise.
+
+Root cause is in `place_dcd_sweep`. It probes against the **live,
+concurrently-updated** mux tracker and commits each move by CAS *inside* an
+unchunked `into_par_iter()`, so which cell wins a contested tile slot is
+decided by thread interleaving. That `into_par_iter()` is not inside
+`solve_pool.install`, so it runs on the global rayon pool (all 32 logical
+CPUs) in **every** run here -- which is why it explains the run-to-run
+spread but is not itself the variable that differs between the 8- and
+32-thread configs.
+
+Consequences, in order of importance:
+
+1. **The ~6.5 % thread penalty is not established.** With n=2 per side,
+   a perfectly separated grouping arises by chance with probability 1/3
+   under the null. The effect size is suggestive -- the gap is ~4x the
+   within-pair spread -- but 20-iteration outcomes compound from a chaotic
+   process, so the distribution may simply be wide. Three more 32-thread
+   draws take that side to n=5; if all five still exceed both 8-thread runs,
+   p = 1/C(7,2) = 0.048.
+2. **A bit-identical `DCD` signature is not an available test on this
+   codebase.** Identical configurations diverge, so no code change can be
+   validated by signature comparison until the sweep is made deterministic.
+   Every A/B needs repeats, and the 1.3 % same-config spread is the floor on
+   what any experiment here can resolve.
+3. Until (1) resolves, **`NPNR_OT_THREADS` is validated on `steiner=0`
+   only** (+0.49 %, inside noise).
+
+The fix that unblocks all of this is to make the sweep deterministic: keep
+the probe parallel against frozen state, then commit in a fixed cell order.
+Commit is slot bookkeeping, so the serial part is cheap, and the sweep is
+only ~6 % of runtime. That would remove the thread-count dependence, make
+results reproducible, and restore signature comparison as a cheap test.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
