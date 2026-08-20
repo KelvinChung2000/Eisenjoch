@@ -109,11 +109,34 @@ Consequences, in order of importance:
 3. Until (1) resolves, **`NPNR_OT_THREADS` is validated on `steiner=0`
    only** (+0.49 %, inside noise).
 
-The fix that unblocks all of this is to make the sweep deterministic: keep
-the probe parallel against frozen state, then commit in a fixed cell order.
-Commit is slot bookkeeping, so the serial part is cheap, and the sweep is
-only ~6 % of runtime. That would remove the thread-count dependence, make
-results reproducible, and restore signature comparison as a cheap test.
+### `NPNR_OT_DET_SWEEP=1` makes it reproducible (default off)
+
+The sweep now splits into a parallel probe against frozen occupancy and a
+commit pass in ascending cell index, sharing `plan_cell` / `commit_cell` so
+candidates and their rank order are unchanged. Only the tie-break for a
+contested slot moves -- from whichever thread won the CAS to the lower cell
+index.
+
+Verified on FPGA01, `steiner=1`, 3 iters, 32 threads, comparing `DCD` lines
+with the timing fields stripped:
+
+| | two runs, same config |
+|---|---|
+| `NPNR_OT_DET_SWEEP=1` | **identical** on every result field |
+| default (racy) | differ |
+
+A matched negative control, so this is the fix and not a quiet run. Strip
+`refresh=`/`dcd=`/`total=` before comparing -- they vary run to run and a
+naive `diff` reports a false negative.
+
+This restores the bit-identical signature check as a cheap test for any
+future change here, which the racy path made impossible.
+
+Cost is not yet known. The deterministic path commits **fewer** moves
+(51 349 vs 59 810 at outer=0) and its `line` at outer=2 is ~0.6 % above both
+racy draws, so serial commit looks more conservative about contested slots.
+A 20-iteration quality run against the racy bands is the open item; until it
+lands, the flag stays off.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
