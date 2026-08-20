@@ -148,11 +148,42 @@ but does not reach the racy *best*, and stays 6.2 % above every 8-thread run.
 confirms the diagnosis above: the sweep race cannot be the mechanism, because
 that sweep runs on the global 32-thread pool in both configs.
 
-The flag's value is measurement, not quality: one deterministic run is an
-exact value, so the thread penalty and the chunk-size hypothesis can now be
-settled with single runs instead of fighting a 10 % band. Since results no
-longer depend on timing, such runs can even be executed concurrently without
-confounding each other.
+### The race was the whole thread penalty -- and it was setting a schedule
+
+With `DET_SWEEP=1`, HPWL is **7 937 739 identically** at 8 and 32 threads and
+at chunk 410 and 1642 -- byte-identical across all 20 iterations. So the CAS
+race was the *sole* source of thread dependence, and both surviving mechanism
+candidates (solve chunk size, `set_solver_threads`) are cleared.
+
+That also corrects the line above: determinism *does* remove the thread
+penalty. What the 6.2 % gap actually measured is different -- the
+deterministic value is worse than racy-at-8-threads.
+
+The mechanism: the racy path probes against **partially updated** occupancy,
+an accidental Gauss-Seidel effect carrying real information. Freezing
+occupancy for every probe is pure Jacobi and discards it -- which predicts the
+observed ordering, fewer threads meaning less staleness and better placement.
+The race was never only a bug: it was implicitly setting an update-schedule
+parameter that was never exposed.
+
+### `NPNR_OT_DET_CHUNK` exposes it, and recovers the quality at 32 threads
+
+FPGA01, `steiner=1`, 20 iters, 32 threads, deterministic (76 660 cells):
+
+| chunk | HPWL | vs racy 8-thread mean (7 387 340) |
+|---|---|---|
+| 76 660 (= n, pure Jacobi) | 7 937 739 | +7.45 % |
+| 16 384 | 7 618 479 | +3.13 % |
+| **4 096** | **7 387 808** | **+0.006 %** |
+| 1 024 | 7 454 931 | +0.92 % |
+
+`chunk=4096` reproduces the racy 8-thread mean to 0.006 %, deterministically,
+at 32 threads. The optimum is **interior** -- 1024 is worse than 4096 -- so
+more Gauss-Seidel is not monotonically better; these are exact values, so that
+is a real optimum rather than noise.
+
+Wall time for these three is not usable: they ran 3-up on 16 cores. The solo
+timing is the number that decides whether the 2x survives the added barriers.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
