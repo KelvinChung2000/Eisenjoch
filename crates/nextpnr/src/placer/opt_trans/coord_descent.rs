@@ -2240,6 +2240,28 @@ struct CellPlan {
     stats: Option<PlateauStat>,
 }
 
+/// Cells probed per deterministic chunk, via `NPNR_OT_DET_CHUNK`.
+///
+/// `None` (unset) means one chunk covering the sweep -- pure Jacobi, every cell
+/// probing the sweep-start occupancy. Smaller values interleave probe and
+/// commit, so later chunks see earlier commits. Only read when
+/// `deterministic_sweep()` is on. A non-numeric or zero value is a
+/// configuration error and panics rather than silently falling back.
+fn det_sweep_chunk() -> Option<usize> {
+    use std::sync::OnceLock;
+    static CHUNK: OnceLock<Option<usize>> = OnceLock::new();
+    *CHUNK.get_or_init(|| match std::env::var("NPNR_OT_DET_CHUNK") {
+        Ok(v) => {
+            let n: usize = v.parse().unwrap_or_else(|_| {
+                panic!("NPNR_OT_DET_CHUNK must be a positive integer, got {v:?}")
+            });
+            assert!(n > 0, "NPNR_OT_DET_CHUNK must be > 0, got {n}");
+            Some(n)
+        }
+        Err(_) => None,
+    })
+}
+
 /// Commit moves in cell order instead of racing, via `NPNR_OT_DET_SWEEP=1`.
 ///
 /// Off by default: it changes which cell wins a contested tile slot, so it is
@@ -2567,15 +2589,30 @@ fn place_dcd_sweep(
         };
 
         if deterministic_sweep() {
-            let plans: Vec<CellPlan> = (0..n).into_par_iter().map(|ci| plan_cell(ci)).collect();
-            plans
-                .into_iter()
-                .enumerate()
-                .map(|(ci, plan)| {
+            // Chunked schedule: probe a chunk in parallel against occupancy
+            // frozen at chunk start, commit it in index order, then let the
+            // next chunk see the update. Chunk bounds come from the cell index,
+            // never the worker count, so the result is thread-independent.
+            //
+            // `chunk = n` is pure Jacobi -- every cell probes the sweep-start
+            // state. Smaller chunks recover the Gauss-Seidel information that
+            // the racy path was getting by accident, at the cost of more
+            // barriers. This is the knob the race was setting implicitly.
+            let chunk = det_sweep_chunk().unwrap_or(n).min(n).max(1);
+            let mut out: Vec<(i32, i32, bool, Option<PlateauStat>)> = Vec::with_capacity(n);
+            let mut start = 0usize;
+            while start < n {
+                let end = (start + chunk).min(n);
+                let plans: Vec<CellPlan> =
+                    (start..end).into_par_iter().map(|ci| plan_cell(ci)).collect();
+                for (offset, plan) in plans.into_iter().enumerate() {
+                    let ci = start + offset;
                     let (gx, gy, committed) = commit_cell(ci, &plan);
-                    (gx, gy, committed, plan.stats)
-                })
-                .collect()
+                    out.push((gx, gy, committed, plan.stats));
+                }
+                start = end;
+            }
+            out
         } else {
             (0..n)
                 .into_par_iter()
