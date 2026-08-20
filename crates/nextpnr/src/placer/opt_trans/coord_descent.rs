@@ -2229,6 +2229,37 @@ fn per_net_hpwl(net_infos: &[NetInfo], network: &PipeNetwork) -> (Vec<String>, V
 /// fits.
 const PROBE_TOPK: usize = 8;
 
+/// One cell's move plan: current position plus ranked candidate destinations,
+/// primary first. Produced by the sweep's probe phase and consumed by its
+/// commit phase; splitting the two is what lets commits run in a fixed order.
+struct CellPlan {
+    old_gx: i32,
+    old_gy: i32,
+    cands: [(i32, i32); PROBE_TOPK + 1],
+    n_cands: usize,
+    stats: Option<PlateauStat>,
+}
+
+/// Commit moves in cell order instead of racing, via `NPNR_OT_DET_SWEEP=1`.
+///
+/// Off by default: it changes which cell wins a contested tile slot, so it is
+/// a placement-behaviour change, not just a reproducibility one. A non-numeric
+/// value is a configuration error and panics rather than silently falling back.
+fn deterministic_sweep() -> bool {
+    use std::sync::OnceLock;
+    static DET: OnceLock<bool> = OnceLock::new();
+    *DET.get_or_init(|| match std::env::var("NPNR_OT_DET_SWEEP") {
+        Ok(v) => {
+            let n: u32 = v.parse().unwrap_or_else(|_| {
+                panic!("NPNR_OT_DET_SWEEP must be 0 or 1, got {v:?}")
+            });
+            assert!(n <= 1, "NPNR_OT_DET_SWEEP must be 0 or 1, got {n}");
+            n == 1
+        }
+        Err(_) => false,
+    })
+}
+
 #[derive(Clone, Copy, Debug)]
 struct SoftminAccumulator {
     anchor: f64,
@@ -2456,20 +2487,33 @@ fn place_dcd_sweep(
     let collect_stats = diag.enabled;
     let use_softmin = cfg.softmin_enabled && theta > 0.0;
 
-    // Single-phase Jacobi: probe against the live (concurrently-updated)
-    // tracker, apply damping, and atomically commit the move — all inside
-    // the parallel map. The cost landscape (`net_infos`) stays frozen for
-    // the sweep; only the mux-slot occupancy is live, so two threads can
-    // not both claim the last slot in a tile (CAS in `try_commit`).
-    // Each entry returns `(final_gx, final_gy, committed, stats)`.
-    let probes: Vec<(i32, i32, bool, Option<PlateauStat>)> = (0..n)
-        .into_par_iter()
-        .map(|ci| {
+    // Two phases, selected by `deterministic_sweep()`:
+    //
+    //   racy (default): probe and commit inside one parallel map. A cell sees
+    //     occupancy other threads are still changing, so a contested tile slot
+    //     goes to whichever thread reaches the CAS first -- the run-to-run and
+    //     thread-count dependence measured in
+    //     `docs/opt_trans_refresh_speedup.md`.
+    //   deterministic: probe every cell against frozen occupancy, then commit
+    //     in ascending cell index. Same candidates in the same rank order; a
+    //     contested slot now goes to the lower cell index instead of the
+    //     faster thread.
+    //
+    // Both share `plan_cell` and `commit_cell`, so the only difference is when
+    // commits become visible. `net_infos` is frozen across the sweep either
+    // way; only mux-slot occupancy is live.
+    let probes: Vec<(i32, i32, bool, Option<PlateauStat>)> = {
+        let plan_cell = |ci: usize| -> CellPlan {
             let cell_nets = &cell_net_map.map[ci];
-            let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
-            let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
+            let mut plan = CellPlan {
+                old_gx: network.tile_to_net(cell_x[ci]).round() as i32,
+                old_gy: network.tile_to_net(cell_y[ci]).round() as i32,
+                cands: [(0, 0); PROBE_TOPK + 1],
+                n_cands: 0,
+                stats: None,
+            };
             if cell_nets.is_empty() {
-                return (old_gx, old_gy, false, None);
+                return plan;
             }
             let (acc, stats) = fullscan_sweep_probe(
                 ci,
@@ -2483,47 +2527,66 @@ fn place_dcd_sweep(
                 if use_softmin { theta } else { 0.0 },
                 collect_stats,
             );
+            plan.stats = stats;
             let (primary_gx, primary_gy) = if use_softmin {
                 acc.softmin_tile(ci, validity, network.width, network.height)
             } else {
                 acc.argmin()
             };
-            // Walk the ranked candidate list: first the primary (softmin
-            // tile or argmin), then the top-K fallbacks in order of cost.
-            // Each candidate is damped against `old` and tried via an
-            // atomic `try_commit`; first success wins. Cells stay put only
-            // if every candidate fails.
-            let try_candidate = |cand_gx: i32, cand_gy: i32| -> Option<(i32, i32)> {
-                if cand_gx == old_gx && cand_gy == old_gy {
-                    return None;
-                }
-                let new_gx_f = alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64;
-                let new_gy_f = alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64;
-                let new_gx = new_gx_f.round() as i32;
-                let new_gy = new_gy_f.round() as i32;
-                if new_gx == old_gx && new_gy == old_gy {
-                    return None;
-                }
-                if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
-                    Some((new_gx, new_gy))
-                } else {
-                    None
-                }
-            };
-            if let Some((new_gx, new_gy)) = try_candidate(primary_gx, primary_gy) {
-                return (new_gx, new_gy, true, stats);
-            }
+            plan.cands[0] = (primary_gx, primary_gy);
+            plan.n_cands = 1;
             for &(_, cand_gx, cand_gy) in acc.topk() {
                 if cand_gx == primary_gx && cand_gy == primary_gy {
                     continue;
                 }
-                if let Some((new_gx, new_gy)) = try_candidate(cand_gx, cand_gy) {
-                    return (new_gx, new_gy, true, stats);
+                plan.cands[plan.n_cands] = (cand_gx, cand_gy);
+                plan.n_cands += 1;
+            }
+            plan
+        };
+        // Each candidate is damped against `old` and tried via `try_commit`;
+        // first success wins. Cells stay put only if every candidate fails.
+        let commit_cell = |ci: usize, plan: &CellPlan| -> (i32, i32, bool) {
+            let (old_gx, old_gy) = (plan.old_gx, plan.old_gy);
+            for &(cand_gx, cand_gy) in &plan.cands[..plan.n_cands] {
+                if cand_gx == old_gx && cand_gy == old_gy {
+                    continue;
+                }
+                let new_gx =
+                    (alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64).round() as i32;
+                let new_gy =
+                    (alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64).round() as i32;
+                if new_gx == old_gx && new_gy == old_gy {
+                    continue;
+                }
+                if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
+                    return (new_gx, new_gy, true);
                 }
             }
-            (old_gx, old_gy, false, stats)
-        })
-        .collect();
+            (old_gx, old_gy, false)
+        };
+
+        if deterministic_sweep() {
+            let plans: Vec<CellPlan> = (0..n).into_par_iter().map(|ci| plan_cell(ci)).collect();
+            plans
+                .into_iter()
+                .enumerate()
+                .map(|(ci, plan)| {
+                    let (gx, gy, committed) = commit_cell(ci, &plan);
+                    (gx, gy, committed, plan.stats)
+                })
+                .collect()
+        } else {
+            (0..n)
+                .into_par_iter()
+                .map(|ci| {
+                    let plan = plan_cell(ci);
+                    let (gx, gy, committed) = commit_cell(ci, &plan);
+                    (gx, gy, committed, plan.stats)
+                })
+                .collect()
+        }
+    };
 
     // Record plateau stats serially after the parallel phase.
     if collect_stats {
