@@ -182,8 +182,31 @@ at 32 threads. The optimum is **interior** -- 1024 is worse than 4096 -- so
 more Gauss-Seidel is not monotonically better; these are exact values, so that
 is a real optimum rather than noise.
 
-Wall time for these three is not usable: they ran 3-up on 16 cores. The solo
-timing is the number that decides whether the 2x survives the added barriers.
+Solo timing at `chunk=4096`, 32 threads -- HPWL reproduced exactly, which is
+also another determinism check:
+
+| `steiner=1`, 20 iters | wall | HPWL | spread |
+|---|---|---|---|
+| racy, 8 threads (baseline) | 2898 s | 7 387 340 (mean, n=4) | 2.48 % |
+| **deterministic, chunk 4096, 32 threads** | **1465 s** | **7 387 808** (exact) | **none** |
+
+**1.98x at +0.006 % HPWL**, with the run-to-run spread gone. The barriers are
+close to free: DCD totals 131 s of 1465 s (9 %) against ~140 s for the racy
+path, so 19 barriers per sweep cost nothing measurable. `refresh` is still
+83.5 % of the time.
+
+## Where this leaves the HeAP gap
+
+Runtime roughly halved at unchanged quality, so the ordering the goal asked
+for -- hold HPWL first, then chase runtime -- is satisfied. The remaining gap
+to HeAP's 52.8 s is ~28x and is **not** a tuning gap: HeAP costs O(pins) per
+net, opt_trans O(corridor area). Closing it needs a different per-net
+computation, not a faster one.
+
+The live lead is the ~90 % zero-load result above: the corridor settles about
+10x more nodes than can affect congestion. It is now testable cheaply, since
+deterministic runs make an approximate prune comparable against an exact
+baseline in one run instead of four.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
