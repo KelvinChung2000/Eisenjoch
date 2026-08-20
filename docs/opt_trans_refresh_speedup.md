@@ -132,11 +132,27 @@ naive `diff` reports a false negative.
 This restores the bit-identical signature check as a cheap test for any
 future change here, which the racy path made impossible.
 
-Cost is not yet known. The deterministic path commits **fewer** moves
-(51 349 vs 59 810 at outer=0) and its `line` at outer=2 is ~0.6 % above both
-racy draws, so serial commit looks more conservative about contested slots.
-A 20-iteration quality run against the racy bands is the open item; until it
-lands, the flag stays off.
+Priced at 20 iterations, `steiner=1`, 32 threads: **HPWL 7 937 739** in
+1483 s.
+
+| 32 threads, 20 iters | HPWL |
+|---|---|
+| racy, n=5 | mean 8 084 121, range 7 757 880 - 8 549 040 |
+| **deterministic** | **7 937 739** (exact -- no spread) |
+| racy 8 threads, n=4 | mean 7 387 340 |
+
+So determinism beats the racy *mean* by 1.8 % and removes a 10.2 % spread,
+but does not reach the racy *best*, and stays 6.2 % above every 8-thread run.
+
+**Determinism does not fix the thread penalty** -- which independently
+confirms the diagnosis above: the sweep race cannot be the mechanism, because
+that sweep runs on the global 32-thread pool in both configs.
+
+The flag's value is measurement, not quality: one deterministic run is an
+exact value, so the thread penalty and the chunk-size hypothesis can now be
+settled with single runs instead of fighting a 10 % band. Since results no
+longer depend on timing, such runs can even be executed concurrently without
+confounding each other.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
