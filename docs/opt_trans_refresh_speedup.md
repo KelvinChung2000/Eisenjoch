@@ -218,10 +218,10 @@ to HeAP's 52.8 s is ~28x and is **not** a tuning gap: HeAP costs O(pins) per
 net, opt_trans O(corridor area). Closing it needs a different per-net
 computation, not a faster one.
 
-The live lead is the ~90 % zero-load result above: the corridor settles about
-10x more nodes than can affect congestion. It is now testable cheaply, since
-deterministic runs make an approximate prune comparable against an exact
-baseline in one run instead of four.
+The zero-load result below reads as the live lead, and over three outer
+iterations it is. Over twenty it is not: the oracle share falls to 43.9 % on
+`steiner=1`, and the bound that is actually implementable reclaims ~12 % on
+either config. See the correction at the end of that section.
 
 ## The corridor settles ~10x more nodes than can affect congestion
 
@@ -234,8 +234,9 @@ Instrumenting the back-pass (`load_nonzero` / `load_material`, FPGA01,
 | 1 | 9 017 | 1 208 (13.4 %) | 709 (7.9 %) |
 | 2 | 8 194 | 826 (10.1 %) | 668 (8.2 %) |
 
-Once congestion develops, **~90 % of settled nodes receive exactly zero
-load**. Load reaches only the ancestors of sinks in the shortest-path DAG --
+Over these three iterations **~90 % of settled nodes receive exactly zero
+load**. That share does not survive a full run, and the correction below
+prices what does. Load reaches only the ancestors of sinks in the DAG --
 a tube -- while the corridor admits a geometric Manhattan ellipse. Congestion
 inflates cost-per-tile (`max_util` reaches 475x), which shrinks the tube in
 cost space while leaving the ellipse unchanged: that is why the loaded share
@@ -273,6 +274,67 @@ pass -- an admissible A* heuristic -- which is weak exactly where congestion
 is high. The claim above is argued, not measured; the test is a
 bit-identical `DCD` signature (`energy`, `line`, `pops`) across a few
 iterations at fixed thread count.
+
+### Correction: 90 % is three iterations of one config, not the run
+
+The table above stops at outer=2. Read over all twenty iterations of the two
+deterministic `chunk=4096` runs, weighting each iteration by the settles it
+performs, the oracle share is much smaller and it is config-dependent:
+
+| FPGA01, 20 iters, det chunk 4096 | zero load | >= 1e-6 of demand | A* bound could drop |
+|---|---|---|---|
+| `steiner=0` | 80.5 % | 9.8 % | 12.0 % |
+| `steiner=1` | **43.9 %** | 34.2 % | 12.7 % |
+
+`steiner=0` reproduces the 4-thread numbers almost exactly at outer=0..2
+(61.9 / 12.7 / 9.2 % any-load against 62.1 / 13.4 / 10.1 %), so the original
+measurement is sound. What fails is the extrapolation from three iterations to
+"once congestion develops".
+
+On `steiner=1` the sparse regime ends at outer=6 and does not return:
+
+| outer | 0 | 1-5 | 6 | 7 | 8-19 |
+|---|---|---|---|---|---|
+| any load | 61.5 % | 8-12 % | 36.2 % | 85.5 % | 68-86 % |
+| >= 1e-6 | 23.9 % | 7-9 % | 17.6 % | 55.7 % | 27-63 % |
+
+Thirteen of twenty iterations sit in the regime where **most settled nodes do
+carry load**, and over half carry material load. `steiner=0` stays in the
+sparse regime throughout (zero load 68-93 %), which is why the two configs
+disagree by a factor of two on the oracle.
+
+The correlated quantity is the spread of the BPR resistance distribution
+rather than congestion as such. Between the `E_decomp` lines bracketing that
+flip, the `>=100x` resistance bucket falls from 2 432 690 pipes to 29 616 and
+`max_util` from 1001 to 501, while the `2-10x` bucket rises from 37 582 to
+1 866 168. A spiky field discriminates sharply between paths, so few edges
+clear `likelihood > 0` and the tube is narrow; a flat field leaves many paths
+near-tied and load spreads over most of the corridor. This is a hypothesis
+from one coincidence in one run, not an established cause.
+
+It also costs wall time directly, because the back-pass scales with loaded
+nodes rather than settled ones: refresh goes 50 975 ms -> 88 700 ms across
+that same boundary while `settle_avg` falls 7027 -> 6925.
+
+**This closes the lead.** The argument for exact prunability is unchanged and
+still correct, but the oracle it bounds is worth 44 % on the shipping config,
+and no oracle is implementable anyway. `heuristic_prunable` prices the bound
+that is: an admissible Manhattan A* test, work-weighted at **12.0 % / 12.7 %**,
+and 10 % excluding outer=0. Against that, `CORRIDOR_TIGHT` already measured
+the conversion from settles to time at 24 % fewer settles for 11.7 % of
+refresh, because the expensive nets are bbox-clamped rather than
+stretch-clamped. So 12 % fewer settles buys roughly 6 % of refresh, ~5 % of
+wall, before paying for the per-node bound evaluation. Not worth building.
+
+Only a congestion-aware admissible bound could raise that 12 % ceiling, since
+the Manhattan bound is weakest exactly where the resistance field is spikiest.
+ALT-style landmarks over the live field would cost a handful of full-graph
+Dijkstras per outer iteration against 105 117 net solves, so the arithmetic is
+not obviously hostile. Nothing here measures it.
+
+One scope bound: `load_support` instrumentation landed in `ae95605`, after the
+racy `steiner1_t32_rep*` runs, so those logs carry no load lines. The regime
+flip is observed only under `DET_SWEEP=1` and has no racy control.
 
 ## Where the time actually goes
 
