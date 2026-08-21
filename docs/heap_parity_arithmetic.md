@@ -237,3 +237,49 @@ relaxations. What it does not yet supply is `dist_cache` coverage within
 `cache_radius_tiles` of each pin, which the sweep reads through
 `evaluate_cell_at` and a single walked path does not fill. That gap is the
 design question, not the ratio.
+
+## Negative: a label-accurate closed form is not a field-accurate one
+
+`NPNR_OT_ANALYTIC_DIST=1` serves `dist_cache.get` from `k * manhattan(driver,
+node)` with `k` fitted per net to the labels refresh just wrote. Against the
+cap 1.2 control at 20 iterations:
+
+| | HPWL | wall |
+|---|---|---|
+| control, stored labels | 5 750 533 | 1335 s |
+| analytic field | **8 725 198** | 1591 s |
+
+**+51.7 %.** The refresh still ran in both arms, so this measures the field
+alone, and `line` comes from `continuous_line_estimate` over cell coordinates
+rather than from the cache, so the comparison is not circular.
+
+The shape of the failure is the useful part:
+
+| outer | 0 | 2 | 9 | 10 | 14 | 19 |
+|---|---|---|---|---|---|---|
+| control `line` | 17 072 682 | 15 688 776 | 11 620 900 | 11 120 807 | 9 331 223 | 7 602 848 |
+| analytic `line` | 14 556 961 | 12 390 351 | 11 239 658 | 11 187 463 | 11 045 139 | 10 949 821 |
+| difference | -14.7 % | -21.0 % | -3.3 % | +0.6 % | +18.4 % | +44.0 % |
+
+The analytic field descends **21 % faster than the exact one for three
+iterations**, crosses over at outer=10, then stalls: it moves 2.1 % over the
+last nine iterations against the control's 31.6 %.
+
+The mechanism is that `k * manhattan` from the driver is a cone, and a cone has
+no congestion structure. Early on that is an advantage, because the exact
+labels are rugged and only defined within `cache_radius_tiles` of a pin, so a
+smooth field that is finite everywhere lets cells move further per sweep. Once
+the placement is roughly right, the cone's minimum is reached and there is
+nothing left to descend, while the exact labels keep carrying the congestion
+field that drives the remaining 31.6 %.
+
+So `straight/star = 1.036` was measured on driver-to-sink **labels**, and label
+accuracy does not imply the **field** is replaceable. Those are different
+requirements, and this arm is what distinguishes them. Replacing refresh needs
+a cheap field that still varies with congestion, not a cheap distance.
+
+One lead falls out of the crossover rather than the conclusion: the cone wins
+for the first three iterations, and those are the most expensive refreshes
+(118 s at outer=0 against 55 s later). Running analytic early with no Dijkstra
+at all and switching to exact at the crossover would cut the costliest part of
+refresh while keeping the field that does the late work. Unmeasured.
