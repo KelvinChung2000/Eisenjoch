@@ -179,3 +179,61 @@ half of the target reached and the other half missed by 33x. The projection is
 an extrapolation of a decaying rate and is worth exactly what such an
 extrapolation is worth; a 32-iteration arm at the winning cap is queued to
 replace it with a measurement.
+
+## Measured: 32 iterations at cap 1.2 beats HeAP's HPWL
+
+The full cap sweep, all `steiner=1`, `DET_CHUNK=4096`, 32 threads, 20 iters:
+
+| cap | inf | 100 | 10 | 5 | 3 | 2 | 1.5 | 1.2 |
+|---|---|---|---|---|---|---|---|---|
+| HPWL | 7 387 808 | 7 559 506 | 6 456 365 | 6 178 251 | 5 934 823 | 5 809 246 | 5 758 090 | **5 750 533** |
+| wall | 1465 s | 1758 s | 1562 s | 1489 s | 1518 s | 1386 s | 1457 s | **1335 s** |
+
+Monotone below 10 and flattening between 1.5 and 1.2, so the knee is near 1.2.
+
+Taking that cap to 32 iterations, which the convergence rate said was the
+affordable route to quality:
+
+| | HPWL | wall |
+|---|---|---|
+| HeAP | 4 533 609 | 52.8 s |
+| **ours, cap 1.2, 32 iters** | **3 767 053** | 1726 s |
+
+Both figures are final-placement HPWL under the same `get_net_metric`, ours
+post-legalisation (pre-legalisation is 3 765 433, so legalisation costs 0.04 %)
+and HeAP's post-placement, its own final. Net counts differ slightly, 105 117
+against 105 220.
+
+**The quality half of the target is met and passed: 0.831x HeAP, from 1.630x
+at the start of this work.** The time half is not: 1726 s against 52.8 s is
+32.7x, worse than the 27.7x it started at, because quality was bought with
+iterations.
+
+The routability caveat above now binds harder, not less. cap 1.2 leaves a
+congestion multiplier that can never exceed 1.2, so the placer is close to
+pure wirelength, and pure wirelength is exactly the regime that produced the
+2026-05-22 unroutable placement. An HPWL that beats HeAP means nothing if the
+result does not route, and that is unmeasured here.
+
+## Measured: at a bounded price the search is 3.5 % of what it costs
+
+`straight/star`, the monotone walk priced against the Dijkstra label at the
+same `R_eff`, over eight iterations:
+
+| outer | 0 | 1 | 2 | 4 | 7 |
+|---|---|---|---|---|---|
+| uncapped | 1.393 | 2.8e7 | 4.8e6 | 1816 | 22 768 |
+| cap 1.2 | 1.393 | 1.110 | 1.057 | 1.033 | **1.036** |
+
+Uncapped, the walk is hopeless once congestion develops, which is what made
+the search load-bearing. Bounded, the walk is within **3.5 %** of the search
+and stays there, and only 19 320 of 105 117 nets gain more than 5 % from
+searching.
+
+That is the green light for the time half. Refresh is 83.5 % of wall and costs
+`O(corridor area)` per net; the walk costs `O(path length x degree)`, roughly
+a thousand edge inspections per sink against a few hundred thousand
+relaxations. What it does not yet supply is `dist_cache` coverage within
+`cache_radius_tiles` of each pin, which the sweep reads through
+`evaluate_cell_at` and a single walked path does not fill. That gap is the
+design question, not the ratio.
