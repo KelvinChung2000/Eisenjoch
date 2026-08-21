@@ -1,0 +1,5 @@
+launched at : 2026-08-19T22:38:37+01:00
+arm         : s70p3_20 (NPNR_OT_STRATA_SPAN=70 NPNR_OT_STRATA_PERIOD=3)
+git HEAD    : 9bf49cd1b23ea7b3bce476daf9cc53e2afda1b62
+exit code: 0
+wall_secs: 725

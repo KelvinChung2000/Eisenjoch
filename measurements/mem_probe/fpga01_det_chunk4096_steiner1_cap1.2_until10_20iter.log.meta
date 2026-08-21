@@ -1,0 +1,6 @@
+launched at : 2026-08-21T18:04:41+01:00
+arm         : det_chunk4096_steiner1_cap1.2_until10_20iter (cap=1.2, ANALYTIC_UNTIL=10, 20 iters)
+git HEAD    : 3040f30535de92c76033cb0fa20f603c821a92cb
+control     : cap=1.2 20 iters -> HPWL 5750533 in 1335s
+exit code: 0
+wall_secs: 962

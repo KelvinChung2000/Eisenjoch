@@ -1,0 +1,5 @@
+launched at : 2026-08-20T23:44:22+01:00
+arm         : det_chunk2048_steiner0_20iter (steiner=0, threads=32, DET_SWEEP=1, chunk=2048)
+git HEAD    : 1e0b5ab947e75f45600029a8153501ea21132e55
+exit code: 0
+wall_secs: 1270

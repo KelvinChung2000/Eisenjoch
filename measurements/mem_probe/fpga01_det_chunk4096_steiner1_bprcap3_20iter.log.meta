@@ -1,0 +1,5 @@
+launched at : 2026-08-21T13:24:23+01:00
+arm         : det_chunk4096_steiner1_bprcap3_20iter (steiner=1, threads=32, DET_SWEEP=1, chunk=4096, cap=3, 20 iters)
+git HEAD    : 5782f15c33b15714b14b825f7984be246f3863c4
+exit code: 0
+wall_secs: 1518

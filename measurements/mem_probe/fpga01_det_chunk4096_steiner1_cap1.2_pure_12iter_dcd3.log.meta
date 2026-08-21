@@ -1,0 +1,6 @@
+launched at : 2026-08-21T18:39:06+01:00
+arm         : det_chunk4096_steiner1_cap1.2_pure_12iter_dcd3 (cap=1.2, pure analytic, 12 iters, dcd_iters=3)
+git HEAD    : f7315438ce5d9dc55992783a049da704b3389be0
+target      : HeAP 4 533 609 in 52.8s place-only
+exit code: 0
+wall_secs: 319

@@ -326,6 +326,18 @@ pub struct PipeNetwork {
     pub coarsen: usize,
 }
 
+/// Skip pipe enumeration entirely, via `NPNR_OT_SKIP_PIPES=1`.
+///
+/// Only sound when nothing reads the pipe graph: no Dijkstra, no BPR. That is
+/// exactly the pure-analytic configuration (`NPNR_OT_ANALYTIC_UNTIL` >=
+/// `NPNR_OT_MAX_ITERS`), where the placer needs node coordinates and nothing
+/// else. Measured on FPGA01: the build is 52.8 s of a 106.6 s placer span.
+pub fn skip_pipes() -> bool {
+    use std::sync::OnceLock;
+    static SKIP: OnceLock<bool> = OnceLock::new();
+    *SKIP.get_or_init(|| std::env::var("NPNR_OT_SKIP_PIPES").ok().as_deref() == Some("1"))
+}
+
 impl PipeNetwork {
     #[inline]
     pub fn scale(&self) -> f64 {
@@ -458,6 +470,9 @@ impl PipeNetwork {
         let mut n_long_range = 0usize;
         let mut n_skipped_null_src = 0usize;
         let mut n_skipped_null_dst = 0usize;
+        // Pure-analytic placement reads only node coordinates, so enumerating
+        // 2.5 M pipes off the chipdb is 52.8 s of pure waste there.
+        if !skip_pipes() {
         for cy in 0..h {
             for cx in 0..w {
                 let src_ci = idx(cx, cy);
@@ -543,6 +558,7 @@ impl PipeNetwork {
                     );
                 }
             }
+        }
         }
         let _ = n_span1;
         eprintln!(

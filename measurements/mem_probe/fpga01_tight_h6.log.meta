@@ -1,0 +1,5 @@
+launched at : 2026-08-19T21:19:54+01:00
+arm         : tight_h6 (NPNR_OT_CORRIDOR_TIGHT=1 NPNR_OT_CORRIDOR_HALO_MAX=6)
+git HEAD    : b2d90a4bca49e740bc76469246e6eaebad558d17
+exit code: 0
+wall_secs: 312

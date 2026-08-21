@@ -283,3 +283,43 @@ for the first three iterations, and those are the most expensive refreshes
 (118 s at outer=0 against 55 s later). Running analytic early with no Dijkstra
 at all and switching to exact at the crossover would cut the costliest part of
 refresh while keeping the field that does the late work. Unmeasured.
+
+## Where this ends up
+
+FPGA01, `steiner=1`, cap 1.2, pure analytic (`ANALYTIC_UNTIL` = `MAX_ITERS`),
+`NPNR_OT_SWEEP=jacobi_bisect`, deterministic, chunk 4096, 32 threads:
+
+| iters | HPWL | vs HeAP | placer span | vs HeAP |
+|---|---|---|---|---|
+| 10 | 4 684 333 | 1.033x | 102.1 s | 1.93x |
+| **11** | **4 523 586** | **0.998x** | 106.6 s | 2.02x |
+| 12 | 4 392 778 | 0.969x | 111.6 s | 2.11x |
+| 20 | 3 854 290 | 0.850x | 151.9 s | 2.88x |
+
+**HPWL parity is met at 11 iterations.** Wall is 2.02x, from 27.7x when this
+started.
+
+Three levers got the wall there, in order of size. Bisection instead of the
+default `JacobiFullscan`: a cone is unimodal, so the argmin is found in log
+depth, 4.4 s an iteration against 20 s. The analytic field itself: refresh goes
+from 118 s an iteration to 2.5 s. And the cap, which is what made the analytic
+field viable at all.
+
+### The remaining 2x is setup, not placement
+
+The placer span splits in two. From the `cfg:` line to the first `pre_solve`
+mark is **52.8 s** and contains no placement at all; the eleven iterations plus
+legalisation are the other 51.3 s. HeAP's `place_secs` brackets `place()`
+including its own setup, so the honest comparison is the whole 106.6 s, and the
+51.3 s figure is not a parity claim.
+
+That 52.8 s is inside `PipeNetwork::from_context`. `NPNR_OT_SKIP_PIPES=1` gates
+the pipe enumeration out entirely and the run is 112.1 s at HPWL 4 523 586,
+bit-identical to the ungated arm. So pure-analytic placement provably never
+reads the pipe graph, and the pipe loop is provably not the cost. What remains
+in that window is the per-fine-tile scan over the full chip and the span
+histograms, neither of which has been timed separately.
+
+So the time half stands at 2.02x with the residual isolated to one-off chipdb
+work that the configuration demonstrably does not use. That is a measurement
+away from being tested, not a design question.
