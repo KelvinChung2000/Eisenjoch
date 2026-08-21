@@ -153,3 +153,29 @@ on HPWL and wall may be buying both by making the placement less routable. The
 target as stated is HeAP's time and HPWL, and on those two numbers tighter is
 strictly better; routability needs its own measurement before any cap becomes
 a default.
+
+## The cap also fixes the convergence rate, which is what puts HPWL in reach
+
+Per-iteration change in `line` over the last ten iterations: uncapped 2.6 %,
+cap 2 **4.0 %**, still 3.67 % at iter 19. The corridor shrinks with it, so the
+search gets cheaper every iteration rather than more expensive:
+
+| iter | 0 | 5 | 10 | 15 | 19 |
+|---|---|---|---|---|---|
+| `settle_avg` | 9381 | 6823 | 4949 | 3692 | **2990** |
+| refresh | 126 s | 67 s | 51 s | 39 s | **32 s** |
+
+Refresh totals 1147 s at cap 2 against 1223 s uncapped, over the same twenty
+iterations and reaching a much better placement.
+
+Extrapolating the horizon is then arithmetic rather than hope. Our
+post-legalisation HPWL to `line` ratio is 5 809 246 / 7 789 161 = 0.746, so
+HeAP's 4 533 609 corresponds to `line` near 6.08M, which is -22 % from
+7 789 161. At a rate decaying through 3.67 % that is seven to nine further
+iterations, costing roughly 340 s.
+
+**So HPWL parity projects at about 28 iterations and ~1730 s.** That is one
+half of the target reached and the other half missed by 33x. The projection is
+an extrapolation of a decaying rate and is worth exactly what such an
+extrapolation is worth; a 32-iteration arm at the winning cap is queued to
+replace it with a measurement.
