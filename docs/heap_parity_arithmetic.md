@@ -84,11 +84,14 @@ no such field exists on master.
 FPGA01, `steiner=1`, `DET_SWEEP=1`, `DET_CHUNK=4096`, 32 threads, 20 iters.
 Deterministic, so each arm is one exact sample rather than a draw:
 
-| `NPNR_OT_BPR_CAP` | post-leg HPWL | vs uncapped | wall | `cong_share` |
-|---|---|---|---|---|
-| unbounded (reference) | 7 387 808 | — | 1465 s | 100.0 % |
-| 100 | 7 559 506 | +2.3 % | 1758 s | — |
-| **10** | **6 456 365** | **-12.6 %** | 1562 s | 40-46 % |
+| `NPNR_OT_BPR_CAP` | post-leg HPWL | vs uncapped | wall | vs HeAP HPWL | vs HeAP wall |
+|---|---|---|---|---|---|
+| unbounded (reference) | 7 387 808 | — | 1465 s | 1.630x | 27.7x |
+| 100 | 7 559 506 | +2.3 % | 1758 s | 1.667x | 33.3x |
+| 10 | 6 456 365 | -12.6 % | 1562 s | 1.424x | 29.6x |
+| **2** | **5 809 246** | **-21.4 %** | **1386 s** | **1.281x** | **26.3x** |
+
+`cong_share` is 100.0 % uncapped and 40-46 % at cap 10.
 
 The mechanism is the one the cap was built for. Uncapped, the congestion term
 reaches `cong_share = 100.0 %` and base wirelength is invisible to the descent.
@@ -131,3 +134,22 @@ The spread is 0.53 % and not monotone, against a 4.3 % spread on `steiner=1`
 between chunk 1024 and 76 660. Chunk is a real lever on `steiner=1` and close
 to noise on `steiner=0`, so the +0.91 % generalisation penalty recorded for
 4096 is not a mistuning and re-tuning does not recover it.
+
+
+## Tighter is better on both axes, and the knee is not found yet
+
+cap 2 improves quality by 21.4 % and wall by 5.4 % against uncapped, so it is
+not a trade. Every tightening so far has moved both numbers the same way, and
+the sweep has not yet turned. Caps 3, 1.5 and 1.2 are queued; the limit is
+cap 1.0, which is the multiplier pinned at 1 and therefore no congestion price
+at all.
+
+That limit is the reason to read this result narrowly. **The cap trades away
+the only congestion mechanism the placer has.** FPGA01's binding constraint
+was already local routability rather than HPWL: the 2026-05-22 end-to-end run
+never routed, failing short nets, and a router-agnostic check put ~20k interior
+tile edges over capacity. Nothing here re-measures that, so a cap chosen purely
+on HPWL and wall may be buying both by making the placement less routable. The
+target as stated is HeAP's time and HPWL, and on those two numbers tighter is
+strictly better; routability needs its own measurement before any cap becomes
+a default.
