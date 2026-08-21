@@ -416,6 +416,13 @@ impl OptTransPlacerCfg {
         {
             self.seed = v;
         }
+        if let Some(v) = env::var("NPNR_OT_DCD_ITERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            assert!(v > 0, "NPNR_OT_DCD_ITERS must be > 0, got {v}");
+            self.dcd_iters_per_cell = v;
+        }
         if let Some(v) = env::var("NPNR_OT_MAX_ITERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
