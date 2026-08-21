@@ -103,7 +103,7 @@ struct DistCache {
 fn analytic_dist() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_DIST") {
+    let forced = *ON.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_DIST") {
         Ok(v) => {
             let n: u32 = v
                 .parse()
@@ -112,7 +112,52 @@ fn analytic_dist() -> bool {
             n == 1
         }
         Err(_) => false,
+    });
+    forced || ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// True while the outer loop is inside the leading analytic phase, where no
+/// Dijkstra runs at all.
+static ANALYTIC_PHASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Outer iterations to run on the analytic field with the per-net solve skipped
+/// entirely, via `NPNR_OT_ANALYTIC_UNTIL`. Zero, the default, keeps every
+/// iteration exact.
+///
+/// Measured at `NPNR_OT_BPR_CAP=1.2`: the analytic field's `line` leads the
+/// exact one through outer=9 (-14.7 % at outer=0, -3.3 % at outer=9) and only
+/// falls behind from outer=10, while outer=0 alone costs 118 s of refresh
+/// against 55 s later. So the iterations it wins are also the dear ones.
+fn analytic_until() -> usize {
+    use std::sync::OnceLock;
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_UNTIL") {
+        Ok(v) => v
+            .parse()
+            .unwrap_or_else(|_| panic!("NPNR_OT_ANALYTIC_UNTIL must be an integer, got {v:?}")),
+        Err(_) => 0,
     })
+}
+
+/// Cost per tile used during the analytic phase, before any solve has produced
+/// labels to fit. Default 0.33, the measured `star/manh` at cap 1.2.
+fn analytic_k_seed() -> f32 {
+    use std::sync::OnceLock;
+    static K: OnceLock<f32> = OnceLock::new();
+    *K.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_K") {
+        Ok(v) => v
+            .parse()
+            .unwrap_or_else(|_| panic!("NPNR_OT_ANALYTIC_K must be a float, got {v:?}")),
+        Err(_) => 0.33,
+    })
+}
+
+/// Enter or leave the leading analytic phase for `outer`. Returns true while
+/// the phase is active, which is the caller's signal to skip the solve.
+fn set_analytic_phase(outer: usize) -> bool {
+    let active = outer < analytic_until();
+    ANALYTIC_PHASE.store(active, std::sync::atomic::Ordering::Relaxed);
+    active
 }
 
 impl DistCache {
@@ -190,6 +235,26 @@ impl DistCache {
     /// summing over sinks so a multi-sink net is fitted to all of them rather
     /// than to whichever one is read first. Costs one hash lookup per sink,
     /// against a Dijkstra per net, so it is free at this scale.
+    fn seed_analytic(&mut self, net_infos: &[NetInfo], width: usize, k: f32) {
+        self.width = width;
+        if self.analytic_k.len() != self.n_nets {
+            self.analytic_k = vec![f32::NAN; self.n_nets];
+            self.analytic_driver = vec![u32::MAX; self.n_nets];
+        }
+        for (net_idx, info) in net_infos.iter().enumerate() {
+            match info.pins.iter().find(|p| p.is_driver).map(|p| p.node) {
+                Some(driver) => {
+                    self.analytic_driver[net_idx] = driver as u32;
+                    self.analytic_k[net_idx] = k;
+                }
+                None => {
+                    self.analytic_driver[net_idx] = u32::MAX;
+                    self.analytic_k[net_idx] = f32::NAN;
+                }
+            }
+        }
+    }
+
     fn calibrate_analytic(&mut self, net_infos: &[NetInfo], width: usize) {
         self.width = width;
         if self.analytic_k.len() != self.n_nets {
@@ -745,6 +810,19 @@ fn solve_all_nets_with_displacement(
             collect_usage,
         );
     }
+
+    // Inside the leading analytic phase nothing reads the labels, so skipping
+    // every net is the whole point: this is where the refresh time goes.
+    let analytic_skip: Option<Vec<bool>> =
+        if ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(vec![true; net_infos.len()])
+        } else {
+            None
+        };
+    let skip_mask = match analytic_skip.as_deref() {
+        Some(m) => Some(m),
+        None => skip_mask,
+    };
 
     let n_pipes = network.num_pipes();
     let batch_size =
@@ -1660,7 +1738,9 @@ fn solve_distance_cache(
         skip_mask,
         displacement,
     );
-    if analytic_dist() {
+    if ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed) {
+        dist_cache.seed_analytic(net_infos, network.width as usize, analytic_k_seed());
+    } else if analytic_dist() {
         dist_cache.calibrate_analytic(net_infos, network.width as usize);
     }
     accum
@@ -1686,7 +1766,9 @@ fn solve_usage_and_energy(
         None,
         displacement,
     );
-    if analytic_dist() {
+    if ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed) {
+        dist_cache.seed_analytic(net_infos, network.width as usize, analytic_k_seed());
+    } else if analytic_dist() {
         dist_cache.calibrate_analytic(net_infos, network.width as usize);
     }
     accum
@@ -4339,6 +4421,9 @@ pub fn run_inner_outer(
             .unwrap_or(0);
 
         let t_refresh = std::time::Instant::now();
+        if set_analytic_phase(outer) {
+            eprintln!("    analytic_phase[outer={}]: solve skipped, k={}", outer, analytic_k_seed());
+        }
         update_effective_conductance(network, solve_pool, resistance_model, cfg.graph_model);
         report_reff_distribution(network, resistance_model, outer);
         let displacement_table = if matches!(
