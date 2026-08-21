@@ -82,6 +82,37 @@ struct DistCache {
     /// additive cost term scaled by `cfg.tile_pressure_weight`. Zero everywhere
     /// when the term is disabled (`tile_pressure_weight == 0.0`).
     tile_pressure: Vec<f64>,
+    /// Network grid width, so a node index converts to tile coords without the
+    /// network. Zero until `calibrate_analytic` runs.
+    width: usize,
+    /// Per-net cost per tile of Manhattan distance from the driver, fitted to
+    /// the labels the last refresh produced. `NaN` where the net has no driver,
+    /// no sinks, or no finite label. Read only under `NPNR_OT_ANALYTIC_DIST=1`.
+    analytic_k: Vec<f32>,
+    /// Per-net driver node, `u32::MAX` where the net has none.
+    analytic_driver: Vec<u32>,
+}
+
+/// Serve `DistCache::get` from `k * manhattan(driver, node)` rather than the
+/// stored labels, via `NPNR_OT_ANALYTIC_DIST=1`.
+///
+/// Measured on FPGA01 at `NPNR_OT_BPR_CAP=1.2`: `star/manh` sits at 0.325-0.343
+/// across eight iterations and only 38-67 nets of 105 117 deviate more than
+/// 25 % from the fit. Uncapped the same count is 57 837, so this is a knob that
+/// only means anything under a bounded congestion price.
+fn analytic_dist() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_DIST") {
+        Ok(v) => {
+            let n: u32 = v
+                .parse()
+                .unwrap_or_else(|_| panic!("NPNR_OT_ANALYTIC_DIST must be 0 or 1, got {v:?}"));
+            assert!(n <= 1, "NPNR_OT_ANALYTIC_DIST must be 0 or 1, got {n}");
+            n == 1
+        }
+        Err(_) => false,
+    })
 }
 
 impl DistCache {
@@ -94,6 +125,9 @@ impl DistCache {
             steiner_cy: vec![0.0; n_nets],
             mst_neighbors: Vec::new(),
             tile_pressure: vec![0.0; n_nodes],
+            width: 0,
+            analytic_k: vec![f32::NAN; n_nets],
+            analytic_driver: vec![u32::MAX; n_nets],
         }
     }
 
@@ -127,9 +161,67 @@ impl DistCache {
     /// path don't have to track the storage precision; absent → INFINITY.
     #[inline]
     fn get(&self, net_idx: usize, node: usize) -> f64 {
+        if analytic_dist() {
+            return self.analytic_get(net_idx, node);
+        }
         match self.rows[net_idx].get(&(node as u32)) {
             Some(&v) => v as f64,
             None => f64::INFINITY,
+        }
+    }
+
+    /// `k * manhattan(driver, node)`. Uncalibrated nets return INFINITY, which
+    /// is what the stored row returns for an unsolved net, so callers need no
+    /// new case.
+    #[inline]
+    fn analytic_get(&self, net_idx: usize, node: usize) -> f64 {
+        let k = self.analytic_k[net_idx];
+        let driver = self.analytic_driver[net_idx];
+        if !k.is_finite() || driver == u32::MAX {
+            return f64::INFINITY;
+        }
+        let w = self.width;
+        let (dx, dy) = ((driver as usize % w) as i32, (driver as usize / w) as i32);
+        let (nx, ny) = ((node % w) as i32, (node / w) as i32);
+        k as f64 * ((nx - dx).abs() + (ny - dy).abs()) as f64
+    }
+
+    /// Fit one cost-per-tile rate per net to the labels the refresh just wrote,
+    /// summing over sinks so a multi-sink net is fitted to all of them rather
+    /// than to whichever one is read first. Costs one hash lookup per sink,
+    /// against a Dijkstra per net, so it is free at this scale.
+    fn calibrate_analytic(&mut self, net_infos: &[NetInfo], width: usize) {
+        self.width = width;
+        if self.analytic_k.len() != self.n_nets {
+            self.analytic_k = vec![f32::NAN; self.n_nets];
+            self.analytic_driver = vec![u32::MAX; self.n_nets];
+        }
+        for (net_idx, info) in net_infos.iter().enumerate() {
+            let Some(driver) = info.pins.iter().find(|p| p.is_driver).map(|p| p.node) else {
+                self.analytic_k[net_idx] = f32::NAN;
+                self.analytic_driver[net_idx] = u32::MAX;
+                continue;
+            };
+            let (dx, dy) = ((driver % width) as i32, (driver / width) as i32);
+            let mut sum_dist = 0.0f64;
+            let mut sum_manh = 0.0f64;
+            for pin in info.pins.iter().filter(|p| !p.is_driver) {
+                let Some(&d) = self.rows[net_idx].get(&(pin.node as u32)) else {
+                    continue;
+                };
+                if !d.is_finite() {
+                    continue;
+                }
+                let (px, py) = ((pin.node % width) as i32, (pin.node / width) as i32);
+                sum_manh += ((px - dx).abs() + (py - dy).abs()) as f64;
+                sum_dist += d as f64;
+            }
+            self.analytic_driver[net_idx] = driver as u32;
+            self.analytic_k[net_idx] = if sum_manh > 0.0 {
+                (sum_dist / sum_manh) as f32
+            } else {
+                f32::NAN
+            };
         }
     }
 
@@ -1557,7 +1649,7 @@ fn solve_distance_cache(
     skip_mask: Option<&[bool]>,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    solve_all_nets_with_displacement(
+    let accum = solve_all_nets_with_displacement(
         network,
         net_infos,
         cfg,
@@ -1567,7 +1659,11 @@ fn solve_distance_cache(
         false,
         skip_mask,
         displacement,
-    )
+    );
+    if analytic_dist() {
+        dist_cache.calibrate_analytic(net_infos, network.width as usize);
+    }
+    accum
 }
 
 fn solve_usage_and_energy(
@@ -1579,7 +1675,7 @@ fn solve_usage_and_energy(
     dist_cache: &mut DistCache,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    solve_all_nets_with_displacement(
+    let accum = solve_all_nets_with_displacement(
         network,
         net_infos,
         cfg,
@@ -1589,7 +1685,11 @@ fn solve_usage_and_energy(
         true,
         None,
         displacement,
-    )
+    );
+    if analytic_dist() {
+        dist_cache.calibrate_analytic(net_infos, network.width as usize);
+    }
+    accum
 }
 
 /// Dual ascent on the per-pipe capacity constraint (PathFinder's `h`).
