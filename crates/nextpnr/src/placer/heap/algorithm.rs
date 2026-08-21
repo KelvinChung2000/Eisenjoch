@@ -18,6 +18,9 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
     let t_alg = std::time::Instant::now();
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
     eprintln!("  ALG_T heap prepare_discrete: {:.1}s", t_alg.elapsed().as_secs_f64());
+    // What the shared initial placement already scores, before either
+    // placer optimises anything.
+    eprintln!("  ALG_T init_hpwl: {:.0}", crate::metrics::wirelength::total_hpwl(ctx));
 
     let mut state = HeapState::new(ctx, cfg)?;
 

@@ -353,3 +353,42 @@ is. If its HPWL is close to 4.5M then HeAP's 1.2 s is a small correction to a
 placement we are both handed, and our 55.8 s is buying a result of similar
 quality by a much longer route. That single number would settle how much of
 this benchmark is the placers at all, and it has not been measured.
+
+## What HeAP's 1.2 s actually does
+
+The shared initial placement scores **14 051 632**. HeAP takes it to 4 533 609
+in **1.2 s**, a 3.1x improvement. From the same start, opt_trans reaches
+4 523 586 in 55.8 s.
+
+| | start | end | own time |
+|---|---|---|---|
+| HeAP | 14 051 632 | 4 533 609 | 1.2 s |
+| ours, 11 iters | 14 051 632 | 4 523 586 | 55.8 s |
+
+So quality is a dead heat and the whole remaining gap is efficiency: **HeAP is
+about 46x cheaper per unit of the same improvement**. That is not a constant
+factor to be tuned away. HeAP solves a sparse linear system, a few conjugate
+gradient passes costing `O(pins)`, then legalises. We run eleven coordinate
+descent sweeps over 76 660 cells, each sweep visiting every cell. Reaching
+1.2 s means eleven sweeps at 0.1 s each against 5.1 s today.
+
+### The target and the project constraint collide
+
+The mechanism that does this in 1.2 s is exactly the one this placer is
+forbidden to use. The standing constraint is that opt_trans must reach good
+placements without any HeAP-style quadratic solve, cell-Laplacian, or
+star-model global solve, and not as a warm start either, because the point of
+the Beckmann formulation is to show a congestion-aware path-based placer
+converges without a quadratic anchor.
+
+So `place_secs` parity with HeAP requires either the quadratic solve the
+project rules out, or a coordinate-descent sweep roughly 50x faster than the
+present one. The first is not available. The second is a real open problem and
+not a tuning exercise: this session already took the sweep from
+`JacobiFullscan` to bisection for 4.5x, and took refresh from 118 s an
+iteration to 2.5 s, and the result is 5.1 s per sweep.
+
+Worth stating plainly, because it changes what the goal means: on the metric
+being compared, HeAP spends 97 % of its time in a step we also pay for and 1.2 s
+on the part that distinguishes the two placers. Matching its `place_secs` is
+therefore a statement about that 1.2 s, not about the 52.8 s.
