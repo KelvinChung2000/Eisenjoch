@@ -139,6 +139,25 @@ fn analytic_until() -> usize {
     })
 }
 
+/// Manhattan radius beyond which the analytic field reports INFINITY, via
+/// `NPNR_OT_ANALYTIC_RADIUS`. Unset means unbounded.
+///
+/// The stored labels only exist within `cache_radius_tiles` of a pin, so the
+/// sweep used to prune distant candidates on an INFINITY it got for free. The
+/// analytic field is finite everywhere, which is why it descends faster and
+/// also why the sweep grew from 131 s to 504 s. This bounds the search without
+/// going back to the radius-12 field that pruning implied.
+fn analytic_radius() -> i32 {
+    use std::sync::OnceLock;
+    static R: OnceLock<i32> = OnceLock::new();
+    *R.get_or_init(|| match std::env::var("NPNR_OT_ANALYTIC_RADIUS") {
+        Ok(v) => v
+            .parse()
+            .unwrap_or_else(|_| panic!("NPNR_OT_ANALYTIC_RADIUS must be an integer, got {v:?}")),
+        Err(_) => i32::MAX,
+    })
+}
+
 /// Cost per tile used during the analytic phase, before any solve has produced
 /// labels to fit. Default 0.33, the measured `star/manh` at cap 1.2.
 fn analytic_k_seed() -> f32 {
@@ -228,7 +247,11 @@ impl DistCache {
         let w = self.width;
         let (dx, dy) = ((driver as usize % w) as i32, (driver as usize / w) as i32);
         let (nx, ny) = ((node % w) as i32, (node / w) as i32);
-        k as f64 * ((nx - dx).abs() + (ny - dy).abs()) as f64
+        let manh = (nx - dx).abs() + (ny - dy).abs();
+        if manh > analytic_radius() {
+            return f64::INFINITY;
+        }
+        k as f64 * manh as f64
     }
 
     /// Fit one cost-per-tile rate per net to the labels the refresh just wrote,
