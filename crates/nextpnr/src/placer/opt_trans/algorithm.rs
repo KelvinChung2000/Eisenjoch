@@ -22,11 +22,14 @@ use super::resistance::ResistanceModel;
 pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(), PlacerError> {
     let mut cfg = cfg.clone();
     cfg.apply_env_overrides();
+    let t_alg = std::time::Instant::now();
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
+    eprintln!("  ALG_T prepare_discrete: {:.1}s", t_alg.elapsed().as_secs_f64());
     crate::solver::set_solver_threads(cfg.num_threads);
 
     let target_scale = 1.0;
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
+    eprintln!("  ALG_T collect_movable: {:.1}s", t_alg.elapsed().as_secs_f64());
     let alive_net_ids: Vec<_> = ctx
         .design
         .iter_alive_nets()
@@ -48,7 +51,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .num_threads(cfg.num_threads.max(1))
         .build()
         .map_err(|e| PlacerError::PlacementFailed(format!("thread pool: {e}")))?;
+    eprintln!("  ALG_T pre_network: {:.1}s", t_alg.elapsed().as_secs_f64());
     let mut network = PipeNetwork::from_context(ctx, target_scale);
+    eprintln!("  ALG_T network: {:.1}s", t_alg.elapsed().as_secs_f64());
 
     match cfg.init_strategy {
         super::config::InitStrategy::Centroid => {

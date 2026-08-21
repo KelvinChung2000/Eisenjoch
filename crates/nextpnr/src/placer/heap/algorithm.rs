@@ -15,7 +15,9 @@ use super::state::HeapState;
 pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerError> {
     info!("HeAP Placer: starting...");
 
+    let t_alg = std::time::Instant::now();
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
+    eprintln!("  ALG_T heap prepare_discrete: {:.1}s", t_alg.elapsed().as_secs_f64());
 
     let mut state = HeapState::new(ctx, cfg)?;
 

@@ -323,3 +323,33 @@ histograms, neither of which has been timed separately.
 So the time half stands at 2.02x with the residual isolated to one-off chipdb
 work that the configuration demonstrably does not use. That is a measurement
 away from being tested, not a design question.
+
+## What the 52.8 s target actually contains
+
+Instrumenting both placers at the same point:
+
+| | `prepare_discrete` | own work | `place_secs` |
+|---|---|---|---|
+| HeAP | 50.9 s | **1.2 s** | 52.1 s |
+| ours, 11 iters | 50.8 s | 55.8 s | 106.6 s |
+
+`PlacerPipeline::prepare_discrete` runs the topological initial placement and
+is called identically by `heap/algorithm.rs:18` and `opt_trans/algorithm.rs:26`.
+It is **97 % of HeAP's measured time**. The benchmark both placers are being
+scored on is therefore a shared floor of 50.8 s plus whatever each does on top,
+and HeAP does 1.2 s of work on top.
+
+This is why the wall gap did not close further. Speeding up `prepare_discrete`
+cannot help, because it would lower both sides equally and the target moves
+with it. The only way to `place_secs` parity is to do our own optimisation in
+about 2 s against the present 55.8 s, which at 11 iterations is 5.1 s each.
+
+It also puts the earlier `SKIP_PIPES` and span-histogram results in context:
+both measured zero because the whole of `PipeNetwork::from_context` is 0.0 s.
+Every gate tried was gating something that was never the cost.
+
+What is not established here is how good the shared initial placement already
+is. If its HPWL is close to 4.5M then HeAP's 1.2 s is a small correction to a
+placement we are both handed, and our 55.8 s is buying a result of similar
+quality by a much longer route. That single number would settle how much of
+this benchmark is the placers at all, and it has not been measured.

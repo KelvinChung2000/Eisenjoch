@@ -393,6 +393,7 @@ impl PipeNetwork {
                 });
             }
         }
+        let t_build = std::time::Instant::now();
         let mut tile_type_by_node = vec![0u16; n_coarse];
         for cy in 0..h {
             for cx in 0..w {
@@ -403,6 +404,7 @@ impl PipeNetwork {
             }
         }
 
+        eprintln!("  BUILD_T tile_type_by_node: {:.1}s", t_build.elapsed().as_secs_f64());
         let total_nodes = nodes.len();
         let mut pipes = Vec::new();
         let mut node_pipes = vec![Vec::new(); total_nodes];
@@ -432,9 +434,16 @@ impl PipeNetwork {
             }
         }
 
+        eprintln!("  BUILD_T coarse_aggregate: {:.1}s", t_build.elapsed().as_secs_f64());
         // Build span histograms first — one source of truth for both span-1
         // (inter-tile) and span-N (long-range) pipe capacities.
-        let span_histograms = build_span_histograms(ctx.chipdb());
+        // Only the gated pipe loop below consumes this, and it walks every pip
+        // in the chipdb to build it.
+        let span_histograms = if skip_pipes() {
+            Default::default()
+        } else {
+            build_span_histograms(ctx.chipdb())
+        };
 
         // Unified pipe creation: one aggregation pass per coarse cell sums
         // `span_histograms` entries across ALL fine tiles inside the cell,
@@ -673,6 +682,7 @@ impl PipeNetwork {
         );
 
         let pipe_lookup = build_pipe_lookup(&pipes);
+        eprintln!("  BUILD_T pipe_loop: {:.1}s", t_build.elapsed().as_secs_f64());
         let pipe_costs: Vec<f64> = pipes
             .iter()
             .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
@@ -684,7 +694,9 @@ impl PipeNetwork {
         let span_cost_table = SpanCostTable::disabled(pipes.len());
         let tile_grid = TileGrid::build(&pipes, &nodes, w, h);
         let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        eprintln!("  BUILD_T grids_and_adjacency: {:.1}s", t_build.elapsed().as_secs_f64());
         let tile_templates = Arc::new(build_tile_templates(ctx.chipdb()));
+        eprintln!("  BUILD_T tile_templates: {:.1}s", t_build.elapsed().as_secs_f64());
 
         let mut net = Self {
             nodes,
