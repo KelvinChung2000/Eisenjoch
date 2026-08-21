@@ -480,6 +480,13 @@ fn compute_mst_neighbors(dist_cache: &mut DistCache, net_infos: &[NetInfo], netw
     }
 }
 
+fn cache_netmap() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NPNR_OT_CACHE_NETMAP").ok().as_deref() == Some("1"))
+}
+
+#[derive(Clone)]
 struct CellNetMap {
     /// For each cell, the list of (net_idx, pin_idx) pairs it participates in.
     map: Vec<Vec<(usize, usize)>>,
@@ -489,6 +496,27 @@ struct CellNetMap {
 }
 
 impl CellNetMap {
+    /// Build once per placement rather than twice per outer iteration, via
+    /// `NPNR_OT_CACHE_NETMAP=1`.
+    ///
+    /// The map is cell-to-(net, pin) incidence plus a driver-to-sink topological
+    /// order. Both are fixed by the netlist, and the outer loop only moves cells,
+    /// so rebuilding them each iteration re-allocates ~150 000 small vectors for
+    /// an identical answer. Measured at 24 % of the profile.
+    ///
+    /// Cached on the assumption that pin `cell_idx` and `is_fixed` do not change
+    /// inside the loop. Deterministic runs make that testable exactly: a cached
+    /// run must reproduce the uncached HPWL bit for bit.
+    fn build_cached(net_infos: &[NetInfo], n_cells: usize, cache: &mut Option<Self>) -> Self {
+        if !cache_netmap() {
+            return Self::build(net_infos, n_cells);
+        }
+        if cache.is_none() {
+            *cache = Some(Self::build(net_infos, n_cells));
+        }
+        cache.as_ref().expect("just filled").clone()
+    }
+
     fn build(net_infos: &[NetInfo], n_cells: usize) -> Self {
         let mut map = vec![Vec::new(); n_cells];
         for (net_idx, info) in net_infos.iter().enumerate() {
@@ -4367,6 +4395,7 @@ pub fn run_inner_outer(
     // iter's post-solve. Compared against the current iter's pre-solve pin
     // layout to decide which nets' `dist_cache` rows can be reused.
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
+    let mut netmap_cache: Option<CellNetMap> = None;
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
 
@@ -4393,7 +4422,7 @@ pub fn run_inner_outer(
             network,
             cfg,
         );
-        let cell_net_map = CellNetMap::build(&net_infos, n);
+        let cell_net_map = CellNetMap::build_cached(&net_infos, n, &mut netmap_cache);
         if outer == 0 && std::env::var("NPNR_OT_COLOR_DIAG").ok().as_deref() == Some("1") {
             measure_cell_coloring(&net_infos, &cell_net_map, n);
         }
@@ -5422,7 +5451,7 @@ pub fn run_inner_outer(
             network,
             cfg,
         );
-        let post_cell_net_map = CellNetMap::build(&post_net_infos, n);
+        let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, &mut netmap_cache);
         let (state_energy, refresh_ms, solve_stats) = if cfg.path_model == PathModel::BresenhamLogit
         {
             let post_solve = solve_bresenham_usage_only(network, &post_net_infos, cfg, solve_pool);
