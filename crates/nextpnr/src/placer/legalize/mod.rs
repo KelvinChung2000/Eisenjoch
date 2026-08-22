@@ -69,6 +69,17 @@ pub fn create_legalizer(name: &str) -> Box<dyn Legalizer> {
 ///
 /// `cell_x`/`cell_y` are physical coordinates. The legalizer snaps to valid tiles,
 /// resolves overcrowding, and assigns cells to specific BELs.
+/// Per-phase legalisation timings on stderr, off by default.
+///
+/// Legalisation is the serial half of placement, so a profile of the whole run
+/// buries it under the parallel sweep's CPU time and these timers are the only
+/// way to see inside it.
+pub(crate) fn leg_timers() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NPNR_LEG_TIMERS").ok().as_deref() == Some("1"))
+}
+
 pub fn legalize(
     ctx: &mut Context,
     idx_to_cell: &[CellId],
@@ -76,10 +87,23 @@ pub fn legalize(
     cell_y: &[f64],
     strategy: &str,
 ) -> Result<f64, PlacerError> {
+    let t = std::time::Instant::now();
     let type_aware = TypeAwarePlacement::build(ctx, 0, 0);
+    if leg_timers() {
+        eprintln!("  LEG_T type_aware: {:.3}s", t.elapsed().as_secs_f64());
+    }
     let legalizer = create_legalizer(strategy);
     let displacement = legalizer.legalize(ctx, idx_to_cell, cell_x, cell_y, &type_aware)?;
+    if leg_timers() {
+        eprintln!("  LEG_T legalizer: {:.3}s", t.elapsed().as_secs_f64());
+    }
     common::verify_cluster_placement(ctx)?;
+    if leg_timers() {
+        eprintln!("  LEG_T verify_cluster: {:.3}s", t.elapsed().as_secs_f64());
+    }
     common::verify_shared_mux_legality(ctx)?;
+    if leg_timers() {
+        eprintln!("  LEG_T verify_mux: {:.3}s", t.elapsed().as_secs_f64());
+    }
     Ok(displacement)
 }

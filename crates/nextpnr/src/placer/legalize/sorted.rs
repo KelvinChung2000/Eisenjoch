@@ -15,7 +15,7 @@ use crate::placer::legalize::common::{
 use crate::placer::PlacerError;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::Legalizer;
+use super::{leg_timers, Legalizer};
 
 /// Nearest-BEL legalization with region support.
 ///
@@ -341,6 +341,7 @@ pub fn sorted_legalize(
 
     // Gather per-cell info up front.
     // Read region from the cell directly via ctx.design.
+    let t_leg = std::time::Instant::now();
     let cell_infos: Vec<CellLegalizeInfo> = order
         .iter()
         .map(|&idx| {
@@ -383,6 +384,9 @@ pub fn sorted_legalize(
         })
         .collect();
 
+    if leg_timers() {
+        eprintln!("  LEG_T cell_infos: {:.3}s", t_leg.elapsed().as_secs_f64());
+    }
     // Pre-compute region BEL sets for region-constrained cells.
     let region_bel_sets: FxHashMap<u32, FxHashSet<BelId>> = {
         let mut map = FxHashMap::default();
@@ -411,6 +415,9 @@ pub fn sorted_legalize(
         map
     };
 
+    if leg_timers() {
+        eprintln!("  LEG_T region_sets: {:.3}s", t_leg.elapsed().as_secs_f64());
+    }
     // Phase A: one spatial index per cell type, replacing the per-cell
     // shortlists.
     //
@@ -428,10 +435,16 @@ pub fn sorted_legalize(
         .map(|(&type_id, bels)| (type_id, BelGrid::build(bels, grid_w, grid_h)))
         .collect();
 
+    if leg_timers() {
+        eprintln!("  LEG_T bel_grids: {:.3}s", t_leg.elapsed().as_secs_f64());
+    }
     // Seed the shared-mux registry from already-bound cells (packer-placed
     // fixed cells: BUFG, IO, clock buffers). Movable cells were just unbound
     // so they don't contribute.
     let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
+    if leg_timers() {
+        eprintln!("  LEG_T registry_seed: {:.3}s", t_leg.elapsed().as_secs_f64());
+    }
     let mut shared_mux_rejects: u64 = 0;
     let mut arch_validity_rejects: u64 = 0;
     let mut cluster_footprint_rejects: u64 = 0;
@@ -507,6 +520,9 @@ pub fn sorted_legalize(
         }
     }
 
+    if leg_timers() {
+        eprintln!("  LEG_T phase_b_done: {:.3}s", t_leg.elapsed().as_secs_f64());
+    }
     eprintln!(
         "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={} arch_validity_rejects={}",
         cluster_footprint_rejects, shared_mux_rejects, arch_validity_rejects,
