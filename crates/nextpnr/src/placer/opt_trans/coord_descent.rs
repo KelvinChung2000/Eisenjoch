@@ -7,6 +7,7 @@
 //! conductance are refreshed between sweeps.
 
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -37,7 +38,10 @@ struct PinNode {
 #[derive(Clone, Debug)]
 struct NetInfo {
     net_id: NetId,
-    debug_name: String,
+    /// Shared rather than owned: the name breaks ties in the deterministic net
+    /// sort, and re-resolving and re-allocating it for 105 000 nets twice an
+    /// iteration cost more than the sort it feeds.
+    debug_name: Arc<str>,
     pins: Vec<PinNode>,
     has_fixed_pin: bool,
 }
@@ -507,14 +511,22 @@ impl CellNetMap {
     /// Cached on the assumption that pin `cell_idx` and `is_fixed` do not change
     /// inside the loop. Deterministic runs make that testable exactly: a cached
     /// run must reproduce the uncached HPWL bit for bit.
-    fn build_cached(net_infos: &[NetInfo], n_cells: usize, cache: &mut Option<Self>) -> Self {
+    ///
+    /// Shared through an `Arc` rather than cloned: the map holds one vector per
+    /// cell, so handing out copies reintroduced most of the allocation the
+    /// cache exists to avoid.
+    fn build_cached(
+        net_infos: &[NetInfo],
+        n_cells: usize,
+        cache: &mut Option<Arc<Self>>,
+    ) -> Arc<Self> {
         if !cache_netmap() {
-            return Self::build(net_infos, n_cells);
+            return Arc::new(Self::build(net_infos, n_cells));
         }
         if cache.is_none() {
-            *cache = Some(Self::build(net_infos, n_cells));
+            *cache = Some(Arc::new(Self::build(net_infos, n_cells)));
         }
-        cache.as_ref().expect("just filled").clone()
+        Arc::clone(cache.as_ref().expect("just filled"))
     }
 
     fn build(net_infos: &[NetInfo], n_cells: usize) -> Self {
@@ -536,6 +548,9 @@ impl CellNetMap {
     /// For cycles (back edges), relaxation picks the cell with the smallest
     /// remaining in-degree, breaking the cycle arbitrarily but deterministically.
     fn build_topo_order(net_infos: &[NetInfo], n_cells: usize) -> Vec<usize> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+
         let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); n_cells];
         let mut in_degree: Vec<u32> = vec![0; n_cells];
 
@@ -571,29 +586,48 @@ impl CellNetMap {
         let mut placed = vec![false; n_cells];
         let mut deg = in_degree;
 
-        loop {
-            let mut best: Option<usize> = None;
-            let mut best_deg = u32::MAX;
-            for ci in 0..n_cells {
-                if placed[ci] {
-                    continue;
-                }
-                if deg[ci] < best_deg {
-                    best_deg = deg[ci];
-                    best = Some(ci);
-                    if best_deg == 0 {
-                        break;
+        // Lowest-index-first among the cells whose in-degree has reached zero,
+        // which is what a scan from index 0 with an early break on degree zero
+        // selected. Kept in a heap so the scan does not walk the placed prefix
+        // again on every step; that walk was 16.4 % of the placement profile.
+        // A cell can be pushed more than once, so entries are validated on pop.
+        let mut ready: BinaryHeap<Reverse<usize>> = (0..n_cells)
+            .filter(|&ci| deg[ci] == 0)
+            .map(Reverse)
+            .collect();
+        let mut remaining = n_cells;
+
+        while remaining > 0 {
+            let ci = loop {
+                match ready.pop() {
+                    Some(Reverse(ci)) if !placed[ci] && deg[ci] == 0 => break ci,
+                    Some(_) => continue,
+                    // Every remaining cell sits on a cycle. Break it the way the
+                    // scan did: lowest index among the smallest in-degrees.
+                    None => {
+                        let mut best: Option<usize> = None;
+                        let mut best_deg = u32::MAX;
+                        for ci in 0..n_cells {
+                            if !placed[ci] && deg[ci] < best_deg {
+                                best_deg = deg[ci];
+                                best = Some(ci);
+                            }
+                        }
+                        break best.expect("remaining > 0 implies an unplaced cell");
                     }
                 }
-            }
-            let Some(ci) = best else { break };
+            };
 
             order.push(ci);
             placed[ci] = true;
+            remaining -= 1;
 
             for &next in &out_edges[ci] {
                 if !placed[next] && deg[next] > 0 {
                     deg[next] -= 1;
+                    if deg[next] == 0 {
+                        ready.push(Reverse(next));
+                    }
                 }
             }
         }
@@ -727,35 +761,58 @@ fn pin_pos(
     );
 }
 
+/// Nets that survive the constant and clock name tests of [`OptTransPlacerCfg`].
+///
+/// The tests read net names, and a name does not change while cells move, so
+/// running them inside the per-iteration collect meant interning and
+/// lowercasing 105 220 strings twice an iteration. The type exists so a caller
+/// cannot pass the unfiltered list by accident.
+struct NameFilteredNets {
+    nets: Vec<(NetId, Arc<str>)>,
+}
+
+impl NameFilteredNets {
+    fn new(ctx: &Context, alive_net_ids: &[NetId], cfg: &OptTransPlacerCfg) -> Self {
+        let skip_constants = cfg.skip_constants;
+        let skip_clocks = cfg.skip_clocks || cfg.exclude_globals;
+        let nets = alive_net_ids
+            .iter()
+            .copied()
+            .filter_map(|net_id| {
+                let net_name = ctx.name_of(ctx.design.net(net_id).name);
+                if skip_constants
+                    && (net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET")
+                {
+                    return None;
+                }
+                if skip_clocks {
+                    let lower = net_name.to_ascii_lowercase();
+                    if lower.contains("clk") || lower.contains("clock") {
+                        return None;
+                    }
+                }
+                Some((net_id, Arc::from(net_name)))
+            })
+            .collect();
+        Self { nets }
+    }
+}
+
 fn collect_net_infos_simple(
     ctx: &Context,
-    net_ids: &[NetId],
+    net_ids: &NameFilteredNets,
     cell_to_idx: &FxHashMap<CellId, usize>,
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
 ) -> Vec<NetInfo> {
-    let skip_constants = cfg.skip_constants;
-    let skip_clocks = cfg.skip_clocks || cfg.exclude_globals;
-
     let mut nets: Vec<_> = net_ids
+        .nets
         .par_iter()
-        .filter_map(|&net_id| {
+        .filter_map(|(net_id, net_name)| {
+            let net_id = *net_id;
             let net = ctx.design.net(net_id);
-            let net_name = ctx.name_of(net.name);
-            let is_const = net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET";
-            if skip_constants && is_const {
-                return None;
-            }
-            if skip_clocks {
-                let lower = net_name.to_ascii_lowercase();
-                let is_clockish = lower.contains("clk") || lower.contains("clock");
-                if is_clockish {
-                    return None;
-                }
-            }
-
             let driver = net.driver()?;
             if net.num_users() == 0 {
                 return None;
@@ -799,7 +856,7 @@ fn collect_net_infos_simple(
             if has_movable && pins.len() >= 2 {
                 Some(NetInfo {
                     net_id,
-                    debug_name: net_name.to_string(),
+                    debug_name: Arc::clone(net_name),
                     pins,
                     has_fixed_pin,
                 })
@@ -2410,7 +2467,7 @@ fn per_net_hpwl(net_infos: &[NetInfo], network: &PipeNetwork) -> (Vec<String>, V
     let mut fanout = Vec::with_capacity(n);
     let mut hpwl = Vec::with_capacity(n);
     for info in net_infos {
-        names.push(info.debug_name.clone());
+        names.push(info.debug_name.to_string());
         fanout.push(info.pins.len().saturating_sub(1) as u32);
         if info.pins.is_empty() {
             hpwl.push(0.0);
@@ -4395,7 +4452,8 @@ pub fn run_inner_outer(
     // iter's post-solve. Compared against the current iter's pre-solve pin
     // layout to decide which nets' `dist_cache` rows can be reused.
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
-    let mut netmap_cache: Option<CellNetMap> = None;
+    let mut netmap_cache: Option<Arc<CellNetMap>> = None;
+    let named_nets = NameFilteredNets::new(ctx, alive_net_ids, cfg);
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
 
@@ -4415,7 +4473,7 @@ pub fn run_inner_outer(
         };
         let mut net_infos = collect_net_infos_simple(
             ctx,
-            alive_net_ids,
+            &named_nets,
             cell_to_idx,
             cell_x,
             cell_y,
@@ -5444,7 +5502,7 @@ pub fn run_inner_outer(
         let t_post_refresh = std::time::Instant::now();
         let post_net_infos = collect_net_infos_simple(
             ctx,
-            alive_net_ids,
+            &named_nets,
             cell_to_idx,
             cell_x,
             cell_y,
@@ -6369,7 +6427,7 @@ mod driver_hole_tests {
     pub(super) fn driver_net() -> Vec<NetInfo> {
         vec![NetInfo {
             net_id: NetId::from_raw(0),
-            debug_name: "n".to_string(),
+            debug_name: Arc::from("n"),
             pins: vec![
                 PinNode { node: 0, cell_idx: Some(0), is_driver: true, is_fixed: false },
                 PinNode { node: 6, cell_idx: None, is_driver: false, is_fixed: true },
