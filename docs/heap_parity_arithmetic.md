@@ -8,32 +8,37 @@ the two figures divide. Wirelength is post-legalisation HPWL as
 
 ## Position
 
-| | place_secs | HPWL | iterations |
-| --- | --- | --- | --- |
-| HeAP | 1.40 | 4 533 609 | 2 |
-| opt_trans, 11 sweeps | 2.07 | 4 523 586 | 11 |
-| opt_trans, 13 sweeps | 2.17 | 4 281 980 | 13 |
+Three runs of each arm, mean and spread:
 
-At eleven sweeps the wirelength is 0.998x HeAP's for 1.48x the time. At
-thirteen it is 0.944x for 1.55x, so the placement is better than the reference
-by 5.6 % and the extra two sweeps cost 0.10s.
+| | place_secs | spread | HPWL | iterations |
+| --- | --- | --- | --- | --- |
+| HeAP | 1.33 | 1.3-1.4 | 4 533 609 | 2 |
+| opt_trans, 11 sweeps | 1.91 | 1.90-1.92 | 4 523 586 | 11 |
+| opt_trans, 12 sweeps | 1.99 | 1.95-2.06 | 4 392 778 | 12 |
+| opt_trans, 13 sweeps | 2.04 | 2.02-2.07 | 4 281 980 | 13 |
+
+At eleven sweeps the wirelength is 0.998x HeAP's for 1.43x the time. At
+thirteen it is 0.944x for 1.53x, so the placement beats the reference by 5.6 %
+and the two extra sweeps cost 0.13s.
 
 The session opened at 27.7x and a floor of 51s that both placers paid.
 
-## What the 2.07s is
+## What the 1.91s is
 
     0.18  prepare_discrete and the network build, shared with HeAP
-    0.09  setup before the first sweep
-    1.03  eleven sweeps
-    0.67  legalisation
-    0.10  post-legalisation report
+    0.05  setup before the first sweep
+    1.08  eleven sweeps
+    0.52  legalisation
+    0.08  post-legalisation report
+
+Above the shared floor that is 1.73s of our own work against HeAP's 1.13s.
 
 A sweep costs 91ms for the first and about 60ms after, so four extra sweeps buy
 12 % of wirelength for 0.23s. Time is nearly flat in the iteration count and
 wirelength is not, which is why thirteen sweeps beat HeAP on both the number
 that matters and the number it costs.
 
-## The five things that were not the algorithm
+## The six things that were not the algorithm
 
 Each was found by profiling, removed, and checked by the placement reproducing
 its HPWL exactly rather than approximately. Deterministic sweeps
@@ -61,6 +66,12 @@ change while cells move. `NameFilteredNets` decides it once.
 1.5s, more than legalisation costs. HeAP's driver computes its equivalent after
 stopping the clock, so leaving it on made every place-time ratio wrong in our
 favour. It is behind `NPNR_OT_REPORT_TOP_NETS=1` now.
+
+The sorted legalizer rebuilt each cell's pin-port list for every candidate BEL
+it tested, and the FPGA01 candidate loop rejects 1 492 190 of them on the
+shared-mux test alone. `is_legal_template` already existed and `ring.rs` was
+already using it. Legalisation went from 0.71s to 0.52s with the reject counts
+identical, which is the check that the two legality tests agree.
 
 ## What the parity configuration actually runs
 
@@ -105,8 +116,12 @@ one design on one device, which is the only use made of it here.
 
 ## What is left
 
-The gap is convergence rate. HeAP reaches 4.53M in two rounds of solve, spread
-and legalise at 0.70s each; a sweep costs us 60ms and we need eleven. We are
-2.8x faster per iteration and take 5.5x as many, so no further work on the
-sweep closes it. Either the sweep makes more progress per pass, which is the
-colored Gauss-Seidel and momentum design, or 1.48x stands.
+The gap is 0.58s and it is convergence rate. HeAP reaches 4.53M in two rounds
+of solve, spread and legalise at about 0.55s each; a sweep costs us 60ms and we
+need eleven. We are nine times faster per iteration and take 5.5x as many, so
+no further work on the sweep closes it: even a free sweep leaves 0.83s against
+HeAP's 1.33s only because legalisation and the shared floor are most of what is
+left.
+
+Either the sweep makes more progress per pass, which is the colored
+Gauss-Seidel and momentum design, or 1.43x stands.
