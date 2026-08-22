@@ -916,7 +916,9 @@ fn cache_netinfo() -> bool {
 /// structure. The only thing an iteration changes is where the movable cells
 /// are, so a rebuild reconstructs 105 000 structures and their pin vectors to
 /// alter one integer per pin.
-fn collect_net_infos_cached(
+#[allow(clippy::too_many_arguments)]
+fn refresh_net_infos(
+    buf: &mut Vec<NetInfo>,
     ctx: &Context,
     net_ids: &NameFilteredNets,
     cell_to_idx: &FxHashMap<CellId, usize>,
@@ -924,21 +926,17 @@ fn collect_net_infos_cached(
     cell_y: &[f64],
     network: &PipeNetwork,
     cfg: &OptTransPlacerCfg,
-    cache: &mut Option<Vec<NetInfo>>,
-) -> Vec<NetInfo> {
-    if !cache_netinfo() {
-        return collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+) {
+    if !cache_netinfo() || buf.is_empty() {
+        *buf = collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+        return;
     }
-    let infos = cache.get_or_insert_with(|| {
-        collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg)
-    });
-    infos.par_iter_mut().for_each(|info| {
+    buf.par_iter_mut().for_each(|info| {
         for (pin, src) in info.pins.iter_mut().zip(info.pin_src.iter()) {
             let (x, y) = src.position(cell_x, cell_y);
             pin.node = position_to_node(network, x, y);
         }
     });
-    infos.clone()
 }
 
 fn collect_net_infos_simple(
@@ -4606,7 +4604,8 @@ pub fn run_inner_outer(
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
     let mut netmap_cache: Option<Arc<CellNetMap>> = None;
     let named_nets = NameFilteredNets::new(ctx, alive_net_ids, cfg);
-    let mut netinfo_cache: Option<Vec<NetInfo>> = None;
+    let mut netinfo_buf: Vec<NetInfo> = Vec::new();
+    let mut post_netinfo_buf: Vec<NetInfo> = Vec::new();
     eprintln!("  ALG_T dcd_setup_done: {:.2}s (pre-loop)", t_dcd_entry.elapsed().as_secs_f64());
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
@@ -4626,7 +4625,12 @@ pub fn run_inner_outer(
             s * (e / s).powf(t)
         };
         let t_collect = std::time::Instant::now();
-        let mut net_infos = collect_net_infos_cached(
+        // Taken rather than borrowed so the rest of the iteration keeps an
+        // owned vector. A path that leaves the loop without giving it back
+        // costs one rebuild, never a wrong answer.
+        let mut net_infos = std::mem::take(&mut netinfo_buf);
+        refresh_net_infos(
+            &mut net_infos,
             ctx,
             &named_nets,
             cell_to_idx,
@@ -4634,7 +4638,6 @@ pub fn run_inner_outer(
             cell_y,
             network,
             cfg,
-            &mut netinfo_cache,
         );
         COLLECT_NS.fetch_add(t_collect.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
@@ -5662,7 +5665,9 @@ pub fn run_inner_outer(
         eprintln!("PHASE_MARK outer={} enter=post_refresh rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let t_post_refresh = std::time::Instant::now();
         let t_collect2 = std::time::Instant::now();
-        let post_net_infos = collect_net_infos_cached(
+        let mut post_net_infos = std::mem::take(&mut post_netinfo_buf);
+        refresh_net_infos(
+            &mut post_net_infos,
             ctx,
             &named_nets,
             cell_to_idx,
@@ -5670,7 +5675,6 @@ pub fn run_inner_outer(
             cell_y,
             network,
             cfg,
-            &mut netinfo_cache,
         );
         COLLECT_NS.fetch_add(t_collect2.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
@@ -6197,6 +6201,9 @@ pub fn run_inner_outer(
             est_bytes as f64 / (1024.0 * 1024.0),
             process_rss_kb() as f64 / 1024.0,
         );
+
+        netinfo_buf = net_infos;
+        post_netinfo_buf = post_net_infos;
 
         if moved == 0 {
             eprintln!("  DCD converged: no cells moved in iteration {}", outer);
