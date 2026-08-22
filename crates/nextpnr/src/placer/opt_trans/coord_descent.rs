@@ -490,13 +490,29 @@ fn cache_netmap() -> bool {
     *ON.get_or_init(|| std::env::var("NPNR_OT_CACHE_NETMAP").ok().as_deref() == Some("1"))
 }
 
+/// Whether the configured sweep walks cells in driver-to-sink order.
+///
+/// Only the sequential sweeps do. Building the order for the parallel ones is
+/// a topological sort over 150 000 cells that nothing then reads.
+fn want_topo_order(cfg: &OptTransPlacerCfg) -> bool {
+    matches!(
+        cfg.sweep_mode,
+        super::config::SweepMode::SequentialBisection | super::config::SweepMode::JacobiBB
+    )
+}
+
 #[derive(Clone)]
 struct CellNetMap {
     /// For each cell, the list of (net_idx, pin_idx) pairs it participates in.
     map: Vec<Vec<(usize, usize)>>,
     /// Topological cell order following driver → sink edges, with back edges
     /// broken by choosing the cell with smallest remaining in-degree.
-    topo_order: Vec<usize>,
+    /// Driver-to-sink order, present only for the sweep modes that walk cells
+    /// sequentially. `JacobiBisection` and the other parallel sweeps never read
+    /// it, and building it cost 17 % of the profile, so it is absent rather
+    /// than empty for them: a consumer that needs it and finds `None` is a
+    /// dispatch bug and says so.
+    topo_order: Option<Vec<usize>>,
 }
 
 impl CellNetMap {
@@ -518,18 +534,19 @@ impl CellNetMap {
     fn build_cached(
         net_infos: &[NetInfo],
         n_cells: usize,
+        want_topo: bool,
         cache: &mut Option<Arc<Self>>,
     ) -> Arc<Self> {
         if !cache_netmap() {
-            return Arc::new(Self::build(net_infos, n_cells));
+            return Arc::new(Self::build(net_infos, n_cells, want_topo));
         }
         if cache.is_none() {
-            *cache = Some(Arc::new(Self::build(net_infos, n_cells)));
+            *cache = Some(Arc::new(Self::build(net_infos, n_cells, want_topo)));
         }
         Arc::clone(cache.as_ref().expect("just filled"))
     }
 
-    fn build(net_infos: &[NetInfo], n_cells: usize) -> Self {
+    fn build(net_infos: &[NetInfo], n_cells: usize, want_topo: bool) -> Self {
         let mut map = vec![Vec::new(); n_cells];
         for (net_idx, info) in net_infos.iter().enumerate() {
             for (pin_idx, pin) in info.pins.iter().enumerate() {
@@ -540,7 +557,7 @@ impl CellNetMap {
                 }
             }
         }
-        let topo_order = Self::build_topo_order(net_infos, n_cells);
+        let topo_order = want_topo.then(|| Self::build_topo_order(net_infos, n_cells));
         Self { map, topo_order }
     }
 
@@ -4231,7 +4248,11 @@ fn place_dcd_sweep_sequential_bisection(
     let mut n_refreshes: usize = 0;
     let mut n_driver_moves: usize = 0;
 
-    for &ci in &cell_net_map.topo_order {
+    let topo_order = cell_net_map
+        .topo_order
+        .as_ref()
+        .expect("sequential bisection needs the topological order");
+    for &ci in topo_order {
         let cell_nets = &cell_net_map.map[ci];
         if cell_nets.is_empty() {
             continue;
@@ -4482,7 +4503,7 @@ pub fn run_inner_outer(
             network,
             cfg,
         );
-        let cell_net_map = CellNetMap::build_cached(&net_infos, n, &mut netmap_cache);
+        let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         if outer == 0 && std::env::var("NPNR_OT_COLOR_DIAG").ok().as_deref() == Some("1") {
             measure_cell_coloring(&net_infos, &cell_net_map, n);
         }
@@ -5445,7 +5466,10 @@ pub fn run_inner_outer(
                     validity,
                     &mux_tracker,
                     &mut diag_ctx,
-                    &cell_net_map.topo_order,
+                    cell_net_map
+                        .topo_order
+                        .as_ref()
+                        .expect("JacobiBB needs the topological order"),
                 )
             }
             super::config::SweepMode::MedianDiag => place_dcd_sweep_median(
@@ -5511,7 +5535,7 @@ pub fn run_inner_outer(
             network,
             cfg,
         );
-        let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, &mut netmap_cache);
+        let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         let (state_energy, refresh_ms, solve_stats) = if cfg.path_model == PathModel::BresenhamLogit
         {
             let post_solve = solve_bresenham_usage_only(network, &post_net_infos, cfg, solve_pool);
