@@ -4353,6 +4353,7 @@ pub fn run_inner_outer(
     phys_grid_w: usize,
     phys_grid_h: usize,
 ) -> f64 {
+    let t_dcd_entry = std::time::Instant::now();
     let n = cell_x.len();
     let n_nodes = network.num_nodes();
     let mut dist_cache = DistCache::new(0, n_nodes);
@@ -4454,6 +4455,7 @@ pub fn run_inner_outer(
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
     let mut netmap_cache: Option<Arc<CellNetMap>> = None;
     let named_nets = NameFilteredNets::new(ctx, alive_net_ids, cfg);
+    eprintln!("  ALG_T dcd_setup_done: {:.2}s (pre-loop)", t_dcd_entry.elapsed().as_secs_f64());
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
 

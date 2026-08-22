@@ -53,7 +53,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .map_err(|e| PlacerError::PlacementFailed(format!("thread pool: {e}")))?;
     eprintln!("  ALG_T pre_network: {:.1}s", t_alg.elapsed().as_secs_f64());
     let mut network = PipeNetwork::from_context(ctx, target_scale);
-    eprintln!("  ALG_T network: {:.1}s", t_alg.elapsed().as_secs_f64());
+    eprintln!("  ALG_T network: {:.2}s", t_alg.elapsed().as_secs_f64());
 
     match cfg.init_strategy {
         super::config::InitStrategy::Centroid => {
@@ -214,6 +214,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         phys_grid_w,
         phys_grid_h,
     );
+    eprintln!("  ALG_T dcd_done: {:.2}s", t_alg.elapsed().as_secs_f64());
 
     if std::env::var("NPNR_OT_DUMP_SPAN_USAGE").ok().as_deref() == Some("1") {
         network.report_span_utilization("post-DCD");
@@ -230,6 +231,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     }
 
     crate::placer::legalize::legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &cfg.legalization)?;
+    eprintln!("  ALG_T legalize_done: {:.2}s", t_alg.elapsed().as_secs_f64());
 
     if std::env::var("NPNR_OT_CHECK_ROUTABILITY").ok().as_deref() == Some("1") {
         let report_g = crate::placer::routability::check_routability_global(ctx);
@@ -275,7 +277,13 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     }
 
     report::report_post_legalization(ctx);
-    report::report_top_net_hpwl(ctx, 10);
+    // Ranking 105 000 nets by wirelength is a diagnostic, and it cost 1.5s of
+    // the 5.3s run -- more than legalisation. HeAP's driver computes its
+    // equivalent after stopping the clock, so leaving this on by default made
+    // every place-time comparison against it wrong by that much.
+    if std::env::var("NPNR_OT_REPORT_TOP_NETS").ok().as_deref() == Some("1") {
+        report::report_top_net_hpwl(ctx, 10);
+    }
     report::dump_position_csv_from_env(ctx, "NPNR_OT_DUMP_CSV", &idx_to_cell, &phys_x, &phys_y)
         .expect("dump placement CSV");
 

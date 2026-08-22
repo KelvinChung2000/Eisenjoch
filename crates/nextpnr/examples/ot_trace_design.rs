@@ -85,5 +85,14 @@ fn main() {
         cfg.max_outer_iters, cfg.blend_alpha, cfg.hardening_step, cfg.graph_model,
     );
 
+    // Timed the same way `heap_trace_design` times its placer, so the two
+    // numbers can be divided: the placer call and nothing around it.
+    let t_place = std::time::Instant::now();
     PlacerOptTrans.place(&mut ctx, &cfg).expect("place");
+    let place_secs = t_place.elapsed().as_secs_f64();
+    eprintln!(
+        "OT_RESULT place_secs={:.2} total_hpwl={:.0}",
+        place_secs,
+        nextpnr::metrics::wirelength::total_hpwl(&ctx),
+    );
 }
