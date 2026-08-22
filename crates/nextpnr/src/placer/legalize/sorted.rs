@@ -10,7 +10,7 @@ use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::bel_grid::{BelGrid, RingCandidates};
 use crate::placer::legalize::common::{
-    place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
+    build_cell_pin_template, place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -130,6 +130,17 @@ fn try_bind_cell(
     shared_mux_rejects: &mut u64,
     arch_validity_rejects: &mut u64,
 ) -> Result<Option<f64>, PlacerError> {
+    // The cell and its children are fixed across the candidate loop, so their
+    // pin ports are resolved once. `is_legal` rebuilt them per candidate, and
+    // with 1.8 million rejected candidates on FPGA01 that was two vector
+    // allocations and a port walk each time.
+    let root_template = build_cell_pin_template(ctx, info.cell_idx);
+    let child_templates: Vec<_> = info
+        .cluster_children
+        .iter()
+        .map(|&(child_id, ..)| build_cell_pin_template(ctx, child_id))
+        .collect();
+
     'outer: for bel in candidates {
         let bel_view = ctx.bel(bel);
         if !bel_view.is_available() {
@@ -157,12 +168,14 @@ fn try_bind_cell(
 
         // Shared-mux check: root and every child's pin wires must not
         // collide on a routing node already claimed by another net.
-        if !registry.is_legal(ctx, info.cell_idx, bel) {
+        if !registry.is_legal_template(ctx, &root_template, bel) {
             *shared_mux_rejects += 1;
             continue 'outer;
         }
-        for &(child_id, child_bel) in &child_bels {
-            if !registry.is_legal(ctx, child_id, child_bel) {
+        // `child_bels` is filled in `cluster_children` order and the loop above
+        // bails on the first missing child, so the two stay aligned.
+        for (i, &(_, child_bel)) in child_bels.iter().enumerate() {
+            if !registry.is_legal_template(ctx, &child_templates[i], child_bel) {
                 *shared_mux_rejects += 1;
                 continue 'outer;
             }

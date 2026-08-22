@@ -46,6 +46,16 @@ pub struct CongestionReport {
 /// Handles all octants (steep, shallow, positive and negative directions).
 pub fn bresenham_line(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32)> {
     let mut points = Vec::new();
+    bresenham_line_into(&mut points, x0, y0, x1, y1);
+    points
+}
+
+/// As [`bresenham_line`], writing into a caller-owned buffer.
+///
+/// Callers that trace a line per driver-sink pair reuse one buffer across a
+/// whole net rather than allocating per pair.
+pub fn bresenham_line_into(points: &mut Vec<(i32, i32)>, x0: i32, y0: i32, x1: i32, y1: i32) {
+    points.clear();
 
     let dx = (x1 - x0).abs();
     let dy = (y1 - y0).abs();
@@ -80,8 +90,6 @@ pub fn bresenham_line(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32)> {
             y += sy;
         }
     }
-
-    points
 }
 
 /// Compute per-tile capacity grids from wire counts.

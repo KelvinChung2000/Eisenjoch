@@ -11,7 +11,7 @@ use std::env;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::metrics::congestion::bresenham_line;
+use crate::metrics::congestion::bresenham_line_into;
 
 use super::config::OptTransPlacerCfg;
 use super::network::PipeNetwork;
@@ -473,7 +473,11 @@ pub fn continuous_line_estimate(
                 coord_scale,
             );
             let driver = (dx.round() as i32, dy.round() as i32);
-            let mut edges = FxHashSet::default();
+            // One tile edge per step, so the span of the net's bounding box is
+            // a close upper bound and stops the table rehashing as it fills.
+            let mut edges =
+                FxHashSet::with_capacity_and_hasher(4 * net.num_users(), Default::default());
+            let mut points: Vec<(i32, i32)> = Vec::new();
 
             for user in net.users() {
                 if !user.is_valid() {
@@ -489,7 +493,7 @@ pub fn continuous_line_estimate(
                     coord_scale,
                 );
                 let sink = (sx.round() as i32, sy.round() as i32);
-                let points = bresenham_line(driver.0, driver.1, sink.0, sink.1);
+                bresenham_line_into(&mut points, driver.0, driver.1, sink.0, sink.1);
                 for pair in points.windows(2) {
                     let (x1, y1) = pair[0];
                     let (x2, y2) = pair[1];

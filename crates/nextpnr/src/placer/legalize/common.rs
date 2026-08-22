@@ -233,21 +233,28 @@ pub(crate) struct DriverNodeRegistry {
 
 impl DriverNodeRegistry {
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    fn with_capacity(pins: usize) -> Self {
         Self {
-            claimed_nodes: FxHashMap::default(),
-            claimed_local: FxHashMap::default(),
+            claimed_nodes: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
+            claimed_local: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
         }
     }
 
     /// Seed the registry with every cell already bound to a BEL. Captures
     /// packer-placed fixed cells (BUFG, IO) that legalize must respect.
     pub fn seed_from_bound(ctx: &Context) -> Self {
-        let mut reg = Self::new();
         let bound: Vec<(CellId, BelId)> = ctx
             .design
             .iter_alive_cells()
             .filter_map(|(cid, cell)| cell.bel.map(|b| (cid, b)))
             .collect();
+        // Roughly one entry per pin. Growing from empty rehashed the table a
+        // dozen times over half a million inserts on FPGA01; the estimate only
+        // has to be the right order of magnitude to stop that.
+        let mut reg = Self::with_capacity(bound.len() * 8);
         for (cid, bel) in bound {
             reg.record(ctx, cid, bel);
         }
