@@ -532,6 +532,13 @@ pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerErro
 /// For each cell in `idx_to_cell`, find the nearest available BEL of its
 /// bucket and bind it there. Cells with targets far from the chip centre are
 /// processed first so they aren't displaced by ones with central targets.
+///
+/// Nearest is Manhattan distance between tile coordinates, so every BEL in a
+/// tile is equidistant from a given target and the search can proceed tile by
+/// tile. Rings of increasing radius are scanned until one holds an available
+/// BEL, which is the nearest by construction; ties inside that ring go to the
+/// lowest pool index, reproducing what a linear scan with a strict `<` test
+/// would have chosen.
 fn snap_and_bind_cells_to_bels(
     ctx: &mut Context,
     idx_to_cell: &[CellId],
@@ -542,6 +549,11 @@ fn snap_and_bind_cells_to_bels(
 
     let chip_cx = (ctx.chipdb().width() / 2) as f64;
     let chip_cy = (ctx.chipdb().height() / 2) as f64;
+    let grid_w = ctx.chipdb().width();
+    let grid_h = ctx.chipdb().height();
+    // A ring this wide has left the grid on every side, so failing to find a
+    // BEL by then means the bucket is exhausted rather than merely distant.
+    let max_radius = grid_w + grid_h;
 
     let mut by_bucket: FxHashMap<IdString, Vec<usize>> = FxHashMap::default();
     for (i, &cid) in idx_to_cell.iter().enumerate() {
@@ -576,30 +588,73 @@ fn snap_and_bind_cells_to_bels(
             )));
         }
 
+        // Pool indices bucketed by tile, ascending within a tile because the
+        // pool is walked in order. BELs outside the grid cannot be reached by
+        // a ring scan, so they are rejected here rather than silently dropped.
+        let mut tile_bels: Vec<Vec<u32>> = vec![Vec::new(); (grid_w * grid_h) as usize];
+        for (i, &(_, bx, by)) in pool.iter().enumerate() {
+            if bx < 0 || by < 0 || bx >= grid_w || by >= grid_h {
+                let bucket_name = ctx.name_of(bucket).to_owned();
+                return Err(PlacerError::NoBelsAvailable(format!(
+                    "{bucket_name} BEL at ({bx}, {by}) lies outside the {grid_w}x{grid_h} grid"
+                )));
+            }
+            tile_bels[(by * grid_w + bx) as usize].push(i as u32);
+        }
         let mut available: Vec<bool> = vec![true; pool.len()];
+        let mut tile_remaining: Vec<u32> =
+            tile_bels.iter().map(|t| t.len() as u32).collect();
+
         for &ci in &indices {
             let cid = idx_to_cell[ci];
             let target_x = cell_x[ci].round() as i32;
             let target_y = cell_y[ci].round() as i32;
-            let mut best_idx: Option<usize> = None;
-            let mut best_dist = i32::MAX;
-            for (i, &(_, bx, by)) in pool.iter().enumerate() {
-                if !available[i] {
-                    continue;
+
+            // Lowest pool index among the available BELs of one tile.
+            let best_in_tile = |tx: i32, ty: i32, avail: &[bool], rem: &[u32]| -> Option<u32> {
+                if tx < 0 || ty < 0 || tx >= grid_w || ty >= grid_h {
+                    return None;
                 }
-                let d = (bx - target_x).abs() + (by - target_y).abs();
-                if d < best_dist {
-                    best_dist = d;
-                    best_idx = Some(i);
+                let t = (ty * grid_w + tx) as usize;
+                if rem[t] == 0 {
+                    return None;
+                }
+                tile_bels[t].iter().copied().find(|&b| avail[b as usize])
+            };
+
+            let mut found: Option<u32> = None;
+            for radius in 0..=max_radius {
+                let mut best: Option<u32> = None;
+                let mut consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
+                    if let Some(b) = best_in_tile(tx, ty, &available, &tile_remaining) {
+                        if best.is_none_or(|cur| b < cur) {
+                            *best = Some(b);
+                        }
+                    }
+                };
+                for dx in -radius..=radius {
+                    let dy = radius - dx.abs();
+                    consider(target_x + dx, target_y + dy, &mut best);
+                    if dy != 0 {
+                        consider(target_x + dx, target_y - dy, &mut best);
+                    }
+                }
+                if best.is_some() {
+                    found = best;
+                    break;
                 }
             }
-            let Some(idx) = best_idx else {
+
+            let Some(idx) = found else {
                 let cell_name = ctx.cell(cid).name_id();
                 return Err(PlacerError::InitialPlacementFailed(
                     ctx.name_of(cell_name).to_owned(),
                 ));
             };
+            let idx = idx as usize;
             available[idx] = false;
+            let (_, bx, by) = pool[idx];
+            tile_remaining[(by * grid_w + bx) as usize] -= 1;
             if !ctx.bind_bel(pool[idx].0, cid, PlaceStrength::Placer) {
                 let cell_name = ctx.cell(cid).name_id();
                 return Err(PlacerError::InitialPlacementFailed(
