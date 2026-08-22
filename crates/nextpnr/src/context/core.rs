@@ -193,11 +193,14 @@ impl Context {
     /// Find the wire connected to a specific BEL pin.
     pub fn bel_pin_wire(&self, bp: BelPin) -> Option<Wire<'_>> {
         let port_name = self.name_of(bp.port());
+        // Integer compare against the canonical constid. Matching by string
+        // resolved and compared a name for every pin of every candidate BEL,
+        // which the legalizer does millions of times.
+        let want = self.chipdb.constid_for_name(port_name)?;
         let bel_info = self.chipdb.bel_info(bp.bel());
         bel_info.pins.get().iter().find_map(|pin| {
             let (name_constid, wire_idx, _dir) = self.chipdb.bel_pin_fields(pin);
-            let pin_name = self.chipdb.constid_str(name_constid).unwrap_or("");
-            (pin_name == port_name)
+            (self.chipdb.constid_canon(name_constid) == want)
                 .then(|| Wire::new(self, crate::chipdb::WireId::new(bp.bel().tile(), wire_idx)))
         })
     }

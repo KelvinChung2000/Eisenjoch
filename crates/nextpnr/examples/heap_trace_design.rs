@@ -179,7 +179,7 @@ fn main() {
     eprintln!("Post-placement: HPWL={hpwl:.0}, line={line:.0}");
     eprintln!("HeAP get_net_metric: {wl} over {nets} nets");
     println!(
-        "HEAP_RESULT place_secs={place_secs:.1} total_hpwl={hpwl:.0} line={line:.0} \
+        "HEAP_RESULT place_secs={place_secs:.2} total_hpwl={hpwl:.0} line={line:.0} \
 get_net_metric={wl} nets={nets}"
     );
 }

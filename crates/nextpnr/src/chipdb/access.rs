@@ -65,6 +65,42 @@ impl ChipDb {
         self.constid_strs.len()
     }
 
+    /// Canonical constid for `index`, or `index` itself when unknown.
+    ///
+    /// Two constids that spell the same string share a canonical value, so
+    /// `constid_canon(a) == constid_canon(b)` answers the same question as
+    /// comparing the strings, without touching either.
+    #[inline]
+    pub fn constid_canon(&self, index: i32) -> i32 {
+        let table = self.constid_table();
+        table.canon.get(index as usize).copied().unwrap_or(index)
+    }
+
+    /// Canonical constid for a name, or `None` if the chipdb has no such
+    /// string and therefore no pin can match it.
+    #[inline]
+    pub fn constid_for_name(&self, name: &str) -> Option<i32> {
+        self.constid_table().by_name.get(name).copied()
+    }
+
+    fn constid_table(&self) -> &crate::chipdb::chip::ConstIdCanon {
+        self.constid_canon.get_or_init(|| {
+            let mut by_name: rustc_hash::FxHashMap<String, i32> = rustc_hash::FxHashMap::default();
+            let mut canon = vec![0i32; self.constid_strs.len()];
+            for i in 0..self.constid_strs.len() {
+                let idx = i as i32;
+                match self.constid_str(idx) {
+                    Some(s) => {
+                        let rep = *by_name.entry(s.to_owned()).or_insert(idx);
+                        canon[i] = rep;
+                    }
+                    None => canon[i] = idx,
+                }
+            }
+            crate::chipdb::chip::ConstIdCanon { canon, by_name }
+        })
+    }
+
     pub fn constid_str(&self, index: i32) -> Option<&str> {
         if index < 0 || (index as usize) >= self.constid_strs.len() {
             return None;

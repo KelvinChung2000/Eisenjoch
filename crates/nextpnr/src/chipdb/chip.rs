@@ -27,6 +27,21 @@ pub struct ChipDb {
     pub(super) _mmap: Mmap,
     pub(super) chip_info: *const ChipInfoPod,
     pub(super) constid_strs: Vec<ConstIdStr>,
+    /// Built on first use. See [`ChipDb::constid_canon`].
+    pub(super) constid_canon: std::sync::OnceLock<ConstIdCanon>,
+}
+
+/// Constids that spell the same string collapsed to one representative, so a
+/// name comparison becomes an integer comparison.
+///
+/// `bel_pin_wire` matched a port against a BEL's pins by resolving both sides
+/// to `&str` and calling `memcmp` for each pin of each candidate BEL, which the
+/// legalizer does millions of times.
+pub struct ConstIdCanon {
+    /// `canon[i]` is the lowest constid spelling the same string as `i`.
+    pub(super) canon: Vec<i32>,
+    /// Name to canonical constid.
+    pub(super) by_name: rustc_hash::FxHashMap<String, i32>,
 }
 
 impl std::fmt::Debug for ChipDb {

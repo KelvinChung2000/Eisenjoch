@@ -58,6 +58,7 @@ impl ChipDb {
             _mmap: mmap,
             chip_info,
             constid_strs,
+            constid_canon: std::sync::OnceLock::new(),
         })
     }
 
@@ -117,6 +118,7 @@ impl ChipDb {
             _mmap: mmap,
             chip_info,
             constid_strs,
+            constid_canon: std::sync::OnceLock::new(),
         })
     }
 }
