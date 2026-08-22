@@ -103,6 +103,12 @@ pub(crate) struct RingCandidates<'a> {
     grid: &'a BelGrid,
     /// The type's `bel_data_cache` entry; `enum_index` indexes it.
     bels: &'a [(BelId, i32, i32, i32)],
+    /// One flag per enumeration index, true once the BEL is bound. Bound BELs
+    /// are never pushed, so the heap holds only candidates the caller can
+    /// actually use. On FPGA01 the walk pushed 3.08 million BELs that were
+    /// already taken, 62 % of everything it emitted, for the caller to reject
+    /// with `is_available`.
+    taken: &'a [bool],
     target_x: f64,
     target_y: f64,
     cx: i32,
@@ -124,12 +130,19 @@ impl<'a> RingCandidates<'a> {
     pub(crate) fn new(
         grid: &'a BelGrid,
         bels: &'a [(BelId, i32, i32, i32)],
+        taken: &'a [bool],
         target_x: f64,
         target_y: f64,
     ) -> Self {
+        assert_eq!(
+            taken.len(),
+            bels.len(),
+            "one taken flag per enumeration index"
+        );
         let mut walk = Self {
             grid,
             bels,
+            taken,
             target_x,
             target_y,
             cx: target_x.round() as i32,
@@ -191,6 +204,9 @@ impl<'a> RingCandidates<'a> {
         }
         let bits = self.dist_sq(x, y).to_bits();
         for &e in entries {
+            if self.taken[e as usize] {
+                continue;
+            }
             self.heap.push(Reverse((bits, e)));
         }
     }
@@ -221,9 +237,11 @@ impl<'a> RingCandidates<'a> {
 }
 
 impl Iterator for RingCandidates<'_> {
-    type Item = BelId;
+    /// `(BelId, enumeration index)`. The caller needs the index to mark the
+    /// BEL taken once it binds there.
+    type Item = (BelId, u32);
 
-    fn next(&mut self) -> Option<BelId> {
+    fn next(&mut self) -> Option<(BelId, u32)> {
         loop {
             match self.heap.peek() {
                 // Strictly `<`. On an exact tie an unexplored BEL could carry
@@ -234,7 +252,7 @@ impl Iterator for RingCandidates<'_> {
                     if self.exhausted || f64::from_bits(bits) < self.guard =>
                 {
                     let Reverse((_, e)) = self.heap.pop().expect("just peeked");
-                    return Some(self.bels[e as usize].0);
+                    return Some((self.bels[e as usize].0, e));
                 }
                 None if self.exhausted => return None,
                 _ => self.expand(),
@@ -358,7 +376,10 @@ mod tests {
 
     fn walk(bels: &[(BelId, i32, i32, i32)], dim: i32, tx: f64, ty: f64) -> Vec<BelId> {
         let grid = BelGrid::build(bels, dim, dim);
-        RingCandidates::new(&grid, bels, tx, ty).collect()
+        let free = vec![false; bels.len()];
+        RingCandidates::new(&grid, bels, &free, tx, ty)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Square rings under a Euclidean metric: a BEL in ring `r` is not
@@ -473,12 +494,41 @@ mod tests {
     /// Laziness is the point: binding to the nearest BEL must not touch the
     /// rest of the type. Taking one candidate may expand at most a ring or
     /// two, never the whole grid.
+    /// A taken BEL is never emitted, and the rest keep their order.
+    #[test]
+    fn taken_bels_are_skipped_without_disturbing_the_order() {
+        let bels = grid_bels(8, 2);
+        let grid = BelGrid::build(&bels, 8, 8);
+        let all: Vec<BelId> = {
+            let free = vec![false; bels.len()];
+            RingCandidates::new(&grid, &bels, &free, 3.0, 3.0)
+                .map(|(id, _)| id)
+                .collect()
+        };
+        let mut taken = vec![false; bels.len()];
+        for i in (0..bels.len()).step_by(3) {
+            taken[i] = true;
+        }
+        let kept: Vec<BelId> = RingCandidates::new(&grid, &bels, &taken, 3.0, 3.0)
+            .map(|(id, _)| id)
+            .collect();
+        let expected: Vec<BelId> = all
+            .into_iter()
+            .filter(|id| {
+                let e = bels.iter().position(|b| b.0 == *id).expect("known bel");
+                !taken[e]
+            })
+            .collect();
+        assert_eq!(kept, expected);
+    }
+
     #[test]
     fn taking_one_candidate_does_not_walk_the_grid() {
         let bels = grid_bels(64, 4); // 16,384 candidates
         let grid = BelGrid::build(&bels, 64, 64);
-        let mut it = RingCandidates::new(&grid, &bels, 32.0, 32.0);
-        let first = it.next().expect("a candidate");
+        let free = vec![false; bels.len()];
+        let mut it = RingCandidates::new(&grid, &bels, &free, 32.0, 32.0);
+        let (first, _) = it.next().expect("a candidate");
         let (_, bx, by, _) = bels.iter().find(|b| b.0 == first).copied().unwrap();
         assert_eq!((bx, by), (32, 32));
         assert!(

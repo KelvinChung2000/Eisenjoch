@@ -17,6 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::{leg_timers, Legalizer};
 
+
 /// Nearest-BEL legalization with region support.
 ///
 /// Phase A: index each cell type's BELs by tile.
@@ -125,11 +126,13 @@ fn try_bind_cell(
     info: &CellLegalizeInfo,
     bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     registry: &mut DriverNodeRegistry,
-    candidates: impl Iterator<Item = BelId>,
+    // `(BelId, enumeration index)`. The region-constrained path has no
+    // enumeration index and passes `u32::MAX`.
+    candidates: impl Iterator<Item = (BelId, u32)>,
     cluster_footprint_rejects: &mut u64,
     shared_mux_rejects: &mut u64,
     arch_validity_rejects: &mut u64,
-) -> Result<Option<f64>, PlacerError> {
+) -> Result<Option<(f64, u32)>, PlacerError> {
     // The cell and its children are fixed across the candidate loop, so their
     // pin ports are resolved once. `is_legal` rebuilt them per candidate, and
     // with 1.8 million rejected candidates on FPGA01 that was two vector
@@ -141,7 +144,7 @@ fn try_bind_cell(
         .map(|&(child_id, ..)| build_cell_pin_template(ctx, child_id))
         .collect();
 
-    'outer: for bel in candidates {
+    'outer: for (bel, enum_index) in candidates {
         let bel_view = ctx.bel(bel);
         if !bel_view.is_available() {
             continue;
@@ -247,7 +250,7 @@ fn try_bind_cell(
         let loc = ctx.bel(bel).loc();
         let dx = loc.x as f64 - info.target_x;
         let dy = loc.y as f64 - info.target_y;
-        return Ok(Some(dx * dx + dy * dy));
+        return Ok(Some((dx * dx + dy * dy, enum_index)));
     }
 
     Ok(None)
@@ -430,6 +433,20 @@ pub fn sorted_legalize(
     // Built from `bel_data_cache`, so the candidate universe is identical to
     // `candidate_list`'s by construction: same alias resolution via
     // `bels_for_bucket`, same filtering, same enumeration order.
+    // One flag per BEL per type, seeded from what the packer already bound, so
+    // the ring walk never offers a BEL the caller would reject. Phase B is the
+    // only thing binding from here on, so the flags stay exact.
+    let mut bel_taken: FxHashMap<IdString, Vec<bool>> = bel_data_cache
+        .iter()
+        .map(|(&type_id, bels)| {
+            let flags = bels
+                .iter()
+                .map(|&(id, ..)| !ctx.bel(id).is_available())
+                .collect();
+            (type_id, flags)
+        })
+        .collect();
+
     let bel_grids: FxHashMap<IdString, BelGrid> = bel_data_cache
         .iter()
         .map(|(&type_id, bels)| (type_id, BelGrid::build(bels, grid_w, grid_h)))
@@ -475,7 +492,7 @@ pub fn sorted_legalize(
                 info,
                 &bel_by_loc,
                 &mut registry,
-                candidates.into_iter(),
+                candidates.into_iter().map(|b| (b, u32::MAX)),
                 &mut cluster_footprint_rejects,
                 &mut shared_mux_rejects,
                 &mut arch_validity_rejects,
@@ -498,7 +515,13 @@ pub fn sorted_legalize(
                 info,
                 &bel_by_loc,
                 &mut registry,
-                RingCandidates::new(grid, bels, info.target_x, info.target_y),
+                RingCandidates::new(
+                    grid,
+                    bels,
+                    &bel_taken[&info.cell_type_id],
+                    info.target_x,
+                    info.target_y,
+                ),
                 &mut cluster_footprint_rejects,
                 &mut shared_mux_rejects,
                 &mut arch_validity_rejects,
@@ -506,7 +529,14 @@ pub fn sorted_legalize(
         };
 
         match disp {
-            Some(d) => total_displacement += d,
+            Some((d, enum_index)) => {
+                total_displacement += d;
+                if enum_index != u32::MAX {
+                    bel_taken
+                        .get_mut(&info.cell_type_id)
+                        .expect("grid exists for this type")[enum_index as usize] = true;
+                }
+            }
             None => {
                 return Err(PlacerError::NoBelsAvailable(format!(
                     "{} (no available BELs for cell {} after {} cluster-footprint, {} shared-mux and {} arch-validity rejections)",
@@ -667,7 +697,10 @@ mod candidate_list_tests {
             ] {
                 let info = info_at(tx, ty);
                 let want = candidate_list(&info, &c, &regions);
-                let got: Vec<BelId> = RingCandidates::new(&grid, bels, tx, ty).collect();
+                let free = vec![false; bels.len()];
+                let got: Vec<BelId> = RingCandidates::new(&grid, bels, &free, tx, ty)
+                    .map(|(id, _)| id)
+                    .collect();
                 assert_eq!(
                     got.len(),
                     want.len(),
