@@ -473,10 +473,10 @@ pub fn continuous_line_estimate(
                 coord_scale,
             );
             let driver = (dx.round() as i32, dy.round() as i32);
-            // One tile edge per step, so the span of the net's bounding box is
-            // a close upper bound and stops the table rehashing as it fills.
-            let mut edges =
-                FxHashSet::with_capacity_and_hasher(4 * net.num_users(), Default::default());
+            // Only the number of distinct tile edges matters, and a net's are
+            // few, so they are collected and sorted rather than hashed. The
+            // hash set here was 20 % of the placement profile.
+            let mut edges: Vec<u64> = Vec::with_capacity(8 * net.num_users());
             let mut points: Vec<(i32, i32)> = Vec::new();
 
             for user in net.users() {
@@ -500,10 +500,12 @@ pub fn continuous_line_estimate(
                     let a = (y1 * width + x1) as u32;
                     let b = (y2 * width + x2) as u32;
                     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                    edges.insert(((lo as u64) << 32) | (hi as u64));
+                    edges.push(((lo as u64) << 32) | (hi as u64));
                 }
             }
 
+            edges.sort_unstable();
+            edges.dedup();
             edges.len() as f64
         })
         .reduce(|| 0.0, |a, b| a + b)

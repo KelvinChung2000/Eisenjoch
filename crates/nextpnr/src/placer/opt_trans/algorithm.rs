@@ -224,8 +224,16 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     let phys_x: Vec<f64> = cell_x.iter().map(|x| x + network.x0 as f64).collect();
     let phys_y: Vec<f64> = cell_y.iter().map(|y| y + network.y0 as f64).collect();
 
-    let pre_legal_hpwl = continuous_hpwl(ctx, &cell_to_idx, &phys_x, &phys_y);
-    eprintln!("Pre-legalization: HPWL={:.0}", pre_legal_hpwl);
+    // Two full wirelength passes that no placement decision reads. HeAP's
+    // driver computes its equivalent after stopping the clock, so keeping
+    // them inside `place()` charged us for measurement HeAP is not charged
+    // for. `NPNR_OT_REPORT_HPWL=1` puts them back for anything that parses
+    // the lines.
+    let report_hpwl = std::env::var("NPNR_OT_REPORT_HPWL").ok().as_deref() == Some("1");
+    if report_hpwl {
+        let pre_legal_hpwl = continuous_hpwl(ctx, &cell_to_idx, &phys_x, &phys_y);
+        eprintln!("Pre-legalization: HPWL={:.0}", pre_legal_hpwl);
+    }
 
     if std::env::var("NPNR_OT_DUMP_DIST").ok().as_deref() == Some("1") {
         report_distribution("DCD-end", &phys_x, &phys_y, phys_max_x, phys_max_y);
@@ -277,7 +285,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         }
     }
 
-    report::report_post_legalization(ctx);
+    if report_hpwl {
+        report::report_post_legalization(ctx);
+    }
     // Ranking 105 000 nets by wirelength is a diagnostic, and it cost 1.5s of
     // the 5.3s run -- more than legalisation. HeAP's driver computes its
     // equivalent after stopping the clock, so leaving this on by default made
