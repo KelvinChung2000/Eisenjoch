@@ -8,16 +8,17 @@ the two figures divide. Wirelength is post-legalisation HPWL as
 
 ## Position
 
-Five paired runs, alternating placer, same binary:
+Ten paired runs, alternating placer, same binary:
 
 | | place_secs | spread | HPWL |
 | --- | --- | --- | --- |
-| HeAP | 1.296 | 1.27-1.33 | 4 533 609 |
-| opt_trans | 1.354 | 1.33-1.37 | 4 520 199 |
+| HeAP | 1.271 | 1.25-1.29 | 4 533 609 |
+| opt_trans | 1.337 | 1.32-1.38 | 4 520 199 |
 
-1.045x on time and 0.997x on wirelength, so the placement is slightly better
-than the reference and takes 58ms longer. The two spreads touch: our fastest
-run and HeAP's slowest are both 1.33.
+1.052x on time and 0.997x on wirelength: the placement is 13 410 better than
+the reference and takes 66ms longer. The distributions do not overlap, so the
+66ms is a real difference rather than run-to-run scatter, and it is the last
+thing between here and the goal.
 
 The session opened at 27.7x and a floor of 51s that both placers paid.
 
@@ -92,7 +93,16 @@ spell the same string now collapse onto one representative so the match is an
 integer compare, and the legalizer's template resolves the port's constid once
 per cell rather than once per candidate.
 
-## Where the last 58ms is not
+## Why the profile stopped helping
+
+`perf` reports CPU time. The sweep runs on 32 threads and legalisation runs on
+one, so a line worth 10 % of samples inside the sweep is worth about a
+thirtieth of that in wall clock, while a line inside legalisation is worth all
+of it. Three changes aimed at what the flat profile showed returned nothing
+measurable before that was noticed. Timers, not samples, produced every number
+in the decomposition above.
+
+## Where the last 66ms is not
 
 Three changes aimed at what the profile showed returned nothing measurable:
 pre-sizing the driver-node registry, replacing the hash set in
@@ -155,12 +165,20 @@ one design on one device, which is the only use made of it here.
 
 ## What is left
 
-The gap is 58ms. Half of what is left is legalisation at 0.45s, where the
-candidate loop rejects 1 492 190 BELs on the shared-mux test; cutting that
-means changing which candidates are offered, which changes the placement. The
-other half is the eleven sweeps at 0.55s, which is convergence: HeAP reaches
-4.53M in two rounds and we need eleven passes over every cell.
+The gap is 66ms, and both halves of what is left are algorithmic rather than
+accidental.
 
-So the two honest routes are a legalizer that offers better candidates, or the
-colored Gauss-Seidel and momentum design that makes a sweep do more. Neither is
-a further pass over the profile; the profile is out of accidental cost.
+Legalisation is 0.46s, of which 0.27s is the candidate loop. It rejects
+1 492 190 BELs on the shared-mux test where HeAP's two runs of the same
+legalizer reject 16 338 between them, because HeAP legalises from a spread
+placement and we legalise from an overlapped one. Cutting it means changing
+which candidates are offered, which changes the placement.
+
+The sweeps are 0.65s over eleven passes. HeAP reaches 4.53M in two rounds of
+solve, spread and legalise. That is convergence, and it is what the colored
+Gauss-Seidel and momentum design addresses.
+
+Neither is another pass over the profile. What tuning was available has been
+taken: `NPNR_OT_DCD_ITERS=2` improves both axes over the default 8, the softmin
+temperature does nothing at all in this configuration, and thread count and
+determinism chunk move the wall clock by less than the run-to-run spread.
