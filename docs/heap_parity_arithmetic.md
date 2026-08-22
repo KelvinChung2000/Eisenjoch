@@ -8,37 +8,40 @@ the two figures divide. Wirelength is post-legalisation HPWL as
 
 ## Position
 
-Three runs of each arm, mean and spread:
+Five paired runs, alternating placer, same binary:
 
-| | place_secs | spread | HPWL | iterations |
-| --- | --- | --- | --- | --- |
-| HeAP | 1.33 | 1.3-1.4 | 4 533 609 | 2 |
-| opt_trans, 11 sweeps | 1.91 | 1.90-1.92 | 4 523 586 | 11 |
-| opt_trans, 12 sweeps | 1.99 | 1.95-2.06 | 4 392 778 | 12 |
-| opt_trans, 13 sweeps | 2.04 | 2.02-2.07 | 4 281 980 | 13 |
+| | place_secs | spread | HPWL |
+| --- | --- | --- | --- |
+| HeAP | 1.296 | 1.27-1.33 | 4 533 609 |
+| opt_trans | 1.354 | 1.33-1.37 | 4 520 199 |
 
-At eleven sweeps the wirelength is 0.998x HeAP's for 1.43x the time. At
-thirteen it is 0.944x for 1.53x, so the placement beats the reference by 5.6 %
-and the two extra sweeps cost 0.13s.
+1.045x on time and 0.997x on wirelength, so the placement is slightly better
+than the reference and takes 58ms longer. The two spreads touch: our fastest
+run and HeAP's slowest are both 1.33.
 
 The session opened at 27.7x and a floor of 51s that both placers paid.
 
-## What the 1.91s is
+## What the 1.35s is
 
-    0.18  prepare_discrete and the network build, shared with HeAP
-    0.05  setup before the first sweep
-    1.08  eleven sweeps
-    0.52  legalisation
-    0.08  post-legalisation report
+    0.17  prepare_discrete and the network build, shared with HeAP
+    0.08  setup before the first sweep
+    0.07  refreshing net infos, eleven iterations
+    0.07  the per-iteration line estimate
+    0.55  eleven sweeps
+    0.45  legalisation
 
-Above the shared floor that is 1.73s of our own work against HeAP's 1.13s.
+Above the shared floor that is 1.18s of our own work against HeAP's 1.13s.
+
+Two of those numbers exist because a timer was cheaper than a guess. The net
+info refresh and the line estimate were each expected to be several tenths and
+are 0.07s; what is left in the outer loop is the sweeps themselves.
 
 A sweep costs 91ms for the first and about 60ms after, so four extra sweeps buy
 12 % of wirelength for 0.23s. Time is nearly flat in the iteration count and
 wirelength is not, which is why thirteen sweeps beat HeAP on both the number
 that matters and the number it costs.
 
-## The six things that were not the algorithm
+## The nine things that were not the algorithm
 
 Each was found by profiling, removed, and checked by the placement reproducing
 its HPWL exactly rather than approximately. Deterministic sweeps
@@ -73,10 +76,46 @@ shared-mux test alone. `is_legal_template` already existed and `ring.rs` was
 already using it. Legalisation went from 0.71s to 0.52s with the reject counts
 identical, which is the check that the two legality tests agree.
 
+`NetInfo` was rebuilt from the netlist twice an outer iteration to change one
+integer per pin. A `PinSource` per pin records whether the position follows a
+movable cell, with a cluster offset, or a BEL that does not move, and the two
+buffers now live outside the loop so no copy is made at all. Net info work
+0.32s to 0.07s.
+
+Two full HPWL passes ran inside `place()` that no placement decision reads.
+HeAP's driver computes its equivalent after stopping its clock, so charging
+ours inside the call measured the two placers over different spans.
+
+`bel_pin_wire` matched a port against a BEL's pins by resolving both sides to
+`&str` and calling `memcmp`, once per pin per candidate BEL. Constids that
+spell the same string now collapse onto one representative so the match is an
+integer compare, and the legalizer's template resolves the port's constid once
+per cell rather than once per candidate.
+
+## Where the last 58ms is not
+
+Three changes aimed at what the profile showed returned nothing measurable:
+pre-sizing the driver-node registry, replacing the hash set in
+`continuous_line_estimate` with a sorted vector, and precomputing
+`net_path_weight` to avoid a hash lookup per candidate. The `HashMap::insert`
+line that motivated the last two is spread across callers rather than
+concentrated in one, and cumulative percentages in a `--children` report read
+as addressable time when they are not. They are kept because they are right.
+
+The one configuration change that helped came from a sweep rather than a
+profile. `NPNR_OT_DCD_ITERS=2` is both faster than the default 8 and produces a
+better placement, 1.35s and 4 520 199 against 1.41s and 4 523 586, because
+inner iterations past the second mostly re-confirm a cell's position.
+`NPNR_OT_SOFTMIN_THETA_START` and `_END` do nothing at all here: 24 arms across
+6 to 9 outer iterations returned byte-identical wirelength at every setting,
+because the softmin temperature only feeds the Dijkstra soft-path assignment
+that the analytic field replaces.
+
 ## What the parity configuration actually runs
 
     NPNR_OT_BPR_CAP=1.2  NPNR_OT_SWEEP=jacobi_bisect  NPNR_OT_ANALYTIC_UNTIL=999
     NPNR_OT_STEINER=1    NPNR_OT_CACHE_NETMAP=1       NPNR_OT_SKIP_PIPES=1
+    NPNR_OT_CACHE_NETINFO=1                           NPNR_OT_DCD_ITERS=2
     NPNR_OT_DET_SWEEP=1  NPNR_OT_DET_CHUNK=4096       NPNR_OT_THREADS=32
 
 Three of those change what the placer is rather than how fast it runs.
@@ -116,12 +155,12 @@ one design on one device, which is the only use made of it here.
 
 ## What is left
 
-The gap is 0.58s and it is convergence rate. HeAP reaches 4.53M in two rounds
-of solve, spread and legalise at about 0.55s each; a sweep costs us 60ms and we
-need eleven. We are nine times faster per iteration and take 5.5x as many, so
-no further work on the sweep closes it: even a free sweep leaves 0.83s against
-HeAP's 1.33s only because legalisation and the shared floor are most of what is
-left.
+The gap is 58ms. Half of what is left is legalisation at 0.45s, where the
+candidate loop rejects 1 492 190 BELs on the shared-mux test; cutting that
+means changing which candidates are offered, which changes the placement. The
+other half is the eleven sweeps at 0.55s, which is convergence: HeAP reaches
+4.53M in two rounds and we need eleven passes over every cell.
 
-Either the sweep makes more progress per pass, which is the colored
-Gauss-Seidel and momentum design, or 1.43x stands.
+So the two honest routes are a legalizer that offers better candidates, or the
+colored Gauss-Seidel and momentum design that makes a sweep do more. Neither is
+a further pass over the profile; the profile is out of accidental cost.
