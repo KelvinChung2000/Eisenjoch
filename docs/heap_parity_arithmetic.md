@@ -104,13 +104,22 @@ in the decomposition above.
 
 ## Where the last 66ms is not
 
-Three changes aimed at what the profile showed returned nothing measurable:
+Four changes aimed at what the profile showed returned nothing measurable:
 pre-sizing the driver-node registry, replacing the hash set in
 `continuous_line_estimate` with a sorted vector, and precomputing
 `net_path_weight` to avoid a hash lookup per candidate. The `HashMap::insert`
 line that motivated the last two is spread across callers rather than
 concentrated in one, and cumulative percentages in a `--children` report read
 as addressable time when they are not. They are kept because they are right.
+
+The fourth was reverted. Legalisation's candidate loop calls
+`bel_pin_wire_canon`, which scans a BEL's pin list per port, so remembering
+the index a port was found at last time should have turned roughly 200
+comparisons per candidate into five. It moved nothing: phase B is bound by
+chasing pointers through a 1.6M-BEL structure, not by comparing integers once
+it arrives. The change did confirm its own correctness on the way out, both
+reject counts and the wirelength exact, which is the only reason it is
+mentioned here rather than forgotten.
 
 The one configuration change that helped came from a sweep rather than a
 profile. `NPNR_OT_DCD_ITERS=2` is both faster than the default 8 and produces a
