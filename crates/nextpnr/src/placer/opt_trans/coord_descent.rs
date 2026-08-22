@@ -7,7 +7,17 @@
 //! conductance are refreshed between sweeps.
 
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+
+static COLLECT_NS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn report_collect_time() {
+    eprintln!(
+        "  ALG_T collect_net_infos_total: {:.2}s",
+        COLLECT_NS.load(AtomicOrdering::Relaxed) as f64 / 1e9
+    );
+}
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -35,6 +45,29 @@ struct PinNode {
     is_fixed: bool,
 }
 
+/// Where a pin's position comes from, which `pin_pos` resolves from cluster
+/// structure and BEL binding, neither of which changes while the sweep moves
+/// cells. Keeping it lets an iteration refresh `PinNode::node` in place
+/// instead of rebuilding every `NetInfo` from the netlist.
+#[derive(Clone, Copy, Debug)]
+enum PinSource {
+    /// Follows movable cell `idx`, offset by a cluster constraint if the pin
+    /// belongs to a child rather than the root.
+    Movable { idx: usize, off_x: f64, off_y: f64 },
+    /// Bound to a BEL the sweep does not move.
+    Fixed { x: f64, y: f64 },
+}
+
+impl PinSource {
+    #[inline]
+    fn position(&self, cell_x: &[f64], cell_y: &[f64]) -> (f64, f64) {
+        match *self {
+            PinSource::Movable { idx, off_x, off_y } => (cell_x[idx] + off_x, cell_y[idx] + off_y),
+            PinSource::Fixed { x, y } => (x, y),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct NetInfo {
     net_id: NetId,
@@ -43,6 +76,8 @@ struct NetInfo {
     /// iteration cost more than the sort it feeds.
     debug_name: Arc<str>,
     pins: Vec<PinNode>,
+    /// Aligned with `pins`. Only read when refreshing positions.
+    pin_src: Vec<PinSource>,
     has_fixed_pin: bool,
 }
 
@@ -70,6 +105,11 @@ struct DistCache {
     /// 1-Steiner pseudo-node centroids in network grid coords. One entry per
     /// net. Zeros when `steiner_weight == 0.0` in config (term disabled).
     /// Refreshed by `compute_steiner_centroids` at the top of each outer iter.
+    /// `net_path_weight` per net, which depends on the net id and whether the
+    /// net has a fixed pin, never on where the candidate cell sits. Evaluating
+    /// it inside the candidate loop meant a `timing_criticality` hash lookup
+    /// for every net of every candidate position of every cell.
+    path_weight: Vec<f64>,
     steiner_cx: Vec<f64>,
     steiner_cy: Vec<f64>,
     /// Per-net rectilinear MST adjacency. `mst_neighbors[net_idx][pin_idx]` is
@@ -189,6 +229,7 @@ impl DistCache {
             rows: (0..n_nets).map(|_| FxHashMap::default()).collect(),
             n_nets,
             n_nodes,
+            path_weight: vec![1.0; n_nets],
             steiner_cx: vec![0.0; n_nets],
             steiner_cy: vec![0.0; n_nets],
             mst_neighbors: Vec::new(),
@@ -242,7 +283,26 @@ impl DistCache {
     /// is what the stored row returns for an unsolved net, so callers need no
     /// new case.
     #[inline]
+    /// As [`DistCache::get`], for callers that already hold the node's grid
+    /// coordinates. The analytic field is a function of those coordinates, so
+    /// going through the node index divides them back out for nothing; four
+    /// integer divisions per call showed up as 9.5 % of the placement profile.
+    fn get_at(&self, net_idx: usize, node: usize, nx: i32, ny: i32) -> f64 {
+        if analytic_dist() {
+            return self.analytic_get_xy(net_idx, nx, ny);
+        }
+        match self.rows[net_idx].get(&(node as u32)) {
+            Some(&v) => v as f64,
+            None => f64::INFINITY,
+        }
+    }
+
     fn analytic_get(&self, net_idx: usize, node: usize) -> f64 {
+        let w = self.width;
+        self.analytic_get_xy(net_idx, (node % w) as i32, (node / w) as i32)
+    }
+
+    fn analytic_get_xy(&self, net_idx: usize, nx: i32, ny: i32) -> f64 {
         let k = self.analytic_k[net_idx];
         let driver = self.analytic_driver[net_idx];
         if !k.is_finite() || driver == u32::MAX {
@@ -250,7 +310,6 @@ impl DistCache {
         }
         let w = self.width;
         let (dx, dy) = ((driver as usize % w) as i32, (driver as usize / w) as i32);
-        let (nx, ny) = ((node % w) as i32, (node / w) as i32);
         let manh = (nx - dx).abs() + (ny - dy).abs();
         if manh > analytic_radius() {
             return f64::INFINITY;
@@ -387,6 +446,16 @@ fn process_rss_kb() -> usize {
 /// The centroid is the arithmetic mean of all pin positions (driver + sinks)
 /// in network grid coords. Called at the top of each outer iter so the Jacobi
 /// sweep sees a stable hub during inner evaluation.
+fn compute_path_weights(
+    dist_cache: &mut DistCache,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+) {
+    for (net_idx, info) in net_infos.iter().enumerate() {
+        dist_cache.path_weight[net_idx] = net_path_weight(info, cfg);
+    }
+}
+
 fn compute_steiner_centroids(
     dist_cache: &mut DistCache,
     net_infos: &[NetInfo],
@@ -733,8 +802,26 @@ fn pin_pos(
     cell_y: &[f64],
     network: &PipeNetwork,
 ) -> (f64, f64, Option<usize>) {
+    let (x, y, idx, _) = pin_pos_src(ctx, cell_id, cell_to_idx, cell_x, cell_y, network);
+    (x, y, idx)
+}
+
+/// As [`pin_pos`], also returning the [`PinSource`] the position came from.
+fn pin_pos_src(
+    ctx: &Context,
+    cell_id: CellId,
+    cell_to_idx: &FxHashMap<CellId, usize>,
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+) -> (f64, f64, Option<usize>, PinSource) {
     if let Some(&idx) = cell_to_idx.get(&cell_id) {
-        return (cell_x[idx], cell_y[idx], Some(idx));
+        return (
+            cell_x[idx],
+            cell_y[idx],
+            Some(idx),
+            PinSource::Movable { idx, off_x: 0.0, off_y: 0.0 },
+        );
     }
 
     let cell = ctx.design.cell(cell_id);
@@ -747,6 +834,11 @@ fn pin_pos(
                     cell_x[root_idx] + cell.constr_x as f64,
                     cell_y[root_idx] + cell.constr_y as f64,
                     Some(root_idx),
+                    PinSource::Movable {
+                        idx: root_idx,
+                        off_x: cell.constr_x as f64,
+                        off_y: cell.constr_y as f64,
+                    },
                 );
             }
             // Root is not a movable cell: fall through to BEL location of
@@ -754,22 +846,18 @@ fn pin_pos(
             let root_cell = ctx.design.cell(root_id);
             if let Some(root_bel) = root_cell.bel {
                 let loc = ctx.bel(root_bel).loc();
-                return (
-                    (loc.x + cell.constr_x - network.x0) as f64,
-                    (loc.y + cell.constr_y - network.y0) as f64,
-                    None,
-                );
+                let x = (loc.x + cell.constr_x - network.x0) as f64;
+                let y = (loc.y + cell.constr_y - network.y0) as f64;
+                return (x, y, None, PinSource::Fixed { x, y });
             }
         }
     }
 
     if let Some(bel) = cell.bel {
         let loc = ctx.bel(bel).loc();
-        return (
-            (loc.x - network.x0) as f64,
-            (loc.y - network.y0) as f64,
-            None,
-        );
+        let x = (loc.x - network.x0) as f64;
+        let y = (loc.y - network.y0) as f64;
+        return (x, y, None, PinSource::Fixed { x, y });
     }
 
     panic!(
@@ -815,6 +903,44 @@ impl NameFilteredNets {
     }
 }
 
+fn cache_netinfo() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("NPNR_OT_CACHE_NETINFO").ok().as_deref() == Some("1"))
+}
+
+/// Rebuild `net_infos` only once, then move the pins.
+///
+/// Which nets survive the filter, which pins each carries, and where each pin
+/// takes its position from are all fixed by the netlist and the cluster
+/// structure. The only thing an iteration changes is where the movable cells
+/// are, so a rebuild reconstructs 105 000 structures and their pin vectors to
+/// alter one integer per pin.
+fn collect_net_infos_cached(
+    ctx: &Context,
+    net_ids: &NameFilteredNets,
+    cell_to_idx: &FxHashMap<CellId, usize>,
+    cell_x: &[f64],
+    cell_y: &[f64],
+    network: &PipeNetwork,
+    cfg: &OptTransPlacerCfg,
+    cache: &mut Option<Vec<NetInfo>>,
+) -> Vec<NetInfo> {
+    if !cache_netinfo() {
+        return collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+    }
+    let infos = cache.get_or_insert_with(|| {
+        collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg)
+    });
+    infos.par_iter_mut().for_each(|info| {
+        for (pin, src) in info.pins.iter_mut().zip(info.pin_src.iter()) {
+            let (x, y) = src.position(cell_x, cell_y);
+            pin.node = position_to_node(network, x, y);
+        }
+    });
+    infos.clone()
+}
+
 fn collect_net_infos_simple(
     ctx: &Context,
     net_ids: &NameFilteredNets,
@@ -836,12 +962,13 @@ fn collect_net_infos_simple(
             }
 
             let mut pins = Vec::with_capacity(net.num_users() + 1);
+            let mut pin_src = Vec::with_capacity(net.num_users() + 1);
             let mut has_fixed_pin = false;
             let mut has_movable = false;
 
             let driver_cell = ctx.design.cell(driver.cell);
-            let (dx, dy, driver_idx) =
-                pin_pos(ctx, driver.cell, cell_to_idx, cell_x, cell_y, network);
+            let (dx, dy, driver_idx, driver_src) =
+                pin_pos_src(ctx, driver.cell, cell_to_idx, cell_x, cell_y, network);
             let driver_fixed = driver_cell.bel_strength.is_locked();
             has_fixed_pin |= driver_fixed || driver_idx.is_none();
             has_movable |= driver_idx.is_some() && !driver_fixed;
@@ -851,14 +978,15 @@ fn collect_net_infos_simple(
                 is_driver: true,
                 is_fixed: driver_fixed,
             });
+            pin_src.push(driver_src);
 
             for user in net.users() {
                 if !user.is_valid() {
                     continue;
                 }
                 let user_cell = ctx.design.cell(user.cell);
-                let (ux, uy, user_idx) =
-                    pin_pos(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
+                let (ux, uy, user_idx, user_src) =
+                    pin_pos_src(ctx, user.cell, cell_to_idx, cell_x, cell_y, network);
                 let user_fixed = user_cell.bel_strength.is_locked();
                 has_fixed_pin |= user_fixed || user_idx.is_none();
                 has_movable |= user_idx.is_some() && !user_fixed;
@@ -868,6 +996,7 @@ fn collect_net_infos_simple(
                     is_driver: false,
                     is_fixed: user_fixed,
                 });
+                pin_src.push(user_src);
             }
 
             if has_movable && pins.len() >= 2 {
@@ -875,6 +1004,7 @@ fn collect_net_infos_simple(
                     net_id,
                     debug_name: Arc::clone(net_name),
                     pins,
+                    pin_src,
                     has_fixed_pin,
                 })
             } else {
@@ -1968,10 +2098,10 @@ fn evaluate_cell_at(
         let pin = &info.pins[pin_idx];
         debug_assert_eq!(pin.cell_idx, Some(cell_idx));
 
-        let weight = net_path_weight(info, cfg);
+        let weight = dist_cache.path_weight[net_idx];
 
         if !pin.is_driver {
-            let d = dist_cache.get(net_idx, node);
+            let d = dist_cache.get_at(net_idx, node, gx, gy);
             if !d.is_finite() {
                 return f64::INFINITY;
             }
@@ -4476,6 +4606,7 @@ pub fn run_inner_outer(
     let mut prev_solve_pin_sigs: Vec<Vec<usize>> = Vec::new();
     let mut netmap_cache: Option<Arc<CellNetMap>> = None;
     let named_nets = NameFilteredNets::new(ctx, alive_net_ids, cfg);
+    let mut netinfo_cache: Option<Vec<NetInfo>> = None;
     eprintln!("  ALG_T dcd_setup_done: {:.2}s (pre-loop)", t_dcd_entry.elapsed().as_secs_f64());
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
@@ -4494,7 +4625,8 @@ pub fn run_inner_outer(
             let e = cfg.softmin_theta_end.max(1e-9);
             s * (e / s).powf(t)
         };
-        let mut net_infos = collect_net_infos_simple(
+        let t_collect = std::time::Instant::now();
+        let mut net_infos = collect_net_infos_cached(
             ctx,
             &named_nets,
             cell_to_idx,
@@ -4502,7 +4634,9 @@ pub fn run_inner_outer(
             cell_y,
             network,
             cfg,
+            &mut netinfo_cache,
         );
+        COLLECT_NS.fetch_add(t_collect.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         if outer == 0 && std::env::var("NPNR_OT_COLOR_DIAG").ok().as_deref() == Some("1") {
             measure_cell_coloring(&net_infos, &cell_net_map, n);
@@ -4515,6 +4649,7 @@ pub fn run_inner_outer(
         // Refresh per-net 1-Steiner centroids before the Jacobi sweep so
         // every `evaluate_cell_at` call in this iter uses a hub consistent
         // with the current pin layout. Skip when the term is disabled.
+        compute_path_weights(&mut dist_cache, &net_infos, cfg);
         if cfg.steiner_weight > 0.0 {
             compute_steiner_centroids(&mut dist_cache, &net_infos, network);
         }
@@ -5526,7 +5661,8 @@ pub fn run_inner_outer(
 
         eprintln!("PHASE_MARK outer={} enter=post_refresh rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
         let t_post_refresh = std::time::Instant::now();
-        let post_net_infos = collect_net_infos_simple(
+        let t_collect2 = std::time::Instant::now();
+        let post_net_infos = collect_net_infos_cached(
             ctx,
             &named_nets,
             cell_to_idx,
@@ -5534,7 +5670,9 @@ pub fn run_inner_outer(
             cell_y,
             network,
             cfg,
+            &mut netinfo_cache,
         );
+        COLLECT_NS.fetch_add(t_collect2.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         let (state_energy, refresh_ms, solve_stats) = if cfg.path_model == PathModel::BresenhamLogit
         {
@@ -6454,6 +6592,7 @@ mod driver_hole_tests {
         vec![NetInfo {
             net_id: NetId::from_raw(0),
             debug_name: Arc::from("n"),
+            pin_src: Vec::new(),
             pins: vec![
                 PinNode { node: 0, cell_idx: Some(0), is_driver: true, is_fixed: false },
                 PinNode { node: 6, cell_idx: None, is_driver: false, is_fixed: true },

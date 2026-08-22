@@ -215,6 +215,7 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         phys_grid_h,
     );
     eprintln!("  ALG_T dcd_done: {:.2}s", t_alg.elapsed().as_secs_f64());
+    super::coord_descent::report_collect_time();
 
     if std::env::var("NPNR_OT_DUMP_SPAN_USAGE").ok().as_deref() == Some("1") {
         network.report_span_utilization("post-DCD");
