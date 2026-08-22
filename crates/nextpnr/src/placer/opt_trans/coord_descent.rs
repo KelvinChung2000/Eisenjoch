@@ -11,11 +11,16 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 static COLLECT_NS: AtomicU64 = AtomicU64::new(0);
+static LINE_NS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn report_collect_time() {
     eprintln!(
         "  ALG_T collect_net_infos_total: {:.2}s",
         COLLECT_NS.load(AtomicOrdering::Relaxed) as f64 / 1e9
+    );
+    eprintln!(
+        "  ALG_T line_estimate_total: {:.2}s",
+        LINE_NS.load(AtomicOrdering::Relaxed) as f64 / 1e9
     );
 }
 
@@ -5828,7 +5833,9 @@ pub fn run_inner_outer(
             (post_solve.energy, refresh_ms, solve_stats)
         };
 
+        let t_line = std::time::Instant::now();
         let line = demand::continuous_line_estimate(ctx, cell_to_idx, cell_x, cell_y, network);
+        LINE_NS.fetch_add(t_line.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let friction = super::congestion::compute_friction_energy(network);
         let (max_overflow, n_overflow, overflow_excess) = type_aware.compute_overflow(
             cell_buckets,

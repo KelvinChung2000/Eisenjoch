@@ -197,11 +197,19 @@ impl Context {
         // resolved and compared a name for every pin of every candidate BEL,
         // which the legalizer does millions of times.
         let want = self.chipdb.constid_for_name(port_name)?;
-        let bel_info = self.chipdb.bel_info(bp.bel());
+        self.bel_pin_wire_canon(bp.bel(), want)
+    }
+
+    /// As [`Context::bel_pin_wire`], for a port already resolved to its
+    /// canonical constid by [`ChipDb::constid_for_name`]. Callers that test one
+    /// port against many BELs resolve once and then only compare.
+    #[inline]
+    pub fn bel_pin_wire_canon(&self, bel: crate::chipdb::BelId, want: i32) -> Option<Wire<'_>> {
+        let bel_info = self.chipdb.bel_info(bel);
         bel_info.pins.get().iter().find_map(|pin| {
             let (name_constid, wire_idx, _dir) = self.chipdb.bel_pin_fields(pin);
             (self.chipdb.constid_canon(name_constid) == want)
-                .then(|| Wire::new(self, crate::chipdb::WireId::new(bp.bel().tile(), wire_idx)))
+                .then(|| Wire::new(self, crate::chipdb::WireId::new(bel.tile(), wire_idx)))
         })
     }
 }

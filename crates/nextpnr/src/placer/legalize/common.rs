@@ -308,9 +308,8 @@ impl DriverNodeRegistry {
     /// `node_id` resolution per pin, skipping per-call cell-port walks.
     pub fn is_legal_template(&self, ctx: &Context, template: &CellPinTemplate, bel: BelId) -> bool {
         let bel_view = ctx.bel(bel);
-        for (port_name, net) in &template.pin_ports {
-            let net = *net;
-            let Some(w) = bel_view.pin_wire(*port_name) else {
+        for &(port_canon, net) in &template.pin_ports {
+            let Some(w) = ctx.bel_pin_wire_canon(bel, port_canon) else {
                 continue;
             };
             let w = w.id();
@@ -329,12 +328,18 @@ impl DriverNodeRegistry {
 /// Build once per cell via `build_cell_pin_template`; reuse for every BEL
 /// candidate the cell is tested against.
 pub(crate) struct CellPinTemplate {
-    pub pin_ports: Vec<(IdString, NetId)>,
+    /// `(canonical constid of the port name, net)`. The constid is resolved
+    /// when the template is built, so testing the cell against a candidate BEL
+    /// costs an integer compare per pin and no name lookup at all.
+    pub pin_ports: Vec<(i32, NetId)>,
 }
 
 pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPinTemplate {
     let cell = ctx.design.cell(cell_id);
-    let mut pin_ports: Vec<(IdString, NetId)> = Vec::with_capacity(8);
+    let mut pin_ports: Vec<(i32, NetId)> = Vec::with_capacity(8);
+    // A port whose name the chipdb does not know cannot match any BEL pin, so
+    // it is dropped here rather than failing to match on every candidate.
+    let canon = |name: IdString| ctx.chipdb().constid_for_name(ctx.name_of(name));
     for (name, data) in cell.ports.iter() {
         let port_type = data.port_type();
         let Some(net_id) = data.net() else { continue };
@@ -350,17 +355,23 @@ pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPin
                 if net.driver_cell_port().map(|p| p.cell) != Some(cell_id) {
                     continue;
                 }
-                pin_ports.push((*name, net_id));
+                if let Some(c) = canon(*name) {
+                    pin_ports.push((c, net_id));
+                }
             }
             PortType::InOut => {
                 let is_driver = net.driver_cell_port().map(|p| p.cell) == Some(cell_id);
                 if is_driver && net.num_users() == 0 {
                     continue;
                 }
-                pin_ports.push((*name, net_id));
+                if let Some(c) = canon(*name) {
+                    pin_ports.push((c, net_id));
+                }
             }
             PortType::In => {
-                pin_ports.push((*name, net_id));
+                if let Some(c) = canon(*name) {
+                    pin_ports.push((c, net_id));
+                }
             } // No catch-all arm: Out/InOut/In are exhaustive today, and keeping
               // the match exhaustive means a new PortType variant becomes a
               // compile error here instead of being silently dropped.
