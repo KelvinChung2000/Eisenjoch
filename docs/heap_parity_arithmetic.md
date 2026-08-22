@@ -125,10 +125,18 @@ The one configuration change that helped came from a sweep rather than a
 profile. `NPNR_OT_DCD_ITERS=2` is both faster than the default 8 and produces a
 better placement, 1.35s and 4 520 199 against 1.41s and 4 523 586, because
 inner iterations past the second mostly re-confirm a cell's position.
-`NPNR_OT_SOFTMIN_THETA_START` and `_END` do nothing at all here: 24 arms across
-6 to 9 outer iterations returned byte-identical wirelength at every setting,
-because the softmin temperature only feeds the Dijkstra soft-path assignment
-that the analytic field replaces.
+
+Four other knobs are inert in this configuration, each checked by a sweep that
+returned byte-identical wirelength at every setting rather than by reading the
+code. `NPNR_OT_SOFTMIN_THETA_START` and `_END` across 24 arms, and
+`NPNR_OT_JACOBI_ALPHA` across 0.5 to 2.0, feed the Dijkstra soft-path
+assignment and the Jacobi step that the analytic field and the bisection sweep
+respectively replace. `NPNR_OT_BPR_CAP` from 1.2 to 4 changes nothing because
+`NPNR_OT_SKIP_PIPES` leaves no pipe usage to price. Thread count and
+determinism chunk move the wall clock by less than the run-to-run spread.
+
+So `NPNR_OT_MAX_ITERS` and `NPNR_OT_DCD_ITERS` are the only two knobs that do
+anything here, and both are at their best setting.
 
 ## What the parity configuration actually runs
 
