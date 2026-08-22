@@ -60,6 +60,41 @@ fn spawn_rss_sampler() {
     });
 }
 
+/// Router-agnostic congestion of the placement currently bound in `ctx`.
+///
+/// Demand is one Bresenham line per driver-sink pair and capacity is the
+/// chipdb wire count over four, so the absolute ratio is an overcount on
+/// high-fanout nets. It is comparable between two placements of the same
+/// design on the same device, which is what it is used for here.
+fn report_congestion(ctx: &nextpnr::context::Context, tag: &str) {
+    use nextpnr::metrics::congestion::estimate_congestion;
+    let report = estimate_congestion(ctx, 1.0);
+    let w = report.h_congestion.first().map_or(0, |r| r.len());
+    let h = report.h_congestion.len();
+    let mut over = 0usize;
+    let mut interior_over = 0usize;
+    let mut cost = 0.0f64;
+    for y in 0..h {
+        for x in 0..w {
+            for grid in [&report.h_congestion, &report.v_congestion] {
+                let r = grid[y][x];
+                cost += r * r;
+                if r > 1.0 {
+                    over += 1;
+                    if x > 0 && y > 0 && x + 1 < w && y + 1 < h {
+                        interior_over += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "CONGESTION[{tag}] avg={:.4} max={:.1} over_cap={over} interior_over={interior_over} \
+cost={cost:.3e}",
+        report.avg_congestion, report.max_congestion,
+    );
+}
+
 fn main() {
     spawn_rss_sampler();
     let chipdb = required("NPNR_OT_TRACE_CHIPDB");
@@ -95,4 +130,7 @@ fn main() {
         place_secs,
         nextpnr::metrics::wirelength::total_hpwl(&ctx),
     );
+    if std::env::var("NPNR_OT_CHECK_CONGESTION").ok().as_deref() == Some("1") {
+        report_congestion(&ctx, "opt_trans");
+    }
 }
