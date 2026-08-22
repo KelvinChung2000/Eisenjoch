@@ -8,30 +8,31 @@ the two figures divide. Wirelength is post-legalisation HPWL as
 
 ## Position
 
-Ten paired runs, alternating placer, same binary:
+Twelve paired runs, alternating placer, same binary:
 
-| | place_secs | spread | HPWL |
-| --- | --- | --- | --- |
-| HeAP | 1.271 | 1.25-1.29 | 4 533 609 |
-| opt_trans | 1.337 | 1.32-1.38 | 4 520 199 |
+| | mean | median | sd | HPWL |
+| --- | --- | --- | --- | --- |
+| HeAP | 1.296 | 1.280 | 0.041 | 4 533 609 |
+| opt_trans | 1.307 | 1.300 | 0.016 | 4 520 199 |
 
-1.052x on time and 0.997x on wirelength: the placement is 13 410 better than
-the reference and takes 66ms longer. The distributions do not overlap, so the
-66ms is a real difference rather than run-to-run scatter, and it is the last
-thing between here and the goal.
+1.008x on the means, 1.016x on the medians, and 0.997x on wirelength. The
+11ms between the means is a quarter of HeAP's own run-to-run standard
+deviation, and our slowest run is faster than HeAP's slowest; ours is the
+faster placer in 3 of the 12 pairs. Both spreads are given because picking the
+mean alone would flatter the result and picking the median alone would not.
 
-The session opened at 27.7x and a floor of 51s that both placers paid.
+The session opened at 27.7x on time and 51s of shared floor.
 
-## What the 1.35s is
+## What the 1.31s is
 
     0.17  prepare_discrete and the network build, shared with HeAP
     0.08  setup before the first sweep
     0.07  refreshing net infos, eleven iterations
     0.07  the per-iteration line estimate
     0.55  eleven sweeps
-    0.45  legalisation
+    0.42  legalisation
 
-Above the shared floor that is 1.18s of our own work against HeAP's 1.13s.
+Above the shared floor that is 1.14s of our own work against HeAP's 1.10s.
 
 Two of those numbers exist because a timer was cheaper than a guess. The net
 info refresh and the line estimate were each expected to be several tenths and
@@ -180,22 +181,35 @@ contributes fanout-many lines where a shared Steiner tree contributes one, and
 the absolute ratios are overcounts. It is comparable between two placements of
 one design on one device, which is the only use made of it here.
 
+## The measurement that contradicted its own hypothesis
+
+Legalisation's candidate loop was blamed all session on our placement being
+more overlapped than HeAP's, so the shared-mux test would fail more often.
+Counting rather than reasoning: of 4 980 704 candidates the ring walk emitted,
+3 077 082 were BELs already bound and thrown away by the caller's
+`is_available` check before any legality test, and the mux test itself was
+0.055s of a 0.27s phase. The cost was walking over occupied BELs.
+
+Teaching the walk to skip them took candidates examined to 2 690 667 and the
+whole placer from 1.337s to 1.307s, with both reject counts and the wirelength
+unchanged.
+
+Marking cluster children taken as well went further on paper, phase B 0.263s
+to 0.238s, and was reverted: it needs a second location-to-index map over
+1.6 million BELs, HeAP runs the same legalizer twice and paid that build twice,
+and its `place_secs` went from 1.29 to 1.40. A change that wins by slowing the
+reference is not a win. HeAP was re-measured either side of the change that
+was kept, 1.2925 against 1.2975, which is the check that this one does not do
+the same thing.
+
 ## What is left
 
-The gap is 66ms, and both halves of what is left are algorithmic rather than
-accidental.
+What separates the two means is 11ms, which is a quarter of the reference's
+own standard deviation. Chasing it further would be fitting to noise.
 
-Legalisation is 0.46s, of which 0.27s is the candidate loop. It rejects
-1 492 190 BELs on the shared-mux test where HeAP's two runs of the same
-legalizer reject 16 338 between them, because HeAP legalises from a spread
-placement and we legalise from an overlapped one. Cutting it means changing
-which candidates are offered, which changes the placement.
-
-The sweeps are 0.65s over eleven passes. HeAP reaches 4.53M in two rounds of
-solve, spread and legalise. That is convergence, and it is what the colored
-Gauss-Seidel and momentum design addresses.
-
-Neither is another pass over the profile. What tuning was available has been
-taken: `NPNR_OT_DCD_ITERS=2` improves both axes over the default 8, the softmin
-temperature does nothing at all in this configuration, and thread count and
-determinism chunk move the wall clock by less than the run-to-run spread.
+The structural difference has not gone away and is worth stating: HeAP reaches
+4.53M in two rounds of solve, spread and legalise, and we take eleven sweeps.
+We are the faster placer per pass by a wide margin and need many more passes.
+Fewer passes at the same wirelength is what the colored Gauss-Seidel and
+momentum design is for, and it is the thing that would turn a tie into a
+margin.
