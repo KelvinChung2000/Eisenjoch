@@ -1674,7 +1674,11 @@ impl super::Router for RasterRouter {
             // A pass over 105k low-fanout nets is sequential and can outlast an
             // hour, and the raster_fail print is capped at the first 100 ever,
             // so without this the pass is silent from net 100 to the end.
+            // Cadence is wall time rather than net count alone: the pass rate is
+            // only bounded above (105k nets unfinished in 5400s), and a count-only
+            // trigger stays silent for the whole run if the rate is under 1 net/s.
             let t_lf = std::time::Instant::now();
+            let mut last_progress = t_lf;
             for (i, &net) in lf_nets.iter().enumerate() {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
@@ -1702,10 +1706,14 @@ impl super::Router for RasterRouter {
                         failed += 1;
                     }
                 }
-                if cfg.verbose && (i + 1) % 5000 == 0 {
+                if cfg.verbose
+                    && ((i + 1) % 5000 == 0
+                        || last_progress.elapsed() >= std::time::Duration::from_secs(60))
+                {
+                    last_progress = std::time::Instant::now();
                     let secs = t_lf.elapsed().as_secs_f64();
                     eprintln!(
-                        "  pass {} progress: {}/{} lf nets, routed={}, failed={}, {:.1}s, {:.0} nets/s",
+                        "  pass {} progress: {}/{} lf nets, routed={}, failed={}, {:.1}s, {:.2} nets/s",
                         iter,
                         i + 1,
                         lf_nets.len(),
