@@ -1671,7 +1671,11 @@ impl super::Router for RasterRouter {
             let mut routed = hf_routed;
             let mut failed = hf_nets.len() - hf_routed;
 
-            for &net in &lf_nets {
+            // A pass over 105k low-fanout nets is sequential and can outlast an
+            // hour, and the raster_fail print is capped at the first 100 ever,
+            // so without this the pass is silent from net 100 to the end.
+            let t_lf = std::time::Instant::now();
+            for (i, &net) in lf_nets.iter().enumerate() {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
                 } else {
@@ -1697,6 +1701,19 @@ impl super::Router for RasterRouter {
                     _ => {
                         failed += 1;
                     }
+                }
+                if cfg.verbose && (i + 1) % 5000 == 0 {
+                    let secs = t_lf.elapsed().as_secs_f64();
+                    eprintln!(
+                        "  pass {} progress: {}/{} lf nets, routed={}, failed={}, {:.1}s, {:.0} nets/s",
+                        iter,
+                        i + 1,
+                        lf_nets.len(),
+                        routed,
+                        failed,
+                        secs,
+                        (i + 1) as f64 / secs,
+                    );
                 }
             }
 

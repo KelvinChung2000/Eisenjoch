@@ -35,3 +35,6 @@ build
 !demo/blinky.json
 *.so
 perf.data*
+
+# perf.data dumps renamed by hand; 80-130MB each and regenerable
+*.perf
