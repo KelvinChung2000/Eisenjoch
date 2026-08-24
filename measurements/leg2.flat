@@ -1,0 +1,17 @@
+    25.87%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::evaluate_cell_at
+     4.23%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::common::CellValidityMask::is_valid
+     4.17%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     4.11%  ot_trace_design  ot_trace_design       [.] core::slice::sort::unstable::quicksort::quicksort
+     3.99%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::bisect_2d
+     3.60%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     2.82%  ot_trace_design  ot_trace_design       [.] core::slice::sort::shared::smallsort::small_sort_network
+     2.77%  ot_trace_design  libc.so.6             [.] _int_free
+     2.64%  ot_trace_design  ot_trace_design       [.] round
+     2.64%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::intern
+     2.61%  ot_trace_design  libc.so.6             [.] _int_malloc
+     2.54%  ot_trace_design  ot_trace_design       [.] nextpnr::metrics::congestion::bresenham_line_into
+     2.33%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     2.06%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::demand::pin_pos
+     1.72%  ot_trace_design  libc.so.6             [.] __memmove_avx512_unaligned_erms
+     1.40%  ot_trace_design  libc.so.6             [.] malloc
+     1.24%  ot_trace_design  libc.so.6             [.] unlink_chunk.constprop.0

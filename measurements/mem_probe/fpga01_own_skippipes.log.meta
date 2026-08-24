@@ -1,0 +1,7 @@
+launched at : 2026-08-22T00:55:47+01:00
+arm         : own_skippipes
+extra env   : NPNR_OT_SKIP_PIPES=1
+git HEAD    : bd00e71bb441527fcfe98a966d51ecb98e6267df
+baseline    : span 60.5s, HPWL 4523586 (fpga01_pure_11iter_bisect_netmap)
+exit code: 0
+wall_secs: 58

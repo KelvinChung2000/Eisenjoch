@@ -1,0 +1,5 @@
+Running scope as unit: run-r6e91584342324e04a2ef579df2265ae6.scope
+=== opt_trans arm started 2026-08-22T16:00:18+01:00 ===
+opt_trans exit=124 2026-08-22T17:30:18+01:00
+=== heap arm started 2026-08-22T17:30:18+01:00 ===
+heap exit=124 2026-08-22T19:00:18+01:00

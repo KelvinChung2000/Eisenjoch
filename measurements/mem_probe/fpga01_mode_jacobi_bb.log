@@ -1,0 +1,344 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+RSS_SAMPLE t=0.0s rss=3MB hwm=3MB
+RSS_SAMPLE t=0.3s rss=463MB hwm=463MB
+RSS_SAMPLE t=0.5s rss=730MB hwm=730MB
+RSS_SAMPLE t=0.8s rss=818MB hwm=823MB
+RSS_SAMPLE t=1.0s rss=818MB hwm=823MB
+RSS_SAMPLE t=1.3s rss=818MB hwm=823MB
+cfg: max_outer_iters=2 blend_alpha=0.5 hardening_step=0 graph_model=TwoLevelPip
+RSS_SAMPLE t=1.5s rss=820MB hwm=823MB
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T prepare_discrete: 0.2s
+  ALG_T collect_movable: 0.2s
+  ALG_T pre_network: 0.2s
+  BUILD_T tile_type_by_node: 0.0s
+  BUILD_T coarse_aggregate: 0.0s
+  Skipped truly-null coarse cells: 0 (of 69353 total); pruned pipes: src_null=0 dst_null=0
+  Pipe capacity by span:
+  Thin span-1 pipes (cap<=2): 0 total, by tile-type pair (top 20):
+  Pipe cost: span^0.50 model (r1=1), span-1=1.000, span-12=3.464, 2×span-6=4.899, 12×span-1=12.000
+  BUILD_T pipe_loop: 0.0s
+  BUILD_T grids_and_adjacency: 0.0s
+  BUILD_T tile_templates: 0.0s
+  ALG_T network: 0.18s
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+RSS_SAMPLE t=1.8s rss=822MB hwm=823MB
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+Coordinate descent mode: 76660 cells, scale 1.00
+CellValidityMask: 76660 cells, 311x223 grid, 2 bucket masks, per-cell valid positions: min=67346 avg=67346.0 max=67346, unmapped cells=0
+MuxSlotTracker: 76660 cells (76660 with external fanout), 67346 tiles, total_cap=1077536, active_buckets=[DFF,LUT6], built in 66.9ms
+MuxSlotTracker[post-seed]: populated_cells=27114, overflow_tiles=518, at_cap_tiles=50, peak_excess=41, capacity_hist={16:67346}
+DCD placer: 76660 cells, 69353 nodes, outer_iters=2, dcd_iters_per_cell=8, graph_model=TwoLevelPip
+MEM_STATIC: pipes=0MB nodes=1MB adjacency=0MB pipe_cost_vecs=0MB validity_mask=0MB n_pipes=0 n_edges=0 rss=934MB
+Softmin position update: enabled, theta 0.250 -> 5.000 (anneal over 2 iters)
+  ALG_T dcd_setup_done: 0.08s (pre-loop)
+RSS_SAMPLE t=2.0s rss=956MB hwm=956MB
+RSS_SAMPLE t=2.3s rss=956MB hwm=956MB
+RSS_SAMPLE t=2.5s rss=956MB hwm=956MB
+RSS_SAMPLE t=2.8s rss=956MB hwm=956MB
+RSS_SAMPLE t=3.0s rss=956MB hwm=956MB
+RSS_SAMPLE t=3.3s rss=956MB hwm=956MB
+RSS_SAMPLE t=3.5s rss=956MB hwm=956MB
+    analytic_phase[outer=0]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=0 enter=pre_solve rss=956MB
+    rss_probe[outer=0]: pre_refresh_rss=956MB post_pre_solve_rss=982MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=0]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=254
+  Cell placement by tile type (iter 0, 76660 cells):
+    NULL: 31596
+    CLB: 27114
+    IOB_W: 15019
+    CLK_BUFG: 2320
+    BRAM: 351
+    DSP: 182
+    IOB_E: 78
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=0 enter=dcd_sweep rss=982MB
+RSS_SAMPLE t=3.8s rss=5047MB hwm=5047MB
+RSS_SAMPLE t=4.0s rss=9136MB hwm=9136MB
+RSS_SAMPLE t=4.3s rss=10398MB hwm=10398MB
+RSS_SAMPLE t=4.5s rss=10398MB hwm=10398MB
+RSS_SAMPLE t=4.8s rss=10398MB hwm=10398MB
+RSS_SAMPLE t=5.0s rss=10399MB hwm=10399MB
+RSS_SAMPLE t=5.3s rss=10399MB hwm=10399MB
+RSS_SAMPLE t=5.5s rss=10399MB hwm=10399MB
+RSS_SAMPLE t=5.8s rss=10399MB hwm=10399MB
+RSS_SAMPLE t=6.0s rss=10400MB hwm=10400MB
+RSS_SAMPLE t=6.3s rss=10400MB hwm=10400MB
+RSS_SAMPLE t=6.5s rss=10400MB hwm=10400MB
+RSS_SAMPLE t=6.8s rss=10400MB hwm=10400MB
+RSS_SAMPLE t=7.0s rss=10400MB hwm=10400MB
+RSS_SAMPLE t=7.3s rss=10401MB hwm=10401MB
+RSS_SAMPLE t=7.5s rss=10401MB hwm=10401MB
+RSS_SAMPLE t=7.8s rss=10401MB hwm=10401MB
+RSS_SAMPLE t=8.0s rss=10401MB hwm=10401MB
+RSS_SAMPLE t=8.3s rss=10401MB hwm=10401MB
+RSS_SAMPLE t=8.5s rss=10402MB hwm=10402MB
+RSS_SAMPLE t=8.8s rss=10402MB hwm=10402MB
+RSS_SAMPLE t=9.0s rss=10402MB hwm=10402MB
+RSS_SAMPLE t=9.3s rss=10402MB hwm=10402MB
+RSS_SAMPLE t=9.5s rss=10403MB hwm=10403MB
+RSS_SAMPLE t=9.8s rss=10403MB hwm=10403MB
+RSS_SAMPLE t=10.0s rss=10403MB hwm=10403MB
+RSS_SAMPLE t=10.3s rss=10403MB hwm=10403MB
+RSS_SAMPLE t=10.5s rss=10404MB hwm=10404MB
+RSS_SAMPLE t=10.8s rss=10404MB hwm=10404MB
+RSS_SAMPLE t=11.0s rss=10404MB hwm=10404MB
+RSS_SAMPLE t=11.3s rss=10404MB hwm=10404MB
+RSS_SAMPLE t=11.5s rss=10405MB hwm=10405MB
+RSS_SAMPLE t=11.8s rss=10405MB hwm=10405MB
+RSS_SAMPLE t=12.0s rss=10405MB hwm=10405MB
+RSS_SAMPLE t=12.3s rss=10405MB hwm=10405MB
+RSS_SAMPLE t=12.5s rss=10406MB hwm=10406MB
+RSS_SAMPLE t=12.8s rss=10406MB hwm=10406MB
+RSS_SAMPLE t=13.0s rss=10406MB hwm=10406MB
+RSS_SAMPLE t=13.3s rss=10406MB hwm=10406MB
+RSS_SAMPLE t=13.5s rss=10407MB hwm=10407MB
+RSS_SAMPLE t=13.8s rss=10407MB hwm=10407MB
+RSS_SAMPLE t=14.0s rss=10407MB hwm=10407MB
+RSS_SAMPLE t=14.3s rss=10407MB hwm=10407MB
+RSS_SAMPLE t=14.5s rss=10408MB hwm=10408MB
+RSS_SAMPLE t=14.8s rss=10408MB hwm=10408MB
+RSS_SAMPLE t=15.0s rss=10408MB hwm=10408MB
+RSS_SAMPLE t=15.3s rss=10408MB hwm=10408MB
+RSS_SAMPLE t=15.5s rss=10408MB hwm=10408MB
+RSS_SAMPLE t=15.8s rss=10409MB hwm=10409MB
+RSS_SAMPLE t=16.0s rss=10409MB hwm=10409MB
+RSS_SAMPLE t=16.3s rss=10409MB hwm=10409MB
+RSS_SAMPLE t=16.5s rss=10409MB hwm=10409MB
+RSS_SAMPLE t=16.8s rss=10409MB hwm=10409MB
+RSS_SAMPLE t=17.0s rss=10410MB hwm=10410MB
+RSS_SAMPLE t=17.3s rss=10410MB hwm=10410MB
+RSS_SAMPLE t=17.5s rss=10410MB hwm=10410MB
+RSS_SAMPLE t=17.8s rss=10410MB hwm=10410MB
+RSS_SAMPLE t=18.0s rss=10411MB hwm=10411MB
+RSS_SAMPLE t=18.3s rss=10411MB hwm=10411MB
+RSS_SAMPLE t=18.5s rss=10411MB hwm=10411MB
+RSS_SAMPLE t=18.8s rss=10411MB hwm=10411MB
+RSS_SAMPLE t=19.0s rss=10411MB hwm=10411MB
+RSS_SAMPLE t=19.3s rss=10412MB hwm=10412MB
+RSS_SAMPLE t=19.5s rss=10412MB hwm=10412MB
+RSS_SAMPLE t=19.8s rss=10413MB hwm=10413MB
+RSS_SAMPLE t=20.0s rss=10413MB hwm=10413MB
+RSS_SAMPLE t=20.3s rss=10413MB hwm=10413MB
+RSS_SAMPLE t=20.5s rss=10413MB hwm=10413MB
+RSS_SAMPLE t=20.8s rss=10413MB hwm=10413MB
+RSS_SAMPLE t=21.0s rss=10414MB hwm=10414MB
+RSS_SAMPLE t=21.3s rss=10414MB hwm=10414MB
+RSS_SAMPLE t=21.5s rss=10414MB hwm=10414MB
+RSS_SAMPLE t=21.8s rss=10414MB hwm=10414MB
+RSS_SAMPLE t=22.0s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=22.3s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=22.5s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=22.8s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=23.0s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=23.3s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=23.5s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=23.8s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=24.0s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=24.3s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=24.5s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=24.8s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=25.0s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=25.3s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=25.5s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=25.8s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=26.0s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=26.3s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=26.5s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=26.8s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=27.0s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=27.3s rss=10398MB hwm=10415MB
+PHASE_MARK outer=0 leave=dcd_sweep rss=6852MB
+PHASE_MARK outer=0 enter=post_refresh rss=6852MB
+MEM_POOL: workspaces=30 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=0]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=0]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=0]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=0]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=0]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=0]: pre_post_solve=6853MB post_post_solve=6853MB after_apply=6853MB
+MuxSlotTracker[sweep 0 LEAK]: populated_cells=27154, overflow_tiles=518, at_cap_tiles=53, peak_excess=41, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=1 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   0: nets=105117 line=17529691 energy=0.000 dE=+0.000 friction=0.0 bins=4.7x(517) excess=726.5 moved=40 disp=inf solves=0 skip=0 pops=0 theta=0.250 refresh=16ms dcd=23953ms total=25644ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=6853
+RSS_SAMPLE t=27.5s rss=6601MB hwm=10415MB
+    analytic_phase[outer=1]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=1 enter=pre_solve rss=6601MB
+    rss_probe[outer=1]: pre_refresh_rss=6601MB post_pre_solve_rss=6601MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=1]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=239
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=1 enter=dcd_sweep rss=6601MB
+RSS_SAMPLE t=27.8s rss=8015MB hwm=10415MB
+RSS_SAMPLE t=28.0s rss=10399MB hwm=10415MB
+RSS_SAMPLE t=28.3s rss=10399MB hwm=10415MB
+RSS_SAMPLE t=28.5s rss=10399MB hwm=10415MB
+RSS_SAMPLE t=28.8s rss=10400MB hwm=10415MB
+RSS_SAMPLE t=29.0s rss=10400MB hwm=10415MB
+RSS_SAMPLE t=29.3s rss=10400MB hwm=10415MB
+RSS_SAMPLE t=29.5s rss=10400MB hwm=10415MB
+RSS_SAMPLE t=29.8s rss=10400MB hwm=10415MB
+RSS_SAMPLE t=30.0s rss=10401MB hwm=10415MB
+RSS_SAMPLE t=30.3s rss=10401MB hwm=10415MB
+RSS_SAMPLE t=30.5s rss=10401MB hwm=10415MB
+RSS_SAMPLE t=30.8s rss=10402MB hwm=10415MB
+RSS_SAMPLE t=31.0s rss=10402MB hwm=10415MB
+RSS_SAMPLE t=31.3s rss=10402MB hwm=10415MB
+RSS_SAMPLE t=31.5s rss=10402MB hwm=10415MB
+RSS_SAMPLE t=31.8s rss=10402MB hwm=10415MB
+RSS_SAMPLE t=32.0s rss=10403MB hwm=10415MB
+RSS_SAMPLE t=32.3s rss=10403MB hwm=10415MB
+RSS_SAMPLE t=32.5s rss=10403MB hwm=10415MB
+RSS_SAMPLE t=32.8s rss=10403MB hwm=10415MB
+RSS_SAMPLE t=33.0s rss=10404MB hwm=10415MB
+RSS_SAMPLE t=33.3s rss=10404MB hwm=10415MB
+RSS_SAMPLE t=33.5s rss=10404MB hwm=10415MB
+RSS_SAMPLE t=33.8s rss=10404MB hwm=10415MB
+RSS_SAMPLE t=34.0s rss=10405MB hwm=10415MB
+RSS_SAMPLE t=34.3s rss=10405MB hwm=10415MB
+RSS_SAMPLE t=34.5s rss=10405MB hwm=10415MB
+RSS_SAMPLE t=34.8s rss=10405MB hwm=10415MB
+RSS_SAMPLE t=35.0s rss=10405MB hwm=10415MB
+RSS_SAMPLE t=35.3s rss=10406MB hwm=10415MB
+RSS_SAMPLE t=35.5s rss=10406MB hwm=10415MB
+RSS_SAMPLE t=35.8s rss=10406MB hwm=10415MB
+RSS_SAMPLE t=36.0s rss=10406MB hwm=10415MB
+RSS_SAMPLE t=36.3s rss=10407MB hwm=10415MB
+RSS_SAMPLE t=36.5s rss=10407MB hwm=10415MB
+RSS_SAMPLE t=36.8s rss=10407MB hwm=10415MB
+RSS_SAMPLE t=37.0s rss=10407MB hwm=10415MB
+RSS_SAMPLE t=37.3s rss=10407MB hwm=10415MB
+RSS_SAMPLE t=37.5s rss=10408MB hwm=10415MB
+RSS_SAMPLE t=37.8s rss=10408MB hwm=10415MB
+RSS_SAMPLE t=38.0s rss=10408MB hwm=10415MB
+RSS_SAMPLE t=38.3s rss=10408MB hwm=10415MB
+RSS_SAMPLE t=38.5s rss=10409MB hwm=10415MB
+RSS_SAMPLE t=38.8s rss=10409MB hwm=10415MB
+RSS_SAMPLE t=39.0s rss=10409MB hwm=10415MB
+RSS_SAMPLE t=39.3s rss=10409MB hwm=10415MB
+RSS_SAMPLE t=39.5s rss=10410MB hwm=10415MB
+RSS_SAMPLE t=39.8s rss=10410MB hwm=10415MB
+RSS_SAMPLE t=40.0s rss=10410MB hwm=10415MB
+RSS_SAMPLE t=40.3s rss=10410MB hwm=10415MB
+RSS_SAMPLE t=40.5s rss=10410MB hwm=10415MB
+RSS_SAMPLE t=40.8s rss=10411MB hwm=10415MB
+RSS_SAMPLE t=41.0s rss=10411MB hwm=10415MB
+RSS_SAMPLE t=41.3s rss=10411MB hwm=10415MB
+RSS_SAMPLE t=41.5s rss=10411MB hwm=10415MB
+RSS_SAMPLE t=41.8s rss=10412MB hwm=10415MB
+RSS_SAMPLE t=42.0s rss=10412MB hwm=10415MB
+RSS_SAMPLE t=42.3s rss=10412MB hwm=10415MB
+RSS_SAMPLE t=42.5s rss=10412MB hwm=10415MB
+RSS_SAMPLE t=42.8s rss=10413MB hwm=10415MB
+RSS_SAMPLE t=43.0s rss=10413MB hwm=10415MB
+RSS_SAMPLE t=43.3s rss=10413MB hwm=10415MB
+RSS_SAMPLE t=43.5s rss=10413MB hwm=10415MB
+RSS_SAMPLE t=43.8s rss=10414MB hwm=10415MB
+RSS_SAMPLE t=44.0s rss=10414MB hwm=10415MB
+RSS_SAMPLE t=44.3s rss=10414MB hwm=10415MB
+RSS_SAMPLE t=44.5s rss=10414MB hwm=10415MB
+RSS_SAMPLE t=44.8s rss=10414MB hwm=10415MB
+RSS_SAMPLE t=45.0s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=45.3s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=45.5s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=45.8s rss=10415MB hwm=10415MB
+RSS_SAMPLE t=46.0s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=46.3s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=46.5s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=46.8s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=47.0s rss=10416MB hwm=10416MB
+RSS_SAMPLE t=47.3s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=47.5s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=47.8s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=48.0s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=48.3s rss=10417MB hwm=10417MB
+RSS_SAMPLE t=48.5s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=48.8s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=49.0s rss=10418MB hwm=10418MB
+RSS_SAMPLE t=49.3s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=49.5s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=49.8s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=50.0s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=50.3s rss=10419MB hwm=10419MB
+RSS_SAMPLE t=50.5s rss=10420MB hwm=10420MB
+RSS_SAMPLE t=50.8s rss=10420MB hwm=10420MB
+RSS_SAMPLE t=51.0s rss=10420MB hwm=10420MB
+PHASE_MARK outer=1 leave=dcd_sweep rss=8193MB
+PHASE_MARK outer=1 enter=post_refresh rss=8193MB
+RSS_SAMPLE t=51.3s rss=7973MB hwm=10416MB
+MEM_POOL: workspaces=30 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=1]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=1]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=1]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=1]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=1]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=1]: pre_post_solve=7973MB post_post_solve=7973MB after_apply=7973MB
+MuxSlotTracker[sweep 1 LEAK]: populated_cells=27154, overflow_tiles=518, at_cap_tiles=51, peak_excess=41, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=2 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   1: nets=105117 line=17529680 energy=0.000 dE=+0.000 friction=0.0 bins=4.7x(517) excess=726.5 moved=40 disp=0.001 solves=0 skip=105117 pops=0 theta=5.000 refresh=26ms dcd=23718ms total=23784ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=7888
+DCD done: energy=0.000 line=17529680 friction=0.0 bins=4.7x(517) excess=726.5
+MuxSlotTracker: 314 commit rejections over entire DCD
+MuxSlotTracker[post-DCD]: populated_cells=27154, overflow_tiles=518, at_cap_tiles=51, peak_excess=41, capacity_hist={16:67346}
+  ALG_T dcd_done: 49.89s
+Pre-legalization: HPWL=15467561
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+RSS_SAMPLE t=51.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=51.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=52.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=52.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=52.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=52.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=53.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=53.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=53.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=53.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=54.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=54.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=54.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=54.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=55.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=55.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=55.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=55.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=56.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=56.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=56.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=56.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=57.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=57.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=57.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=57.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=58.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=58.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=58.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=58.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=59.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=59.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=59.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=59.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=60.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=60.3s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=60.5s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=60.8s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=61.0s rss=7051MB hwm=10416MB
+RSS_SAMPLE t=61.3s rss=7051MB hwm=10416MB
+  SortedLegalizer: cluster_rejects=2990927 shared_mux_rejects=34957913 arch_validity_rejects=0
+  ALG_T legalize_done: 59.94s
+Post-legalization: HPWL=15078462, line=18419966
+OT_RESULT place_secs=60.05 total_hpwl=15078462
+RSS_SAMPLE t=61.5s rss=6954MB hwm=10416MB

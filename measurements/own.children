@@ -1,0 +1,35 @@
+    18.05%     0.00%  ot_trace_design  [unknown]             [.] 0x0000000000012b73
+    16.44%    16.44%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::CellNetMap::build
+    16.42%     0.00%  ot_trace_design  ot_trace_design       [.] build_topo_order (inlined)
+    15.81%    15.81%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::evaluate_cell_at
+     9.95%     4.93%  ot_trace_design  ot_trace_design       [.] hashbrown::map::HashMap<K,V,S,A>::insert
+     8.96%     0.00%  ot_trace_design  ot_trace_design       [.] find_or_find_insert_slot<u64, (), rustc_hash::FxBuildHasher, alloc::alloc::Global, u64> (inlined)
+     8.96%     0.00%  ot_trace_design  ot_trace_design       [.] find_or_find_insert_slot<(u64, ()), alloc::alloc::Global, hashbrown::map::equivalent_key::{closure_env#0}<u64, u64, ()>, hashbrown::map::make_hasher::{closure_env#0}<u64, (), rustc_hash::FxBuildHasher>> (inlined)
+     7.29%     7.29%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::DistCache::get
+     6.89%     0.11%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     6.86%     0.00%  ot_trace_design  ot_trace_design       [.] {closure#0} (inlined)
+     6.57%     0.00%  ot_trace_design  ot_trace_design       [.] analytic_get (inlined)
+     6.09%     3.97%  ot_trace_design  libc.so.6             [.] _int_malloc
+     5.82%     3.37%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{{closure}}
+     5.39%     0.00%  ot_trace_design  ot_trace_design       [.] reserve<(u64, ()), alloc::alloc::Global, hashbrown::map::make_hasher::{closure_env#0}<u64, (), rustc_hash::FxBuildHasher>> (inlined)
+     5.17%     2.23%  ot_trace_design  libc.so.6             [.] malloc
+     4.86%     0.00%  ot_trace_design  ot_trace_design       [.] grow (inlined)
+     4.86%     0.00%  ot_trace_design  ot_trace_design       [.] grow_impl (inlined)
+     4.86%     0.00%  ot_trace_design  ot_trace_design       [.] realloc (inlined)
+     4.83%     0.00%  ot_trace_design  libc.so.6             [.] __libc_realloc (inlined)
+     4.70%     0.66%  ot_trace_design  ot_trace_design       [.] alloc::raw_vec::finish_grow
+     4.61%     4.51%  ot_trace_design  ot_trace_design       [.] hashbrown::raw::RawTable<T,A>::reserve_rehash
+     4.57%     0.00%  ot_trace_design  ot_trace_design       [.] reserve_rehash_inner<alloc::alloc::Global> (inlined)
+     4.57%     0.00%  ot_trace_design  ot_trace_design       [.] resize_inner<alloc::alloc::Global> (inlined)
+     4.18%     0.00%  ot_trace_design  ot_trace_design       [.] rayon::iter::plumbing::bridge_producer_consumer::helper
+     4.18%     0.00%  ot_trace_design  ot_trace_design       [.] join_context<rayon::iter::plumbing::bridge_producer_consumer::helper::{closure_env#0}<rayon::slice::IterProducer<nextpnr::netlist::indices::NetId>, rayon::iter::filter_map::FilterMapConsumer<rayon::iter::extend::ListVecConsumer, nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{closure_env#0}>>, rayon::iter::plumbing::bridge_producer_consumer::helper::{closure_env#1}<rayon::slice::IterProducer<nextpnr::netlist::indices::NetId>, rayon::iter::filter_map::FilterMapConsumer<rayon::iter::extend::ListVecConsumer, nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{closure_env#0}>>, alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>, alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>> (inlined)
+     4.18%     0.00%  ot_trace_design  ot_trace_design       [.] in_worker<rayon_core::join::join_context::{closure_env#0}<rayon::iter::plumbing::bridge_producer_consumer::helper::{closure_env#0}<rayon::slice::IterProducer<nextpnr::netlist::indices::NetId>, rayon::iter::filter_map::FilterMapConsumer<rayon::iter::extend::ListVecConsumer, nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{closure_env#0}>>, rayon::iter::plumbing::bridge_producer_consumer::helper::{closure_env#1}<rayon::slice::IterProducer<nextpnr::netlist::indices::NetId>, rayon::iter::filter_map::FilterMapConsumer<rayon::iter::extend::ListVecConsumer, nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{closure_env#0}>>, alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>, alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>>, (alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>, alloc::collections::linked_list::LinkedList<alloc::vec::Vec<nextpnr::placer::opt_trans::coord_descent::NetInfo, alloc::alloc::Global>, alloc::alloc::Global>)> (inlined)
+     4.13%     0.00%  ot_trace_design  ot_trace_design       [.] prepare_insert_slot (inlined)
+     4.10%     0.00%  ot_trace_design  ot_trace_design       [.] find_insert_slot (inlined)
+     4.06%     0.18%  ot_trace_design  libc.so.6             [.] _int_realloc
+     3.53%     0.00%  ot_trace_design  ot_trace_design       [.] find_or_find_insert_slot_inner (inlined)
+     3.48%     0.00%  ot_trace_design  ot_trace_design       [.] try_resolve<lasso::keys::Spur, std::hash::random::RandomState> (inlined)
+     3.36%     3.36%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     3.19%     2.43%  ot_trace_design  libc.so.6             [.] _int_free
+     3.10%     0.43%  ot_trace_design  libc.so.6             [.] cfree@GLIBC_2.2.5
+     3.03%     0.15%  ot_trace_design  ot_trace_design       [.] rayon_core::join::join_context::{{closure}}

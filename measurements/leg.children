@@ -1,0 +1,18 @@
+    29.14%    29.13%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::evaluate_cell_at
+    13.61%     7.38%  ot_trace_design  ot_trace_design       [.] hashbrown::map::HashMap<K,V,S,A>::insert
+     6.31%     6.11%  ot_trace_design  ot_trace_design       [.] hashbrown::raw::RawTable<T,A>::reserve_rehash
+     5.01%     5.01%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::common::CellValidityMask::is_valid
+     4.84%     0.47%  ot_trace_design  ot_trace_design       [.] alloc::raw_vec::finish_grow
+     4.01%     2.17%  ot_trace_design  libc.so.6             [.] _int_malloc
+     4.00%     4.00%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::bisect_2d
+     3.32%     1.45%  ot_trace_design  libc.so.6             [.] malloc
+     3.21%     0.23%  ot_trace_design  libc.so.6             [.] _int_realloc
+     3.19%     3.19%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     2.89%     2.28%  ot_trace_design  libc.so.6             [.] _int_free
+     2.86%     1.83%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     2.76%     0.39%  ot_trace_design  libc.so.6             [.] cfree@GLIBC_2.2.5
+     2.57%     0.00%  ot_trace_design  [unknown]             [.] 0x937b00c09d4d8eed
+     2.45%     2.45%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     2.29%     2.29%  ot_trace_design  ot_trace_design       [.] round
+     2.27%     2.27%  ot_trace_design  ot_trace_design       [.] nextpnr::metrics::congestion::bresenham_line_into
+     2.18%     2.07%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::intern

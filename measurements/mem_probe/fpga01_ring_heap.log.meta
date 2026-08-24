@@ -1,0 +1,6 @@
+launched at : 2026-08-22T01:59:03+01:00
+arm         : HeAP reference, ring-search snap
+git HEAD    : 2d2ed50789c61d7d9e687b96781e4369b5d67045
+expected    : HPWL 4533609, exact
+exit code: 0
+wall_secs: 3

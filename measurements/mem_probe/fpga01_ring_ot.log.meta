@@ -1,0 +1,6 @@
+launched at : 2026-08-22T01:58:58+01:00
+arm         : opt_trans parity arm, ring-search snap
+git HEAD    : 2d2ed50789c61d7d9e687b96781e4369b5d67045
+expected    : HPWL 4523586, exact
+exit code: 0
+wall_secs: 5
