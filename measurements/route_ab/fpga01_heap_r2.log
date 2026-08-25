@@ -1,0 +1,224 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+placer: heap, route_iters: 50
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T heap prepare_discrete: 0.2s
+  ALG_T init_hpwl: 14051632
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=6247 shared_mux_rejects=16338 arch_validity_rejects=0
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=7688 shared_mux_rejects=21129 arch_validity_rejects=0
+PLACE_RESULT placer=heap place_secs=1.40 total_hpwl=4533609
+routable nets: 105118
+RasterRouter: 105118 nets on 311x223, beam_width=128, max_steps=1000
+RasterRouter: pre-reserved 459727 BEL-pin wires (0 conflicts)
+Lookahead pip-cost model: cost = 11*sqrt(span) + orig_delay/span
+Lookahead class 0 (LUT6): 8085 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 1 (DFF): 8365 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 2 (IOB): 8877 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 3 (GND_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 4 (VCC_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 5 (RAMB18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 6 (FIFO18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 7 (RAMBFIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 8 (RAMB36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 9 (FIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 10 (BUFG): 8661 reachable pips, rate = 159/209 ≈ 0.761/tile
+Lookahead class 11 (DSP48E1): 16919 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead: 12 driver classes, default=10 (BUFG)
+  priority top-5 (score, fanout): [(9300000.0, 93000), (2900.0, 29), (2800.0, 28), (2800.0, 28), (2600.0, 26)]
+  high-fanout: 63/64 routed sequentially
+  raster_fail #0: net='net_80667' src=(271,192) sink=(260,192) dist=11 tree=123
+  raster_fail #1: net='net_68108' src=(278,29) sink=(267,67) dist=49 tree=280
+  raster_fail #2: net='net_31556' src=(102,118) sink=(164,120) dist=64 tree=369
+  raster_fail #3: net='net_1525' src=(265,169) sink=(223,118) dist=93 tree=374
+  raster_fail #4: net='net_75784' src=(273,39) sink=(277,85) dist=50 tree=345
+  raster_fail #5: net='net_31479' src=(203,133) sink=(216,107) dist=39 tree=67
+  raster_fail #6: net='net_73117' src=(234,88) sink=(214,104) dist=36 tree=143
+  raster_fail #7: net='net_5349' src=(203,47) sink=(185,112) dist=83 tree=683
+  raster_fail #8: net='net_96068' src=(198,91) sink=(169,116) dist=54 tree=458
+  raster_fail #9: net='net_77665' src=(228,156) sink=(177,116) dist=91 tree=557
+  raster_fail #10: net='net_77665' src=(228,156) sink=(165,114) dist=105 tree=557
+  raster_fail #11: net='net_52724' src=(214,114) sink=(193,104) dist=31 tree=135
+  raster_fail #12: net='net_81670' src=(206,85) sink=(183,111) dist=49 tree=347
+  raster_fail #13: net='net_80476' src=(169,97) sink=(218,117) dist=69 tree=382
+  raster_fail #14: net='net_80476' src=(169,97) sink=(223,115) dist=72 tree=382
+  raster_fail #15: net='net_85954' src=(197,96) sink=(221,104) dist=32 tree=128
+  raster_fail #16: net='net_75417' src=(246,115) sink=(205,101) dist=55 tree=520
+  raster_fail #17: net='net_98931' src=(242,104) sink=(161,113) dist=90 tree=698
+  raster_fail #18: net='net_39603' src=(188,89) sink=(175,113) dist=37 tree=216
+  raster_fail #19: net='net_39603' src=(188,89) sink=(205,120) dist=48 tree=216
+  raster_fail #20: net='net_23658' src=(263,111) sink=(194,118) dist=76 tree=700
+  raster_fail #21: net='net_23658' src=(263,111) sink=(188,102) dist=84 tree=700
+  raster_fail #22: net='net_6686' src=(101,108) sink=(206,97) dist=116 tree=1009
+  raster_fail #23: net='net_47232' src=(171,84) sink=(203,102) dist=50 tree=369
+  raster_fail #24: net='net_1609' src=(241,82) sink=(231,97) dist=25 tree=368
+  raster_fail #25: net='net_1609' src=(241,82) sink=(226,97) dist=30 tree=368
+  raster_fail #26: net='net_59800' src=(203,122) sink=(193,100) dist=32 tree=245
+  raster_fail #27: net='net_102704' src=(232,91) sink=(226,96) dist=11 tree=33
+  raster_fail #28: net='net_42629' src=(253,83) sink=(206,111) dist=75 tree=576
+  raster_fail #29: net='net_1626' src=(187,116) sink=(180,120) dist=11 tree=106
+  raster_fail #30: net='net_1626' src=(187,116) sink=(205,118) dist=20 tree=106
+  raster_fail #31: net='net_1626' src=(187,116) sink=(211,122) dist=30 tree=131
+  raster_fail #32: net='net_99612' src=(228,147) sink=(181,108) dist=86 tree=720
+  raster_fail #33: net='net_52735' src=(170,103) sink=(185,116) dist=28 tree=73
+  raster_fail #34: net='net_10710' src=(175,84) sink=(151,109) dist=49 tree=505
+  raster_fail #35: net='net_45659' src=(198,121) sink=(192,106) dist=21 tree=50
+  raster_fail #36: net='net_62173' src=(223,123) sink=(197,110) dist=39 tree=384
+  raster_fail #37: net='net_912' src=(138,103) sink=(215,122) dist=96 tree=718
+  raster_fail #38: net='net_100786' src=(130,107) sink=(194,113) dist=70 tree=348
+  raster_fail #39: net='net_100786' src=(130,107) sink=(209,121) dist=93 tree=348
+  raster_fail #40: net='net_30621' src=(200,103) sink=(207,111) dist=15 tree=38
+  raster_fail #41: net='net_52924' src=(250,121) sink=(171,99) dist=101 tree=534
+  raster_fail #42: net='net_45651' src=(207,94) sink=(169,101) dist=45 tree=168
+  raster_fail #43: net='net_5908' src=(147,112) sink=(194,103) dist=56 tree=517
+  raster_fail #44: net='net_5908' src=(147,112) sink=(209,105) dist=69 tree=688
+  raster_fail #45: net='net_5908' src=(147,112) sink=(208,99) dist=74 tree=823
+  raster_fail #46: net='net_99237' src=(260,152) sink=(198,120) dist=94 tree=680
+  raster_fail #47: net='net_99237' src=(260,152) sink=(194,113) dist=105 tree=680
+  raster_fail #48: net='net_99237' src=(260,152) sink=(188,112) dist=112 tree=680
+  raster_fail #49: net='net_7928' src=(168,133) sink=(209,117) dist=57 tree=183
+  raster_fail #50: net='net_7928' src=(168,133) sink=(204,108) dist=61 tree=183
+  raster_fail #51: net='net_7928' src=(168,133) sink=(207,107) dist=65 tree=231
+  raster_fail #52: net='net_7928' src=(168,133) sink=(232,101) dist=96 tree=231
+  raster_fail #53: net='net_7928' src=(168,133) sink=(232,99) dist=98 tree=231
+  raster_fail #54: net='net_7928' src=(168,133) sink=(247,101) dist=111 tree=231
+  raster_fail #55: net='net_52768' src=(222,131) sink=(258,162) dist=67 tree=682
+  raster_fail #56: net='net_46971' src=(124,182) sink=(208,118) dist=148 tree=988
+  raster_fail #57: net='net_49518' src=(229,99) sink=(203,97) dist=28 tree=34
+  raster_fail #58: net='net_49518' src=(229,99) sink=(186,100) dist=44 tree=34
+  raster_fail #59: net='net_77745' src=(262,103) sink=(206,107) dist=60 tree=760
+  raster_fail #60: net='net_77745' src=(262,103) sink=(180,111) dist=90 tree=848
+  raster_fail #61: net='net_77745' src=(262,103) sink=(171,108) dist=96 tree=848
+  raster_fail #62: net='net_31564' src=(252,124) sink=(199,121) dist=56 tree=450
+  raster_fail #63: net='net_10176' src=(196,101) sink=(180,99) dist=18 tree=97
+  raster_fail #64: net='net_10176' src=(196,101) sink=(187,116) dist=24 tree=97
+  raster_fail #65: net='net_10176' src=(196,101) sink=(175,110) dist=30 tree=97
+  raster_fail #66: net='net_10176' src=(196,101) sink=(158,111) dist=48 tree=97
+  raster_fail #67: net='net_52977' src=(237,105) sink=(167,107) dist=72 tree=467
+  raster_fail #68: net='net_23613' src=(276,175) sink=(211,97) dist=143 tree=611
+  raster_fail #69: net='net_47309' src=(113,91) sink=(219,113) dist=128 tree=369
+  raster_fail #70: net='net_98930' src=(245,57) sink=(198,96) dist=86 tree=427
+  raster_fail #71: net='net_98930' src=(245,57) sink=(197,96) dist=87 tree=427
+  raster_fail #72: net='net_98930' src=(245,57) sink=(193,96) dist=91 tree=427
+  raster_fail #73: net='net_98930' src=(245,57) sink=(193,98) dist=93 tree=556
+  raster_fail #74: net='net_98930' src=(245,57) sink=(189,97) dist=96 tree=556
+  raster_fail #75: net='net_75690' src=(260,88) sink=(196,100) dist=76 tree=508
+  raster_fail #76: net='net_77793' src=(265,141) sink=(177,110) dist=119 tree=659
+  raster_fail #77: net='net_31538' src=(255,108) sink=(181,107) dist=75 tree=672
+  raster_fail #78: net='net_45297' src=(199,117) sink=(215,115) dist=18 tree=1
+  raster_fail #79: net='net_25584' src=(242,113) sink=(160,119) dist=88 tree=531
+  raster_fail #80: net='net_25584' src=(242,113) sink=(123,115) dist=121 tree=531
+  raster_fail #81: net='net_25584' src=(242,113) sink=(113,112) dist=130 tree=531
+  raster_fail #82: net='net_2315' src=(218,107) sink=(230,112) dist=17 tree=59
+  raster_fail #83: net='net_2315' src=(218,107) sink=(226,95) dist=20 tree=59
+  raster_fail #84: net='net_2315' src=(218,107) sink=(235,111) dist=21 tree=59
+  raster_fail #85: net='net_2315' src=(218,107) sink=(198,113) dist=26 tree=200
+  raster_fail #86: net='net_62136' src=(217,111) sink=(197,110) dist=21 tree=98
+  raster_fail #87: net='net_62136' src=(217,111) sink=(194,114) dist=26 tree=98
+  raster_fail #88: net='net_11424' src=(258,64) sink=(214,105) dist=85 tree=280
+  raster_fail #89: net='net_11424' src=(258,64) sink=(207,103) dist=90 tree=280
+  raster_fail #90: net='net_11424' src=(258,64) sink=(187,102) dist=109 tree=418
+  raster_fail #91: net='net_11424' src=(258,64) sink=(183,105) dist=116 tree=418
+  raster_fail #92: net='net_11424' src=(258,64) sink=(173,101) dist=122 tree=418
+  raster_fail #93: net='net_11424' src=(258,64) sink=(170,107) dist=131 tree=418
+  raster_fail #94: net='net_11424' src=(258,64) sink=(166,117) dist=145 tree=418
+  raster_fail #95: net='net_31500' src=(189,64) sink=(217,104) dist=68 tree=1
+  raster_fail #96: net='net_87241' src=(164,133) sink=(200,119) dist=50 tree=359
+  raster_fail #97: net='net_89876' src=(187,137) sink=(202,101) dist=51 tree=376
+  raster_fail #98: net='net_104738' src=(133,99) sink=(206,99) dist=73 tree=623
+  raster_fail #99: net='net_104738' src=(133,99) sink=(212,105) dist=85 tree=705
+  pass 0 progress: 1269/105054 lf nets, routed=1331, failed=2, 60.2s, 21.08 nets/s
+  pass 0 progress: 1448/105054 lf nets, routed=1509, failed=3, 120.4s, 12.02 nets/s
+  pass 0 progress: 1604/105054 lf nets, routed=1662, failed=6, 180.9s, 8.87 nets/s
+  pass 0 progress: 1768/105054 lf nets, routed=1823, failed=9, 241.7s, 7.31 nets/s
+  pass 0 progress: 1915/105054 lf nets, routed=1966, failed=13, 301.9s, 6.34 nets/s
+  pass 0 progress: 2041/105054 lf nets, routed=2085, failed=20, 362.1s, 5.64 nets/s
+  pass 0 progress: 2150/105054 lf nets, routed=2188, failed=26, 422.9s, 5.08 nets/s
+  pass 0 progress: 2283/105054 lf nets, routed=2315, failed=32, 484.3s, 4.71 nets/s
+  pass 0 progress: 2414/105054 lf nets, routed=2438, failed=40, 544.5s, 4.43 nets/s
+  pass 0 progress: 2511/105054 lf nets, routed=2530, failed=45, 605.6s, 4.15 nets/s
+  pass 0 progress: 2631/105054 lf nets, routed=2643, failed=52, 666.9s, 3.95 nets/s
+  pass 0 progress: 2766/105054 lf nets, routed=2768, failed=62, 727.8s, 3.80 nets/s
+  pass 0 progress: 2889/105054 lf nets, routed=2885, failed=68, 788.0s, 3.67 nets/s
+  pass 0 progress: 2993/105054 lf nets, routed=2978, failed=79, 848.5s, 3.53 nets/s
+  pass 0 progress: 3100/105054 lf nets, routed=3075, failed=89, 908.8s, 3.41 nets/s
+  pass 0 progress: 3232/105054 lf nets, routed=3199, failed=97, 969.5s, 3.33 nets/s
+  pass 0 progress: 3365/105054 lf nets, routed=3323, failed=106, 1030.2s, 3.27 nets/s
+  pass 0 progress: 3480/105054 lf nets, routed=3426, failed=118, 1090.8s, 3.19 nets/s
+  pass 0 progress: 3604/105054 lf nets, routed=3536, failed=132, 1151.7s, 3.13 nets/s
+  pass 0 progress: 3740/105054 lf nets, routed=3661, failed=143, 1212.4s, 3.08 nets/s
+  pass 0 progress: 3854/105054 lf nets, routed=3760, failed=158, 1272.9s, 3.03 nets/s
+  pass 0 progress: 3960/105054 lf nets, routed=3850, failed=174, 1333.9s, 2.97 nets/s
+  pass 0 progress: 4071/105054 lf nets, routed=3945, failed=190, 1394.2s, 2.92 nets/s
+  pass 0 progress: 4191/105054 lf nets, routed=4051, failed=204, 1455.2s, 2.88 nets/s
+  pass 0 progress: 4326/105054 lf nets, routed=4171, failed=219, 1515.8s, 2.85 nets/s
+  pass 0 progress: 4449/105054 lf nets, routed=4284, failed=229, 1576.8s, 2.82 nets/s
+  pass 0 progress: 4576/105054 lf nets, routed=4400, failed=240, 1637.1s, 2.80 nets/s
+  pass 0 progress: 4696/105054 lf nets, routed=4508, failed=252, 1697.3s, 2.77 nets/s
+  pass 0 progress: 4830/105054 lf nets, routed=4632, failed=262, 1758.1s, 2.75 nets/s
+  pass 0 progress: 4935/105054 lf nets, routed=4724, failed=275, 1818.2s, 2.71 nets/s
+  pass 0 progress: 5000/105054 lf nets, routed=4778, failed=286, 1855.1s, 2.70 nets/s
+  pass 0 progress: 5116/105054 lf nets, routed=4884, failed=296, 1915.2s, 2.67 nets/s
+  pass 0 progress: 5240/105054 lf nets, routed=4994, failed=310, 1975.8s, 2.65 nets/s
+  pass 0 progress: 5370/105054 lf nets, routed=5107, failed=327, 2036.3s, 2.64 nets/s
+  pass 0 progress: 5508/105054 lf nets, routed=5225, failed=347, 2096.3s, 2.63 nets/s
+  pass 0 progress: 5654/105054 lf nets, routed=5353, failed=365, 2156.4s, 2.62 nets/s
+  pass 0 progress: 5771/105054 lf nets, routed=5447, failed=388, 2216.6s, 2.60 nets/s
+  pass 0 progress: 5907/105054 lf nets, routed=5564, failed=407, 2276.6s, 2.59 nets/s
+  pass 0 progress: 6036/105054 lf nets, routed=5672, failed=428, 2337.6s, 2.58 nets/s
+  pass 0 progress: 6179/105054 lf nets, routed=5797, failed=446, 2398.2s, 2.58 nets/s
+  pass 0 progress: 6292/105054 lf nets, routed=5889, failed=467, 2459.4s, 2.56 nets/s
+  pass 0 progress: 6421/105054 lf nets, routed=6001, failed=484, 2519.4s, 2.55 nets/s
+  pass 0 progress: 6565/105054 lf nets, routed=6127, failed=502, 2579.9s, 2.54 nets/s
+  pass 0 progress: 6703/105054 lf nets, routed=6252, failed=515, 2640.0s, 2.54 nets/s
+  pass 0 progress: 6819/105054 lf nets, routed=6345, failed=538, 2700.8s, 2.52 nets/s
+  pass 0 progress: 6960/105054 lf nets, routed=6465, failed=559, 2761.6s, 2.52 nets/s
+  pass 0 progress: 7096/105054 lf nets, routed=6581, failed=579, 2822.3s, 2.51 nets/s
+  pass 0 progress: 7230/105054 lf nets, routed=6701, failed=593, 2883.4s, 2.51 nets/s
+  pass 0 progress: 7348/105054 lf nets, routed=6800, failed=612, 2943.5s, 2.50 nets/s
+  pass 0 progress: 7458/105054 lf nets, routed=6894, failed=628, 3003.8s, 2.48 nets/s
+  pass 0 progress: 7565/105054 lf nets, routed=6977, failed=652, 3063.8s, 2.47 nets/s
+  pass 0 progress: 7679/105054 lf nets, routed=7072, failed=671, 3124.0s, 2.46 nets/s
+  pass 0 progress: 7820/105054 lf nets, routed=7194, failed=690, 3185.2s, 2.46 nets/s
+  pass 0 progress: 7933/105054 lf nets, routed=7284, failed=713, 3245.3s, 2.44 nets/s
+  pass 0 progress: 8051/105054 lf nets, routed=7381, failed=734, 3306.3s, 2.44 nets/s
+  pass 0 progress: 8162/105054 lf nets, routed=7473, failed=753, 3366.3s, 2.42 nets/s
+  pass 0 progress: 8307/105054 lf nets, routed=7598, failed=773, 3426.4s, 2.42 nets/s
+  pass 0 progress: 8468/105054 lf nets, routed=7737, failed=795, 3486.6s, 2.43 nets/s
+  pass 0 progress: 8649/105054 lf nets, routed=7893, failed=820, 3546.7s, 2.44 nets/s
+  pass 0 progress: 8810/105054 lf nets, routed=8027, failed=847, 3607.0s, 2.44 nets/s
+  pass 0 progress: 8966/105054 lf nets, routed=8159, failed=871, 3667.1s, 2.44 nets/s
+  pass 0 progress: 9141/105054 lf nets, routed=8307, failed=898, 3727.2s, 2.45 nets/s
+  pass 0 progress: 9307/105054 lf nets, routed=8448, failed=923, 3787.6s, 2.46 nets/s
+  pass 0 progress: 9458/105054 lf nets, routed=8578, failed=944, 3848.0s, 2.46 nets/s
+  pass 0 progress: 9640/105054 lf nets, routed=8734, failed=970, 3908.2s, 2.47 nets/s
+  pass 0 progress: 9822/105054 lf nets, routed=8891, failed=995, 3969.1s, 2.47 nets/s
+  pass 0 progress: 10000/105054 lf nets, routed=9043, failed=1021, 4026.5s, 2.48 nets/s
+  pass 0 progress: 10136/105054 lf nets, routed=9150, failed=1050, 4087.3s, 2.48 nets/s
+  pass 0 progress: 10295/105054 lf nets, routed=9283, failed=1076, 4147.4s, 2.48 nets/s
+  pass 0 progress: 10446/105054 lf nets, routed=9404, failed=1106, 4208.1s, 2.48 nets/s
+  pass 0 progress: 10628/105054 lf nets, routed=9562, failed=1130, 4268.2s, 2.49 nets/s
+  pass 0 progress: 10809/105054 lf nets, routed=9717, failed=1156, 4328.2s, 2.50 nets/s
+  pass 0 progress: 10971/105054 lf nets, routed=9850, failed=1185, 4388.8s, 2.50 nets/s
+  pass 0 progress: 11157/105054 lf nets, routed=10008, failed=1213, 4449.3s, 2.51 nets/s
+  pass 0 progress: 11308/105054 lf nets, routed=10134, failed=1238, 4509.4s, 2.51 nets/s
+  pass 0 progress: 11460/105054 lf nets, routed=10254, failed=1270, 4570.1s, 2.51 nets/s
+  pass 0 progress: 11595/105054 lf nets, routed=10358, failed=1301, 4630.1s, 2.50 nets/s
+  pass 0 progress: 11743/105054 lf nets, routed=10480, failed=1327, 4690.5s, 2.50 nets/s
+  pass 0 progress: 11915/105054 lf nets, routed=10627, failed=1352, 4751.4s, 2.51 nets/s
+  pass 0 progress: 12072/105054 lf nets, routed=10754, failed=1382, 4811.6s, 2.51 nets/s
+  pass 0 progress: 12206/105054 lf nets, routed=10856, failed=1414, 4871.7s, 2.51 nets/s
+  pass 0 progress: 12352/105054 lf nets, routed=10972, failed=1444, 4932.1s, 2.50 nets/s
+  pass 0 progress: 12509/105054 lf nets, routed=11099, failed=1474, 4992.2s, 2.51 nets/s
+  pass 0 progress: 12644/105054 lf nets, routed=11205, failed=1503, 5052.7s, 2.50 nets/s
+  pass 0 progress: 12796/105054 lf nets, routed=11328, failed=1532, 5112.9s, 2.50 nets/s
+  pass 0 progress: 12939/105054 lf nets, routed=11438, failed=1565, 5172.9s, 2.50 nets/s
+  pass 0 progress: 13139/105054 lf nets, routed=11607, failed=1596, 5233.5s, 2.51 nets/s
+  pass 0 progress: 13370/105054 lf nets, routed=11799, failed=1635, 5293.6s, 2.53 nets/s
+  pass 0 progress: 13568/105054 lf nets, routed=11949, failed=1683, 5353.9s, 2.53 nets/s
