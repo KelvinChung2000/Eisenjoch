@@ -103,11 +103,17 @@ fn main() {
         .map(|v| v.parse().expect("NPNR_ROUTE_CLEANUP_VISITS must be an integer"));
     eprintln!("cleanup_visit_limit: {cleanup_visit_limit:?}");
 
+    // Cleanup recovers 1.4% of failed nets at 8.1s each. Skipping it asks
+    // whether the pass loop's tile congestion history converges on its own.
+    let skip_cleanup = env::var("NPNR_ROUTE_SKIP_CLEANUP").ok().as_deref() == Some("1");
+    eprintln!("skip_cleanup: {skip_cleanup}");
+
     let cfg = RasterRouterCfg {
         max_iterations: route_iters,
         verbose: true,
         sink_visit_limit,
         cleanup_visit_limit,
+        skip_cleanup,
         ..RasterRouterCfg::default()
     };
     let t_route = Instant::now();
