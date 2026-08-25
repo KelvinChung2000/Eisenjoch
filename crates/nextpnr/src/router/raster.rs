@@ -513,6 +513,11 @@ pub struct RasterRouterCfg {
     pub bbox_margin: i32,
     /// If true, use pure greedy line-walk instead of beam search.
     pub use_greedy: bool,
+    /// Per-sink A* pop budget. `None` defers to the kernel default, which on
+    /// FPGA01 lets a doomed sink spend ~214k pops, 44x a successful one and
+    /// over half the router's total pops. A flat cap trades those for sinks
+    /// that would have been found late in the search.
+    pub sink_visit_limit: Option<usize>,
     pub verbose: bool,
 }
 
@@ -527,6 +532,7 @@ impl Default for RasterRouterCfg {
             max_beam_steps: 1000,
             bbox_margin: 8,
             use_greedy: false,
+            sink_visit_limit: None,
             verbose: false,
         }
     }
@@ -843,6 +849,7 @@ fn route_sink_astar(
     bbox: Option<&BoundingBox>,
     cong: &CongestionMap,
     cong_weight: f32,
+    sink_visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
     let model = RasterCostModel {
         net,
@@ -851,7 +858,7 @@ fn route_sink_astar(
         cong_weight,
     };
     let opts = AStarOptions {
-        visit_limit: None,
+        visit_limit: sink_visit_limit,
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: true,
@@ -1422,6 +1429,7 @@ fn route_net_raster(
             bbox.as_ref(),
             cong,
             cong_weight,
+            cfg.sink_visit_limit,
         ) {
             Some(pips) => {
                 for &pip in &pips {
