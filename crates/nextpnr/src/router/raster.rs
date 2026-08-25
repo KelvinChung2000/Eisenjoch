@@ -763,13 +763,21 @@ impl<'a> PathCostModel for RasterCostModel<'a> {
         1
     }
 
-    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
-        if let Some((owner, _)) = ctx.wire_binding(wire) {
-            if owner != self.net {
-                return DelayT::MAX / 4;
-            }
-        }
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
         (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
+    }
+
+    /// Wire binding is exclusive, so a route onto another net's wire is
+    /// rejected by `apply_route_plan` however cheaply the search priced it.
+    /// Excluding the wire here rather than charging `DelayT::MAX / 4` keeps it
+    /// out of the heap: a soft penalty still admits the wire, and four of them
+    /// on one path sum past `i32::MAX` and wrap the score negative, which
+    /// makes the blocked region look cheapest.
+    fn is_blocked(&self, ctx: &Context, wire: WireId) -> bool {
+        match ctx.wire_binding(wire) {
+            Some((owner, _)) => owner != self.net,
+            None => false,
+        }
     }
 
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
@@ -1735,6 +1743,8 @@ impl super::Router for RasterRouter {
             }
 
             let mut hf_routed = 0usize;
+            let mut apply_conflicts = 0usize;
+            let mut empty_plans = 0usize;
             for &net in &hf_nets {
                 let result = if cfg.use_greedy {
                     route_net_greedy(ctx, net, &cong, cong_weight, cfg)
@@ -1753,9 +1763,15 @@ impl super::Router for RasterRouter {
                                 }
                                 hf_routed += 1;
                             }
-                            Err(_conflict) => {}
+                            Err(_conflict) => {
+                                apply_conflicts += 1;
+                            }
                         }
+                    } else {
+                        empty_plans += 1;
                     }
+                } else {
+                    empty_plans += 1;
                 }
             }
 
@@ -1803,11 +1819,13 @@ impl super::Router for RasterRouter {
                             }
                             Err(_conflict) => {
                                 failed += 1;
+                                apply_conflicts += 1;
                             }
                         }
                     }
                     _ => {
                         failed += 1;
+                        empty_plans += 1;
                     }
                 }
                 if cfg.verbose
@@ -1843,6 +1861,11 @@ impl super::Router for RasterRouter {
             eprintln!(
                 "RasterRouter pass {}: routed={}, failed={}, tile_cong={}, wire_cong={}, max_usage={:.0}, wl={}, cong_w={:.2}",
                 iter, routed, failed, congested, wire_congested, cong.max_usage(), wl, cong_weight,
+            );
+            eprintln!("  pass {} astar: {}", iter, astar_probe::summary());
+            eprintln!(
+                "  pass {} failmode: apply_conflicts={} empty_plans={}  astar:{}",
+                iter, apply_conflicts, empty_plans, astar_probe::summary(),
             );
 
             if routed > best_routed || (routed == best_routed && wl < best_wl) {
@@ -2308,5 +2331,63 @@ impl super::Router for RasterRouter {
             cfg.max_iterations,
             cong.num_congested_tiles(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chipdb::testutil::make_test_chipdb;
+    use crate::common::PlaceStrength;
+
+    /// The synthetic chipdb gives each tile one pip, W0 -> W1, and no
+    /// inter-tile nodes, so tile 0's W1 is reachable from its W0 by exactly
+    /// one hop and by no other route.
+    const W0: WireId = WireId::new(0, 0);
+    const W1: WireId = WireId::new(0, 1);
+
+    fn ctx_with_two_nets() -> (Context, NetId, NetId) {
+        let mut ctx = Context::new(make_test_chipdb());
+        let owner_name = ctx.id("owner");
+        let intruder_name = ctx.id("intruder");
+        let owner = ctx.design.add_net(owner_name);
+        let intruder = ctx.design.add_net(intruder_name);
+        (ctx, owner, intruder)
+    }
+
+    fn route_w0_to_w1(ctx: &Context, net: NetId) -> Option<Vec<PipId>> {
+        let cong = CongestionMap::new(ctx.chipdb().width(), ctx.chipdb().height());
+        let mut src = FxHashSet::default();
+        src.insert(W0);
+        route_sink_astar(ctx, net, &src, W1, None, &cong, 0.0, Some(10_000))
+    }
+
+    #[test]
+    fn routes_to_a_free_sink_wire() {
+        let (ctx, _owner, intruder) = ctx_with_two_nets();
+        let pips = route_w0_to_w1(&ctx, intruder).expect("W0 -> W1 is one pip");
+        assert_eq!(pips.len(), 1);
+    }
+
+    /// A wire bound to another net cannot carry this net's route: binding is
+    /// exclusive, so a plan that lands on one is rejected by
+    /// `apply_route_plan` after the search has already paid for it. The
+    /// search must refuse the wire instead of pricing it.
+    #[test]
+    fn refuses_to_plan_through_a_foreign_bound_wire() {
+        let (mut ctx, owner, intruder) = ctx_with_two_nets();
+        ctx.try_bind_wire_node(W1, owner, PlaceStrength::Strong)
+            .expect("W1 is free before the test binds it");
+        assert!(route_w0_to_w1(&ctx, intruder).is_none());
+    }
+
+    /// The net's own wires stay usable: a partial tree is extended through
+    /// the wires it already holds.
+    #[test]
+    fn plans_through_its_own_bound_wire() {
+        let (mut ctx, _owner, intruder) = ctx_with_two_nets();
+        ctx.try_bind_wire_node(W1, intruder, PlaceStrength::Strong)
+            .expect("W1 is free before the test binds it");
+        assert!(route_w0_to_w1(&ctx, intruder).is_some());
     }
 }
