@@ -771,6 +771,70 @@ impl<'a> PathCostModel for RasterCostModel<'a> {
     }
 }
 
+/// Per-sink A* cost, accumulated across a pass. The progress line reports
+/// ~320ms per net processed on FPGA01 without saying where it goes; these
+/// counters split it by search outcome so a cheap `Reached` is distinguishable
+/// from one that grinds to `max_visits`.
+mod astar_probe {
+    use super::AStarExit;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    pub struct Bucket {
+        pub calls: AtomicUsize,
+        pub pops: AtomicUsize,
+        pub at_limit: AtomicUsize,
+    }
+
+    impl Bucket {
+        const fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                pops: AtomicUsize::new(0),
+                at_limit: AtomicUsize::new(0),
+            }
+        }
+        pub fn take(&self) -> (usize, usize, usize) {
+            (
+                self.calls.load(Relaxed),
+                self.pops.load(Relaxed),
+                self.at_limit.load(Relaxed),
+            )
+        }
+    }
+
+    pub static REACHED: Bucket = Bucket::new();
+    pub static DRAINED: Bucket = Bucket::new();
+    pub static LIMITED: Bucket = Bucket::new();
+
+    /// `at_limit` counts searches that used at least 90% of the budget in
+    /// effect, which catches a `Reached` that only just beat the cap.
+    pub fn record(exit: AStarExit, visit_count: usize, max_visits: usize) {
+        let b = match exit {
+            AStarExit::Reached => &REACHED,
+            AStarExit::HeapDrained => &DRAINED,
+            AStarExit::VisitLimit => &LIMITED,
+        };
+        b.calls.fetch_add(1, Relaxed);
+        b.pops.fetch_add(visit_count, Relaxed);
+        if max_visits > 0 && visit_count * 10 >= max_visits * 9 {
+            b.at_limit.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// One line summarising mean pops per sink by exit reason.
+    pub fn summary() -> String {
+        let mut out = String::new();
+        for (name, b) in [("reached", &REACHED), ("drained", &DRAINED), ("limited", &LIMITED)] {
+            let (calls, pops, at_limit) = b.take();
+            let mean = if calls > 0 { pops as f64 / calls as f64 } else { 0.0 };
+            out.push_str(&format!(
+                " {name}={calls} pops/sink={mean:.0} at_limit={at_limit}"
+            ));
+        }
+        out
+    }
+}
+
 fn route_sink_astar(
     ctx: &Context,
     net: NetId,
@@ -792,7 +856,9 @@ fn route_sink_astar(
         retain_trace: false,
         stop_on_first_touch: true,
     };
-    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
+    let res = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+    astar_probe::record(res.trace.exit, res.trace.visit_count, res.trace.max_visits);
+    res.path
 }
 
 // ---------------------------------------------------------------------------
@@ -1713,7 +1779,7 @@ impl super::Router for RasterRouter {
                     last_progress = std::time::Instant::now();
                     let secs = t_lf.elapsed().as_secs_f64();
                     eprintln!(
-                        "  pass {} progress: {}/{} lf nets, routed={}, failed={}, {:.1}s, {:.2} nets/s",
+                        "  pass {} progress: {}/{} lf nets, routed={}, failed={}, {:.1}s, {:.2} nets/s  astar:{}",
                         iter,
                         i + 1,
                         lf_nets.len(),
@@ -1721,6 +1787,7 @@ impl super::Router for RasterRouter {
                         failed,
                         secs,
                         (i + 1) as f64 / secs,
+                        astar_probe::summary(),
                     );
                 }
             }
