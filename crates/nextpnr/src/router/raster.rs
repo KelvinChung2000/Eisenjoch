@@ -521,6 +521,12 @@ pub struct RasterRouterCfg {
     /// Same budget for the per-iteration cleanup A*, which the pass-0 cap does
     /// not reach. `None` keeps the derived default.
     pub cleanup_visit_limit: Option<usize>,
+    /// Drop the per-iteration cleanup stage and let the pass loop's tile
+    /// congestion history carry the design on its own. Also unfreezes partial
+    /// trees at the rip-up gate: they are preserved only so cleanup A* can
+    /// extend them, so keeping that half without the other floors the unrouted
+    /// count at however many partials pass 0 left.
+    pub skip_cleanup: bool,
     pub verbose: bool,
 }
 
@@ -537,6 +543,7 @@ impl Default for RasterRouterCfg {
             use_greedy: false,
             sink_visit_limit: None,
             cleanup_visit_limit: None,
+            skip_cleanup: false,
             verbose: false,
         }
     }
@@ -1621,6 +1628,7 @@ impl super::Router for RasterRouter {
                 // preserved (see below) and empty ones have nothing to release,
                 // so the former `to_unroute` list was always empty and its
                 // `unroute_net` loop never ran.
+                let mut partials_to_rip: Vec<NetId> = Vec::new();
                 for idx in ctx.design.iter_net_indices() {
                     let n = ctx.net(idx);
                     if !n.is_alive() || !n.has_driver() || n.num_users() == 0 {
@@ -1631,6 +1639,14 @@ impl super::Router for RasterRouter {
                     // (An explicit `drop(n)` here was a no-op: `Net<'_>` is Copy.)
                     let empty = n.wires().is_empty();
                     if empty || !net_fully_routed(ctx, idx) {
+                        if !empty && cfg.skip_cleanup {
+                            // No cleanup stage to extend this partial, so the
+                            // pass loop is its only remaining chance. Ripped up
+                            // after this loop: `iter_net_indices` holds ctx
+                            // immutably.
+                            partials_to_rip.push(idx);
+                            continue;
+                        }
                         if !empty {
                             // Never rip up a partial tree at the gate. A
                             // partial is concrete progress (e.g. tree=853 on a
@@ -1648,6 +1664,16 @@ impl super::Router for RasterRouter {
                         // failed → empty plan → no source bind).
                         to_retry.push(idx);
                     }
+                }
+                // Usage is read off `net.wires()`, so release it before the
+                // unroute, matching the congested loop above.
+                for &idx in &partials_to_rip {
+                    neg_state.remove_net_usage(&ctx.design, idx);
+                    unroute_net(ctx, idx);
+                    to_retry.push(idx);
+                }
+                if cfg.skip_cleanup {
+                    eprintln!("  pass {} gate: {} partials ripped up", iter, partials_to_rip.len());
                 }
                 eprintln!(
                     "  pass {} gate: bumped={} sticky_skipped={} (threshold={})",
@@ -1846,7 +1872,22 @@ impl super::Router for RasterRouter {
                         && !net_fully_routed(ctx, net)
                 })
                 .collect();
-            if !failed_nets.is_empty() {
+            if cfg.skip_cleanup {
+                // Ground truth, not the pass counter: `routed` counts a net
+                // whose plan applied with sinks missing, so `failed` alone
+                // undercounts by the number of partials.
+                let empty_trees = failed_nets
+                    .iter()
+                    .filter(|&&n| ctx.net(n).wires().is_empty())
+                    .count();
+                failed = failed_nets.len();
+                eprintln!(
+                    "  skip_cleanup: {} unrouted ({} empty, {} partial)",
+                    failed,
+                    empty_trees,
+                    failed - empty_trees,
+                );
+            } else if !failed_nets.is_empty() {
                 // Route const nets first: their per-sink lookup is O(1) and
                 // deterministic, so we never lose a const net to the wall-clock
                 // budget getting burned by a slow non-const A*.
