@@ -763,21 +763,13 @@ impl<'a> PathCostModel for RasterCostModel<'a> {
         1
     }
 
-    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
-        (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
-    }
-
-    /// Wire binding is exclusive, so a route onto another net's wire is
-    /// rejected by `apply_route_plan` however cheaply the search priced it.
-    /// Excluding the wire here rather than charging `DelayT::MAX / 4` keeps it
-    /// out of the heap: a soft penalty still admits the wire, and four of them
-    /// on one path sum past `i32::MAX` and wrap the score negative, which
-    /// makes the blocked region look cheapest.
-    fn is_blocked(&self, ctx: &Context, wire: WireId) -> bool {
-        match ctx.wire_binding(wire) {
-            Some((owner, _)) => owner != self.net,
-            None => false,
+    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
+        if let Some((owner, _)) = ctx.wire_binding(wire) {
+            if owner != self.net {
+                return DelayT::MAX / 4;
+            }
         }
+        (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
     }
 
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
@@ -2369,16 +2361,23 @@ mod tests {
         assert_eq!(pips.len(), 1);
     }
 
-    /// A wire bound to another net cannot carry this net's route: binding is
-    /// exclusive, so a plan that lands on one is rejected by
-    /// `apply_route_plan` after the search has already paid for it. The
-    /// search must refuse the wire instead of pricing it.
+    /// The search prices a foreign-bound wire at `DelayT::MAX / 4` rather
+    /// than excluding it, so it can return a plan `apply_route_plan` must
+    /// reject. Excluding it via `PathCostModel::is_blocked` was built and
+    /// measured: FPGA01 pass 0 kept identical search sizes (177852 sinks
+    /// reached at 3217 pops each, 83703 capped) and identical outcomes
+    /// (82069 routed, 41560 unrouted) while wall time rose 1005s -> 1175s,
+    /// because every candidate edge then pays a `wire_binding` lookup on top
+    /// of the one `wire_penalty` already does. The rejected plans it would
+    /// have saved do not exist: `apply_conflicts` is 0 on both FPGA01 and
+    /// stereovision3. This test pins the behaviour so the exclusion is not
+    /// reintroduced as an obvious cleanup.
     #[test]
-    fn refuses_to_plan_through_a_foreign_bound_wire() {
+    fn prices_a_foreign_bound_wire_rather_than_excluding_it() {
         let (mut ctx, owner, intruder) = ctx_with_two_nets();
         ctx.try_bind_wire_node(W1, owner, PlaceStrength::Strong)
             .expect("W1 is free before the test binds it");
-        assert!(route_w0_to_w1(&ctx, intruder).is_none());
+        assert!(route_w0_to_w1(&ctx, intruder).is_some());
     }
 
     /// The net's own wires stay usable: a partial tree is extended through
