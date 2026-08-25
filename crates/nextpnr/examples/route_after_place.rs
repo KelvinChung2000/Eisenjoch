@@ -98,10 +98,16 @@ fn main() {
         .map(|v| v.parse().expect("NPNR_ROUTE_SINK_VISITS must be an integer"));
     eprintln!("sink_visit_limit: {sink_visit_limit:?}");
 
+    let cleanup_visit_limit = env::var("NPNR_ROUTE_CLEANUP_VISITS")
+        .ok()
+        .map(|v| v.parse().expect("NPNR_ROUTE_CLEANUP_VISITS must be an integer"));
+    eprintln!("cleanup_visit_limit: {cleanup_visit_limit:?}");
+
     let cfg = RasterRouterCfg {
         max_iterations: route_iters,
         verbose: true,
         sink_visit_limit,
+        cleanup_visit_limit,
         ..RasterRouterCfg::default()
     };
     let t_route = Instant::now();

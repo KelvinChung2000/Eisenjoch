@@ -518,6 +518,9 @@ pub struct RasterRouterCfg {
     /// over half the router's total pops. A flat cap trades those for sinks
     /// that would have been found late in the search.
     pub sink_visit_limit: Option<usize>,
+    /// Same budget for the per-iteration cleanup A*, which the pass-0 cap does
+    /// not reach. `None` keeps the derived default.
+    pub cleanup_visit_limit: Option<usize>,
     pub verbose: bool,
 }
 
@@ -533,6 +536,7 @@ impl Default for RasterRouterCfg {
             bbox_margin: 8,
             use_greedy: false,
             sink_visit_limit: None,
+            cleanup_visit_limit: None,
             verbose: false,
         }
     }
@@ -1908,8 +1912,28 @@ impl super::Router for RasterRouter {
                     );
 
                     let mut cleanup_routed = 0usize;
+                    // The loop below ran 73 minutes on FPGA01's 41560 failed
+                    // nets without printing anything, so its rate was unknown.
+                    let mut cleanup_ripups = 0usize;
+                    let t_cleanup = std::time::Instant::now();
+                    let mut last_cleanup_report = t_cleanup;
 
-                    for &net in &failed_nets {
+                    for (cleanup_i, &net) in failed_nets.iter().enumerate() {
+                        if cfg.verbose
+                            && last_cleanup_report.elapsed() >= std::time::Duration::from_secs(60)
+                        {
+                            last_cleanup_report = std::time::Instant::now();
+                            let secs = t_cleanup.elapsed().as_secs_f64();
+                            eprintln!(
+                                "  cleanup progress: {}/{} nets, routed={}, ripups={}, {:.1}s, {:.2} nets/s",
+                                cleanup_i,
+                                failed_nets.len(),
+                                cleanup_routed,
+                                cleanup_ripups,
+                                secs,
+                                cleanup_i as f64 / secs,
+                            );
+                        }
                         let source_wire = match resolve_source_wire(ctx, net) {
                             Ok(Some(w)) => w,
                             _ => continue,
@@ -2007,16 +2031,16 @@ impl super::Router for RasterRouter {
 
                             // Spatial bound: a bbox enclosing all of this net's
                             // BEL locations plus a margin scaled by the net's
-                            // span. Inside a finite bbox, A* either finds a
-                            // path or drains its state space — there is no
-                            // legitimate reason to also impose an artificial
-                            // visit cap. Leaving `visit_limit=None` lets the
-                            // astar core compute a default from the bbox.
+                            // span. The bbox is finite but not small: FPGA01
+                            // cleanup FAIL lines report bbox=[0,310]x[0,222],
+                            // the whole chip, so the derived budget reaches the
+                            // full 693k pops per search. `cleanup_visit_limit`
+                            // overrides it; `None` keeps the derived default.
                             let cleanup_margin =
                                 EXPLORE_BBOX_MARGIN_MIN.max(manhattan * EXPLORE_BBOX_SPAN_MULT);
                             let cleanup_bbox =
                                 crate::metrics::compute_bbox(ctx, net, cleanup_margin);
-                            let per_sink_limit: Option<usize> = None;
+                            let per_sink_limit: Option<usize> = cfg.cleanup_visit_limit;
 
                             let route_fn = if manhattan > 50 {
                                 astar_route_multihop
@@ -2132,6 +2156,7 @@ impl super::Router for RasterRouter {
                                 &mut neg_state,
                             ) {
                                 cleanup_routed += 1;
+                                cleanup_ripups += 1;
                                 continue;
                             }
                         }
