@@ -746,10 +746,11 @@ fn raster_corridor(
 // ---------------------------------------------------------------------------
 
 /// Weighted A* cost model: uniform pip cost (g = number of pips) and
-/// manhattan heuristic. h is admissible (≤ true pip count); scaling by
-/// `H_WEIGHT > 1` trades optimality for search speed (returned cost ≤
-/// `H_WEIGHT × optimal`). `H_WEIGHT = 2` is a typical balance.
-const H_WEIGHT: DelayT = 2;
+/// manhattan heuristic. The lookahead build measures ≈2.789 pips per tile of
+/// manhattan distance, so `H_WEIGHT = 2` was still admissible and searched
+/// near-optimally; 3 overestimates by ~7.5% (returned cost ≤ 1.08 × optimal),
+/// trading that slack for a narrower search.
+const H_WEIGHT: DelayT = 3;
 
 struct RasterCostModel<'a> {
     net: NetId,
