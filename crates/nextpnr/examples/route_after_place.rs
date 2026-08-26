@@ -108,12 +108,17 @@ fn main() {
     let skip_cleanup = env::var("NPNR_ROUTE_SKIP_CLEANUP").ok().as_deref() == Some("1");
     eprintln!("skip_cleanup: {skip_cleanup}");
 
+    // Scoped rip-up in the pass loop; cleanup keeps only const/clock paths.
+    let inloop_ripup = env::var("NPNR_ROUTE_INLOOP_RIPUP").ok().as_deref() == Some("1");
+    eprintln!("inloop_ripup: {inloop_ripup}");
+
     let cfg = RasterRouterCfg {
         max_iterations: route_iters,
         verbose: true,
         sink_visit_limit,
         cleanup_visit_limit,
         skip_cleanup,
+        inloop_ripup,
         ..RasterRouterCfg::default()
     };
     let t_route = Instant::now();
