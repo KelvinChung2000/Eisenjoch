@@ -112,6 +112,11 @@ fn main() {
     let inloop_ripup = env::var("NPNR_ROUTE_INLOOP_RIPUP").ok().as_deref() == Some("1");
     eprintln!("inloop_ripup: {inloop_ripup}");
 
+    // PathFinder over-use negotiation; NPNR_ROUTE_PRESENT / _PRESENT_GROWTH /
+    // _HIST_GAIN tune the pricing schedule inside the router.
+    let overuse = env::var("NPNR_ROUTE_OVERUSE").ok().as_deref() == Some("1");
+    eprintln!("overuse: {overuse}");
+
     let cfg = RasterRouterCfg {
         max_iterations: route_iters,
         verbose: true,
@@ -119,6 +124,7 @@ fn main() {
         cleanup_visit_limit,
         skip_cleanup,
         inloop_ripup,
+        overuse,
         ..RasterRouterCfg::default()
     };
     let t_route = Instant::now();

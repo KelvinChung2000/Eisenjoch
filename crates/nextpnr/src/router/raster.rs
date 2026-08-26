@@ -882,6 +882,13 @@ pub struct RasterRouterCfg {
     /// 8.1s each; the sweep spends the budget on the mechanism behind 13 of
     /// cleanup's 14 recoveries instead.
     pub inloop_ripup: bool,
+    /// PathFinder-style negotiation: wires may be over-subscribed within a
+    /// pass, priced by present over-use and accumulated history, and plans
+    /// live in router-owned state until no wire is shared, when they commit
+    /// through `apply_route_plan`. Exclusive binding cannot converge on the
+    /// FPGA01 residual — displacement has to chain (commit c8c34a7) — and
+    /// over-use pricing is the mechanism that chains it.
+    pub overuse: bool,
     pub verbose: bool,
 }
 
@@ -900,6 +907,7 @@ impl Default for RasterRouterCfg {
             cleanup_visit_limit: None,
             skip_cleanup: false,
             inloop_ripup: false,
+            overuse: false,
             verbose: false,
         }
     }
@@ -1848,6 +1856,490 @@ fn route_net_raster(
 }
 
 // ---------------------------------------------------------------------------
+// Over-use negotiation (PathFinder)
+// ---------------------------------------------------------------------------
+
+/// Dense per-wire indexing so occupancy and history live in flat vectors.
+/// The 2.5M-wire chipdb makes hash maps the wrong shape for a value read on
+/// every A* expansion.
+struct WireTable {
+    offsets: Vec<u32>,
+    n: usize,
+}
+
+impl WireTable {
+    fn build(chipdb: &crate::chipdb::ChipDb) -> Self {
+        let n_tiles = chipdb.num_tiles();
+        let mut offsets = Vec::with_capacity(n_tiles as usize + 1);
+        let mut total = 0u32;
+        for t in 0..n_tiles {
+            offsets.push(total);
+            total += chipdb.tile_type(t).wires.get().len() as u32;
+        }
+        offsets.push(total);
+        Self {
+            offsets,
+            n: total as usize,
+        }
+    }
+
+    #[inline]
+    fn idx(&self, w: WireId) -> usize {
+        self.offsets[w.tile() as usize] as usize + w.index() as usize
+    }
+}
+
+/// Canonical flat indices a plan occupies: source, every pip destination and
+/// every sink, each expanded over its node peers and deduplicated, so one net
+/// contributes exactly one unit of demand per routing node it crosses.
+fn plan_wire_indices(ctx: &Context, wt: &WireTable, plan: &RoutePlan) -> Vec<u32> {
+    let chipdb = ctx.chipdb();
+    let mut set: FxHashSet<u32> = FxHashSet::default();
+    let mut add = |set: &mut FxHashSet<u32>, w: WireId| {
+        set.insert(wt.idx(w) as u32);
+        chipdb.node_wires_cb(w, |nw| {
+            set.insert(wt.idx(nw) as u32);
+        });
+    };
+    add(&mut set, plan.source_wire);
+    for sr in &plan.sink_routes {
+        add(&mut set, sr.sink_wire);
+        for &pip in &sr.pips {
+            add(&mut set, chipdb.pip_dst_wire(pip));
+        }
+    }
+    let mut v: Vec<u32> = set.into_iter().collect();
+    v.sort_unstable();
+    v
+}
+
+/// Congestion-priced cost model: a shared wire costs `present × occupancy`
+/// now and `history` for every past pass it stayed shared, instead of the
+/// exclusive model's `DelayT::MAX/4` wall. BEL-pin reservations stay walls —
+/// a foreign net planning through a sink pin's node can never be priced out
+/// of the way, only displaced, which negotiation cannot express.
+struct OveruseCostModel<'a> {
+    net: NetId,
+    bbox: Option<&'a BoundingBox>,
+    wt: &'a WireTable,
+    occ: &'a [u16],
+    hist: &'a [f32],
+    reserved: &'a FxHashMap<WireId, NetId>,
+    present: f32,
+}
+
+impl<'a> PathCostModel for OveruseCostModel<'a> {
+    fn pip_cost(&self, _ctx: &Context, _pip: PipId) -> DelayT {
+        1
+    }
+
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
+        if let Some(&owner) = self.reserved.get(&wire) {
+            if owner != self.net {
+                return DelayT::MAX / 4;
+            }
+        }
+        let i = self.wt.idx(wire);
+        (self.present * self.occ[i] as f32 + self.hist[i]) as DelayT
+    }
+
+    fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
+        let chipdb = ctx.chipdb();
+        let (wx, wy) = chipdb.tile_xy(wire.tile());
+        let (dx, dy) = chipdb.tile_xy(dst.tile());
+        let m = ((wx - dx).abs() + (wy - dy).abs()) as DelayT;
+        m.saturating_mul(H_WEIGHT)
+    }
+
+    fn bboxes(&self) -> &[BoundingBox] {
+        match self.bbox {
+            Some(bb) => std::slice::from_ref(bb),
+            None => &[],
+        }
+    }
+}
+
+fn route_sink_overuse(
+    ctx: &Context,
+    model: &OveruseCostModel,
+    src_wires: &FxHashSet<WireId>,
+    dst_wire: WireId,
+    sink_visit_limit: Option<usize>,
+) -> Option<Vec<PipId>> {
+    let opts = AStarOptions {
+        visit_limit: sink_visit_limit,
+        exhaustive: false,
+        retain_trace: false,
+        stop_on_first_touch: true,
+    };
+    let res = astar_search(ctx, model, src_wires, dst_wire, &opts);
+    astar_probe::record(res.trace.exit, res.trace.visit_count, res.trace.max_visits);
+    res.path
+}
+
+/// Plan one net under congestion pricing. Same tree-growth shape as
+/// `route_net_raster`; returns the plan and how many sinks stayed missing
+/// (visit cap or per-net deadline), which keeps the net dirty next pass.
+fn plan_net_overuse(
+    ctx: &Context,
+    net: NetId,
+    source_wire: WireId,
+    wt: &WireTable,
+    occ: &[u16],
+    hist: &[f32],
+    reserved: &FxHashMap<WireId, NetId>,
+    present: f32,
+    cfg: &RasterRouterCfg,
+) -> (RoutePlan, usize) {
+    let chipdb = ctx.chipdb();
+    let sink_wires = collect_sink_wires(ctx, net);
+    if sink_wires.is_empty() {
+        return (
+            RoutePlan {
+                net,
+                source_wire,
+                sink_routes: Vec::new(),
+            },
+            0,
+        );
+    }
+
+    let bbox = if cfg.bbox_margin > 0 {
+        Some(crate::metrics::compute_bbox(ctx, net, cfg.bbox_margin))
+    } else {
+        None
+    };
+    let model = OveruseCostModel {
+        net,
+        bbox: bbox.as_ref(),
+        wt,
+        occ,
+        hist,
+        reserved,
+        present,
+    };
+
+    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    tree_wires.insert(source_wire);
+    chipdb.node_wires_cb(source_wire, |nw| {
+        tree_wires.insert(nw);
+    });
+
+    let (src_x, src_y) = chipdb.tile_xy(source_wire.tile());
+    let mut remaining_sinks: Vec<(WireId, i32, i32)> = sink_wires
+        .iter()
+        .map(|&w| {
+            let (sx, sy) = chipdb.tile_xy(w.tile());
+            (w, sx, sy)
+        })
+        .collect();
+    remaining_sinks.sort_by_key(|&(_, sx, sy)| (sx - src_x).abs() + (sy - src_y).abs());
+
+    let n_sinks = remaining_sinks.len();
+    let net_deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(2000 + n_sinks as u64 * 10);
+
+    let mut sink_routes = Vec::new();
+    for (sink_wire, _, _) in remaining_sinks {
+        if std::time::Instant::now() > net_deadline {
+            break;
+        }
+        if tree_wires.contains(&sink_wire) {
+            sink_routes.push(SinkRoute {
+                sink_wire,
+                pips: vec![],
+            });
+            continue;
+        }
+        match route_sink_overuse(ctx, &model, &tree_wires, sink_wire, cfg.sink_visit_limit) {
+            Some(pips) => {
+                for &pip in &pips {
+                    let dst = chipdb.pip_dst_wire(pip);
+                    tree_wires.insert(dst);
+                    chipdb.node_wires_cb(dst, |nw| {
+                        tree_wires.insert(nw);
+                    });
+                }
+                tree_wires.insert(sink_wire);
+                sink_routes.push(SinkRoute { sink_wire, pips });
+            }
+            None => continue,
+        }
+    }
+
+    let missing = n_sinks - sink_routes.len();
+    (
+        RoutePlan {
+            net,
+            source_wire,
+            sink_routes,
+        },
+        missing,
+    )
+}
+
+/// PathFinder pass loop. Plans live in router-owned state, wires may be
+/// shared, and each pass replans exactly the nets touching shared wires
+/// under prices that grow until sharing stops paying. Convergence commits
+/// every plan through the atomic `apply_route_plan`; const nets, clock nets
+/// and anything negotiation could not finish then go through the exclusive
+/// path, whose cleanup stage owns their special-case routing.
+fn route_nets_overuse(
+    ctx: &mut Context,
+    cfg: &RasterRouterCfg,
+    nets: &[NetId],
+) -> Result<(), RouterError> {
+    let env_f32 = |name: &str, default: f32| -> f32 {
+        std::env::var(name)
+            .ok()
+            .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a float")))
+            .unwrap_or(default)
+    };
+    let present0 = env_f32("NPNR_ROUTE_PRESENT", 0.5);
+    let growth = env_f32("NPNR_ROUTE_PRESENT_GROWTH", 1.4);
+    let hist_gain = env_f32("NPNR_ROUTE_HIST_GAIN", 1.0);
+
+    let wt = WireTable::build(ctx.chipdb());
+    let mut occ = vec![0u16; wt.n];
+    let mut hist = vec![0f32; wt.n];
+    eprintln!(
+        "RasterRouter[overuse]: {} nets, {} wires, present={} growth={} hist_gain={}",
+        nets.len(),
+        wt.n,
+        present0,
+        growth,
+        hist_gain,
+    );
+
+    // Pin reservations mirror the exclusive pre-reserve but stay in router
+    // state: nothing binds into ctx until commit.
+    let mut reserved: FxHashMap<WireId, NetId> = FxHashMap::default();
+    let mut reservation_conflicts = 0usize;
+    for &net in nets {
+        let n = ctx.net(net);
+        if !n.is_alive() || !n.has_driver() {
+            continue;
+        }
+        let mut pins: Vec<WireId> = Vec::new();
+        if let Some(driver) = n.driver_cell_port() {
+            if let Some(bel) = ctx.cell(driver.cell).bel() {
+                if let Some(w) = bel.pin_wire(driver.port) {
+                    pins.push(w.id());
+                }
+            }
+        }
+        for user in n.users() {
+            if !user.is_valid() {
+                continue;
+            }
+            if let Some(ubel) = ctx.cell(user.cell).bel() {
+                if let Some(uw) = ubel.pin_wire(user.port) {
+                    pins.push(uw.id());
+                }
+            }
+        }
+        for w in pins {
+            let mut node: Vec<WireId> = vec![w];
+            ctx.chipdb().node_wires_cb(w, |nw| node.push(nw));
+            for nw in node {
+                match reserved.entry(nw) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(net);
+                    }
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        if *e.get() != net {
+                            reservation_conflicts += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!(
+        "RasterRouter[overuse]: {} reserved pin wires ({} conflicts)",
+        reserved.len(),
+        reservation_conflicts,
+    );
+
+    // Const and clock sources never route through the priced A* — the const
+    // fast path and the clock-backbone seeding live in the exclusive
+    // cleanup — so they go straight to the finisher.
+    let mut ordinary: Vec<NetId> = Vec::new();
+    for &net in nets {
+        match resolve_source_wire(ctx, net) {
+            Ok(Some(w)) => {
+                if source_wire_const_value(ctx, w) == 0 && !is_global_clock_wire(ctx, w) {
+                    ordinary.push(net);
+                }
+            }
+            _ => {}
+        }
+    }
+    // High fanout first, then net id: identical ordering intent to the
+    // exclusive pass, and fully deterministic.
+    ordinary.sort_by_key(|&n| (usize::MAX - ctx.net(n).num_users(), n));
+
+    struct PlanEntry {
+        plan: RoutePlan,
+        idxs: Vec<u32>,
+        missing: usize,
+    }
+    let mut plans: FxHashMap<NetId, PlanEntry> = FxHashMap::default();
+    let mut present = present0;
+    let t_all = std::time::Instant::now();
+
+    for iter in 0..cfg.max_iterations {
+        let to_route: Vec<NetId> = if iter == 0 {
+            ordinary.clone()
+        } else {
+            ordinary
+                .iter()
+                .copied()
+                .filter(|n| match plans.get(n) {
+                    Some(e) => {
+                        e.missing > 0 || e.idxs.iter().any(|&i| occ[i as usize] > 1)
+                    }
+                    None => true,
+                })
+                .collect()
+        };
+        if to_route.is_empty() {
+            break;
+        }
+
+        let t_pass = std::time::Instant::now();
+        let mut last_progress = t_pass;
+        for (i, &net) in to_route.iter().enumerate() {
+            if let Some(e) = plans.get(&net) {
+                for &wi in &e.idxs {
+                    occ[wi as usize] = occ[wi as usize].saturating_sub(1);
+                }
+            }
+            let source_wire = match resolve_source_wire(ctx, net) {
+                Ok(Some(w)) => w,
+                _ => continue,
+            };
+            let (plan, missing) = plan_net_overuse(
+                ctx,
+                net,
+                source_wire,
+                &wt,
+                &occ,
+                &hist,
+                &reserved,
+                present,
+                cfg,
+            );
+            let idxs = plan_wire_indices(ctx, &wt, &plan);
+            for &wi in &idxs {
+                occ[wi as usize] = occ[wi as usize].saturating_add(1);
+            }
+            plans.insert(net, PlanEntry { plan, idxs, missing });
+            if cfg.verbose
+                && ((i + 1) % 5000 == 0
+                    || last_progress.elapsed() >= std::time::Duration::from_secs(60))
+            {
+                last_progress = std::time::Instant::now();
+                let secs = t_pass.elapsed().as_secs_f64();
+                eprintln!(
+                    "  neg pass {} progress: {}/{} nets, {:.1}s, {:.2} nets/s  astar:{}",
+                    iter,
+                    i + 1,
+                    to_route.len(),
+                    secs,
+                    (i + 1) as f64 / secs,
+                    astar_probe::summary(),
+                );
+            }
+        }
+
+        let mut overused = 0usize;
+        let mut max_occ = 0u16;
+        for i in 0..wt.n {
+            let o = occ[i];
+            if o > 1 {
+                overused += 1;
+                hist[i] += (o - 1) as f32 * hist_gain;
+                if o > max_occ {
+                    max_occ = o;
+                }
+            }
+        }
+        let missing_total: usize = plans.values().map(|e| e.missing).sum();
+        eprintln!(
+            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} present={:.2} {:.1}s (total {:.1}s)",
+            iter,
+            to_route.len(),
+            overused,
+            max_occ,
+            missing_total,
+            present,
+            t_pass.elapsed().as_secs_f64(),
+            t_all.elapsed().as_secs_f64(),
+        );
+        present *= growth;
+
+        if overused == 0 && missing_total == 0 {
+            eprintln!("RasterRouter[overuse]: negotiation converged at pass {}", iter);
+            break;
+        }
+    }
+
+    // Commit. Plans are consistent when negotiation converged; conflicts here
+    // mean it did not (max_iterations hit) and the losing nets fall through
+    // to the finisher unbound.
+    let mut committed = 0usize;
+    let mut commit_conflicts = 0usize;
+    let mut commit_partial = 0usize;
+    for &net in &ordinary {
+        let Some(e) = plans.get(&net) else { continue };
+        if !e.plan.source_wire.is_valid() || e.plan.sink_routes.is_empty() {
+            continue;
+        }
+        match apply_route_plan(ctx, &e.plan) {
+            Ok(()) => {
+                committed += 1;
+                if e.missing > 0 {
+                    commit_partial += 1;
+                }
+            }
+            Err(_) => commit_conflicts += 1,
+        }
+    }
+    eprintln!(
+        "RasterRouter[overuse]: committed={} ({} partial) conflicts={} {:.1}s total",
+        committed,
+        commit_partial,
+        commit_conflicts,
+        t_all.elapsed().as_secs_f64(),
+    );
+
+    // Finisher: const, clock and every net negotiation left unfinished, on
+    // the exclusive path whose cleanup owns their routing.
+    let finish: Vec<NetId> = nets
+        .iter()
+        .copied()
+        .filter(|&n| {
+            let net = ctx.net(n);
+            net.is_alive()
+                && net.has_driver()
+                && net.num_users() > 0
+                && !net_fully_routed(ctx, n)
+        })
+        .collect();
+    if finish.is_empty() {
+        return validate_all_routed(ctx);
+    }
+    eprintln!(
+        "RasterRouter[overuse]: {} nets to the exclusive finisher",
+        finish.len()
+    );
+    let mut fcfg = cfg.clone();
+    fcfg.overuse = false;
+    route_nets_exclusive(ctx, &fcfg, &finish)
+}
+
+// ---------------------------------------------------------------------------
 // Router implementation
 // ---------------------------------------------------------------------------
 
@@ -1867,6 +2359,24 @@ impl super::Router for RasterRouter {
         cfg: &Self::Config,
         nets: &[NetId],
     ) -> Result<(), RouterError> {
+        if cfg.overuse {
+            route_nets_overuse(ctx, cfg, nets)
+        } else {
+            route_nets_exclusive(ctx, cfg, nets)
+        }
+    }
+}
+
+/// The exclusive-binding pass loop: every wire has at most one owner, plans
+/// bind as they apply, and recovery is the cleanup stage. Also the finisher
+/// for the over-use path, which hands it only const nets, clock nets and
+/// whatever negotiation left unrouted.
+fn route_nets_exclusive(
+    ctx: &mut Context,
+    cfg: &RasterRouterCfg,
+    nets: &[NetId],
+) -> Result<(), RouterError> {
+    {
         let chip_w = ctx.chipdb().width();
         let chip_h = ctx.chipdb().height();
 
