@@ -530,6 +530,33 @@ pub fn astar_route_explore(
     lookahead: Option<&super::lookahead::Lookahead>,
     visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
+    astar_route_explore_exit(
+        ctx,
+        net,
+        src_wires,
+        dst_wire,
+        wire_penalty,
+        bbox,
+        lookahead,
+        visit_limit,
+    )
+    .0
+}
+
+/// [`astar_route_explore`] with the search's exit reason. A `HeapDrained`
+/// failure is an unbound-graph infeasibility proof for this bbox — it stays
+/// true for the rest of the run — while `VisitLimit` only says the budget ran
+/// out, so callers cache the former and may retry the latter.
+pub fn astar_route_explore_exit(
+    ctx: &Context,
+    net: NetId,
+    src_wires: &FxHashSet<WireId>,
+    dst_wire: WireId,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    bbox: Option<&crate::metrics::BoundingBox>,
+    lookahead: Option<&super::lookahead::Lookahead>,
+    visit_limit: Option<usize>,
+) -> (Option<Vec<PipId>>, super::astar::AStarExit) {
     let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, true);
     let opts = AStarOptions {
         visit_limit,
@@ -537,7 +564,8 @@ pub fn astar_route_explore(
         retain_trace: false,
         stop_on_first_touch: false,
     };
-    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
+    let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+    (result.path, result.trace.exit)
 }
 
 /// Same semantics as [`astar_route`]. The `multi_hop` flag was historically

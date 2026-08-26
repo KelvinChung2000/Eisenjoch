@@ -1,0 +1,1888 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+placer: opt_trans, route_iters: 50
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T prepare_discrete: 0.3s
+  ALG_T collect_movable: 0.3s
+  ALG_T pre_network: 0.3s
+  BUILD_T tile_type_by_node: 0.0s
+  BUILD_T coarse_aggregate: 0.0s
+  Skipped truly-null coarse cells: 0 (of 69353 total); pruned pipes: src_null=0 dst_null=0
+  Pipe capacity by span:
+  Thin span-1 pipes (cap<=2): 0 total, by tile-type pair (top 20):
+  Pipe cost: span^0.50 model (r1=1), span-1=1.000, span-12=3.464, 2×span-6=4.899, 12×span-1=12.000
+  BUILD_T pipe_loop: 0.0s
+  BUILD_T grids_and_adjacency: 0.0s
+  BUILD_T tile_templates: 0.0s
+  ALG_T network: 0.31s
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+Coordinate descent mode: 76660 cells, scale 1.00
+CellValidityMask: 76660 cells, 311x223 grid, 2 bucket masks, per-cell valid positions: min=67346 avg=67346.0 max=67346, unmapped cells=0
+MuxSlotTracker: 76660 cells (76660 with external fanout), 67346 tiles, total_cap=1077536, active_buckets=[DFF,LUT6], built in 88.8ms
+MuxSlotTracker[post-seed]: populated_cells=27114, overflow_tiles=518, at_cap_tiles=50, peak_excess=41, capacity_hist={16:67346}
+DCD placer: 76660 cells, 69353 nodes, outer_iters=11, dcd_iters_per_cell=2, graph_model=TwoLevelPip
+MEM_STATIC: pipes=0MB nodes=1MB adjacency=0MB pipe_cost_vecs=0MB validity_mask=0MB n_pipes=0 n_edges=0 rss=935MB
+Softmin position update: enabled, theta 0.250 -> 5.000 (anneal over 11 iters)
+  ALG_T dcd_setup_done: 0.11s (pre-loop)
+    analytic_phase[outer=0]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=0 enter=pre_solve rss=973MB
+    rss_probe[outer=0]: pre_refresh_rss=973MB post_pre_solve_rss=992MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=0]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=188
+  Cell placement by tile type (iter 0, 76660 cells):
+    NULL: 31596
+    CLB: 27114
+    IOB_W: 15019
+    CLK_BUFG: 2320
+    BRAM: 351
+    DSP: 182
+    IOB_E: 78
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=0 enter=dcd_sweep rss=992MB
+PHASE_MARK outer=0 leave=dcd_sweep rss=992MB
+PHASE_MARK outer=0 enter=post_refresh rss=992MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=0]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=0]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=0]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=0]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=0]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=0]: pre_post_solve=1018MB post_post_solve=1018MB after_apply=1018MB
+MuxSlotTracker[sweep 0 LEAK]: populated_cells=45673, overflow_tiles=120, at_cap_tiles=276, peak_excess=14, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=1 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   0: nets=105117 line=14011245 energy=0.000 dE=+0.000 friction=0.0 bins=3.1x(535) excess=231.3 moved=37179 disp=inf solves=0 skip=0 pops=0 theta=0.250 refresh=28ms dcd=19ms total=117ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1019
+    analytic_phase[outer=1]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=1 enter=pre_solve rss=1019MB
+    rss_probe[outer=1]: pre_refresh_rss=1019MB post_pre_solve_rss=1019MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=1]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=182
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=1 enter=dcd_sweep rss=1019MB
+PHASE_MARK outer=1 leave=dcd_sweep rss=1019MB
+PHASE_MARK outer=1 enter=post_refresh rss=1019MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=1]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=1]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=1]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=1]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=1]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=1]: pre_post_solve=1019MB post_post_solve=1019MB after_apply=1019MB
+MuxSlotTracker[sweep 1 LEAK]: populated_cells=54836, overflow_tiles=13, at_cap_tiles=223, peak_excess=8, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=2 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   1: nets=105117 line=11706218 energy=0.000 dE=+0.000 friction=0.0 bins=2.2x(360) excess=111.3 moved=45968 disp=22.567 solves=0 skip=105117 pops=0 theta=0.337 refresh=3ms dcd=19ms total=50ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1019
+    analytic_phase[outer=2]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=2 enter=pre_solve rss=1019MB
+    rss_probe[outer=2]: pre_refresh_rss=1019MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=2]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=187
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=2 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=2 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=2 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=2]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=2]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=2]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=2]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=2]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=2]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 2 LEAK]: populated_cells=59763, overflow_tiles=3, at_cap_tiles=184, peak_excess=5, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=3 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   2: nets=105117 line=10245611 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(264) excess=82.2 moved=50690 disp=14.557 solves=0 skip=105117 pops=0 theta=0.455 refresh=3ms dcd=20ms total=50ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=3]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=3 enter=pre_solve rss=1020MB
+    rss_probe[outer=3]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=3]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=182
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=3 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=3 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=3 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=3]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=3]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=3]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=3]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=3]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=3]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 3 LEAK]: populated_cells=62775, overflow_tiles=2, at_cap_tiles=152, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=4 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   3: nets=105117 line=9226093 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(209) excess=65.5 moved=52463 disp=10.366 solves=0 skip=105117 pops=0 theta=0.614 refresh=3ms dcd=20ms total=49ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=4]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=4 enter=pre_solve rss=1020MB
+    rss_probe[outer=4]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=4]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=184
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=4 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=4 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=4 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=4]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=4]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=4]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=4]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=4]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=4]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 4 LEAK]: populated_cells=64842, overflow_tiles=1, at_cap_tiles=136, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=5 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   4: nets=105117 line=8480694 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(209) excess=68.1 moved=52625 disp=7.812 solves=0 skip=105117 pops=0 theta=0.829 refresh=3ms dcd=20ms total=49ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=5]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=5 enter=pre_solve rss=1020MB
+    rss_probe[outer=5]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=5]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=188
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=5 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=5 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=5 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=5]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=5]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=5]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=5]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=5]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=5]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 5 LEAK]: populated_cells=66377, overflow_tiles=1, at_cap_tiles=127, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=6 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   5: nets=105117 line=7898107 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(204) excess=65.4 moved=51917 disp=6.101 solves=0 skip=105117 pops=0 theta=1.118 refresh=3ms dcd=20ms total=49ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=6]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=6 enter=pre_solve rss=1020MB
+    rss_probe[outer=6]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=6]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=187
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=6 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=6 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=6 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=6]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=6]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=6]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=6]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=6]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=6]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 6 LEAK]: populated_cells=67522, overflow_tiles=1, at_cap_tiles=120, peak_excess=1, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=7 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   6: nets=105117 line=7431027 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(206) excess=67.4 moved=50240 disp=4.839 solves=0 skip=105117 pops=0 theta=1.509 refresh=3ms dcd=21ms total=53ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=7]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=7 enter=pre_solve rss=1020MB
+    rss_probe[outer=7]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=7]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=187
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=7 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=7 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=7 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=7]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=7]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=7]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=7]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=7]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=7]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=8 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   7: nets=105117 line=7050020 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(242) excess=78.8 moved=48178 disp=3.987 solves=0 skip=105117 pops=0 theta=2.035 refresh=3ms dcd=20ms total=50ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=8]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=8 enter=pre_solve rss=1020MB
+    rss_probe[outer=8]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=8]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=181
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=8 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=8 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=8 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=8]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=8]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=8]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=8]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=8]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=8]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=9 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   8: nets=105117 line=6739916 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(270) excess=81.8 moved=45861 disp=3.277 solves=0 skip=105117 pops=0 theta=2.746 refresh=3ms dcd=20ms total=48ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=9]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=9 enter=pre_solve rss=1020MB
+    rss_probe[outer=9]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=9]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=188
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=9 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=9 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=9 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=9]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=9]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=9]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=9]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=9]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=9]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=10 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   9: nets=105117 line=6499818 energy=0.000 dE=+0.000 friction=0.0 bins=1.9x(300) excess=88.4 moved=43290 disp=2.735 solves=0 skip=105117 pops=0 theta=3.706 refresh=3ms dcd=19ms total=49ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=10]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=10 enter=pre_solve rss=1020MB
+    rss_probe[outer=10]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=10]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=187
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=10 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=10 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=10 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=23 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=10]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=10]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=10]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=10]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=10]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=10]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=11 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD  10: nets=105117 line=6285510 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(322) excess=98.8 moved=40676 disp=2.334 solves=0 skip=105117 pops=0 theta=5.000 refresh=3ms dcd=18ms total=48ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+DCD done: energy=0.000 line=6285510 friction=0.0 bins=2.0x(322) excess=98.8
+MuxSlotTracker: 150508 commit rejections over entire DCD
+MuxSlotTracker[post-DCD]: populated_cells=70572, overflow_tiles=0, at_cap_tiles=183, peak_excess=0, capacity_hist={16:67346}
+  ALG_T dcd_done: 1.31s
+  ALG_T collect_net_infos_total: 0.08s
+  ALG_T line_estimate_total: 0.09s
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=334045 shared_mux_rejects=1492917 arch_validity_rejects=0
+  ALG_T legalize_done: 1.85s
+PLACE_RESULT placer=opt_trans place_secs=1.85 total_hpwl=4520199
+routable nets: 105118
+sink_visit_limit: Some(30000)
+cleanup_visit_limit: None
+skip_cleanup: false
+inloop_ripup: true
+RasterRouter: 105118 nets on 311x223, beam_width=128, max_steps=1000
+RasterRouter: pre-reserved 459727 BEL-pin wires (0 conflicts)
+Lookahead pip-cost model: cost = 11*sqrt(span) + orig_delay/span
+Lookahead class 0 (LUT6): 8085 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 1 (DFF): 8365 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 2 (IOB): 8877 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 3 (GND_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 4 (VCC_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 5 (RAMB18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 6 (FIFO18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 7 (RAMBFIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 8 (RAMB36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 9 (FIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 10 (BUFG): 8661 reachable pips, rate = 159/209 ≈ 0.761/tile
+Lookahead class 11 (DSP48E1): 16919 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead: 12 driver classes, default=10 (BUFG)
+  priority top-5 (score, fanout): [(9300000.0, 93000), (2900.0, 29), (2800.0, 28), (2800.0, 28), (2600.0, 26)]
+  high-fanout: 63/64 routed sequentially
+  raster_fail #0: net='net_68108' src=(303,6) sink=(306,57) dist=54 tree=169
+  raster_fail #1: net='net_95109' src=(219,117) sink=(231,103) dist=26 tree=190
+  raster_fail #2: net='net_95429' src=(227,70) sink=(214,95) dist=38 tree=229
+  raster_fail #3: net='net_1823' src=(72,113) sink=(108,112) dist=37 tree=261
+  raster_fail #4: net='net_60487' src=(255,115) sink=(254,115) dist=1 tree=10
+  raster_fail #5: net='net_32162' src=(255,130) sink=(216,109) dist=60 tree=402
+  raster_fail #6: net='net_35715' src=(240,42) sink=(230,86) dist=54 tree=161
+  raster_fail #7: net='net_30452' src=(244,105) sink=(286,114) dist=51 tree=240
+  raster_fail #8: net='net_44605' src=(255,108) sink=(257,110) dist=4 tree=20
+  raster_fail #9: net='net_65837' src=(306,207) sink=(285,148) dist=80 tree=57
+  raster_fail #10: net='net_56884' src=(297,115) sink=(252,123) dist=53 tree=539
+  raster_fail #11: net='net_36351' src=(293,111) sink=(261,113) dist=34 tree=242
+  raster_fail #12: net='net_52768' src=(265,115) sink=(245,129) dist=34 tree=1
+  raster_fail #13: net='net_101521' src=(206,107) sink=(206,106) dist=1 tree=8
+  raster_fail #14: net='net_31903' src=(307,39) sink=(308,38) dist=2 tree=14
+  raster_fail #15: net='net_28637' src=(293,54) sink=(282,94) dist=51 tree=202
+  raster_fail #16: net='net_5627' src=(272,123) sink=(271,110) dist=14 tree=37
+  raster_fail #17: net='net_82656' src=(305,16) sink=(307,17) dist=3 tree=21
+  raster_fail #18: net='net_30834' src=(217,110) sink=(227,119) dist=19 tree=75
+  raster_fail #19: net='net_10019' src=(218,108) sink=(213,98) dist=15 tree=32
+  raster_fail #20: net='net_29194' src=(304,116) sink=(307,118) dist=5 tree=77
+  raster_fail #21: net='net_70500' src=(3,220) sink=(3,220) dist=0 tree=11
+  raster_fail #22: net='net_25375' src=(214,113) sink=(213,112) dist=2 tree=53
+  raster_fail #23: net='net_2949' src=(217,96) sink=(223,94) dist=8 tree=116
+  raster_fail #24: net='net_30833' src=(295,39) sink=(281,91) dist=66 tree=401
+  raster_fail #25: net='net_81284' src=(308,68) sink=(275,85) dist=50 tree=11
+  raster_fail #26: net='net_64935' src=(306,73) sink=(307,72) dist=2 tree=44
+  raster_fail #27: net='net_25796' src=(33,96) sink=(24,96) dist=9 tree=12
+  raster_fail #28: net='net_40342' src=(263,116) sink=(263,106) dist=10 tree=1
+  raster_fail #29: net='net_79367' src=(307,205) sink=(307,192) dist=13 tree=41
+  raster_fail #30: net='net_55393' src=(282,92) sink=(283,90) dist=3 tree=29
+  raster_fail #31: net='net_32097' src=(129,114) sink=(219,114) dist=90 tree=456
+  raster_fail #32: net='net_39366' src=(275,115) sink=(139,111) dist=140 tree=574
+  raster_fail #33: net='net_37958' src=(242,103) sink=(255,117) dist=27 tree=105
+  raster_fail #34: net='net_55994' src=(218,96) sink=(229,107) dist=22 tree=1
+  raster_fail #35: net='net_35671' src=(174,122) sink=(170,110) dist=16 tree=1
+  raster_fail #36: net='net_63075' src=(260,103) sink=(279,121) dist=37 tree=155
+  raster_fail #37: net='net_31504' src=(257,108) sink=(260,115) dist=10 tree=1
+  raster_fail #38: net='net_22339' src=(216,110) sink=(138,113) dist=81 tree=1
+  raster_fail #39: net='net_28798' src=(202,115) sink=(202,115) dist=0 tree=2
+  raster_fail #40: net='net_99649' src=(294,114) sink=(8,112) dist=288 tree=455
+  raster_fail #41: net='net_47306' src=(214,88) sink=(143,111) dist=94 tree=346
+  raster_fail #42: net='net_47306' src=(214,88) sink=(141,111) dist=96 tree=346
+  raster_fail #43: net='net_34159' src=(297,133) sink=(249,125) dist=56 tree=230
+  raster_fail #44: net='net_38854' src=(282,105) sink=(111,111) dist=177 tree=359
+  raster_fail #45: net='net_99013' src=(288,190) sink=(276,133) dist=69 tree=173
+  raster_fail #46: net='net_48569' src=(245,95) sink=(230,93) dist=17 tree=57
+  raster_fail #47: net='net_52960' src=(296,166) sink=(263,115) dist=84 tree=1
+  raster_fail #48: net='net_38467' src=(210,113) sink=(206,116) dist=7 tree=1
+  raster_fail #49: net='net_47334' src=(270,135) sink=(96,113) dist=196 tree=661
+  raster_fail #50: net='net_47334' src=(270,135) sink=(93,113) dist=199 tree=661
+  raster_fail #51: net='net_5337' src=(234,109) sink=(223,109) dist=11 tree=83
+  raster_fail #52: net='net_35565' src=(265,106) sink=(258,100) dist=13 tree=92
+  raster_fail #53: net='net_77738' src=(274,158) sink=(108,111) dist=213 tree=452
+  raster_fail #54: net='net_77738' src=(274,158) sink=(66,112) dist=254 tree=452
+  raster_fail #55: net='net_92639' src=(143,100) sink=(161,99) dist=19 tree=111
+  raster_fail #56: net='net_36638' src=(289,88) sink=(291,90) dist=4 tree=33
+  raster_fail #57: net='net_10220' src=(236,149) sink=(237,149) dist=1 tree=1
+  raster_fail #58: net='net_75718' src=(196,117) sink=(259,127) dist=73 tree=322
+  raster_fail #59: net='net_47899' src=(175,107) sink=(136,112) dist=44 tree=1
+  raster_fail #60: net='net_11438' src=(4,108) sink=(116,112) dist=116 tree=569
+  raster_fail #61: net='net_37915' src=(257,115) sink=(259,101) dist=16 tree=55
+  raster_fail #62: net='net_62786' src=(214,130) sink=(249,137) dist=42 tree=1
+  raster_fail #63: net='net_98685' src=(242,108) sink=(241,108) dist=1 tree=1
+  raster_fail #64: net='net_21296' src=(65,105) sink=(50,108) dist=18 tree=1
+  raster_fail #65: net='net_22384' src=(215,65) sink=(125,110) dist=135 tree=423
+  raster_fail #66: net='net_26934' src=(276,172) sink=(207,111) dist=130 tree=343
+  raster_fail #67: net='net_26934' src=(276,172) sink=(207,111) dist=130 tree=343
+  raster_fail #68: net='net_81713' src=(258,82) sink=(145,113) dist=144 tree=452
+  raster_fail #69: net='net_81713' src=(258,82) sink=(120,113) dist=169 tree=452
+  raster_fail #70: net='net_81713' src=(258,82) sink=(61,113) dist=228 tree=618
+  raster_fail #71: net='net_103641' src=(291,130) sink=(291,130) dist=0 tree=2
+  raster_fail #72: net='net_103641' src=(291,130) sink=(295,135) dist=9 tree=2
+  raster_fail #73: net='net_96086' src=(237,113) sink=(104,111) dist=135 tree=604
+  raster_fail #74: net='net_22356' src=(307,83) sink=(129,111) dist=206 tree=672
+  raster_fail #75: net='net_11325' src=(184,108) sink=(147,112) dist=41 tree=54
+  raster_fail #76: net='net_11325' src=(184,108) sink=(120,112) dist=68 tree=54
+  raster_fail #77: net='net_52970' src=(302,163) sink=(112,111) dist=242 tree=905
+  raster_fail #78: net='net_11852' src=(105,96) sink=(104,90) dist=7 tree=22
+  raster_fail #79: net='net_49285' src=(153,118) sink=(149,121) dist=7 tree=2
+  raster_fail #80: net='net_31449' src=(241,136) sink=(241,122) dist=14 tree=1
+  raster_fail #81: net='net_31449' src=(241,136) sink=(166,112) dist=99 tree=359
+  raster_fail #82: net='net_57964' src=(154,112) sink=(154,111) dist=1 tree=1
+  raster_fail #83: net='net_11480' src=(61,109) sink=(128,114) dist=72 tree=492
+  raster_fail #84: net='net_104463' src=(305,84) sink=(305,121) dist=37 tree=102
+  raster_fail #85: net='net_87372' src=(287,134) sink=(289,126) dist=10 tree=1
+  raster_fail #86: net='net_31337' src=(227,181) sink=(93,111) dist=204 tree=455
+  raster_fail #87: net='net_31975' src=(204,131) sink=(73,111) dist=151 tree=200
+  raster_fail #88: net='net_73772' src=(302,216) sink=(303,215) dist=2 tree=1
+  raster_fail #89: net='net_52287' src=(301,93) sink=(101,110) dist=217 tree=828
+  raster_fail #90: net='net_63220' src=(186,109) sink=(189,109) dist=3 tree=11
+  raster_fail #91: net='net_39150' src=(141,111) sink=(53,111) dist=88 tree=183
+  raster_fail #92: net='net_39150' src=(141,111) sink=(41,111) dist=100 tree=183
+  raster_fail #93: net='net_47354' src=(260,106) sink=(78,111) dist=187 tree=1017
+  raster_fail #94: net='net_47354' src=(260,106) sink=(53,111) dist=212 tree=1017
+  raster_fail #95: net='net_23508' src=(298,185) sink=(293,184) dist=6 tree=1
+  raster_fail #96: net='net_47249' src=(222,132) sink=(63,112) dist=179 tree=364
+  raster_fail #97: net='net_2268' src=(232,104) sink=(178,111) dist=61 tree=227
+  raster_fail #98: net='net_93895' src=(139,110) sink=(139,110) dist=0 tree=11
+  raster_fail #99: net='net_4355' src=(246,130) sink=(189,110) dist=77 tree=135
+  pass 0 progress: 5000/105054 lf nets, routed=5061, failed=3, 20.0s, 250.27 nets/s  astar: reached=46534 pops/sink=988 at_limit=15 drained=0 pops/sink=0 at_limit=0 limited=226 pops/sink=30001 at_limit=226
+  pass 0 progress: 10000/105054 lf nets, routed=10037, failed=27, 52.1s, 191.78 nets/s  astar: reached=74033 pops/sink=1228 at_limit=78 drained=0 pops/sink=0 at_limit=0 limited=1252 pops/sink=30001 at_limit=1252
+  pass 0 progress: 15000/105054 lf nets, routed=14939, failed=125, 90.4s, 165.85 nets/s  astar: reached=95453 pops/sink=1405 at_limit=188 drained=0 pops/sink=0 at_limit=0 limited=2897 pops/sink=30001 at_limit=2897
+  pass 0 progress: 20000/105054 lf nets, routed=19784, failed=280, 132.1s, 151.45 nets/s  astar: reached=113497 pops/sink=1532 at_limit=280 drained=0 pops/sink=0 at_limit=0 limited=4853 pops/sink=30001 at_limit=4853
+  pass 0 progress: 25000/105054 lf nets, routed=24606, failed=458, 169.1s, 147.80 nets/s  astar: reached=128012 pops/sink=1628 at_limit=379 drained=0 pops/sink=0 at_limit=0 limited=6566 pops/sink=30001 at_limit=6566
+  pass 0 progress: 30000/105054 lf nets, routed=29386, failed=678, 204.8s, 146.48 nets/s  astar: reached=141318 pops/sink=1708 at_limit=478 drained=0 pops/sink=0 at_limit=0 limited=8260 pops/sink=30001 at_limit=8260
+  pass 0 progress: 35000/105054 lf nets, routed=34138, failed=926, 242.1s, 144.54 nets/s  astar: reached=154471 pops/sink=1777 at_limit=560 drained=0 pops/sink=0 at_limit=0 limited=10107 pops/sink=30001 at_limit=10107
+  pass 0 progress: 40000/105054 lf nets, routed=38822, failed=1242, 267.7s, 149.41 nets/s  astar: reached=163822 pops/sink=1823 at_limit=631 drained=0 pops/sink=0 at_limit=0 limited=11389 pops/sink=30001 at_limit=11389
+  pass 0 progress: 45000/105054 lf nets, routed=43478, failed=1586, 293.2s, 153.46 nets/s  astar: reached=172509 pops/sink=1873 at_limit=686 drained=0 pops/sink=0 at_limit=0 limited=12702 pops/sink=30001 at_limit=12702
+  pass 0 progress: 50000/105054 lf nets, routed=48145, failed=1919, 319.9s, 156.31 nets/s  astar: reached=181207 pops/sink=1923 at_limit=761 drained=0 pops/sink=0 at_limit=0 limited=14004 pops/sink=30001 at_limit=14004
+  pass 0 progress: 55000/105054 lf nets, routed=52751, failed=2313, 349.2s, 157.49 nets/s  astar: reached=189741 pops/sink=1968 at_limit=825 drained=0 pops/sink=0 at_limit=0 limited=15470 pops/sink=30001 at_limit=15470
+  pass 0 progress: 60000/105054 lf nets, routed=57310, failed=2754, 380.9s, 157.51 nets/s  astar: reached=198183 pops/sink=2010 at_limit=881 drained=0 pops/sink=0 at_limit=0 limited=17028 pops/sink=30001 at_limit=17028
+  pass 0 progress: 65000/105054 lf nets, routed=61777, failed=3287, 398.5s, 163.10 nets/s  astar: reached=203708 pops/sink=2025 at_limit=914 drained=0 pops/sink=0 at_limit=0 limited=17847 pops/sink=30001 at_limit=17847
+  pass 0 progress: 70000/105054 lf nets, routed=66179, failed=3885, 411.5s, 170.11 nets/s  astar: reached=208117 pops/sink=2031 at_limit=938 drained=0 pops/sink=0 at_limit=0 limited=18438 pops/sink=30001 at_limit=18438
+  pass 0 progress: 75000/105054 lf nets, routed=70545, failed=4519, 425.6s, 176.20 nets/s  astar: reached=212489 pops/sink=2042 at_limit=964 drained=0 pops/sink=0 at_limit=0 limited=19066 pops/sink=30001 at_limit=19066
+  pass 0 progress: 80000/105054 lf nets, routed=74935, failed=5129, 438.9s, 182.25 nets/s  astar: reached=216888 pops/sink=2050 at_limit=993 drained=0 pops/sink=0 at_limit=0 limited=19667 pops/sink=30001 at_limit=19667
+  pass 0 progress: 85000/105054 lf nets, routed=79281, failed=5783, 453.7s, 187.34 nets/s  astar: reached=221242 pops/sink=2063 at_limit=1035 drained=0 pops/sink=0 at_limit=0 limited=20313 pops/sink=30001 at_limit=20313
+  pass 0 progress: 90000/105054 lf nets, routed=83628, failed=6436, 468.5s, 192.12 nets/s  astar: reached=225594 pops/sink=2072 at_limit=1061 drained=0 pops/sink=0 at_limit=0 limited=20961 pops/sink=30001 at_limit=20961
+  pass 0 progress: 95000/105054 lf nets, routed=87910, failed=7154, 483.8s, 196.37 nets/s  astar: reached=229888 pops/sink=2080 at_limit=1096 drained=0 pops/sink=0 at_limit=0 limited=21667 pops/sink=30001 at_limit=21667
+  pass 0 progress: 100000/105054 lf nets, routed=92174, failed=7890, 499.2s, 200.33 nets/s  astar: reached=234162 pops/sink=2089 at_limit=1125 drained=0 pops/sink=0 at_limit=0 limited=22393 pops/sink=30001 at_limit=22393
+  pass 0 progress: 105000/105054 lf nets, routed=96418, failed=8646, 514.6s, 204.03 nets/s  astar: reached=238418 pops/sink=2097 at_limit=1160 drained=0 pops/sink=0 at_limit=0 limited=23137 pops/sink=30001 at_limit=23137
+RasterRouter pass 0: routed=96464, failed=8654, tile_cong=65551, wire_cong=0, max_usage=722, wl=96464, cong_w=0.05
+  pass 0 astar:  reached=238464 pops/sink=2097 at_limit=1160 drained=0 pops/sink=0 at_limit=0 limited=23145 pops/sink=30001 at_limit=23145
+  pass 0 failmode: apply_conflicts=91 empty_plans=8563  astar: reached=238464 pops/sink=2097 at_limit=1160 drained=0 pops/sink=0 at_limit=0 limited=23145 pops/sink=30001 at_limit=23145
+    reroute_from_scratch FAIL: net='net_84108' src=(308,67) sink=(307,73) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34741' src=(307,60) sink=(306,54) bbox=[246,310]x[0,120]
+    reroute_from_scratch FAIL: net='net_45345' src=(248,148) sink=(306,53) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73200' src=(307,112) sink=(291,149) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102230' src=(135,111) sink=(135,111) bbox=[75,195]x[51,171]
+    reroute_from_scratch FAIL: net='net_5531' src=(225,110) sink=(227,105) bbox=[165,287]x[45,170]
+    reroute_from_scratch FAIL: net='net_5536' src=(260,110) sink=(269,111) bbox=[93,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98162' src=(297,114) sink=(261,121) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70147' src=(306,51) sink=(307,87) bbox=[54,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_94959' src=(262,100) sink=(305,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24338' src=(255,113) sink=(255,112) bbox=[195,310]x[52,173]
+    reroute_from_scratch FAIL: net='net_67601' src=(194,106) sink=(308,132) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70742' src=(126,138) sink=(295,134) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72668' src=(308,184) sink=(305,125) bbox=[128,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104133' src=(304,112) sink=(304,112) bbox=[244,310]x[52,172]
+    reroute_from_scratch FAIL: net='net_104456' src=(307,47) sink=(307,47) bbox=[247,310]x[0,108]
+    reroute_from_scratch FAIL: net='net_10424' src=(42,119) sink=(46,111) bbox=[0,106]x[51,179]
+    reroute_from_scratch FAIL: net='net_70093' src=(308,118) sink=(307,36) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65539' src=(306,98) sink=(307,87) bbox=[111,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67167' src=(305,105) sink=(304,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4883' src=(307,93) sink=(307,56) bbox=[52,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41878' src=(307,178) sink=(307,145) bbox=[208,310]x[46,222]
+    reroute_from_scratch FAIL: net='net_21088' src=(5,111) sink=(7,117) bbox=[0,70]x[51,178]
+    reroute_from_scratch FAIL: net='net_17450' src=(30,73) sink=(43,131) bbox=[0,217]x[0,222]
+    reroute_from_scratch FAIL: net='net_12188' src=(40,154) sink=(39,126) bbox=[0,232]x[0,222]
+    reroute_from_scratch FAIL: net='net_50801' src=(199,106) sink=(197,105) bbox=[105,294]x[14,187]
+    reroute_from_scratch FAIL: net='net_13906' src=(15,111) sink=(8,110) bbox=[0,75]x[50,173]
+    reroute_from_scratch FAIL: net='net_14212' src=(307,177) sink=(307,172) bbox=[247,310]x[112,222]
+    reroute_from_scratch FAIL: net='net_31952' src=(287,12) sink=(287,12) bbox=[170,310]x[0,117]
+    reroute_from_scratch FAIL: net='net_59576' src=(305,133) sink=(306,156) bbox=[80,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10329' src=(308,221) sink=(295,199) bbox=[226,310]x[130,222]
+    reroute_from_scratch FAIL: net='net_31881' src=(295,110) sink=(308,219) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_17729' src=(104,180) sink=(162,128) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_37362' src=(303,60) sink=(308,6) bbox=[123,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65831' src=(285,120) sink=(279,127) bbox=[78,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29620' src=(5,109) sink=(4,113) bbox=[0,65]x[49,173]
+    reroute_from_scratch FAIL: net='net_33609' src=(3,107) sink=(3,106) bbox=[0,64]x[46,168]
+    reroute_from_scratch FAIL: net='net_77518' src=(308,202) sink=(306,166) bbox=[123,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62450' src=(304,218) sink=(307,159) bbox=[37,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65470' src=(308,136) sink=(301,123) bbox=[229,310]x[44,205]
+    reroute_from_scratch FAIL: net='net_23297' src=(307,184) sink=(307,185) bbox=[246,310]x[123,222]
+    reroute_from_scratch FAIL: net='net_67547' src=(308,206) sink=(308,105) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104384' src=(307,74) sink=(307,98) bbox=[225,310]x[0,182]
+    reroute_from_scratch FAIL: net='net_25387' src=(243,69) sink=(212,75) bbox=[119,310]x[0,176]
+    reroute_from_scratch FAIL: net='net_10114' src=(235,96) sink=(230,110) bbox=[170,295]x[36,170]
+    reroute_from_scratch FAIL: net='net_15713' src=(42,100) sink=(42,100) bbox=[0,102]x[35,162]
+    reroute_from_scratch FAIL: net='net_2523' src=(269,111) sink=(270,107) bbox=[209,310]x[47,171]
+    reroute_from_scratch FAIL: net='net_2566' src=(182,111) sink=(182,111) bbox=[122,242]x[51,171]
+    reroute_from_scratch FAIL: net='net_48416' src=(290,159) sink=(291,181) bbox=[104,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73113' src=(308,133) sink=(308,12) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98205' src=(307,209) sink=(302,210) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73113' src=(308,133) sink=(308,12) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70728' src=(308,123) sink=(308,181) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58919' src=(305,43) sink=(307,23) bbox=[173,310]x[0,172]
+    reroute_from_scratch FAIL: net='net_25448' src=(196,130) sink=(195,124) bbox=[132,275]x[46,193]
+    reroute_from_scratch FAIL: net='net_70495' src=(3,220) sink=(1,222) bbox=[0,63]x[160,222]
+    reroute_from_scratch FAIL: net='net_22998' src=(272,121) sink=(271,110) bbox=[202,310]x[50,187]
+    reroute_from_scratch FAIL: net='net_73466' src=(308,101) sink=(308,133) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29072' src=(216,90) sink=(216,84) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72845' src=(216,111) sink=(255,118) bbox=[63,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_27078' src=(218,101) sink=(216,110) bbox=[141,293]x[26,201]
+    reroute_from_scratch FAIL: net='net_70512' src=(1,221) sink=(4,222) bbox=[0,64]x[161,222]
+    reroute_from_scratch FAIL: net='net_29395' src=(164,31) sink=(307,2) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66360' src=(303,109) sink=(308,162) bbox=[51,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65472' src=(306,33) sink=(302,129) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29396' src=(305,1) sink=(307,2) bbox=[245,310]x[0,62]
+    reroute_from_scratch FAIL: net='net_85666' src=(307,173) sink=(306,190) bbox=[97,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52748' src=(305,113) sink=(296,5) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75779' src=(308,88) sink=(306,8) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_99602' src=(283,95) sink=(270,94) bbox=[105,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57875' src=(308,111) sink=(304,115) bbox=[241,310]x[40,175]
+    reroute_from_scratch FAIL: net='net_75390' src=(306,10) sink=(104,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_6480' src=(163,115) sink=(80,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70529' src=(8,114) sink=(7,106) bbox=[0,69]x[46,174]
+    reroute_from_scratch FAIL: net='net_104131' src=(303,110) sink=(305,107) bbox=[243,310]x[47,172]
+    reroute_from_scratch FAIL: net='net_42780' src=(306,25) sink=(296,6) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31288' src=(304,0) sink=(304,0) bbox=[244,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_51807' src=(73,112) sink=(73,112) bbox=[13,134]x[50,172]
+    reroute_from_scratch FAIL: net='net_62019' src=(112,111) sink=(99,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_49221' src=(144,111) sink=(194,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34351' src=(247,103) sink=(248,79) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31946' src=(246,24) sink=(287,12) bbox=[72,310]x[0,198]
+    reroute_from_scratch FAIL: net='net_34584' src=(304,1) sink=(304,1) bbox=[244,310]x[0,70]
+    reroute_from_scratch FAIL: net='net_71147' src=(301,3) sink=(307,47) bbox=[58,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68992' src=(308,113) sink=(306,103) bbox=[171,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_432' src=(280,128) sink=(283,111) bbox=[217,310]x[44,191]
+    reroute_from_scratch FAIL: net='net_36154' src=(115,221) sink=(298,219) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82978' src=(308,180) sink=(306,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65921' src=(305,221) sink=(308,217) bbox=[245,310]x[156,222]
+    reroute_from_scratch FAIL: net='net_68886' src=(308,6) sink=(303,16) bbox=[243,310]x[0,76]
+    reroute_from_scratch FAIL: net='net_69361' src=(291,164) sink=(296,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61333' src=(234,115) sink=(244,114) bbox=[174,304]x[54,175]
+    reroute_from_scratch FAIL: net='net_36930' src=(304,2) sink=(307,15) bbox=[244,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_64453' src=(304,95) sink=(305,94) bbox=[241,310]x[34,165]
+    reroute_from_scratch FAIL: net='net_73999' src=(301,5) sink=(307,61) bbox=[133,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24311' src=(251,114) sink=(246,110) bbox=[159,310]x[33,197]
+    reroute_from_scratch FAIL: net='net_74607' src=(307,53) sink=(307,15) bbox=[150,310]x[0,206]
+    reroute_from_scratch FAIL: net='net_42408' src=(307,80) sink=(307,120) bbox=[65,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101713' src=(173,94) sink=(178,94) bbox=[113,238]x[34,154]
+    reroute_from_scratch FAIL: net='net_43943' src=(120,221) sink=(120,221) bbox=[60,180]x[161,222]
+    reroute_from_scratch FAIL: net='net_62398' src=(307,167) sink=(307,159) bbox=[193,310]x[15,222]
+    reroute_from_scratch FAIL: net='net_41087' src=(247,214) sink=(246,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70105' src=(306,214) sink=(304,222) bbox=[242,310]x[154,222]
+    reroute_from_scratch FAIL: net='net_70119' src=(298,213) sink=(304,221) bbox=[238,310]x[153,222]
+    reroute_from_scratch FAIL: net='net_72879' src=(307,191) sink=(308,185) bbox=[202,310]x[86,222]
+    reroute_from_scratch FAIL: net='net_4664' src=(274,0) sink=(270,58) bbox=[96,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67004' src=(308,48) sink=(307,50) bbox=[247,310]x[0,110]
+    reroute_from_scratch FAIL: net='net_73342' src=(307,137) sink=(306,149) bbox=[246,310]x[77,209]
+    reroute_from_scratch FAIL: net='net_66760' src=(307,122) sink=(307,133) bbox=[192,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38588' src=(277,115) sink=(276,112) bbox=[216,310]x[52,176]
+    reroute_from_scratch FAIL: net='net_59933' src=(121,102) sink=(71,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44231' src=(306,116) sink=(307,117) bbox=[246,310]x[56,178]
+    reroute_from_scratch FAIL: net='net_4783' src=(198,125) sink=(307,67) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72597' src=(291,117) sink=(305,218) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38403' src=(298,212) sink=(306,218) bbox=[238,310]x[152,222]
+    reroute_from_scratch FAIL: net='net_11661' src=(63,106) sink=(1,112) bbox=[0,249]x[0,222]
+    reroute_from_scratch FAIL: net='net_47666' src=(5,115) sink=(7,115) bbox=[0,67]x[55,175]
+    reroute_from_scratch FAIL: net='net_73138' src=(307,18) sink=(300,1) bbox=[240,310]x[0,78]
+    reroute_from_scratch FAIL: net='net_30254' src=(38,82) sink=(42,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82892' src=(242,127) sink=(238,115) bbox=[178,302]x[55,187]
+    reroute_from_scratch FAIL: net='net_56921' src=(106,2) sink=(219,99) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_80051' src=(306,169) sink=(308,17) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35739' src=(307,94) sink=(292,104) bbox=[69,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76618' src=(307,63) sink=(300,219) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104437' src=(293,108) sink=(284,126) bbox=[215,310]x[42,192]
+    reroute_from_scratch FAIL: net='net_72725' src=(306,213) sink=(307,216) bbox=[246,310]x[153,222]
+    reroute_from_scratch FAIL: net='net_5785' src=(307,102) sink=(307,102) bbox=[241,310]x[14,168]
+    reroute_from_scratch FAIL: net='net_29045' src=(305,114) sink=(304,116) bbox=[244,310]x[53,176]
+    reroute_from_scratch FAIL: net='net_77519' src=(308,77) sink=(308,202) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_39663' src=(306,34) sink=(307,28) bbox=[246,310]x[0,107]
+    reroute_from_scratch FAIL: net='net_65145' src=(307,182) sink=(306,136) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75336' src=(308,17) sink=(308,60) bbox=[178,310]x[0,189]
+    reroute_from_scratch FAIL: net='net_64718' src=(306,198) sink=(307,136) bbox=[120,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_88840' src=(308,175) sink=(306,152) bbox=[210,310]x[47,222]
+    reroute_from_scratch FAIL: net='net_36621' src=(306,146) sink=(296,131) bbox=[226,310]x[70,206]
+    reroute_from_scratch FAIL: net='net_77156' src=(303,9) sink=(302,1) bbox=[242,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_73865' src=(35,111) sink=(35,8) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65361' src=(307,137) sink=(305,107) bbox=[206,310]x[5,222]
+    reroute_from_scratch FAIL: net='net_61391' src=(307,106) sink=(308,136) bbox=[216,310]x[16,222]
+    reroute_from_scratch FAIL: net='net_77624' src=(308,77) sink=(307,34) bbox=[67,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77948' src=(307,76) sink=(307,12) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68004' src=(307,134) sink=(308,110) bbox=[220,310]x[18,221]
+    reroute_from_scratch FAIL: net='net_72920' src=(308,62) sink=(307,53) bbox=[207,310]x[0,182]
+    reroute_from_scratch FAIL: net='net_87035' src=(308,158) sink=(308,188) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57846' src=(306,106) sink=(307,79) bbox=[204,310]x[0,207]
+    reroute_from_scratch FAIL: net='net_65555' src=(297,126) sink=(307,87) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61391' src=(307,106) sink=(308,136) bbox=[216,310]x[16,222]
+    reroute_from_scratch FAIL: net='net_3987' src=(306,196) sink=(306,202) bbox=[245,310]x[136,222]
+    reroute_from_scratch FAIL: net='net_94732' src=(277,114) sink=(267,112) bbox=[207,310]x[51,176]
+    reroute_from_scratch FAIL: net='net_46163' src=(232,88) sink=(229,67) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57846' src=(306,106) sink=(307,79) bbox=[204,310]x[0,207]
+    reroute_from_scratch FAIL: net='net_77716' src=(282,109) sink=(209,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67081' src=(307,22) sink=(308,48) bbox=[229,310]x[0,126]
+    reroute_from_scratch FAIL: net='net_31233' src=(304,47) sink=(307,60) bbox=[184,310]x[0,192]
+    reroute_from_scratch FAIL: net='net_67108' src=(294,165) sink=(303,218) bbox=[135,310]x[6,222]
+    reroute_from_scratch FAIL: net='net_65626' src=(307,202) sink=(306,180) bbox=[186,310]x[63,222]
+    reroute_from_scratch FAIL: net='net_78294' src=(298,3) sink=(306,10) bbox=[238,310]x[0,70]
+    reroute_from_scratch FAIL: net='net_58877' src=(307,99) sink=(307,59) bbox=[164,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_84159' src=(306,112) sink=(308,74) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78381' src=(305,11) sink=(303,5) bbox=[238,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_77779' src=(45,5) sink=(297,159) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65774' src=(306,96) sink=(306,96) bbox=[246,310]x[36,156]
+    reroute_from_scratch FAIL: net='net_80011' src=(302,220) sink=(306,211) bbox=[242,310]x[151,222]
+    reroute_from_scratch FAIL: net='net_52648' src=(308,133) sink=(299,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_88764' src=(308,195) sink=(308,185) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103285' src=(275,104) sink=(307,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104119' src=(301,72) sink=(307,22) bbox=[148,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64949' src=(307,71) sink=(305,66) bbox=[245,310]x[0,131]
+    reroute_from_scratch FAIL: net='net_70699' src=(307,136) sink=(308,121) bbox=[132,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69304' src=(301,2) sink=(301,14) bbox=[151,310]x[0,202]
+    reroute_from_scratch FAIL: net='net_69358' src=(306,30) sink=(307,15) bbox=[246,310]x[0,90]
+    reroute_from_scratch FAIL: net='net_3331' src=(222,96) sink=(172,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_80599' src=(248,130) sink=(224,131) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65333' src=(304,109) sink=(305,107) bbox=[243,310]x[47,171]
+    reroute_from_scratch FAIL: net='net_68111' src=(306,76) sink=(292,125) bbox=[145,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66947' src=(306,81) sink=(307,54) bbox=[183,310]x[0,204]
+    reroute_from_scratch FAIL: net='net_70279' src=(263,111) sink=(263,111) bbox=[203,310]x[51,171]
+    reroute_from_scratch FAIL: net='net_70358' src=(302,5) sink=(302,5) bbox=[242,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_70348' src=(189,18) sink=(179,9) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67489' src=(304,111) sink=(307,115) bbox=[244,310]x[49,177]
+    reroute_from_scratch FAIL: net='net_73490' src=(294,114) sink=(305,207) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57861' src=(280,114) sink=(167,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77750' src=(292,168) sink=(238,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_86635' src=(308,119) sink=(300,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_87005' src=(308,23) sink=(297,4) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_855' src=(305,11) sink=(308,15) bbox=[77,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83497' src=(306,124) sink=(304,215) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72935' src=(308,32) sink=(304,8) bbox=[207,310]x[0,125]
+    reroute_from_scratch FAIL: net='net_67560' src=(308,73) sink=(308,105) bbox=[42,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76806' src=(307,137) sink=(308,162) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69095' src=(307,214) sink=(302,219) bbox=[242,310]x[154,222]
+    reroute_from_scratch FAIL: net='net_94721' src=(251,114) sink=(277,116) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61939' src=(253,93) sink=(249,104) bbox=[189,310]x[33,168]
+    reroute_from_scratch FAIL: net='net_73501' src=(302,216) sink=(304,214) bbox=[242,310]x[154,222]
+    reroute_from_scratch FAIL: net='net_73865' src=(35,111) sink=(35,8) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82736' src=(297,3) sink=(301,4) bbox=[237,310]x[0,64]
+    reroute_from_scratch FAIL: net='net_36916' src=(305,138) sink=(305,97) bbox=[182,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98343' src=(305,109) sink=(291,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_95005' src=(308,204) sink=(305,112) bbox=[29,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25945' src=(308,218) sink=(236,147) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38695' src=(306,29) sink=(307,30) bbox=[246,310]x[0,91]
+    reroute_from_scratch FAIL: net='net_99521' src=(303,8) sink=(296,4) bbox=[236,310]x[0,68]
+    reroute_from_scratch FAIL: net='net_92694' src=(307,204) sink=(308,151) bbox=[124,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76439' src=(304,218) sink=(300,219) bbox=[240,310]x[146,222]
+    reroute_from_scratch FAIL: net='net_29985' src=(304,14) sink=(305,17) bbox=[244,310]x[0,77]
+    reroute_from_scratch FAIL: net='net_38728' src=(295,1) sink=(306,5) bbox=[235,310]x[0,65]
+    reroute_from_scratch FAIL: net='net_52800' src=(307,98) sink=(258,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34865' src=(300,5) sink=(304,2) bbox=[240,310]x[0,65]
+    reroute_from_scratch FAIL: net='net_34871' src=(304,1) sink=(300,5) bbox=[240,310]x[0,65]
+    reroute_from_scratch FAIL: net='net_92896' src=(297,217) sink=(300,219) bbox=[237,310]x[157,222]
+    reroute_from_scratch FAIL: net='net_104098' src=(298,10) sink=(304,14) bbox=[238,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_39393' src=(297,9) sink=(305,10) bbox=[237,310]x[0,73]
+    reroute_from_scratch FAIL: net='net_94981' src=(302,215) sink=(308,38) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64709' src=(303,138) sink=(307,147) bbox=[216,310]x[49,222]
+    reroute_from_scratch FAIL: net='net_96052' src=(304,213) sink=(307,208) bbox=[244,310]x[148,222]
+    reroute_from_scratch FAIL: net='net_58925' src=(277,149) sink=(306,209) bbox=[88,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_96061' src=(301,216) sink=(299,213) bbox=[239,310]x[138,222]
+    reroute_from_scratch FAIL: net='net_45730' src=(117,99) sink=(137,98) bbox=[57,197]x[38,159]
+    reroute_from_scratch FAIL: net='net_52809' src=(307,111) sink=(306,84) bbox=[129,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75334' src=(308,7) sink=(308,17) bbox=[148,310]x[0,219]
+    reroute_from_scratch FAIL: net='net_82974' src=(308,132) sink=(306,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_93251' src=(266,47) sink=(301,34) bbox=[149,310]x[0,164]
+    reroute_from_scratch FAIL: net='net_78385' src=(298,2) sink=(308,78) bbox=[70,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98177' src=(296,219) sink=(299,222) bbox=[236,310]x[150,222]
+    reroute_from_scratch FAIL: net='net_78546' src=(299,221) sink=(299,221) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103582' src=(300,217) sink=(299,220) bbox=[239,310]x[157,222]
+    reroute_from_scratch FAIL: net='net_79394' src=(72,104) sink=(290,214) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79492' src=(65,111) sink=(70,93) bbox=[0,148]x[15,183]
+    reroute_from_scratch FAIL: net='net_10005' src=(205,110) sink=(255,84) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_95367' src=(303,213) sink=(301,209) bbox=[240,310]x[149,222]
+    reroute_from_scratch FAIL: net='net_79988' src=(300,216) sink=(306,211) bbox=[240,310]x[151,222]
+    reroute_from_scratch FAIL: net='net_91560' src=(295,216) sink=(299,219) bbox=[232,310]x[154,222]
+    reroute_from_scratch FAIL: net='net_28289' src=(102,105) sink=(114,109) bbox=[0,216]x[0,213]
+    reroute_from_scratch FAIL: net='net_77452' src=(305,67) sink=(307,161) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76537' src=(308,86) sink=(211,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_36152' src=(298,221) sink=(228,150) bbox=[15,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_867' src=(308,82) sink=(190,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_100833' src=(45,111) sink=(42,111) bbox=[0,105]x[51,171]
+    reroute_from_scratch FAIL: net='net_64679' src=(307,202) sink=(308,192) bbox=[243,310]x[132,222]
+    reroute_from_scratch FAIL: net='net_58025' src=(303,106) sink=(307,121) bbox=[117,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70431' src=(306,28) sink=(301,3) bbox=[226,310]x[0,103]
+    reroute_from_scratch FAIL: net='net_10075' src=(210,95) sink=(173,90) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82590' src=(303,212) sink=(308,116) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_86169' src=(307,13) sink=(308,23) bbox=[247,310]x[0,83]
+    reroute_from_scratch FAIL: net='net_67991' src=(307,25) sink=(308,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75459' src=(284,147) sink=(304,210) bbox=[80,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_96181' src=(308,115) sink=(308,89) bbox=[230,310]x[11,193]
+    reroute_from_scratch FAIL: net='net_82260' src=(308,107) sink=(308,114) bbox=[244,310]x[47,174]
+    reroute_from_scratch FAIL: net='net_68981' src=(305,116) sink=(308,118) bbox=[245,310]x[56,178]
+    reroute_from_scratch FAIL: net='net_67847' src=(293,137) sink=(307,130) bbox=[62,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68918' src=(307,76) sink=(308,68) bbox=[247,310]x[8,136]
+    reroute_from_scratch FAIL: net='net_23349' src=(302,206) sink=(305,209) bbox=[242,310]x[145,222]
+    reroute_from_scratch FAIL: net='net_88702' src=(304,210) sink=(300,220) bbox=[240,310]x[140,222]
+    reroute_from_scratch FAIL: net='net_79940' src=(242,213) sink=(251,209) bbox=[44,310]x[11,222]
+    reroute_from_scratch FAIL: net='net_25265' src=(253,97) sink=(257,110) bbox=[193,310]x[37,170]
+    reroute_from_scratch FAIL: net='net_77722' src=(183,35) sink=(182,122) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62601' src=(307,115) sink=(247,89) bbox=[63,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56019' src=(306,117) sink=(303,110) bbox=[243,310]x[50,177]
+    reroute_from_scratch FAIL: net='net_92658' src=(280,186) sink=(303,210) bbox=[97,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_93567' src=(308,61) sink=(302,14) bbox=[50,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103595' src=(271,140) sink=(272,104) bbox=[107,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5094' src=(304,83) sink=(308,79) bbox=[211,310]x[0,195]
+    reroute_from_scratch FAIL: net='net_67223' src=(306,42) sink=(302,15) bbox=[221,310]x[0,123]
+    reroute_from_scratch FAIL: net='net_31519' src=(307,107) sink=(305,112) bbox=[243,310]x[47,174]
+    reroute_from_scratch FAIL: net='net_58961' src=(308,208) sink=(308,208) bbox=[247,310]x[147,222]
+    reroute_from_scratch FAIL: net='net_73956' src=(307,195) sink=(307,208) bbox=[246,310]x[135,222]
+    reroute_from_scratch FAIL: net='net_79618' src=(306,12) sink=(308,11) bbox=[246,310]x[0,72]
+    reroute_from_scratch FAIL: net='net_9653' src=(232,44) sink=(189,0) bbox=[57,310]x[0,176]
+    reroute_from_scratch FAIL: net='net_13906' src=(15,111) sink=(8,110) bbox=[0,75]x[50,173]
+    reroute_from_scratch FAIL: net='net_83366' src=(224,111) sink=(230,111) bbox=[163,294]x[51,171]
+    reroute_from_scratch FAIL: net='net_102860' src=(240,118) sink=(228,116) bbox=[164,300]x[47,184]
+    reroute_from_scratch FAIL: net='net_98998' src=(152,222) sink=(152,222) bbox=[92,212]x[162,222]
+    reroute_from_scratch FAIL: net='net_99334' src=(298,8) sink=(307,14) bbox=[238,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_51229' src=(226,102) sink=(224,114) bbox=[164,286]x[42,174]
+    reroute_from_scratch FAIL: net='net_103458' src=(306,20) sink=(307,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_14490' src=(307,43) sink=(301,54) bbox=[241,310]x[0,123]
+    reroute_from_scratch FAIL: net='net_74854' src=(127,103) sink=(142,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4912' src=(304,108) sink=(307,89) bbox=[103,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102084' src=(308,1) sink=(203,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103178' src=(308,2) sink=(307,0) bbox=[247,310]x[0,62]
+    reroute_from_scratch FAIL: net='net_58852' src=(247,108) sink=(58,6) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44318' src=(254,111) sink=(291,110) bbox=[143,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56845' src=(303,105) sink=(294,109) bbox=[156,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82627' src=(308,69) sink=(301,3) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_95079' src=(296,1) sink=(308,27) bbox=[50,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_94450' src=(308,79) sink=(305,96) bbox=[245,310]x[19,156]
+    reroute_from_scratch FAIL: net='net_41693' src=(294,104) sink=(296,81) bbox=[213,310]x[0,185]
+    reroute_from_scratch FAIL: net='net_58965' src=(307,207) sink=(307,184) bbox=[145,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11439' src=(307,116) sink=(138,78) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103620' src=(146,106) sink=(262,99) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70706' src=(308,114) sink=(308,181) bbox=[107,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67189' src=(306,115) sink=(306,154) bbox=[189,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103349' src=(308,222) sink=(299,212) bbox=[239,310]x[152,222]
+    reroute_from_scratch FAIL: net='net_104454' src=(306,49) sink=(307,48) bbox=[246,310]x[0,109]
+    reroute_from_scratch FAIL: net='net_67359' src=(307,45) sink=(306,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65085' src=(305,103) sink=(307,80) bbox=[236,310]x[11,172]
+    reroute_from_scratch FAIL: net='net_79083' src=(308,168) sink=(308,190) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_105132' src=(302,109) sink=(307,99) bbox=[242,310]x[32,169]
+    reroute_from_scratch FAIL: net='net_70409' src=(308,101) sink=(306,58) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_86637' src=(308,164) sink=(300,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10777' src=(171,77) sink=(201,19) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31425' src=(276,127) sink=(64,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29342' src=(307,178) sink=(307,182) bbox=[247,310]x[116,222]
+    reroute_from_scratch FAIL: net='net_67040' src=(304,6) sink=(307,59) bbox=[145,310]x[0,218]
+    reroute_from_scratch FAIL: net='net_84373' src=(266,97) sink=(256,94) bbox=[196,310]x[32,157]
+    reroute_from_scratch FAIL: net='net_70128' src=(307,134) sink=(307,136) bbox=[247,310]x[74,196]
+    reroute_from_scratch FAIL: net='net_14495' src=(280,55) sink=(305,42) bbox=[199,310]x[0,136]
+    reroute_from_scratch FAIL: net='net_14490' src=(307,43) sink=(301,54) bbox=[241,310]x[0,123]
+    reroute_from_scratch FAIL: net='net_11341' src=(223,60) sink=(208,99) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_15829' src=(94,129) sink=(307,48) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68927' src=(307,76) sink=(306,82) bbox=[225,310]x[0,176]
+    reroute_from_scratch FAIL: net='net_73106' src=(308,126) sink=(308,12) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_19584' src=(41,94) sink=(41,94) bbox=[0,164]x[0,222]
+    reroute_from_scratch FAIL: net='net_32280' src=(174,111) sink=(149,110) bbox=[74,249]x[35,187]
+    reroute_from_scratch FAIL: net='net_52885' src=(267,108) sink=(256,109) bbox=[99,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_20910' src=(20,103) sink=(18,101) bbox=[0,82]x[41,172]
+    reroute_from_scratch FAIL: net='net_104453' src=(306,49) sink=(307,47) bbox=[246,310]x[0,109]
+    reroute_from_scratch FAIL: net='net_16575' src=(204,100) sink=(123,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_6568' src=(174,115) sink=(150,140) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11309' src=(50,107) sink=(204,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_6386' src=(261,134) sink=(262,121) bbox=[174,310]x[29,222]
+    reroute_from_scratch FAIL: net='net_61077' src=(304,144) sink=(305,154) bbox=[189,310]x[33,222]
+    reroute_from_scratch FAIL: net='net_5121' src=(307,177) sink=(299,136) bbox=[53,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41889' src=(304,194) sink=(294,104) bbox=[23,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23255' src=(307,181) sink=(307,190) bbox=[227,310]x[106,222]
+    reroute_from_scratch FAIL: net='net_23577' src=(306,207) sink=(302,206) bbox=[242,310]x[145,222]
+    reroute_from_scratch FAIL: net='net_50565' src=(246,120) sink=(294,138) bbox=[63,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25225' src=(240,91) sink=(254,105) bbox=[180,310]x[31,168]
+    reroute_from_scratch FAIL: net='net_55224' src=(229,94) sink=(241,91) bbox=[58,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52613' src=(248,106) sink=(210,114) bbox=[72,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_9555' src=(150,106) sink=(148,105) bbox=[62,223]x[33,175]
+    reroute_from_scratch FAIL: net='net_61424' src=(306,7) sink=(307,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35246' src=(303,95) sink=(305,93) bbox=[243,310]x[33,168]
+    reroute_from_scratch FAIL: net='net_69215' src=(214,122) sink=(214,122) bbox=[153,274]x[61,182]
+    reroute_from_scratch FAIL: net='net_34162' src=(237,123) sink=(210,114) bbox=[69,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16640' src=(45,124) sink=(122,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38406' src=(306,218) sink=(306,222) bbox=[246,310]x[157,222]
+    reroute_from_scratch FAIL: net='net_36948' src=(308,217) sink=(305,220) bbox=[245,310]x[150,222]
+    reroute_from_scratch FAIL: net='net_44755' src=(305,219) sink=(306,221) bbox=[244,310]x[159,222]
+    reroute_from_scratch FAIL: net='net_52929' src=(307,105) sink=(213,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_55794' src=(235,104) sink=(231,109) bbox=[47,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_1562' src=(228,105) sink=(175,124) bbox=[16,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56994' src=(212,80) sink=(191,100) bbox=[104,293]x[0,185]
+    reroute_from_scratch FAIL: net='net_64132' src=(194,122) sink=(148,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29394' src=(296,10) sink=(307,2) bbox=[236,310]x[0,72]
+    reroute_from_scratch FAIL: net='net_42526' src=(307,36) sink=(307,33) bbox=[246,310]x[0,96]
+    reroute_from_scratch FAIL: net='net_67721' src=(302,220) sink=(308,197) bbox=[230,310]x[124,222]
+    reroute_from_scratch FAIL: net='net_28377' src=(34,165) sink=(36,166) bbox=[0,96]x[105,222]
+    reroute_from_scratch FAIL: net='net_16569' src=(307,125) sink=(307,152) bbox=[224,310]x[44,222]
+    reroute_from_scratch FAIL: net='net_68995' src=(306,129) sink=(307,99) bbox=[216,310]x[9,219]
+    reroute_from_scratch FAIL: net='net_67345' src=(306,118) sink=(303,112) bbox=[243,310]x[52,189]
+    reroute_from_scratch FAIL: net='net_76281' src=(308,116) sink=(308,100) bbox=[236,310]x[28,196]
+    reroute_from_scratch FAIL: net='net_28842' src=(294,131) sink=(307,124) bbox=[234,310]x[64,192]
+    reroute_from_scratch FAIL: net='net_103658' src=(306,145) sink=(307,146) bbox=[246,310]x[85,206]
+    reroute_from_scratch FAIL: net='net_99602' src=(283,95) sink=(270,94) bbox=[105,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41474' src=(305,199) sink=(307,187) bbox=[32,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67345' src=(306,118) sink=(303,112) bbox=[243,310]x[52,189]
+    reroute_from_scratch FAIL: net='net_31330' src=(133,95) sink=(215,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72651' src=(307,110) sink=(308,80) bbox=[217,310]x[0,200]
+    reroute_from_scratch FAIL: net='net_100897' src=(47,113) sink=(46,111) bbox=[0,107]x[51,173]
+    reroute_from_scratch FAIL: net='net_84629' src=(303,207) sink=(308,141) bbox=[105,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_27042' src=(202,98) sink=(191,100) bbox=[113,293]x[15,197]
+    reroute_from_scratch FAIL: net='net_103880' src=(307,106) sink=(308,100) bbox=[247,310]x[40,166]
+    reroute_from_scratch FAIL: net='net_57853' src=(304,113) sink=(306,106) bbox=[240,310]x[46,177]
+    reroute_from_scratch FAIL: net='net_68000' src=(305,129) sink=(307,143) bbox=[83,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_88708' src=(308,200) sink=(308,200) bbox=[114,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23007' src=(283,104) sink=(301,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70423' src=(308,26) sink=(307,29) bbox=[247,310]x[0,93]
+    reroute_from_scratch FAIL: net='net_31022' src=(308,174) sink=(308,174) bbox=[248,310]x[114,222]
+    reroute_from_scratch FAIL: net='net_60395' src=(305,138) sink=(306,61) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_84671' src=(307,55) sink=(300,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58891' src=(299,53) sink=(307,59) bbox=[95,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31476' src=(270,99) sink=(185,94) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47363' src=(308,159) sink=(137,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40931' src=(267,106) sink=(260,100) bbox=[81,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_96396' src=(1,103) sink=(195,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38780' src=(307,163) sink=(307,165) bbox=[247,310]x[103,222]
+    reroute_from_scratch FAIL: net='net_52073' src=(170,127) sink=(167,118) bbox=[101,230]x[58,187]
+    reroute_from_scratch FAIL: net='net_25403' src=(119,110) sink=(238,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73100' src=(308,125) sink=(308,176) bbox=[22,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29588' src=(191,96) sink=(177,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34444' src=(285,131) sink=(289,126) bbox=[225,310]x[61,191]
+    reroute_from_scratch FAIL: net='net_14230' src=(307,166) sink=(307,172) bbox=[247,310]x[106,222]
+    reroute_from_scratch FAIL: net='net_105189' src=(48,109) sink=(186,89) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31560' src=(243,95) sink=(184,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25547' src=(244,103) sink=(244,108) bbox=[183,310]x[34,168]
+    reroute_from_scratch FAIL: net='net_52640' src=(300,109) sink=(202,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26469' src=(306,26) sink=(223,139) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104121' src=(307,179) sink=(307,180) bbox=[247,310]x[119,222]
+    reroute_from_scratch FAIL: net='net_77943' src=(277,128) sink=(308,60) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_133' src=(231,131) sink=(306,66) bbox=[3,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_105135' src=(307,92) sink=(272,112) bbox=[99,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5902' src=(117,131) sink=(65,127) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63267' src=(162,110) sink=(182,109) bbox=[90,258]x[37,182]
+    reroute_from_scratch FAIL: net='net_31191' src=(223,128) sink=(305,14) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30413' src=(295,102) sink=(308,57) bbox=[130,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61782' src=(306,49) sink=(307,65) bbox=[246,310]x[0,125]
+    reroute_from_scratch FAIL: net='net_31337' src=(227,181) sink=(188,134) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76266' src=(307,34) sink=(308,71) bbox=[119,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_51148' src=(234,105) sink=(236,110) bbox=[174,296]x[45,170]
+    reroute_from_scratch FAIL: net='net_48509' src=(307,156) sink=(307,152) bbox=[246,310]x[92,217]
+    reroute_from_scratch FAIL: net='net_40369' src=(140,101) sink=(303,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76223' src=(308,50) sink=(307,34) bbox=[75,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79760' src=(303,213) sink=(308,207) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47106' src=(192,112) sink=(188,112) bbox=[118,254]x[51,172]
+    reroute_from_scratch FAIL: net='net_45665' src=(230,117) sink=(272,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77074' src=(307,171) sink=(306,67) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104205' src=(239,65) sink=(307,65) bbox=[32,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52956' src=(186,104) sink=(290,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98298' src=(308,147) sink=(305,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_36904' src=(305,157) sink=(305,150) bbox=[244,310]x[86,222]
+    reroute_from_scratch FAIL: net='net_59105' src=(307,193) sink=(307,169) bbox=[144,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_39188' src=(3,116) sink=(62,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_92796' src=(226,120) sink=(237,81) bbox=[86,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62523' src=(265,109) sink=(271,108) bbox=[205,310]x[48,169]
+    reroute_from_scratch FAIL: net='net_45390' src=(270,139) sink=(270,137) bbox=[210,310]x[77,199]
+    reroute_from_scratch FAIL: net='net_42451' src=(244,2) sink=(244,35) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11343' src=(4,108) sink=(122,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38957' src=(295,96) sink=(295,106) bbox=[235,310]x[36,166]
+    reroute_from_scratch FAIL: net='net_74049' src=(297,126) sink=(290,108) bbox=[225,310]x[42,189]
+    reroute_from_scratch FAIL: net='net_4898' src=(306,145) sink=(307,147) bbox=[246,310]x[85,208]
+    reroute_from_scratch FAIL: net='net_102988' src=(250,106) sink=(258,86) bbox=[169,310]x[5,194]
+    reroute_from_scratch FAIL: net='net_5009' src=(304,139) sink=(306,115) bbox=[70,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83054' src=(307,141) sink=(308,85) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65097' src=(302,110) sink=(307,102) bbox=[242,310]x[42,174]
+    reroute_from_scratch FAIL: net='net_75151' src=(308,66) sink=(308,145) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25440' src=(195,104) sink=(194,100) bbox=[107,261]x[34,170]
+    reroute_from_scratch FAIL: net='net_76775' src=(285,121) sink=(296,127) bbox=[66,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66731' src=(307,88) sink=(304,113) bbox=[46,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41075' src=(305,114) sink=(295,76) bbox=[181,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_51846' src=(34,112) sink=(139,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_1841' src=(87,110) sink=(186,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75629' src=(240,113) sink=(254,90) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76849' src=(292,103) sink=(305,20) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4334' src=(197,123) sink=(232,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30739' src=(266,112) sink=(257,124) bbox=[197,310]x[52,184]
+    reroute_from_scratch FAIL: net='net_38085' src=(239,103) sink=(243,103) bbox=[177,303]x[43,164]
+    reroute_from_scratch FAIL: net='net_88042' src=(275,112) sink=(274,111) bbox=[210,310]x[51,172]
+    reroute_from_scratch FAIL: net='net_61434' src=(306,170) sink=(307,163) bbox=[237,310]x[94,222]
+    reroute_from_scratch FAIL: net='net_32805' src=(284,111) sink=(270,110) bbox=[210,310]x[50,171]
+    reroute_from_scratch FAIL: net='net_66878' src=(302,108) sink=(306,118) bbox=[242,310]x[48,181]
+    reroute_from_scratch FAIL: net='net_103550' src=(305,97) sink=(291,104) bbox=[231,310]x[37,164]
+    reroute_from_scratch FAIL: net='net_83462' src=(308,169) sink=(303,216) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75123' src=(308,159) sink=(308,171) bbox=[248,310]x[99,222]
+    reroute_from_scratch FAIL: net='net_72218' src=(305,214) sink=(301,137) bbox=[67,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75385' src=(306,155) sink=(306,129) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74196' src=(308,138) sink=(300,112) bbox=[198,310]x[6,222]
+    reroute_from_scratch FAIL: net='net_62055' src=(224,100) sink=(259,108) bbox=[116,310]x[0,219]
+    reroute_from_scratch FAIL: net='net_40717' src=(305,112) sink=(303,112) bbox=[243,310]x[52,174]
+    reroute_from_scratch FAIL: net='net_70207' src=(307,70) sink=(306,140) bbox=[96,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57915' src=(307,96) sink=(307,100) bbox=[247,310]x[36,171]
+    reroute_from_scratch FAIL: net='net_81301' src=(308,151) sink=(306,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31804' src=(273,134) sink=(217,94) bbox=[43,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_59040' src=(306,180) sink=(301,209) bbox=[199,310]x[73,222]
+    reroute_from_scratch FAIL: net='net_63564' src=(126,123) sink=(258,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22835' src=(259,112) sink=(261,112) bbox=[199,310]x[52,172]
+    reroute_from_scratch FAIL: net='net_71172' src=(307,111) sink=(307,78) bbox=[3,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41889' src=(304,194) sink=(294,104) bbox=[23,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66729' src=(307,50) sink=(307,88) bbox=[142,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23203' src=(305,69) sink=(301,89) bbox=[141,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57857' src=(300,111) sink=(303,107) bbox=[238,310]x[39,172]
+    reroute_from_scratch FAIL: net='net_30870' src=(283,147) sink=(287,153) bbox=[223,310]x[87,213]
+    reroute_from_scratch FAIL: net='net_82954' src=(308,139) sink=(308,127) bbox=[143,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50578' src=(276,114) sink=(289,115) bbox=[216,310]x[49,175]
+    reroute_from_scratch FAIL: net='net_1680' src=(223,125) sink=(212,125) bbox=[115,304]x[44,206]
+    reroute_from_scratch FAIL: net='net_6889' src=(139,113) sink=(146,123) bbox=[0,266]x[0,222]
+    reroute_from_scratch FAIL: net='net_76403' src=(138,111) sink=(138,110) bbox=[78,199]x[50,171]
+    reroute_from_scratch FAIL: net='net_103088' src=(308,64) sink=(307,65) bbox=[247,310]x[4,125]
+    reroute_from_scratch FAIL: net='net_73466' src=(308,101) sink=(308,133) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78409' src=(308,12) sink=(302,3) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_97927' src=(305,164) sink=(304,163) bbox=[244,310]x[103,222]
+    reroute_from_scratch FAIL: net='net_50536' src=(305,106) sink=(302,107) bbox=[229,310]x[36,175]
+    reroute_from_scratch FAIL: net='net_71873' src=(257,131) sink=(200,134) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66804' src=(304,107) sink=(307,123) bbox=[244,310]x[47,187]
+    reroute_from_scratch FAIL: net='net_22918' src=(306,93) sink=(307,98) bbox=[246,310]x[28,158]
+    reroute_from_scratch FAIL: net='net_87547' src=(308,87) sink=(292,94) bbox=[229,310]x[27,158]
+    reroute_from_scratch FAIL: net='net_67261' src=(303,111) sink=(307,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69498' src=(304,201) sink=(305,201) bbox=[244,310]x[137,222]
+    reroute_from_scratch FAIL: net='net_104243' src=(302,116) sink=(301,113) bbox=[240,310]x[50,176]
+    reroute_from_scratch FAIL: net='net_16436' src=(307,37) sink=(307,43) bbox=[247,310]x[0,103]
+    reroute_from_scratch FAIL: net='net_44719' src=(305,189) sink=(306,193) bbox=[245,310]x[129,222]
+    reroute_from_scratch FAIL: net='net_67644' src=(306,94) sink=(306,66) bbox=[222,310]x[0,178]
+    reroute_from_scratch FAIL: net='net_203' src=(237,100) sink=(78,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_105090' src=(296,115) sink=(281,105) bbox=[101,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70341' src=(123,212) sink=(306,202) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52525' src=(277,149) sink=(287,140) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70201' src=(306,26) sink=(306,26) bbox=[246,310]x[0,86]
+    reroute_from_scratch FAIL: net='net_103595' src=(271,140) sink=(272,104) bbox=[107,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4844' src=(306,144) sink=(307,124) bbox=[246,310]x[64,204]
+    reroute_from_scratch FAIL: net='net_52648' src=(308,133) sink=(299,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102648' src=(127,78) sink=(299,1) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5798' src=(299,108) sink=(294,94) bbox=[102,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104130' src=(303,110) sink=(304,111) bbox=[243,310]x[50,171]
+    reroute_from_scratch FAIL: net='net_93551' src=(305,110) sink=(308,163) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70684' src=(304,113) sink=(307,93) bbox=[184,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5540' src=(244,71) sink=(212,66) bbox=[35,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_88756' src=(308,185) sink=(307,176) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34883' src=(213,98) sink=(213,23) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76618' src=(307,63) sink=(300,219) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71366' src=(306,21) sink=(308,39) bbox=[246,310]x[0,100]
+    reroute_from_scratch FAIL: net='net_103883' src=(308,100) sink=(308,100) bbox=[247,310]x[40,163]
+    reroute_from_scratch FAIL: net='net_83584' src=(292,166) sink=(296,127) bbox=[57,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52757' src=(290,111) sink=(305,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52582' src=(308,121) sink=(286,89) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58963' src=(308,208) sink=(308,153) bbox=[142,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73527' src=(258,110) sink=(260,107) bbox=[132,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78518' src=(307,12) sink=(301,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48195' src=(306,172) sink=(307,163) bbox=[228,310]x[85,222]
+    reroute_from_scratch FAIL: net='net_82479' src=(308,155) sink=(308,68) bbox=[16,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29800' src=(308,155) sink=(308,142) bbox=[248,310]x[82,215]
+    reroute_from_scratch FAIL: net='net_99506' src=(306,14) sink=(303,8) bbox=[243,310]x[0,78]
+    reroute_from_scratch FAIL: net='net_70381' src=(302,5) sink=(306,15) bbox=[242,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_11071' src=(248,102) sink=(223,103) bbox=[148,310]x[27,178]
+    reroute_from_scratch FAIL: net='net_45159' src=(304,31) sink=(305,28) bbox=[244,310]x[0,91]
+    reroute_from_scratch FAIL: net='net_79631' src=(308,167) sink=(308,124) bbox=[179,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64671' src=(307,125) sink=(308,110) bbox=[206,310]x[14,222]
+    reroute_from_scratch FAIL: net='net_52712' src=(308,100) sink=(305,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63554' src=(297,109) sink=(286,118) bbox=[128,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_39201' src=(153,112) sink=(179,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82967' src=(308,123) sink=(308,173) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67011' src=(307,144) sink=(307,127) bbox=[166,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76971' src=(307,101) sink=(307,113) bbox=[232,310]x[13,188]
+    reroute_from_scratch FAIL: net='net_83677' src=(308,46) sink=(308,115) bbox=[86,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67483' src=(306,60) sink=(307,52) bbox=[117,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35535' src=(262,97) sink=(300,101) bbox=[130,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_93360' src=(307,73) sink=(304,16) bbox=[7,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70997' src=(304,88) sink=(307,84) bbox=[133,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69100' src=(306,187) sink=(308,158) bbox=[156,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11623' src=(140,94) sink=(38,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_87230' src=(217,105) sink=(210,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_81479' src=(111,65) sink=(111,65) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_96916' src=(308,39) sink=(308,93) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67996' src=(308,123) sink=(302,125) bbox=[158,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11358' src=(125,119) sink=(195,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66908' src=(308,132) sink=(307,103) bbox=[196,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56254' src=(231,89) sink=(229,86) bbox=[169,291]x[26,149]
+    reroute_from_scratch FAIL: net='net_68120' src=(308,67) sink=(303,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_21934' src=(244,114) sink=(224,113) bbox=[125,310]x[11,217]
+    reroute_from_scratch FAIL: net='net_1654' src=(254,132) sink=(232,80) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29819' src=(308,142) sink=(307,142) bbox=[247,310]x[82,209]
+    reroute_from_scratch FAIL: net='net_46134' src=(259,102) sink=(212,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77673' src=(226,106) sink=(200,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73930' src=(307,74) sink=(307,34) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102971' src=(307,94) sink=(255,118) bbox=[51,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31579' src=(299,42) sink=(271,78) bbox=[82,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_60795' src=(258,122) sink=(200,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22997' src=(258,101) sink=(255,111) bbox=[83,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_45358' src=(248,119) sink=(223,106) bbox=[139,310]x[7,203]
+    reroute_from_scratch FAIL: net='net_8428' src=(138,96) sink=(192,72) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_93593' src=(308,45) sink=(308,46) bbox=[248,310]x[0,106]
+    reroute_from_scratch FAIL: net='net_77360' src=(304,213) sink=(307,188) bbox=[75,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_87510' src=(164,100) sink=(163,99) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48543' src=(209,104) sink=(205,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_6327' src=(259,129) sink=(253,132) bbox=[181,310]x[68,192]
+    reroute_from_scratch FAIL: net='net_103517' src=(285,59) sink=(276,117) bbox=[102,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103178' src=(308,2) sink=(307,0) bbox=[247,310]x[0,62]
+    reroute_from_scratch FAIL: net='net_36920' src=(306,137) sink=(305,150) bbox=[236,310]x[68,222]
+    reroute_from_scratch FAIL: net='net_73382' src=(307,132) sink=(307,97) bbox=[165,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58070' src=(303,107) sink=(294,112) bbox=[234,310]x[43,172]
+    reroute_from_scratch FAIL: net='net_44552' src=(254,116) sink=(242,106) bbox=[182,310]x[36,176]
+    reroute_from_scratch FAIL: net='net_23264' src=(307,185) sink=(306,183) bbox=[246,310]x[120,222]
+    reroute_from_scratch FAIL: net='net_55185' src=(304,105) sink=(281,111) bbox=[180,310]x[12,211]
+    reroute_from_scratch FAIL: net='net_66760' src=(307,122) sink=(307,133) bbox=[192,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52861' src=(308,57) sink=(257,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66766' src=(307,140) sink=(307,133) bbox=[247,310]x[62,200]
+    reroute_from_scratch FAIL: net='net_72087' src=(307,57) sink=(304,72) bbox=[141,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68105' src=(307,96) sink=(307,30) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26326' src=(299,212) sink=(307,222) bbox=[239,310]x[152,222]
+    reroute_from_scratch FAIL: net='net_77825' src=(308,35) sink=(242,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40642' src=(306,3) sink=(303,1) bbox=[243,310]x[0,63]
+    reroute_from_scratch FAIL: net='net_69091' src=(306,162) sink=(308,158) bbox=[174,310]x[8,222]
+    reroute_from_scratch FAIL: net='net_31326' src=(305,42) sink=(215,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66761' src=(307,128) sink=(307,133) bbox=[196,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48996' src=(95,113) sink=(139,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_59042' src=(307,139) sink=(301,209) bbox=[91,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_14219' src=(307,175) sink=(307,177) bbox=[247,310]x[112,222]
+    reroute_from_scratch FAIL: net='net_53751' src=(49,110) sink=(76,123) bbox=[0,157]x[29,208]
+    reroute_from_scratch FAIL: net='net_104273' src=(302,61) sink=(306,36) bbox=[197,310]x[0,166]
+    reroute_from_scratch FAIL: net='net_29596' src=(143,35) sink=(40,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69098' src=(306,174) sink=(306,187) bbox=[156,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26736' src=(192,106) sink=(188,107) bbox=[64,288]x[10,206]
+    reroute_from_scratch FAIL: net='net_40452' src=(272,123) sink=(269,114) bbox=[209,310]x[54,191]
+    reroute_from_scratch FAIL: net='net_18911' src=(2,114) sink=(34,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31430' src=(231,116) sink=(20,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31676' src=(230,101) sink=(201,96) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_55173' src=(182,111) sink=(192,110) bbox=[88,270]x[32,189]
+    reroute_from_scratch FAIL: net='net_38727' src=(299,0) sink=(306,5) bbox=[239,310]x[0,65]
+    reroute_from_scratch FAIL: net='net_29194' src=(304,116) sink=(302,115) bbox=[242,310]x[54,183]
+    reroute_from_scratch FAIL: net='net_63153' src=(292,103) sink=(307,167) bbox=[58,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29337' src=(306,194) sink=(307,178) bbox=[246,310]x[118,222]
+    reroute_from_scratch FAIL: net='net_65145' src=(307,182) sink=(306,136) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40790' src=(305,5) sink=(307,4) bbox=[245,310]x[0,65]
+    reroute_from_scratch FAIL: net='net_102895' src=(307,79) sink=(308,2) bbox=[73,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29983' src=(307,29) sink=(304,14) bbox=[139,310]x[0,221]
+    reroute_from_scratch FAIL: net='net_59009' src=(308,5) sink=(287,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5017' src=(307,188) sink=(303,206) bbox=[243,310]x[128,222]
+    reroute_from_scratch FAIL: net='net_267' src=(293,9) sink=(294,6) bbox=[233,310]x[0,69]
+    reroute_from_scratch FAIL: net='net_336' src=(191,112) sink=(191,80) bbox=[17,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30914' src=(222,106) sink=(219,102) bbox=[159,282]x[42,178]
+    reroute_from_scratch FAIL: net='net_53699' src=(134,126) sink=(133,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68687' src=(301,109) sink=(293,109) bbox=[233,310]x[48,172]
+    reroute_from_scratch FAIL: net='net_2219' src=(234,100) sink=(209,116) bbox=[134,309]x[25,191]
+    reroute_from_scratch FAIL: net='net_34876' src=(302,17) sink=(304,2) bbox=[242,310]x[0,77]
+    reroute_from_scratch FAIL: net='net_25585' src=(306,119) sink=(306,107) bbox=[243,310]x[47,186]
+    reroute_from_scratch FAIL: net='net_61393' src=(308,136) sink=(306,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_27605' src=(188,113) sink=(193,111) bbox=[128,257]x[50,177]
+    reroute_from_scratch FAIL: net='net_31807' src=(291,122) sink=(254,116) bbox=[127,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_3746' src=(114,118) sink=(155,134) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_18491' src=(301,209) sink=(307,220) bbox=[241,310]x[149,222]
+    reroute_from_scratch FAIL: net='net_29998' src=(307,66) sink=(307,56) bbox=[247,310]x[0,126]
+    reroute_from_scratch FAIL: net='net_102893' src=(306,85) sink=(308,2) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103410' src=(304,129) sink=(307,101) bbox=[205,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_36317' src=(295,111) sink=(292,113) bbox=[224,310]x[51,173]
+    reroute_from_scratch FAIL: net='net_102925' src=(299,103) sink=(295,102) bbox=[235,310]x[41,163]
+    reroute_from_scratch FAIL: net='net_44362' src=(240,144) sink=(265,87) bbox=[46,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35970' src=(194,118) sink=(195,117) bbox=[69,310]x[3,222]
+    reroute_from_scratch FAIL: net='net_39981' src=(194,115) sink=(250,76) bbox=[11,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63131' src=(306,122) sink=(226,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31360' src=(306,199) sink=(256,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78995' src=(308,199) sink=(305,201) bbox=[245,310]x[138,222]
+    reroute_from_scratch FAIL: net='net_52480' src=(305,102) sink=(302,143) bbox=[164,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101407' src=(174,112) sink=(174,113) bbox=[113,234]x[48,180]
+    reroute_from_scratch FAIL: net='net_25445' src=(195,124) sink=(155,121) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4955' src=(307,89) sink=(307,85) bbox=[205,310]x[0,220]
+    reroute_from_scratch FAIL: net='net_31448' src=(308,119) sink=(245,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77957' src=(308,114) sink=(308,114) bbox=[246,310]x[51,174]
+    reroute_from_scratch FAIL: net='net_22422' src=(234,109) sink=(223,108) bbox=[88,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44044' src=(241,80) sink=(241,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_18942' src=(35,106) sink=(32,104) bbox=[0,95]x[44,166]
+    reroute_from_scratch FAIL: net='net_51667' src=(83,108) sink=(86,106) bbox=[0,188]x[4,213]
+    reroute_from_scratch FAIL: net='net_6734' src=(196,113) sink=(197,112) bbox=[129,257]x[52,176]
+    reroute_from_scratch FAIL: net='net_104892' src=(223,101) sink=(231,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77095' src=(307,101) sink=(308,78) bbox=[238,310]x[9,170]
+    reroute_from_scratch FAIL: net='net_67633' src=(164,130) sink=(268,92) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24900' src=(216,107) sink=(214,108) bbox=[154,278]x[47,171]
+    reroute_from_scratch FAIL: net='net_103990' src=(304,115) sink=(304,112) bbox=[244,310]x[52,175]
+    reroute_from_scratch FAIL: net='net_24683' src=(302,51) sink=(307,117) bbox=[64,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64993' src=(306,125) sink=(306,192) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69760' src=(305,202) sink=(306,155) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70810' src=(307,85) sink=(305,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68978' src=(307,84) sink=(306,85) bbox=[209,310]x[0,212]
+    reroute_from_scratch FAIL: net='net_5054' src=(307,187) sink=(303,204) bbox=[213,310]x[97,222]
+    reroute_from_scratch FAIL: net='net_22673' src=(281,111) sink=(289,119) bbox=[98,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103401' src=(308,96) sink=(308,96) bbox=[248,310]x[36,156]
+    reroute_from_scratch FAIL: net='net_77947' src=(308,205) sink=(307,12) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57342' src=(234,135) sink=(234,134) bbox=[174,295]x[74,195]
+    reroute_from_scratch FAIL: net='net_67586' src=(308,132) sink=(307,87) bbox=[171,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52800' src=(307,98) sink=(258,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65540' src=(307,87) sink=(306,33) bbox=[120,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35261' src=(306,116) sink=(307,98) bbox=[245,310]x[38,178]
+    reroute_from_scratch FAIL: net='net_57991' src=(307,96) sink=(306,96) bbox=[245,310]x[35,156]
+    reroute_from_scratch FAIL: net='net_44696' src=(307,92) sink=(307,75) bbox=[210,310]x[0,203]
+    reroute_from_scratch FAIL: net='net_40460' src=(307,89) sink=(307,100) bbox=[245,310]x[29,160]
+    reroute_from_scratch FAIL: net='net_67839' src=(307,136) sink=(307,154) bbox=[36,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73476' src=(307,192) sink=(307,200) bbox=[227,310]x[117,222]
+    reroute_from_scratch FAIL: net='net_5024' src=(304,220) sink=(308,216) bbox=[244,310]x[156,222]
+    reroute_from_scratch FAIL: net='net_40773' src=(308,121) sink=(307,120) bbox=[247,310]x[60,181]
+  inloop_ripup progress: 879/17010 nets, nets_rec=4, sinks_rec=4, ripups=5, 60.1s
+    reroute_from_scratch FAIL: net='net_102073' src=(152,108) sink=(159,107) bbox=[92,219]x[47,168]
+    reroute_from_scratch FAIL: net='net_64903' src=(300,105) sink=(303,100) bbox=[240,310]x[34,165]
+    reroute_from_scratch FAIL: net='net_52802' src=(135,102) sink=(228,89) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63083' src=(275,66) sink=(303,100) bbox=[47,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64676' src=(304,173) sink=(307,202) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74390' src=(305,213) sink=(308,162) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31903' src=(307,39) sink=(289,60) bbox=[1,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103408' src=(306,97) sink=(308,96) bbox=[246,310]x[36,157]
+    reroute_from_scratch FAIL: net='net_38803' src=(303,150) sink=(307,134) bbox=[216,310]x[47,222]
+    reroute_from_scratch FAIL: net='net_70998' src=(306,75) sink=(307,84) bbox=[135,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66904' src=(307,123) sink=(308,132) bbox=[183,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78530' src=(301,2) sink=(302,9) bbox=[73,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77460' src=(307,113) sink=(298,45) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4812' src=(289,127) sink=(295,102) bbox=[187,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71813' src=(303,18) sink=(307,25) bbox=[138,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69331' src=(307,11) sink=(307,30) bbox=[231,310]x[0,105]
+    reroute_from_scratch FAIL: net='net_71188' src=(306,42) sink=(306,15) bbox=[58,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35764' src=(165,60) sink=(250,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66631' src=(305,151) sink=(302,108) bbox=[143,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4883' src=(307,93) sink=(307,56) bbox=[52,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58028' src=(307,130) sink=(307,216) bbox=[45,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69272' src=(307,134) sink=(302,116) bbox=[176,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26012' src=(197,154) sink=(281,154) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_81867' src=(301,108) sink=(306,214) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103357' src=(307,120) sink=(304,110) bbox=[244,310]x[44,180]
+    reroute_from_scratch FAIL: net='net_72742' src=(306,147) sink=(307,129) bbox=[129,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103749' src=(298,114) sink=(301,114) bbox=[238,310]x[53,174]
+    reroute_from_scratch FAIL: net='net_67942' src=(306,79) sink=(308,101) bbox=[189,310]x[0,218]
+    reroute_from_scratch FAIL: net='net_74197' src=(307,198) sink=(306,161) bbox=[153,310]x[8,222]
+    reroute_from_scratch FAIL: net='net_61386' src=(303,99) sink=(305,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64728' src=(308,63) sink=(307,64) bbox=[246,310]x[3,125]
+    reroute_from_scratch FAIL: net='net_59025' src=(306,193) sink=(307,178) bbox=[181,310]x[49,222]
+    reroute_from_scratch FAIL: net='net_79836' src=(301,9) sink=(306,12) bbox=[241,310]x[0,72]
+    reroute_from_scratch FAIL: net='net_104192' src=(307,186) sink=(308,221) bbox=[202,310]x[81,222]
+    reroute_from_scratch FAIL: net='net_67600' src=(308,109) sink=(308,132) bbox=[5,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83677' src=(308,46) sink=(308,115) bbox=[86,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102550' src=(308,182) sink=(205,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77704' src=(308,45) sink=(271,96) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47753' src=(233,99) sink=(228,110) bbox=[168,293]x[39,170]
+    reroute_from_scratch FAIL: net='net_77686' src=(308,200) sink=(307,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52832' src=(215,85) sink=(251,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67172' src=(307,129) sink=(307,97) bbox=[15,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26941' src=(306,187) sink=(302,204) bbox=[241,310]x[127,222]
+    reroute_from_scratch FAIL: net='net_98876' src=(304,13) sink=(308,14) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_39224' src=(153,112) sink=(162,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48918' src=(48,101) sink=(73,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_8180' src=(92,107) sink=(148,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74847' src=(306,64) sink=(308,58) bbox=[246,310]x[0,124]
+    reroute_from_scratch FAIL: net='net_67254' src=(307,54) sink=(307,46) bbox=[247,310]x[0,123]
+    reroute_from_scratch FAIL: net='net_67241' src=(306,46) sink=(308,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29088' src=(307,141) sink=(307,142) bbox=[247,310]x[80,202]
+    reroute_from_scratch FAIL: net='net_30439' src=(307,199) sink=(308,201) bbox=[247,310]x[137,222]
+    reroute_from_scratch FAIL: net='net_88676' src=(269,133) sink=(266,121) bbox=[206,310]x[61,193]
+    reroute_from_scratch FAIL: net='net_5796' src=(292,109) sink=(305,63) bbox=[154,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29485' src=(239,91) sink=(307,79) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_152' src=(297,114) sink=(307,141) bbox=[216,310]x[33,222]
+    reroute_from_scratch FAIL: net='net_31784' src=(291,58) sink=(243,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_59969' src=(223,111) sink=(214,105) bbox=[127,310]x[18,198]
+    reroute_from_scratch FAIL: net='net_90019' src=(199,131) sink=(198,132) bbox=[138,259]x[69,192]
+    reroute_from_scratch FAIL: net='net_42663' src=(120,111) sink=(110,110) bbox=[50,188]x[50,171]
+    reroute_from_scratch FAIL: net='net_35359' src=(292,116) sink=(298,109) bbox=[217,310]x[16,191]
+    reroute_from_scratch FAIL: net='net_70095' src=(307,117) sink=(308,185) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82040' src=(308,88) sink=(250,90) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16513' src=(307,44) sink=(262,77) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26469' src=(306,26) sink=(223,139) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10152' src=(143,191) sink=(138,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102580' src=(240,130) sink=(116,105) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63103' src=(304,76) sink=(195,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58039' src=(297,102) sink=(307,121) bbox=[237,310]x[42,181]
+    reroute_from_scratch FAIL: net='net_37163' src=(304,197) sink=(289,148) bbox=[49,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66868' src=(278,106) sink=(306,116) bbox=[188,310]x[8,206]
+    reroute_from_scratch FAIL: net='net_103755' src=(299,109) sink=(301,53) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4968' src=(307,84) sink=(307,91) bbox=[247,310]x[22,151]
+    reroute_from_scratch FAIL: net='net_1565' src=(267,116) sink=(224,119) bbox=[95,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31240' src=(303,18) sink=(299,10) bbox=[239,310]x[0,78]
+    reroute_from_scratch FAIL: net='net_23198' src=(305,61) sink=(241,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_14785' src=(83,60) sink=(81,54) bbox=[21,143]x[0,120]
+    reroute_from_scratch FAIL: net='net_36608' src=(306,87) sink=(304,77) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31454' src=(298,113) sink=(130,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102893' src=(306,85) sink=(308,2) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_94378' src=(138,118) sink=(70,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75670' src=(232,110) sink=(75,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_3566' src=(191,138) sink=(166,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58378' src=(256,109) sink=(251,116) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_2050' src=(208,119) sink=(250,68) bbox=[50,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41268' src=(279,107) sink=(285,99) bbox=[219,310]x[31,167]
+    reroute_from_scratch FAIL: net='net_101005' src=(134,103) sink=(233,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16938' src=(211,122) sink=(247,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23757' src=(218,105) sink=(213,112) bbox=[153,278]x[36,172]
+    reroute_from_scratch FAIL: net='net_4806' src=(277,115) sink=(278,113) bbox=[163,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10726' src=(307,221) sink=(183,93) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25410' src=(305,127) sink=(239,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22381' src=(305,175) sink=(280,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_43672' src=(218,95) sink=(187,97) bbox=[64,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35511' src=(273,102) sink=(211,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63436' src=(265,112) sink=(268,154) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22391' src=(260,106) sink=(232,85) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_42066' src=(296,6) sink=(307,4) bbox=[236,310]x[0,66]
+    reroute_from_scratch FAIL: net='net_29814' src=(307,146) sink=(308,147) bbox=[247,310]x[74,207]
+    reroute_from_scratch FAIL: net='net_25125' src=(305,118) sink=(300,123) bbox=[240,310]x[56,183]
+    reroute_from_scratch FAIL: net='net_30448' src=(305,200) sink=(307,199) bbox=[245,310]x[139,222]
+    reroute_from_scratch FAIL: net='net_68108' src=(303,6) sink=(306,76) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26002' src=(215,184) sink=(208,131) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10396' src=(98,116) sink=(97,119) bbox=[37,158]x[56,179]
+    reroute_from_scratch FAIL: net='net_33277' src=(305,222) sink=(306,219) bbox=[245,310]x[159,222]
+    reroute_from_scratch FAIL: net='net_102434' src=(304,51) sink=(305,54) bbox=[244,310]x[0,116]
+    reroute_from_scratch FAIL: net='net_104392' src=(307,26) sink=(302,16) bbox=[241,310]x[0,86]
+    reroute_from_scratch FAIL: net='net_4730' src=(294,135) sink=(294,134) bbox=[232,310]x[67,204]
+    reroute_from_scratch FAIL: net='net_5142' src=(180,94) sink=(198,106) bbox=[120,258]x[34,166]
+    reroute_from_scratch FAIL: net='net_11444' src=(153,77) sink=(120,88) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24222' src=(161,111) sink=(139,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64994' src=(70,218) sink=(70,218) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64913' src=(307,73) sink=(307,41) bbox=[211,310]x[0,169]
+    reroute_from_scratch FAIL: net='net_36937' src=(306,61) sink=(291,107) bbox=[153,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70793' src=(68,64) sink=(68,64) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77482' src=(308,184) sink=(306,166) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79364' src=(303,208) sink=(115,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_80996' src=(239,102) sink=(238,104) bbox=[151,310]x[15,218]
+    reroute_from_scratch FAIL: net='net_40003' src=(219,121) sink=(221,116) bbox=[159,281]x[56,181]
+    reroute_from_scratch FAIL: net='net_87358' src=(31,111) sink=(143,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4782' src=(307,89) sink=(307,89) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40496' src=(303,0) sink=(306,3) bbox=[243,310]x[0,63]
+    reroute_from_scratch FAIL: net='net_40623' src=(298,9) sink=(303,0) bbox=[238,310]x[0,69]
+    reroute_from_scratch FAIL: net='net_93551' src=(305,110) sink=(308,163) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62425' src=(305,106) sink=(307,139) bbox=[188,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52548' src=(297,97) sink=(282,96) bbox=[78,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67717' src=(307,185) sink=(308,196) bbox=[247,310]x[125,222]
+    reroute_from_scratch FAIL: net='net_38157' src=(271,121) sink=(283,99) bbox=[163,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34308' src=(298,111) sink=(297,111) bbox=[237,310]x[51,171]
+    reroute_from_scratch FAIL: net='net_31432' src=(29,105) sink=(200,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102629' src=(160,109) sink=(155,139) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52712' src=(308,100) sink=(305,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_2364' src=(227,107) sink=(237,115) bbox=[167,299]x[47,179]
+    reroute_from_scratch FAIL: net='net_37182' src=(307,171) sink=(307,162) bbox=[196,310]x[23,222]
+    reroute_from_scratch FAIL: net='net_24999' src=(211,102) sink=(213,109) bbox=[151,273]x[39,170]
+    reroute_from_scratch FAIL: net='net_103407' src=(307,97) sink=(308,96) bbox=[246,310]x[36,157]
+    reroute_from_scratch FAIL: net='net_105190' src=(218,114) sink=(244,121) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_59576' src=(305,133) sink=(306,156) bbox=[80,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82980' src=(308,157) sink=(306,110) bbox=[5,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74171' src=(308,154) sink=(308,85) bbox=[100,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74155' src=(308,79) sink=(300,131) bbox=[96,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72500' src=(307,195) sink=(302,217) bbox=[236,310]x[129,222]
+    reroute_from_scratch FAIL: net='net_6710' src=(236,106) sink=(165,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26274' src=(148,104) sink=(148,104) bbox=[88,209]x[44,165]
+    reroute_from_scratch FAIL: net='net_43362' src=(219,109) sink=(198,107) bbox=[111,300]x[22,190]
+    reroute_from_scratch FAIL: net='net_83616' src=(58,1) sink=(90,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44565' src=(211,104) sink=(212,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78481' src=(301,0) sink=(298,3) bbox=[16,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56984' src=(79,104) sink=(95,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_43539' src=(124,105) sink=(126,104) bbox=[26,229]x[17,194]
+    reroute_from_scratch FAIL: net='net_66344' src=(306,96) sink=(307,87) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24727' src=(306,59) sink=(261,58) bbox=[20,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29201' src=(307,118) sink=(307,121) bbox=[247,310]x[58,183]
+    reroute_from_scratch FAIL: net='net_62622' src=(306,91) sink=(306,125) bbox=[184,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70981' src=(308,74) sink=(306,138) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_8038' src=(186,110) sink=(207,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47334' src=(270,135) sink=(174,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_37315' src=(308,97) sink=(307,90) bbox=[246,310]x[30,157]
+    reroute_from_scratch FAIL: net='net_25491' src=(243,114) sink=(236,108) bbox=[167,303]x[44,174]
+    reroute_from_scratch FAIL: net='net_76776' src=(303,214) sink=(304,218) bbox=[243,310]x[154,222]
+    reroute_from_scratch FAIL: net='net_62369' src=(298,151) sink=(306,128) bbox=[88,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22981' src=(306,91) sink=(304,87) bbox=[214,310]x[0,207]
+    reroute_from_scratch FAIL: net='net_36916' src=(305,138) sink=(305,97) bbox=[182,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5035' src=(306,118) sink=(303,206) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40527' src=(252,138) sink=(250,128) bbox=[188,310]x[65,198]
+    reroute_from_scratch FAIL: net='net_55271' src=(283,82) sink=(226,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62718' src=(306,89) sink=(307,83) bbox=[245,310]x[23,149]
+    reroute_from_scratch FAIL: net='net_22168' src=(87,103) sink=(98,109) bbox=[0,280]x[0,222]
+    reroute_from_scratch FAIL: net='net_3253' src=(267,110) sink=(267,94) bbox=[183,310]x[10,206]
+    reroute_from_scratch FAIL: net='net_52730' src=(306,84) sink=(265,189) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104179' src=(305,67) sink=(271,104) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68079' src=(306,73) sink=(307,59) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52486' src=(235,126) sink=(300,148) bbox=[19,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66540' src=(308,8) sink=(304,17) bbox=[244,310]x[0,77]
+    reroute_from_scratch FAIL: net='net_66840' src=(307,165) sink=(307,175) bbox=[171,310]x[15,222]
+    reroute_from_scratch FAIL: net='net_48494' src=(181,116) sink=(307,143) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77774' src=(183,141) sink=(242,193) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67528' src=(308,81) sink=(308,128) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67494' src=(308,109) sink=(306,60) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72254' src=(306,138) sink=(304,145) bbox=[172,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71367' src=(308,39) sink=(308,39) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71367' src=(308,39) sink=(308,39) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52492' src=(305,141) sink=(191,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66816' src=(306,119) sink=(307,91) bbox=[212,310]x[0,215]
+    reroute_from_scratch FAIL: net='net_52849' src=(308,165) sink=(168,131) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30984' src=(305,3) sink=(308,100) bbox=[14,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82503' src=(307,165) sink=(307,133) bbox=[115,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_41460' src=(307,187) sink=(306,201) bbox=[246,310]x[127,222]
+    reroute_from_scratch FAIL: net='net_67996' src=(308,123) sink=(302,125) bbox=[158,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_130' src=(46,172) sink=(138,155) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44586' src=(291,106) sink=(236,107) bbox=[15,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34585' src=(302,15) sink=(304,1) bbox=[242,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_65470' src=(308,136) sink=(301,123) bbox=[229,310]x[44,205]
+    reroute_from_scratch FAIL: net='net_30042' src=(305,2) sink=(307,22) bbox=[245,310]x[0,82]
+    reroute_from_scratch FAIL: net='net_72504' src=(302,217) sink=(307,206) bbox=[236,310]x[129,222]
+    reroute_from_scratch FAIL: net='net_25474' src=(202,125) sink=(231,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68091' src=(300,114) sink=(307,210) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10715' src=(291,180) sink=(308,221) bbox=[168,310]x[57,222]
+    reroute_from_scratch FAIL: net='net_66608' src=(308,210) sink=(306,198) bbox=[246,310]x[132,222]
+    reroute_from_scratch FAIL: net='net_79789' src=(306,207) sink=(301,215) bbox=[85,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83360' src=(295,114) sink=(304,211) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67926' src=(306,182) sink=(308,190) bbox=[168,310]x[11,222]
+    reroute_from_scratch FAIL: net='net_74233' src=(307,137) sink=(307,149) bbox=[247,310]x[77,209]
+    reroute_from_scratch FAIL: net='net_65110' src=(301,117) sink=(307,215) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65441' src=(304,17) sink=(306,13) bbox=[244,310]x[0,77]
+    reroute_from_scratch FAIL: net='net_75330' src=(303,2) sink=(308,77) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82260' src=(308,107) sink=(308,114) bbox=[244,310]x[47,174]
+    reroute_from_scratch FAIL: net='net_67537' src=(306,115) sink=(305,106) bbox=[245,310]x[46,176]
+    reroute_from_scratch FAIL: net='net_42541' src=(298,78) sink=(306,221) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_95440' src=(278,101) sink=(279,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79633' src=(306,144) sink=(308,134) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103587' src=(308,222) sink=(300,217) bbox=[239,310]x[157,222]
+    reroute_from_scratch FAIL: net='net_77688' src=(307,12) sink=(267,75) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_100030' src=(205,100) sink=(100,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72304' src=(301,220) sink=(308,216) bbox=[241,310]x[143,222]
+    reroute_from_scratch FAIL: net='net_77538' src=(308,77) sink=(306,191) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66904' src=(307,123) sink=(308,132) bbox=[183,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78546' src=(299,221) sink=(308,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52287' src=(301,93) sink=(101,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_2212' src=(251,101) sink=(260,102) bbox=[191,310]x[41,164]
+    reroute_from_scratch FAIL: net='net_9153' src=(181,123) sink=(181,122) bbox=[121,241]x[62,183]
+    reroute_from_scratch FAIL: net='net_41466' src=(307,201) sink=(307,187) bbox=[234,310]x[118,222]
+    reroute_from_scratch FAIL: net='net_95003' src=(272,113) sink=(305,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_88030' src=(270,111) sink=(247,115) bbox=[7,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102675' src=(307,124) sink=(305,94) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63876' src=(308,128) sink=(307,105) bbox=[236,310]x[36,197]
+    reroute_from_scratch FAIL: net='net_129' src=(231,128) sink=(219,61) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23257' src=(304,204) sink=(305,204) bbox=[244,310]x[144,222]
+    reroute_from_scratch FAIL: net='net_52401' src=(164,8) sink=(173,124) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50572' src=(307,161) sink=(305,126) bbox=[181,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34530' src=(239,108) sink=(240,110) bbox=[179,300]x[48,170]
+    reroute_from_scratch FAIL: net='net_1140' src=(192,101) sink=(189,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11282' src=(1,111) sink=(128,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25665' src=(304,203) sink=(306,200) bbox=[244,310]x[139,222]
+    reroute_from_scratch FAIL: net='net_36851' src=(306,194) sink=(307,195) bbox=[246,310]x[131,222]
+    reroute_from_scratch FAIL: net='net_43733' src=(241,146) sink=(235,67) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31362' src=(242,143) sink=(61,132) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26192' src=(169,140) sink=(305,197) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61386' src=(303,99) sink=(305,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16944' src=(145,99) sink=(218,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_91810' src=(208,126) sink=(185,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82024' src=(308,198) sink=(306,146) bbox=[102,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31784' src=(291,58) sink=(243,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77780' src=(300,217) sink=(207,101) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104190' src=(307,203) sink=(304,208) bbox=[244,310]x[143,222]
+    reroute_from_scratch FAIL: net='net_83497' src=(306,124) sink=(304,215) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67012' src=(307,154) sink=(307,153) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4773' src=(308,93) sink=(303,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29511' src=(307,164) sink=(307,168) bbox=[143,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48186' src=(306,185) sink=(307,163) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56793' src=(237,105) sink=(294,112) bbox=[48,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101519' src=(206,107) sink=(183,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73031' src=(306,126) sink=(307,145) bbox=[186,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30279' src=(169,114) sink=(168,115) bbox=[108,229]x[53,177]
+    reroute_from_scratch FAIL: net='net_62618' src=(270,98) sink=(307,91) bbox=[159,310]x[0,209]
+    reroute_from_scratch FAIL: net='net_2648' src=(304,97) sink=(290,95) bbox=[230,310]x[35,157]
+    reroute_from_scratch FAIL: net='net_58859' src=(308,48) sink=(307,68) bbox=[246,310]x[0,128]
+    reroute_from_scratch FAIL: net='net_67537' src=(306,115) sink=(305,106) bbox=[245,310]x[46,176]
+    reroute_from_scratch FAIL: net='net_59479' src=(303,221) sink=(307,218) bbox=[167,310]x[86,222]
+    reroute_from_scratch FAIL: net='net_72582' src=(307,129) sink=(291,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_62596' src=(307,126) sink=(307,115) bbox=[208,310]x[16,222]
+    reroute_from_scratch FAIL: net='net_63108' src=(296,150) sink=(275,114) bbox=[35,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70484' src=(301,222) sink=(301,222) bbox=[241,310]x[146,222]
+    reroute_from_scratch FAIL: net='net_42538' src=(306,35) sink=(306,34) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77644' src=(308,179) sink=(308,215) bbox=[189,310]x[59,222]
+    reroute_from_scratch FAIL: net='net_23289' src=(307,203) sink=(307,182) bbox=[235,310]x[112,222]
+    reroute_from_scratch FAIL: net='net_68145' src=(306,78) sink=(307,72) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24673' src=(307,62) sink=(304,39) bbox=[175,310]x[0,211]
+    reroute_from_scratch FAIL: net='net_103681' src=(307,2) sink=(304,56) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_137' src=(300,102) sink=(306,58) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104469' src=(307,83) sink=(307,84) bbox=[190,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71833' src=(307,55) sink=(308,96) bbox=[109,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_97412' src=(240,59) sink=(223,63) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67030' src=(307,148) sink=(308,48) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68737' src=(307,62) sink=(308,68) bbox=[247,310]x[2,128]
+    reroute_from_scratch FAIL: net='net_63102' src=(300,107) sink=(306,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66876' src=(286,118) sink=(303,107) bbox=[73,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102567' src=(251,157) sink=(300,215) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_9599' src=(308,106) sink=(308,65) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_59107' src=(307,177) sink=(301,209) bbox=[91,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70732' src=(306,150) sink=(306,199) bbox=[88,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52482' src=(263,131) sink=(307,136) bbox=[89,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66794' src=(307,127) sink=(307,140) bbox=[247,310]x[63,200]
+    reroute_from_scratch FAIL: net='net_74733' src=(308,193) sink=(308,66) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104380' src=(306,62) sink=(305,66) bbox=[245,310]x[2,134]
+    reroute_from_scratch FAIL: net='net_101585' src=(258,119) sink=(307,48) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66688' src=(295,156) sink=(285,136) bbox=[42,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_896' src=(304,8) sink=(251,63) bbox=[86,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47270' src=(137,103) sink=(87,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69525' src=(308,136) sink=(304,11) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79625' src=(308,134) sink=(308,77) bbox=[38,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102752' src=(247,75) sink=(271,78) bbox=[70,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68934' src=(307,75) sink=(306,62) bbox=[219,310]x[0,178]
+    reroute_from_scratch FAIL: net='net_72493' src=(304,190) sink=(307,208) bbox=[244,310]x[130,222]
+    reroute_from_scratch FAIL: net='net_78618' src=(302,203) sink=(299,221) bbox=[239,310]x[143,222]
+    reroute_from_scratch FAIL: net='net_78051' src=(308,17) sink=(294,105) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_91576' src=(299,219) sink=(290,214) bbox=[225,310]x[152,222]
+    reroute_from_scratch FAIL: net='net_80305' src=(256,188) sink=(299,218) bbox=[127,310]x[59,222]
+    reroute_from_scratch FAIL: net='net_74347' src=(308,46) sink=(308,120) bbox=[85,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_867' src=(308,82) sink=(190,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61484' src=(230,102) sink=(234,98) bbox=[101,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65677' src=(306,202) sink=(306,192) bbox=[245,310]x[131,222]
+    reroute_from_scratch FAIL: net='net_42848' src=(218,119) sink=(189,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4380' src=(166,100) sink=(171,100) bbox=[70,294]x[4,221]
+    reroute_from_scratch FAIL: net='net_63148' src=(234,115) sink=(218,119) bbox=[59,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_1907' src=(229,113) sink=(235,114) bbox=[169,296]x[53,174]
+    reroute_from_scratch FAIL: net='net_109' src=(145,125) sink=(278,87) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104667' src=(226,97) sink=(225,103) bbox=[165,286]x[37,163]
+    reroute_from_scratch FAIL: net='net_52322' src=(217,117) sink=(218,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48683' src=(59,121) sink=(63,112) bbox=[0,126]x[52,181]
+    reroute_from_scratch FAIL: net='net_59574' src=(305,133) sink=(250,121) bbox=[79,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103656' src=(306,155) sink=(307,146) bbox=[246,310]x[86,215]
+    reroute_from_scratch FAIL: net='net_65300' src=(308,112) sink=(307,83) bbox=[92,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38791' src=(308,178) sink=(307,165) bbox=[247,310]x[105,222]
+    reroute_from_scratch FAIL: net='net_19842' src=(1,115) sink=(3,110) bbox=[0,63]x[50,175]
+    reroute_from_scratch FAIL: net='net_47374' src=(185,113) sink=(174,112) bbox=[93,282]x[29,194]
+    reroute_from_scratch FAIL: net='net_65254' src=(307,127) sink=(307,119) bbox=[245,310]x[56,187]
+    reroute_from_scratch FAIL: net='net_102026' src=(266,114) sink=(273,170) bbox=[38,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31121' src=(301,119) sink=(290,74) bbox=[155,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29361' src=(226,113) sink=(229,113) bbox=[166,290]x[49,173]
+    reroute_from_scratch FAIL: net='net_77419' src=(308,152) sink=(304,218) bbox=[106,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76708' src=(252,112) sink=(191,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30508' src=(306,4) sink=(300,12) bbox=[240,310]x[0,72]
+    reroute_from_scratch FAIL: net='net_84706' src=(271,156) sink=(178,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69110' src=(308,190) sink=(304,202) bbox=[154,310]x[5,222]
+    reroute_from_scratch FAIL: net='net_3434' src=(195,117) sink=(183,103) bbox=[123,255]x[43,177]
+    reroute_from_scratch FAIL: net='net_44672' src=(85,0) sink=(85,0) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_54567' src=(136,111) sink=(155,110) bbox=[28,280]x[2,221]
+    reroute_from_scratch FAIL: net='net_28809' src=(231,136) sink=(203,117) bbox=[119,310]x[33,221]
+    reroute_from_scratch FAIL: net='net_22390' src=(286,67) sink=(201,92) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68943' src=(306,160) sink=(307,127) bbox=[174,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4903' src=(307,120) sink=(306,145) bbox=[225,310]x[39,222]
+    reroute_from_scratch FAIL: net='net_67494' src=(308,109) sink=(307,93) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74155' src=(308,79) sink=(300,131) bbox=[96,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48494' src=(181,116) sink=(307,143) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47202' src=(171,103) sink=(196,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67342' src=(306,119) sink=(302,109) bbox=[242,310]x[49,186]
+    reroute_from_scratch FAIL: net='net_68995' src=(306,129) sink=(307,99) bbox=[216,310]x[9,219]
+    reroute_from_scratch FAIL: net='net_33292' src=(305,222) sink=(298,190) bbox=[202,310]x[94,222]
+    reroute_from_scratch FAIL: net='net_59361' src=(235,135) sink=(218,112) bbox=[64,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_43689' src=(227,71) sink=(214,81) bbox=[142,299]x[0,167]
+    reroute_from_scratch FAIL: net='net_68083' src=(276,102) sink=(305,104) bbox=[61,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65650' src=(303,219) sink=(305,222) bbox=[243,310]x[159,222]
+    reroute_from_scratch FAIL: net='net_66344' src=(306,96) sink=(307,87) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11066' src=(307,83) sink=(306,84) bbox=[245,310]x[23,144]
+    reroute_from_scratch FAIL: net='net_4924' src=(306,57) sink=(306,78) bbox=[150,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79966' src=(299,219) sink=(302,221) bbox=[239,310]x[152,222]
+    reroute_from_scratch FAIL: net='net_69040' src=(306,99) sink=(307,95) bbox=[246,310]x[35,161]
+    reroute_from_scratch FAIL: net='net_68378' src=(279,122) sink=(298,112) bbox=[218,310]x[52,183]
+    reroute_from_scratch FAIL: net='net_68750' src=(305,94) sink=(306,96) bbox=[221,310]x[10,206]
+    reroute_from_scratch FAIL: net='net_52525' src=(277,149) sink=(287,140) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69558' src=(307,27) sink=(308,44) bbox=[165,310]x[0,215]
+    reroute_from_scratch FAIL: net='net_82495' src=(299,7) sink=(306,11) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102597' src=(308,191) sink=(218,151) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24727' src=(306,59) sink=(261,58) bbox=[20,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31627' src=(308,26) sink=(196,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50528' src=(296,112) sink=(300,112) bbox=[214,310]x[40,182]
+    reroute_from_scratch FAIL: net='net_72265' src=(302,6) sink=(302,6) bbox=[242,310]x[0,66]
+    reroute_from_scratch FAIL: net='net_83451' src=(304,215) sink=(299,216) bbox=[239,310]x[155,222]
+    reroute_from_scratch FAIL: net='net_74003' src=(308,10) sink=(307,16) bbox=[247,310]x[0,76]
+    reroute_from_scratch FAIL: net='net_9460' src=(291,110) sink=(301,97) bbox=[213,310]x[31,182]
+    reroute_from_scratch FAIL: net='net_101869' src=(296,217) sink=(300,217) bbox=[236,310]x[157,222]
+    reroute_from_scratch FAIL: net='net_67483' src=(306,60) sink=(307,52) bbox=[117,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23444' src=(235,109) sink=(223,114) bbox=[139,310]x[19,198]
+    reroute_from_scratch FAIL: net='net_27414' src=(303,116) sink=(305,116) bbox=[242,310]x[53,176]
+    reroute_from_scratch FAIL: net='net_57407' src=(262,122) sink=(260,122) bbox=[200,310]x[62,188]
+    reroute_from_scratch FAIL: net='net_31390' src=(252,191) sink=(98,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72494' src=(307,208) sink=(305,195) bbox=[245,310]x[135,222]
+    reroute_from_scratch FAIL: net='net_25389' src=(213,111) sink=(214,102) bbox=[153,274]x[42,171]
+    reroute_from_scratch FAIL: net='net_41072' src=(303,146) sink=(273,87) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_49835' src=(216,124) sink=(215,127) bbox=[153,285]x[64,200]
+  inloop_ripup progress: 1608/17010 nets, nets_rec=5, sinks_rec=5, ripups=6, 120.1s
+    reroute_from_scratch FAIL: net='net_37901' src=(225,108) sink=(204,108) bbox=[110,310]x[16,199]
+    reroute_from_scratch FAIL: net='net_16152' src=(48,109) sink=(46,78) bbox=[0,238]x[0,222]
+    reroute_from_scratch FAIL: net='net_77806' src=(231,141) sink=(269,47) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103847' src=(254,111) sink=(254,111) bbox=[194,310]x[51,171]
+    reroute_from_scratch FAIL: net='net_103704' src=(274,107) sink=(270,112) bbox=[207,310]x[38,172]
+    reroute_from_scratch FAIL: net='net_58480' src=(278,135) sink=(263,188) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_91649' src=(241,74) sink=(262,94) bbox=[45,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56717' src=(302,119) sink=(302,116) bbox=[242,310]x[56,179]
+    reroute_from_scratch FAIL: net='net_35540' src=(305,101) sink=(302,108) bbox=[242,310]x[41,168]
+    reroute_from_scratch FAIL: net='net_72583' src=(306,197) sink=(308,80) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48189' src=(305,127) sink=(307,163) bbox=[197,310]x[19,222]
+    reroute_from_scratch FAIL: net='net_58135' src=(304,124) sink=(303,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102550' src=(308,182) sink=(205,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_1967' src=(174,111) sink=(125,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74390' src=(305,213) sink=(308,162) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50468' src=(247,119) sink=(262,118) bbox=[157,310]x[28,210]
+    reroute_from_scratch FAIL: net='net_31423' src=(236,147) sink=(255,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74138' src=(307,172) sink=(307,172) bbox=[247,310]x[102,222]
+    reroute_from_scratch FAIL: net='net_56724' src=(308,104) sink=(301,110) bbox=[241,310]x[43,170]
+    reroute_from_scratch FAIL: net='net_103410' src=(304,129) sink=(307,101) bbox=[205,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57849' src=(307,105) sink=(308,111) bbox=[247,310]x[45,171]
+    reroute_from_scratch FAIL: net='net_11468' src=(43,91) sink=(207,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30509' src=(307,131) sink=(302,73) bbox=[128,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69030' src=(307,90) sink=(307,117) bbox=[183,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77158' src=(303,9) sink=(302,1) bbox=[242,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_52874' src=(275,88) sink=(168,131) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82518' src=(306,109) sink=(298,220) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75474' src=(308,90) sink=(307,37) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61450' src=(307,129) sink=(294,121) bbox=[176,310]x[7,222]
+    reroute_from_scratch FAIL: net='net_80008' src=(306,211) sink=(306,211) bbox=[242,310]x[151,222]
+    reroute_from_scratch FAIL: net='net_67263' src=(302,221) sink=(307,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_80012' src=(308,186) sink=(308,17) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52780' src=(307,144) sink=(232,118) bbox=[7,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40479' src=(258,113) sink=(269,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78410' src=(300,7) sink=(306,8) bbox=[240,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_4818' src=(287,116) sink=(307,55) bbox=[66,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_80676' src=(306,176) sink=(299,206) bbox=[209,310]x[86,222]
+    reroute_from_scratch FAIL: net='net_74334' src=(308,85) sink=(304,85) bbox=[220,310]x[0,192]
+    reroute_from_scratch FAIL: net='net_71187' src=(108,84) sink=(307,47) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101336' src=(308,0) sink=(143,68) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22336' src=(307,83) sink=(280,106) bbox=[45,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29815' src=(306,146) sink=(307,146) bbox=[246,310]x[86,207]
+    reroute_from_scratch FAIL: net='net_67600' src=(308,109) sink=(308,132) bbox=[5,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68936' src=(306,160) sink=(307,127) bbox=[45,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38803' src=(303,150) sink=(307,134) bbox=[216,310]x[47,222]
+    reroute_from_scratch FAIL: net='net_78558' src=(308,150) sink=(308,120) bbox=[187,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102694' src=(305,13) sink=(250,37) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_60743' src=(302,1) sink=(296,11) bbox=[159,310]x[0,149]
+    reroute_from_scratch FAIL: net='net_103855' src=(255,115) sink=(285,137) bbox=[111,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_13506' src=(193,115) sink=(203,140) bbox=[118,278]x[40,215]
+    reroute_from_scratch FAIL: net='net_87035' src=(308,158) sink=(308,188) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70257' src=(308,160) sink=(307,117) bbox=[34,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35050' src=(243,98) sink=(236,116) bbox=[176,303]x[38,176]
+    reroute_from_scratch FAIL: net='net_5006' src=(307,73) sink=(306,89) bbox=[246,310]x[9,149]
+    reroute_from_scratch FAIL: net='net_79357' src=(308,210) sink=(302,222) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52954' src=(112,68) sink=(219,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_45693' src=(235,112) sink=(235,112) bbox=[175,299]x[48,177]
+    reroute_from_scratch FAIL: net='net_32385' src=(195,124) sink=(262,140) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72270' src=(307,6) sink=(302,6) bbox=[242,310]x[0,66]
+    reroute_from_scratch FAIL: net='net_52205' src=(185,90) sink=(186,108) bbox=[106,261]x[15,190]
+    reroute_from_scratch FAIL: net='net_29265' src=(159,111) sink=(95,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_49611' src=(250,110) sink=(253,119) bbox=[97,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70730' src=(306,199) sink=(307,204) bbox=[235,310]x[133,222]
+    reroute_from_scratch FAIL: net='net_29448' src=(306,15) sink=(301,14) bbox=[241,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_104224' src=(236,221) sink=(295,219) bbox=[59,310]x[42,222]
+    reroute_from_scratch FAIL: net='net_75576' src=(235,56) sink=(227,63) bbox=[68,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_95464' src=(308,171) sink=(307,209) bbox=[106,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101908' src=(172,105) sink=(204,109) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77716' src=(282,109) sink=(209,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_102566' src=(308,140) sink=(260,116) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77787' src=(307,89) sink=(166,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_100017' src=(305,26) sink=(304,28) bbox=[244,310]x[0,93]
+    reroute_from_scratch FAIL: net='net_90215' src=(308,195) sink=(301,176) bbox=[241,310]x[116,222]
+    reroute_from_scratch FAIL: net='net_56108' src=(237,138) sink=(243,106) bbox=[141,310]x[10,222]
+    reroute_from_scratch FAIL: net='net_100982' src=(229,107) sink=(229,122) bbox=[169,289]x[47,182]
+    reroute_from_scratch FAIL: net='net_43311' src=(261,151) sink=(222,113) bbox=[11,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69006' src=(307,59) sink=(307,90) bbox=[172,310]x[0,219]
+    reroute_from_scratch FAIL: net='net_30146' src=(143,101) sink=(142,101) bbox=[81,203]x[41,166]
+    reroute_from_scratch FAIL: net='net_32840' src=(199,65) sink=(201,83) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104823' src=(262,113) sink=(277,146) bbox=[163,310]x[14,222]
+    reroute_from_scratch FAIL: net='net_58333' src=(294,100) sink=(302,110) bbox=[229,310]x[39,172]
+    reroute_from_scratch FAIL: net='net_61780' src=(306,48) sink=(307,65) bbox=[246,310]x[0,125]
+    reroute_from_scratch FAIL: net='net_75610' src=(303,132) sink=(86,159) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66826' src=(307,164) sink=(307,169) bbox=[201,310]x[45,222]
+    reroute_from_scratch FAIL: net='net_62450' src=(304,218) sink=(307,159) bbox=[37,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_61039' src=(303,4) sink=(277,47) bbox=[148,310]x[0,176]
+    reroute_from_scratch FAIL: net='net_1497' src=(307,133) sink=(67,111) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52884' src=(308,131) sink=(303,132) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73581' src=(302,101) sink=(301,93) bbox=[78,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_36261' src=(271,106) sink=(238,109) bbox=[139,310]x[7,208]
+    reroute_from_scratch FAIL: net='net_75610' src=(303,132) sink=(86,159) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103869' src=(303,112) sink=(308,2) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52583' src=(306,142) sink=(307,90) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4945' src=(307,96) sink=(307,73) bbox=[237,310]x[4,165]
+    reroute_from_scratch FAIL: net='net_74417' src=(308,126) sink=(293,77) bbox=[146,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52608' src=(308,113) sink=(272,58) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66320' src=(247,100) sink=(245,115) bbox=[131,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78476' src=(308,58) sink=(308,193) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63570' src=(244,93) sink=(299,91) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79974' src=(306,211) sink=(302,221) bbox=[240,310]x[151,222]
+    reroute_from_scratch FAIL: net='net_68884' src=(301,1) sink=(304,10) bbox=[241,310]x[0,70]
+    reroute_from_scratch FAIL: net='net_67892' src=(306,130) sink=(307,142) bbox=[183,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70393' src=(305,8) sink=(306,15) bbox=[245,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_58982' src=(307,92) sink=(306,57) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52903' src=(307,161) sink=(308,110) bbox=[154,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82496' src=(307,133) sink=(308,176) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75390' src=(306,10) sink=(104,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70758' src=(304,221) sink=(301,221) bbox=[241,310]x[161,222]
+    reroute_from_scratch FAIL: net='net_38735' src=(152,141) sink=(242,133) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_73472' src=(308,38) sink=(308,57) bbox=[247,310]x[0,117]
+    reroute_from_scratch FAIL: net='net_67506' src=(307,31) sink=(308,145) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83030' src=(308,161) sink=(308,61) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69268' src=(302,219) sink=(306,204) bbox=[242,310]x[144,222]
+    reroute_from_scratch FAIL: net='net_70642' src=(308,201) sink=(307,189) bbox=[244,310]x[129,222]
+    reroute_from_scratch FAIL: net='net_66702' src=(307,210) sink=(303,206) bbox=[243,310]x[146,222]
+    reroute_from_scratch FAIL: net='net_32528' src=(226,138) sink=(165,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29433' src=(307,78) sink=(308,18) bbox=[67,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52521' src=(243,85) sink=(296,90) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_3567' src=(307,40) sink=(68,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75320' src=(306,36) sink=(305,15) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22817' src=(135,108) sink=(139,108) bbox=[75,199]x[48,168]
+    reroute_from_scratch FAIL: net='net_76700' src=(232,73) sink=(195,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104440' src=(301,108) sink=(307,98) bbox=[241,310]x[34,168]
+    reroute_from_scratch FAIL: net='net_2035' src=(269,134) sink=(272,111) bbox=[158,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4882' src=(306,78) sink=(307,45) bbox=[141,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35254' src=(307,128) sink=(307,119) bbox=[242,310]x[44,191]
+    reroute_from_scratch FAIL: net='net_74160' src=(307,81) sink=(305,113) bbox=[209,310]x[0,209]
+    reroute_from_scratch FAIL: net='net_10109' src=(216,76) sink=(255,84) bbox=[99,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5040' src=(307,43) sink=(307,124) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70044' src=(308,118) sink=(308,185) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68091' src=(300,114) sink=(307,210) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75474' src=(308,90) sink=(307,84) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76152' src=(308,47) sink=(299,1) bbox=[161,310]x[0,185]
+    reroute_from_scratch FAIL: net='net_34757' src=(298,110) sink=(306,41) bbox=[29,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71831' src=(308,145) sink=(307,55) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57847' src=(305,102) sink=(307,105) bbox=[245,310]x[42,171]
+    reroute_from_scratch FAIL: net='net_67447' src=(304,0) sink=(307,5) bbox=[244,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_61797' src=(164,110) sink=(164,110) bbox=[104,224]x[50,170]
+    reroute_from_scratch FAIL: net='net_1526' src=(204,109) sink=(250,78) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4889' src=(307,92) sink=(304,114) bbox=[223,310]x[6,195]
+    reroute_from_scratch FAIL: net='net_104179' src=(305,67) sink=(271,104) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103880' src=(307,106) sink=(308,100) bbox=[247,310]x[40,166]
+    reroute_from_scratch FAIL: net='net_70993' src=(308,89) sink=(308,132) bbox=[135,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_28100' src=(200,138) sink=(47,97) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50610' src=(308,216) sink=(304,192) bbox=[231,310]x[120,222]
+    reroute_from_scratch FAIL: net='net_74732' src=(308,88) sink=(308,66) bbox=[212,310]x[0,184]
+    reroute_from_scratch FAIL: net='net_67024' src=(307,148) sink=(307,144) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52510' src=(307,60) sink=(267,84) bbox=[75,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68955' src=(306,208) sink=(307,214) bbox=[246,310]x[146,222]
+    reroute_from_scratch FAIL: net='net_838' src=(303,77) sink=(305,178) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77477' src=(300,218) sink=(307,194) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4912' src=(304,108) sink=(307,89) bbox=[103,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70358' src=(302,5) sink=(307,11) bbox=[242,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_73226' src=(308,180) sink=(307,179) bbox=[238,310]x[100,222]
+    reroute_from_scratch FAIL: net='net_66675' src=(302,222) sink=(275,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64531' src=(307,188) sink=(307,218) bbox=[198,310]x[86,222]
+    reroute_from_scratch FAIL: net='net_17397' src=(308,219) sink=(306,178) bbox=[183,310]x[55,222]
+    reroute_from_scratch FAIL: net='net_52627' src=(235,122) sink=(287,175) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_85614' src=(241,165) sink=(224,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_35536' src=(300,101) sink=(306,101) bbox=[240,310]x[41,161]
+    reroute_from_scratch FAIL: net='net_34410' src=(234,139) sink=(246,69) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30834' src=(217,110) sink=(245,105) bbox=[118,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47699' src=(253,115) sink=(252,116) bbox=[192,310]x[55,180]
+    reroute_from_scratch FAIL: net='net_27139' src=(212,102) sink=(209,120) bbox=[110,310]x[0,219]
+    reroute_from_scratch FAIL: net='net_57032' src=(285,142) sink=(215,119) bbox=[5,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23787' src=(214,139) sink=(240,96) bbox=[85,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71031' src=(305,96) sink=(307,118) bbox=[153,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52897' src=(236,98) sink=(299,106) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11372' src=(258,153) sink=(111,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23438' src=(253,116) sink=(241,109) bbox=[181,310]x[49,176]
+    reroute_from_scratch FAIL: net='net_32122' src=(237,88) sink=(236,78) bbox=[176,300]x[18,154]
+    reroute_from_scratch FAIL: net='net_32161' src=(115,107) sink=(146,94) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11334' src=(45,71) sink=(170,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_43663' src=(162,102) sink=(166,101) bbox=[102,226]x[39,162]
+    reroute_from_scratch FAIL: net='net_29512' src=(307,155) sink=(307,167) bbox=[247,310]x[95,222]
+    reroute_from_scratch FAIL: net='net_54019' src=(287,77) sink=(181,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_47292' src=(151,107) sink=(164,110) bbox=[91,224]x[47,170]
+    reroute_from_scratch FAIL: net='net_60566' src=(287,107) sink=(276,107) bbox=[213,310]x[44,172]
+    reroute_from_scratch FAIL: net='net_58869' src=(276,106) sink=(245,100) bbox=[59,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_57077' src=(165,119) sink=(189,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_105194' src=(306,63) sink=(307,90) bbox=[35,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65313' src=(306,118) sink=(307,131) bbox=[106,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77846' src=(305,11) sink=(29,41) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66998' src=(228,109) sink=(306,148) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67331' src=(308,119) sink=(307,75) bbox=[134,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25580' src=(293,128) sink=(231,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68159' src=(304,18) sink=(300,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69791' src=(266,97) sink=(294,94) bbox=[166,310]x[0,193]
+    reroute_from_scratch FAIL: net='net_104961' src=(306,58) sink=(306,46) bbox=[246,310]x[0,118]
+    reroute_from_scratch FAIL: net='net_5009' src=(304,139) sink=(306,115) bbox=[70,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70801' src=(305,205) sink=(308,156) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77156' src=(303,9) sink=(302,1) bbox=[242,310]x[0,71]
+    reroute_from_scratch FAIL: net='net_77515' src=(306,211) sink=(304,218) bbox=[231,310]x[126,222]
+    reroute_from_scratch FAIL: net='net_131' src=(161,108) sink=(307,172) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_60899' src=(302,209) sink=(305,210) bbox=[242,310]x[141,222]
+    reroute_from_scratch FAIL: net='net_52555' src=(106,140) sink=(83,77) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71181' src=(308,172) sink=(308,60) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104301' src=(305,22) sink=(304,9) bbox=[240,310]x[0,82]
+    reroute_from_scratch FAIL: net='net_77482' src=(308,184) sink=(306,166) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104464' src=(293,112) sink=(307,35) bbox=[53,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24673' src=(307,62) sink=(304,39) bbox=[175,310]x[0,211]
+    reroute_from_scratch FAIL: net='net_68936' src=(306,160) sink=(307,127) bbox=[45,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67119' src=(306,183) sink=(305,220) bbox=[194,310]x[72,222]
+    reroute_from_scratch FAIL: net='net_65148' src=(307,175) sink=(307,156) bbox=[247,310]x[96,222]
+    reroute_from_scratch FAIL: net='net_36926' src=(305,147) sink=(307,160) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67046' src=(304,6) sink=(308,41) bbox=[199,310]x[0,146]
+    reroute_from_scratch FAIL: net='net_25593' src=(306,119) sink=(306,107) bbox=[245,310]x[47,186]
+    reroute_from_scratch FAIL: net='net_28604' src=(307,154) sink=(281,154) bbox=[200,310]x[73,222]
+    reroute_from_scratch FAIL: net='net_55854' src=(280,114) sink=(204,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65110' src=(301,117) sink=(307,215) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103468' src=(307,46) sink=(307,55) bbox=[238,310]x[0,124]
+    reroute_from_scratch FAIL: net='net_102684' src=(249,3) sink=(306,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_83002' src=(306,177) sink=(303,212) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5179' src=(272,28) sink=(96,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70352' src=(307,21) sink=(302,5) bbox=[242,310]x[0,81]
+    reroute_from_scratch FAIL: net='net_70363' src=(302,5) sink=(302,5) bbox=[242,310]x[0,75]
+    reroute_from_scratch FAIL: net='net_95056' src=(308,38) sink=(308,54) bbox=[84,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58038' src=(283,119) sink=(307,121) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77793' src=(306,110) sink=(234,95) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103996' src=(304,112) sink=(280,103) bbox=[0,310]x[0,222]
+  inloop_ripup progress: 2293/17010 nets, nets_rec=5, sinks_rec=5, ripups=6, 180.2s
+    reroute_from_scratch FAIL: net='net_77615' src=(308,188) sink=(299,4) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_124' src=(308,135) sink=(249,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34590' src=(305,14) sink=(307,47) bbox=[166,310]x[0,185]
+    reroute_from_scratch FAIL: net='net_96311' src=(174,110) sink=(215,122) bbox=[51,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71861' src=(306,38) sink=(306,47) bbox=[246,310]x[0,107]
+    reroute_from_scratch FAIL: net='net_105171' src=(302,14) sink=(308,74) bbox=[106,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_50554' src=(304,192) sink=(250,139) bbox=[88,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_23502' src=(283,113) sink=(274,111) bbox=[206,310]x[50,181]
+    reroute_from_scratch FAIL: net='net_33010' src=(147,110) sink=(147,110) bbox=[87,207]x[50,170]
+    reroute_from_scratch FAIL: net='net_27799' src=(261,133) sink=(251,111) bbox=[169,310]x[41,202]
+    reroute_from_scratch FAIL: net='net_33989' src=(221,106) sink=(230,106) bbox=[161,290]x[46,166]
+    reroute_from_scratch FAIL: net='net_66703' src=(304,217) sink=(299,174) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_63556' src=(112,129) sink=(265,124) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78471' src=(306,8) sink=(301,0) bbox=[127,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69102' src=(308,158) sink=(306,140) bbox=[246,310]x[80,218]
+    reroute_from_scratch FAIL: net='net_72303' src=(301,220) sink=(308,216) bbox=[241,310]x[143,222]
+    reroute_from_scratch FAIL: net='net_22775' src=(274,98) sink=(269,102) bbox=[31,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16548' src=(91,108) sink=(228,80) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69360' src=(308,131) sink=(300,187) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_5926' src=(306,86) sink=(198,125) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_38747' src=(280,115) sink=(271,114) bbox=[211,310]x[54,175]
+    reroute_from_scratch FAIL: net='net_66787' src=(308,8) sink=(307,66) bbox=[133,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48523' src=(307,193) sink=(303,204) bbox=[243,310]x[133,222]
+    reroute_from_scratch FAIL: net='net_76156' src=(299,1) sink=(307,14) bbox=[239,310]x[0,74]
+    reroute_from_scratch FAIL: net='net_2326' src=(307,153) sink=(307,153) bbox=[247,310]x[93,213]
+    reroute_from_scratch FAIL: net='net_52890' src=(188,120) sink=(156,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76801' src=(308,170) sink=(308,29) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26776' src=(210,219) sink=(162,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101387' src=(183,111) sink=(225,86) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_3364' src=(196,116) sink=(229,115) bbox=[69,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66908' src=(308,132) sink=(307,103) bbox=[196,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_66809' src=(306,119) sink=(305,116) bbox=[245,310]x[56,179]
+    reroute_from_scratch FAIL: net='net_80412' src=(307,38) sink=(304,7) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_10632' src=(308,221) sink=(136,129) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67517' src=(305,95) sink=(307,31) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74318' src=(307,162) sink=(308,175) bbox=[247,310]x[102,222]
+    reroute_from_scratch FAIL: net='net_36177' src=(308,217) sink=(213,148) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_33291' src=(301,210) sink=(305,222) bbox=[241,310]x[150,222]
+    reroute_from_scratch FAIL: net='net_102637' src=(303,212) sink=(74,145) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70449' src=(295,134) sink=(306,129) bbox=[118,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_42517' src=(298,46) sink=(305,38) bbox=[238,310]x[0,106]
+    reroute_from_scratch FAIL: net='net_45244' src=(304,115) sink=(272,108) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103363' src=(307,87) sink=(307,40) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68749' src=(305,113) sink=(306,96) bbox=[245,310]x[36,173]
+    reroute_from_scratch FAIL: net='net_103372' src=(307,98) sink=(307,100) bbox=[247,310]x[38,160]
+    reroute_from_scratch FAIL: net='net_75443' src=(224,30) sink=(203,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_105092' src=(307,94) sink=(294,96) bbox=[105,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79082' src=(308,202) sink=(304,207) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64544' src=(306,219) sink=(303,220) bbox=[243,310]x[159,222]
+    reroute_from_scratch FAIL: net='net_40798' src=(262,104) sink=(253,122) bbox=[193,310]x[44,182]
+    reroute_from_scratch FAIL: net='net_60397' src=(305,20) sink=(306,61) bbox=[182,310]x[0,184]
+    reroute_from_scratch FAIL: net='net_73004' src=(308,198) sink=(301,218) bbox=[211,310]x[98,222]
+    reroute_from_scratch FAIL: net='net_23573' src=(305,200) sink=(307,206) bbox=[242,310]x[140,222]
+    reroute_from_scratch FAIL: net='net_41251' src=(286,71) sink=(275,115) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_64733' src=(307,59) sink=(307,64) bbox=[246,310]x[0,125]
+    reroute_from_scratch FAIL: net='net_2951' src=(223,94) sink=(221,95) bbox=[161,283]x[17,155]
+    reroute_from_scratch FAIL: net='net_69535' src=(275,141) sink=(307,162) bbox=[134,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_16864' src=(269,104) sink=(287,104) bbox=[206,310]x[34,167]
+    reroute_from_scratch FAIL: net='net_4975' src=(307,91) sink=(306,106) bbox=[205,310]x[0,213]
+    reroute_from_scratch FAIL: net='net_56910' src=(305,99) sink=(307,61) bbox=[191,310]x[0,213]
+    reroute_from_scratch FAIL: net='net_71369' src=(308,42) sink=(308,216) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_84747' src=(48,114) sink=(213,155) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69480' src=(306,152) sink=(307,132) bbox=[107,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68074' src=(308,125) sink=(307,59) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72914' src=(305,204) sink=(305,210) bbox=[241,310]x[138,222]
+    reroute_from_scratch FAIL: net='net_10115' src=(235,99) sink=(230,110) bbox=[170,295]x[39,170]
+    reroute_from_scratch FAIL: net='net_3046' src=(199,87) sink=(183,74) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11424' src=(279,80) sink=(162,105) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_31605' src=(187,105) sink=(204,71) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_48522' src=(307,193) sink=(307,142) bbox=[100,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_81158' src=(258,129) sink=(273,130) bbox=[21,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65032' src=(307,35) sink=(307,119) bbox=[55,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_65314' src=(307,130) sink=(304,107) bbox=[199,310]x[2,222]
+    reroute_from_scratch FAIL: net='net_66761' src=(307,128) sink=(307,133) bbox=[196,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_3567' src=(307,40) sink=(68,113) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_44696' src=(307,92) sink=(307,75) bbox=[210,310]x[0,203]
+    reroute_from_scratch FAIL: net='net_109' src=(145,125) sink=(278,87) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104195' src=(308,221) sink=(260,112) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11468' src=(43,91) sink=(207,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79364' src=(303,208) sink=(115,130) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30781' src=(305,49) sink=(295,102) bbox=[130,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77734' src=(221,88) sink=(209,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24863' src=(217,102) sink=(214,108) bbox=[147,277]x[42,181]
+    reroute_from_scratch FAIL: net='net_87360' src=(235,130) sink=(276,158) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_27032' src=(209,136) sink=(208,150) bbox=[148,269]x[76,210]
+    reroute_from_scratch FAIL: net='net_52138' src=(178,116) sink=(187,101) bbox=[118,252]x[41,176]
+  inloop_ripup progress: 2916/17010 nets, nets_rec=5, sinks_rec=5, ripups=6, 240.4s
+    reroute_from_scratch FAIL: net='net_1579' src=(206,100) sink=(215,125) bbox=[1,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67286' src=(307,158) sink=(308,214) bbox=[139,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52477' src=(307,189) sink=(249,129) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24702' src=(306,41) sink=(308,18) bbox=[237,310]x[0,110]
+    reroute_from_scratch FAIL: net='net_60924' src=(307,209) sink=(302,206) bbox=[242,310]x[141,222]
+    reroute_from_scratch FAIL: net='net_93746' src=(308,199) sink=(308,194) bbox=[239,310]x[131,222]
+    reroute_from_scratch FAIL: net='net_102618' src=(6,116) sink=(145,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_58907' src=(307,96) sink=(307,99) bbox=[224,310]x[14,203]
+    reroute_from_scratch FAIL: net='net_73231' src=(288,116) sink=(289,151) bbox=[31,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_55780' src=(306,90) sink=(234,99) bbox=[18,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_32085' src=(268,120) sink=(241,106) bbox=[140,310]x[10,217]
+    reroute_from_scratch FAIL: net='net_52453' src=(268,105) sink=(217,107) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_29433' src=(307,78) sink=(307,78) bbox=[67,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52849' src=(308,165) sink=(168,131) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67942' src=(306,79) sink=(308,101) bbox=[189,310]x[0,218]
+    reroute_from_scratch FAIL: net='net_73093' src=(308,125) sink=(304,115) bbox=[58,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_101590' src=(305,202) sink=(307,202) bbox=[245,310]x[142,222]
+    reroute_from_scratch FAIL: net='net_104544' src=(277,106) sink=(306,107) bbox=[190,310]x[19,196]
+    reroute_from_scratch FAIL: net='net_76363' src=(308,29) sink=(246,80) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77659' src=(308,65) sink=(281,128) bbox=[77,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_69760' src=(305,202) sink=(306,155) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_72017' src=(299,129) sink=(304,104) bbox=[194,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_46554' src=(213,125) sink=(151,118) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_46838' src=(228,114) sink=(156,110) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_104399' src=(307,84) sink=(307,75) bbox=[52,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_26057' src=(307,193) sink=(201,190) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52866' src=(302,134) sink=(307,61) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_78506' src=(308,183) sink=(308,133) bbox=[155,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_45804' src=(256,87) sink=(258,96) bbox=[130,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24608' src=(204,118) sink=(306,165) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_96511' src=(108,104) sink=(102,105) bbox=[36,168]x[44,167]
+    reroute_from_scratch FAIL: net='net_78424' src=(303,10) sink=(300,7) bbox=[240,310]x[0,70]
+    reroute_from_scratch FAIL: net='net_124' src=(308,135) sink=(249,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_33494' src=(308,196) sink=(307,196) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11536' src=(168,124) sink=(170,110) bbox=[84,275]x[26,222]
+    reroute_from_scratch FAIL: net='net_48166' src=(275,116) sink=(180,113) bbox=[0,310]x[0,222]
+  inloop_ripup progress: 3463/17010 nets, nets_rec=6, sinks_rec=6, ripups=7, 300.4s
+    reroute_from_scratch FAIL: net='net_66876' src=(286,118) sink=(303,107) bbox=[73,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70523' src=(301,222) sink=(306,202) bbox=[202,310]x[90,222]
+    reroute_from_scratch FAIL: net='net_102641' src=(308,77) sink=(308,61) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25923' src=(306,40) sink=(156,117) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_71813' src=(303,18) sink=(307,25) bbox=[138,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_24021' src=(267,124) sink=(260,123) bbox=[200,310]x[60,184]
+    reroute_from_scratch FAIL: net='net_77804' src=(292,4) sink=(269,47) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75453' src=(301,221) sink=(229,104) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_76848' src=(308,60) sink=(308,145) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77100' src=(233,123) sink=(256,100) bbox=[41,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103363' src=(307,87) sink=(307,40) bbox=[108,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_74494' src=(308,40) sink=(308,31) bbox=[242,310]x[0,103]
+    reroute_from_scratch FAIL: net='net_83366' src=(224,111) sink=(230,111) bbox=[163,294]x[51,171]
+    reroute_from_scratch FAIL: net='net_4878' src=(306,97) sink=(307,100) bbox=[246,310]x[32,160]
+    reroute_from_scratch FAIL: net='net_37433' src=(269,95) sink=(304,145) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_25354' src=(254,99) sink=(255,107) bbox=[194,310]x[39,167]
+    reroute_from_scratch FAIL: net='net_70447' src=(306,78) sink=(306,75) bbox=[246,310]x[15,139]
+    reroute_from_scratch FAIL: net='net_84362' src=(210,87) sink=(224,86) bbox=[150,290]x[18,147]
+  inloop_ripup progress: 3985/17010 nets, nets_rec=8, sinks_rec=8, ripups=7, 360.5s
+    reroute_from_scratch FAIL: net='net_25792' src=(214,108) sink=(231,82) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_67843' src=(307,138) sink=(302,111) bbox=[101,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30766' src=(275,70) sink=(301,67) bbox=[179,310]x[0,166]
+    reroute_from_scratch FAIL: net='net_8913' src=(288,106) sink=(286,122) bbox=[203,310]x[37,192]
+    reroute_from_scratch FAIL: net='net_76185' src=(308,124) sink=(308,70) bbox=[75,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_147' src=(179,105) sink=(282,114) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_82498' src=(306,109) sink=(308,154) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_4911' src=(304,108) sink=(307,124) bbox=[244,310]x[48,185]
+    reroute_from_scratch FAIL: net='net_102581' src=(298,61) sink=(287,123) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_86504' src=(206,111) sink=(178,102) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_43970' src=(219,79) sink=(173,92) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_75712' src=(163,103) sink=(252,89) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_56890' src=(236,138) sink=(204,120) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_84675' src=(306,108) sink=(303,15) bbox=[0,310]x[0,222]
+  inloop_ripup progress: 4463/17010 nets, nets_rec=9, sinks_rec=9, ripups=7, 420.5s
+    reroute_from_scratch FAIL: net='net_25970' src=(187,98) sink=(174,118) bbox=[39,298]x[0,222]
+    reroute_from_scratch FAIL: net='net_52571' src=(307,206) sink=(266,119) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_22414' src=(259,98) sink=(253,105) bbox=[99,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68120' src=(308,67) sink=(303,100) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_79902' src=(207,137) sink=(197,138) bbox=[137,267]x[77,198]
+    reroute_from_scratch FAIL: net='net_67356' src=(308,173) sink=(308,109) bbox=[115,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_98754' src=(214,116) sink=(262,128) bbox=[37,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_28743' src=(189,110) sink=(185,97) bbox=[125,256]x[37,170]
+    reroute_from_scratch FAIL: net='net_67382' src=(307,97) sink=(307,127) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_34772' src=(305,90) sink=(255,111) bbox=[105,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_37391' src=(239,110) sink=(255,111) bbox=[134,310]x[0,220]
+  inloop_ripup progress: 4877/17010 nets, nets_rec=10, sinks_rec=10, ripups=7, 480.6s
+    reroute_from_scratch FAIL: net='net_103664' src=(254,111) sink=(298,114) bbox=[95,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_52873' src=(160,139) sink=(188,147) bbox=[46,310]x[1,222]
+    reroute_from_scratch FAIL: net='net_52929' src=(307,105) sink=(213,103) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_103562' src=(256,132) sink=(256,112) bbox=[190,310]x[44,198]
+    reroute_from_scratch FAIL: net='net_29571' src=(150,32) sink=(191,96) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_11377' src=(4,108) sink=(260,130) bbox=[0,310]x[0,222]
+  inloop_ripup progress: 5334/17010 nets, nets_rec=10, sinks_rec=10, ripups=7, 540.8s
+    reroute_from_scratch FAIL: net='net_73331' src=(308,79) sink=(307,112) bbox=[36,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_70705' src=(308,181) sink=(308,125) bbox=[140,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68108' src=(303,6) sink=(306,76) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_40763' src=(307,120) sink=(277,85) bbox=[172,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_68944' src=(307,127) sink=(306,81) bbox=[93,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_77477' src=(300,218) sink=(307,194) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_131' src=(161,108) sink=(307,172) bbox=[0,310]x[0,222]
+    reroute_from_scratch FAIL: net='net_30887' src=(304,164) sink=(301,140) bbox=[225,310]x[64,222]
+  inloop_ripup pass 0: visited=5748/17010 attempted=6295 nets_rec=10 sinks_rec=10 free_ext=4 ripups=7 600.0s skip[dead_cache=0 fanout=221 too_many=0 ledger=266] explore[capped_tight=4132 wide_found=0 capped_wide=0 dead_short=0 dead_mid=0 dead_long=0] fail[extend=230 victim=1436]
+RasterRouter: A* cleanup for 1 failed nets (iter 0)
+  A* cleanup: +1 fully-routed, 16999 still partial/failed
+  pass 1 gate: bumped=0 sticky_skipped=8348 (threshold=1)
+  pass 1 progress: 1180/8651 lf nets, routed=3, failed=1177, 60.0s, 19.66 nets/s  astar: reached=238469 pops/sink=2097 at_limit=1160 drained=0 pops/sink=0 at_limit=0 limited=26866 pops/sink=30001 at_limit=26866

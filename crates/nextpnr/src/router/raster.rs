@@ -23,7 +23,10 @@ use super::common::{
     is_global_clock_wire, resolve_source_wire, source_wire_const_value, unroute_net,
     validate_all_routed, RoutePlan, SinkRoute,
 };
-use super::maze::{astar_route, astar_route_explore, astar_route_multihop, astar_route_with_trace};
+use super::maze::{
+    astar_route, astar_route_explore, astar_route_explore_exit, astar_route_multihop,
+    astar_route_with_trace,
+};
 use super::RouterError;
 
 /// True iff every valid sink of `net` is bound to the net (directly or via a
@@ -118,6 +121,34 @@ const SCOPED_RIPUP_RETRY_LIMIT: usize = 5_000_000;
 /// net now occupies the path they previously used, so this needs to be on
 /// par with the post-rip-up reroute budget for our own net.
 const RIPUP_REROUTE_LIMIT: usize = 5_000_000;
+
+/// In-loop rip-up budgets. The cleanup-stage constants above assume ≤8
+/// invocations per run; the in-loop sweep visits every failed net every
+/// pass (tens of thousands on FPGA01), so each attempt must be orders of
+/// magnitude cheaper and give up early rather than search exhaustively.
+const INLOOP_EXPLORE_LIMIT: usize = 200_000;
+/// Escalated explore budget when the tight-bbox explore *drains* (a proof
+/// nothing exists at `bbox_margin`, not a budget miss): the retry widens to
+/// the cleanup-proven `max(60, span*3)` margin, whose bbox holds millions of
+/// wires, so the tight budget would misreport it as capped.
+const INLOOP_WIDE_EXPLORE_LIMIT: usize = 1_000_000;
+/// Sink attempts per net per sweep. Sinks recover independently now, so this
+/// bounds the worst-case cost of one very broken net, not the recovery.
+const INLOOP_SINKS_PER_NET: usize = 4;
+/// Wall budget per sweep, sized to one retry pass. v1 spent 2059s to recover
+/// 16 nets, 3.4x a pass for a quarter of its yield; the sweep must never
+/// cost more than the pass it augments. Unvisited nets carry to next sweep.
+const INLOOP_SWEEP_WALL_SECS: u64 = 600;
+/// A corridor needing more movers than this is contested, not blocked;
+/// surgical rip-up would cascade, so the attempt is skipped.
+const INLOOP_MAX_BLOCKERS: usize = 8;
+/// Never rip a victim whose reroute means replaying this many sinks; the
+/// rollback cost of a late failure grows with victim fanout.
+const INLOOP_MAX_FANOUT: usize = 64;
+/// Per-victim rip count per sweep. Two nets trading the same corridor
+/// every pass is the oscillation that sank gate-level partial rip-up
+/// (18511 partials rebuilt into 5229); the ledger caps the trade.
+const INLOOP_RIPS_PER_VICTIM: u32 = 2;
 
 /// Snapshot of a net's routed state, sufficient to restore it if rip-up+retry
 /// fails. Captures the wire/pip pairs the net owned via `apply_route_plan`;
@@ -496,6 +527,324 @@ fn scoped_ripup_route(
     true
 }
 
+/// Per-sweep skip and outcome counters, printed once per pass so a sweep
+/// that recovers nothing still says which guard rejected its attempts. The
+/// explore exits split budget misses (`capped_*`) from infeasibility proofs
+/// (`dead_*`, cached for the rest of the run), and the two reroute failure
+/// modes are separated because they point at different fixes: `extend_fail`
+/// at the retry budget or cost model, `victim_fail` at the victim bboxes.
+#[derive(Default)]
+struct InloopStats {
+    attempted: usize,
+    nets_recovered: usize,
+    sinks_recovered: usize,
+    ripups: usize,
+    free_extends: usize,
+    skip_dead_cache: usize,
+    skip_fanout: usize,
+    skip_too_many: usize,
+    skip_ledger: usize,
+    capped_tight: usize,
+    capped_wide: usize,
+    wide_found: usize,
+    dead_short: usize,
+    dead_mid: usize,
+    dead_long: usize,
+    extend_fail: usize,
+    victim_fail: usize,
+}
+
+/// One in-loop recovery pass over a net's missing sinks.
+///
+/// Sinks recover independently: each attempt explores unbound for a corridor,
+/// names the blockers on it, rips only the blockers, *extends* the net's
+/// existing tree to the sink (never rebuilding sinks that already routed —
+/// v1's all-or-nothing reroute rolled back a freed corridor whenever any
+/// other sink still failed, 1647 of 1663 attempts), then reroutes each victim.
+/// Any failure rolls the net and the victims back to their exact prior state,
+/// so a partial tree survives every failed attempt.
+///
+/// The explore runs at the routing margin first; if it *drains* — an
+/// infeasibility proof for that bbox, not a budget miss — it escalates once
+/// to the cleanup-proven `max(60, span*3)` margin. Draining there too is
+/// permanent for the run (the unbound graph and placement are fixed), so the
+/// `(net, sink)` lands in `dead_ends` and is never explored again.
+fn inloop_ripup_net(
+    ctx: &mut Context,
+    net: NetId,
+    cfg: &RasterRouterCfg,
+    wire_penalty: &FxHashMap<WireId, DelayT>,
+    lookahead: &super::lookahead::Lookahead,
+    neg_state: &mut super::common::NegotiationState,
+    victim_ledger: &mut FxHashMap<NetId, u32>,
+    dead_ends: &mut FxHashSet<(NetId, WireId)>,
+    reroute_limit: usize,
+    stats: &mut InloopStats,
+) -> bool {
+    if ctx.net(net).num_users() > INLOOP_MAX_FANOUT {
+        stats.skip_fanout += 1;
+        return false;
+    }
+    let source_wire = match resolve_source_wire(ctx, net) {
+        Ok(Some(w)) => w,
+        _ => return false,
+    };
+    let sink_wires = collect_sink_wires(ctx, net);
+    if sink_wires.is_empty() {
+        return false;
+    }
+
+    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    let mut grow_tree = |tree: &mut FxHashSet<WireId>, ctx: &Context, w: WireId| {
+        tree.insert(w);
+        ctx.chipdb().node_wires_cb(w, |nw| {
+            tree.insert(nw);
+        });
+    };
+    grow_tree(&mut tree_wires, ctx, source_wire);
+    let existing: Vec<WireId> = ctx.net(net).wires().keys().copied().collect();
+    for w in existing {
+        grow_tree(&mut tree_wires, ctx, w);
+    }
+
+    let missing: Vec<WireId> = sink_wires
+        .iter()
+        .copied()
+        .filter(|s| !tree_wires.contains(s))
+        .collect();
+
+    let tight_bbox = crate::metrics::compute_bbox(ctx, net, cfg.bbox_margin.max(1));
+    let bel_bbox = crate::metrics::compute_bbox(ctx, net, 0);
+    let span = (bel_bbox.x1 - bel_bbox.x0).max(bel_bbox.y1 - bel_bbox.y0).max(0);
+    let wide_margin = EXPLORE_BBOX_MARGIN_MIN.max(span * EXPLORE_BBOX_SPAN_MULT);
+    let wide_bbox = crate::metrics::compute_bbox(ctx, net, wide_margin);
+
+    for &sink in missing.iter().take(INLOOP_SINKS_PER_NET) {
+        if dead_ends.contains(&(net, sink)) {
+            stats.skip_dead_cache += 1;
+            continue;
+        }
+        stats.attempted += 1;
+
+        // Tight explore first: cheap, and its corridor is one the extension
+        // can actually use. Escalate only on a drain, which proves the tight
+        // bbox empty rather than the budget short.
+        let (mut explore_path, exit) = astar_route_explore_exit(
+            ctx,
+            net,
+            &tree_wires,
+            sink,
+            wire_penalty,
+            Some(&tight_bbox),
+            Some(lookahead),
+            Some(INLOOP_EXPLORE_LIMIT),
+        );
+        let mut attempt_bbox = &tight_bbox;
+        if explore_path.is_none() {
+            match exit {
+                AStarExit::VisitLimit => {
+                    stats.capped_tight += 1;
+                    continue;
+                }
+                AStarExit::HeapDrained => {
+                    let (wide_path, wide_exit) = astar_route_explore_exit(
+                        ctx,
+                        net,
+                        &tree_wires,
+                        sink,
+                        wire_penalty,
+                        Some(&wide_bbox),
+                        Some(lookahead),
+                        Some(INLOOP_WIDE_EXPLORE_LIMIT),
+                    );
+                    match (wide_path, wide_exit) {
+                        (Some(p), _) => {
+                            stats.wide_found += 1;
+                            explore_path = Some(p);
+                            attempt_bbox = &wide_bbox;
+                        }
+                        (None, AStarExit::HeapDrained) => {
+                            dead_ends.insert((net, sink));
+                            let (sx, sy) = ctx.chipdb().tile_xy(source_wire.tile());
+                            let (tx, ty) = ctx.chipdb().tile_xy(sink.tile());
+                            let dist = (tx - sx).abs() + (ty - sy).abs();
+                            if dist <= 20 {
+                                stats.dead_short += 1;
+                            } else if dist <= 60 {
+                                stats.dead_mid += 1;
+                            } else {
+                                stats.dead_long += 1;
+                            }
+                            continue;
+                        }
+                        (None, _) => {
+                            stats.capped_wide += 1;
+                            continue;
+                        }
+                    }
+                }
+                AStarExit::Reached => continue,
+            }
+        }
+        let explore_path = explore_path.unwrap();
+
+        let mut blockers: FxHashSet<NetId> = FxHashSet::default();
+        for &pip in &explore_path {
+            let dst = ctx.chipdb().pip_dst_wire(pip);
+            if let Some((owner, _)) = ctx.wire_binding(dst) {
+                if owner != net {
+                    blockers.insert(owner);
+                }
+            }
+            ctx.chipdb().node_wires_cb(dst, |nw| {
+                if let Some((owner, _)) = ctx.wire_binding(nw) {
+                    if owner != net {
+                        blockers.insert(owner);
+                    }
+                }
+            });
+        }
+
+        let mut blocker_list: Vec<NetId> = blockers.into_iter().collect();
+        blocker_list.sort_unstable();
+        if blocker_list.len() > INLOOP_MAX_BLOCKERS {
+            stats.skip_too_many += 1;
+            continue;
+        }
+        if blocker_list
+            .iter()
+            .any(|&b| ctx.net(b).num_users() > INLOOP_MAX_FANOUT)
+        {
+            stats.skip_fanout += 1;
+            continue;
+        }
+        if blocker_list
+            .iter()
+            .any(|&b| victim_ledger.get(&b).copied().unwrap_or(0) >= INLOOP_RIPS_PER_VICTIM)
+        {
+            stats.skip_ledger += 1;
+            continue;
+        }
+
+        // Own snapshot taken before the extension so a victim-reroute failure
+        // can restore the pre-extension tree exactly.
+        let own_snapshot = snapshot_net(ctx, net);
+        let snapshots: Vec<NetSnapshot> =
+            blocker_list.iter().map(|&b| snapshot_net(ctx, b)).collect();
+        for &b in &blocker_list {
+            ripup_net_with_equivs(ctx, b);
+            *victim_ledger.entry(b).or_insert(0) += 1;
+            neg_state.bump_rip_up(b);
+        }
+
+        // Extension binds nothing until apply_route_plan, and that call is
+        // atomic, so the only state to restore on failure is the victims'.
+        let extension = astar_route(
+            ctx,
+            net,
+            &tree_wires,
+            sink,
+            wire_penalty,
+            Some(attempt_bbox),
+            50,
+            Some(lookahead),
+            Some(reroute_limit),
+        )
+        .and_then(|pips| {
+            let plan = RoutePlan {
+                net,
+                source_wire,
+                sink_routes: vec![SinkRoute {
+                    sink_wire: sink,
+                    pips,
+                }],
+            };
+            apply_route_plan(ctx, &plan).ok().map(|()| plan)
+        });
+        let plan = match extension {
+            Some(p) => p,
+            None => {
+                for snap in &snapshots {
+                    if !restore_net(ctx, snap) {
+                        eprintln!(
+                            "  inloop_ripup: CRITICAL restore failure for victim {:?}",
+                            snap.net
+                        );
+                    }
+                }
+                stats.extend_fail += 1;
+                continue;
+            }
+        };
+
+        let mut victims_ok = true;
+        for (i, &b) in blocker_list.iter().enumerate() {
+            let vb_span_bbox = crate::metrics::compute_bbox(ctx, b, 0);
+            let vb_span = (vb_span_bbox.x1 - vb_span_bbox.x0)
+                .max(vb_span_bbox.y1 - vb_span_bbox.y0)
+                .max(0);
+            let vb_margin = EXPLORE_BBOX_MARGIN_MIN.max(vb_span * EXPLORE_BBOX_SPAN_MULT);
+            let victim_bbox = crate::metrics::compute_bbox(ctx, b, vb_margin);
+            if !reroute_from_scratch(
+                ctx,
+                b,
+                wire_penalty,
+                lookahead,
+                reroute_limit,
+                Some(&victim_bbox),
+            ) {
+                // Roll back: the failed victim, our extension, the victims
+                // already rerouted, then restore every snapshot.
+                ripup_net_with_equivs(ctx, b);
+                ripup_net_with_equivs(ctx, net);
+                for snap in &snapshots[..i] {
+                    ripup_net_with_equivs(ctx, snap.net);
+                }
+                if !restore_net(ctx, &own_snapshot) {
+                    eprintln!(
+                        "  inloop_ripup: CRITICAL restore failure for own net {:?}",
+                        net
+                    );
+                }
+                for snap in &snapshots {
+                    if !restore_net(ctx, snap) {
+                        eprintln!(
+                            "  inloop_ripup: CRITICAL restore failure for victim {:?}",
+                            snap.net
+                        );
+                    }
+                }
+                stats.victim_fail += 1;
+                victims_ok = false;
+                break;
+            }
+        }
+        if !victims_ok {
+            continue;
+        }
+
+        // Sink landed: fold its corridor into the tree for the next sink.
+        for sr in &plan.sink_routes {
+            for &pip in &sr.pips {
+                let dw = ctx.chipdb().pip_dst_wire(pip);
+                grow_tree(&mut tree_wires, ctx, dw);
+            }
+            grow_tree(&mut tree_wires, ctx, sr.sink_wire);
+        }
+        stats.sinks_recovered += 1;
+        if blocker_list.is_empty() {
+            stats.free_extends += 1;
+        }
+        stats.ripups += blocker_list.len();
+    }
+
+    let fully = net_fully_routed(ctx, net);
+    if fully {
+        stats.nets_recovered += 1;
+    }
+    fully
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -527,6 +876,12 @@ pub struct RasterRouterCfg {
     /// extend them, so keeping that half without the other floors the unrouted
     /// count at however many partials pass 0 left.
     pub skip_cleanup: bool,
+    /// Run the scoped rip-up sweep on every failed net at the end of each
+    /// pass, and restrict the cleanup stage to its const and clock fast
+    /// paths. The chip-scale cleanup A* recovers 1 ordinary net in 98 at
+    /// 8.1s each; the sweep spends the budget on the mechanism behind 13 of
+    /// cleanup's 14 recoveries instead.
+    pub inloop_ripup: bool,
     pub verbose: bool,
 }
 
@@ -544,6 +899,7 @@ impl Default for RasterRouterCfg {
             sink_visit_limit: None,
             cleanup_visit_limit: None,
             skip_cleanup: false,
+            inloop_ripup: false,
             verbose: false,
         }
     }
@@ -1587,6 +1943,11 @@ impl super::Router for RasterRouter {
         // Scoped rip-up budget, shared across all passes within this run.
         let mut ripup_budget: u32 = MAX_RIPUP_ATTEMPTS_PER_RUN;
 
+        // (net, sink) pairs whose wide-bbox unbound explore drained: the
+        // unbound graph and the placement are fixed, so these stay
+        // unreachable for the whole run and are never explored again.
+        let mut inloop_dead: FxHashSet<(NetId, WireId)> = FxHashSet::default();
+
         // Iteration 0: route ALL nets (beam search).
         // Iterations 1+: selective rip-up of congested nets only (PathFinder-style).
         for iter in 0..cfg.max_iterations {
@@ -1890,6 +2251,130 @@ impl super::Router for RasterRouter {
                         && !net_fully_routed(ctx, net)
                 })
                 .collect();
+            // In-loop scoped rip-up: recover failed nets while the pass state
+            // is live instead of leaving them to the cleanup stage, whose
+            // chip-scale A* recovers 1 net in 98 at 8.1s each while 13 of its
+            // 14 recoveries come from the scoped rip-up it gates behind that
+            // A*. Each attempt either fully routes the net or rolls back to
+            // the exact prior state, so partial trees survive a failed try.
+            if cfg.inloop_ripup && !failed_nets.is_empty() {
+                let wire_penalty: FxHashMap<WireId, crate::timing::DelayT> = neg_state
+                    .wire_history
+                    .iter()
+                    .map(|(&w, &h)| {
+                        (
+                            w,
+                            (h * neg_state.cfg.history_cost_multiplier)
+                                as crate::timing::DelayT,
+                        )
+                    })
+                    .collect();
+                // Twice the per-sink cap: the corridor was just emptied for
+                // this net, so a success should land well under the pass
+                // budget and anything beyond it is the doomed-search shape
+                // the cap exists to stop.
+                let reroute_limit = cfg.sink_visit_limit.map(|v| v * 2).unwrap_or(100_000);
+                let mut victim_ledger: FxHashMap<NetId, u32> = FxHashMap::default();
+                let mut stats = InloopStats::default();
+                let t_sweep = std::time::Instant::now();
+                let mut last_sweep_report = t_sweep;
+                // Cheapest explores first: failures skew short-span, and the
+                // wall budget below should be spent where attempts are
+                // plentiful, not on a few wide-bbox stragglers.
+                let mut sweep_targets: Vec<(NetId, i32)> = failed_nets
+                    .iter()
+                    .map(|&n| {
+                        let bb = crate::metrics::compute_bbox(ctx, n, 0);
+                        (n, (bb.x1 - bb.x0).max(bb.y1 - bb.y0).max(0))
+                    })
+                    .collect();
+                sweep_targets.sort_by_key(|&(n, span)| (span, n));
+                let mut sweep_visited = 0usize;
+                for (i, &(net, _)) in sweep_targets.iter().enumerate() {
+                    if t_sweep.elapsed().as_secs() >= INLOOP_SWEEP_WALL_SECS {
+                        break;
+                    }
+                    sweep_visited = i + 1;
+                    if cfg.verbose
+                        && last_sweep_report.elapsed() >= std::time::Duration::from_secs(60)
+                    {
+                        last_sweep_report = std::time::Instant::now();
+                        eprintln!(
+                            "  inloop_ripup progress: {}/{} nets, nets_rec={}, sinks_rec={}, ripups={}, {:.1}s",
+                            i,
+                            sweep_targets.len(),
+                            stats.nets_recovered,
+                            stats.sinks_recovered,
+                            stats.ripups,
+                            t_sweep.elapsed().as_secs_f64(),
+                        );
+                    }
+                    inloop_ripup_net(
+                        ctx,
+                        net,
+                        cfg,
+                        &wire_penalty,
+                        &lookahead,
+                        &mut neg_state,
+                        &mut victim_ledger,
+                        &mut inloop_dead,
+                        reroute_limit,
+                        &mut stats,
+                    );
+                }
+                eprintln!(
+                    "  inloop_ripup pass {}: visited={}/{} attempted={} nets_rec={} sinks_rec={} free_ext={} ripups={} {:.1}s skip[dead_cache={} fanout={} too_many={} ledger={}] explore[capped_tight={} wide_found={} capped_wide={} dead_short={} dead_mid={} dead_long={}] fail[extend={} victim={}]",
+                    iter,
+                    sweep_visited,
+                    sweep_targets.len(),
+                    stats.attempted,
+                    stats.nets_recovered,
+                    stats.sinks_recovered,
+                    stats.free_extends,
+                    stats.ripups,
+                    t_sweep.elapsed().as_secs_f64(),
+                    stats.skip_dead_cache,
+                    stats.skip_fanout,
+                    stats.skip_too_many,
+                    stats.skip_ledger,
+                    stats.capped_tight,
+                    stats.wide_found,
+                    stats.capped_wide,
+                    stats.dead_short,
+                    stats.dead_mid,
+                    stats.dead_long,
+                    stats.extend_fail,
+                    stats.victim_fail,
+                );
+                failed_nets = ctx
+                    .design
+                    .iter_net_indices()
+                    .filter(|&net| {
+                        let n = ctx.net(net);
+                        n.is_alive()
+                            && n.has_driver()
+                            && n.num_users() > 0
+                            && !net_fully_routed(ctx, net)
+                    })
+                    .collect();
+                failed = failed_nets.len();
+                // Ordinary nets had their in-loop chance; only the cleanup
+                // stage's deterministic const and clock-backbone fast paths
+                // still earn their cost.
+                if !cfg.skip_cleanup {
+                    failed_nets.retain(|&n| {
+                        resolve_source_wire(ctx, n)
+                            .ok()
+                            .flatten()
+                            .map(|w| {
+                                source_wire_const_value(ctx, w) != 0
+                                    || is_global_clock_wire(ctx, w)
+                            })
+                            .unwrap_or(false)
+                    });
+                }
+            }
+
             if cfg.skip_cleanup {
                 // Ground truth, not the pass counter: `routed` counts a net
                 // whose plan applied with sinks missing, so `failed` alone
