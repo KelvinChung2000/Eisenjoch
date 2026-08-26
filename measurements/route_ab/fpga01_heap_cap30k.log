@@ -1,0 +1,296 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+placer: heap, route_iters: 50
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T heap prepare_discrete: 0.2s
+  ALG_T init_hpwl: 14051632
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=6247 shared_mux_rejects=16338 arch_validity_rejects=0
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=7688 shared_mux_rejects=21129 arch_validity_rejects=0
+PLACE_RESULT placer=heap place_secs=1.71 total_hpwl=4533609
+routable nets: 105118
+sink_visit_limit: Some(30000)
+cleanup_visit_limit: None
+skip_cleanup: false
+RasterRouter: 105118 nets on 311x223, beam_width=128, max_steps=1000
+RasterRouter: pre-reserved 459727 BEL-pin wires (0 conflicts)
+Lookahead pip-cost model: cost = 11*sqrt(span) + orig_delay/span
+Lookahead class 0 (LUT6): 8085 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 1 (DFF): 8365 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 2 (IOB): 8877 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 3 (GND_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 4 (VCC_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 5 (RAMB18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 6 (FIFO18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 7 (RAMBFIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 8 (RAMB36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 9 (FIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 10 (BUFG): 8661 reachable pips, rate = 159/209 ≈ 0.761/tile
+Lookahead class 11 (DSP48E1): 16919 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead: 12 driver classes, default=10 (BUFG)
+  priority top-5 (score, fanout): [(9300000.0, 93000), (2900.0, 29), (2800.0, 28), (2800.0, 28), (2600.0, 26)]
+  high-fanout: 63/64 routed sequentially
+  raster_fail #0: net='net_90282' src=(247,182) sink=(172,100) dist=157 tree=596
+  raster_fail #1: net='net_16964' src=(207,139) sink=(196,109) dist=41 tree=215
+  raster_fail #2: net='net_44631' src=(234,84) sink=(169,114) dist=95 tree=632
+  raster_fail #3: net='net_44631' src=(234,84) sink=(162,114) dist=102 tree=632
+  raster_fail #4: net='net_31633' src=(189,133) sink=(261,101) dist=104 tree=596
+  raster_fail #5: net='net_62790' src=(230,152) sink=(168,114) dist=100 tree=738
+  raster_fail #6: net='net_4094' src=(203,82) sink=(172,102) dist=51 tree=397
+  raster_fail #7: net='net_84728' src=(133,110) sink=(196,114) dist=67 tree=233
+  raster_fail #8: net='net_16724' src=(175,117) sink=(189,114) dist=17 tree=2
+  raster_fail #9: net='net_45289' src=(228,108) sink=(200,114) dist=34 tree=359
+  raster_fail #10: net='net_52451' src=(250,116) sink=(145,101) dist=120 tree=802
+  raster_fail #11: net='net_35793' src=(97,102) sink=(174,111) dist=86 tree=549
+  raster_fail #12: net='net_45266' src=(189,108) sink=(183,101) dist=13 tree=53
+  raster_fail #13: net='net_103151' src=(221,96) sink=(198,115) dist=42 tree=161
+  raster_fail #14: net='net_103151' src=(221,96) sink=(175,112) dist=62 tree=407
+  raster_fail #15: net='net_95442' src=(210,100) sink=(200,109) dist=19 tree=98
+  raster_fail #16: net='net_95442' src=(210,100) sink=(196,110) dist=24 tree=134
+  raster_fail #17: net='net_95442' src=(210,100) sink=(193,109) dist=26 tree=170
+  raster_fail #18: net='net_95442' src=(210,100) sink=(193,110) dist=27 tree=170
+  raster_fail #19: net='net_50702' src=(221,128) sink=(207,118) dist=24 tree=88
+  raster_fail #20: net='net_36617' src=(195,125) sink=(201,114) dist=17 tree=21
+  raster_fail #21: net='net_16363' src=(137,111) sink=(194,101) dist=67 tree=732
+  raster_fail #22: net='net_75397' src=(154,113) sink=(219,103) dist=75 tree=461
+  raster_fail #23: net='net_56442' src=(243,115) sink=(178,117) dist=67 tree=384
+  raster_fail #24: net='net_56442' src=(243,115) sink=(128,113) dist=117 tree=803
+  raster_fail #25: net='net_47408' src=(177,126) sink=(150,110) dist=43 tree=181
+  raster_fail #26: net='net_52792' src=(282,41) sink=(168,113) dist=186 tree=765
+  raster_fail #27: net='net_33391' src=(191,109) sink=(165,104) dist=31 tree=2
+  raster_fail #28: net='net_85157' src=(165,144) sink=(193,113) dist=59 tree=458
+  raster_fail #29: net='net_63580' src=(228,104) sink=(175,113) dist=62 tree=554
+  raster_fail #30: net='net_61938' src=(263,142) sink=(179,115) dist=111 tree=841
+  raster_fail #31: net='net_61938' src=(263,142) sink=(181,112) dist=112 tree=841
+  raster_fail #32: net='net_75478' src=(231,109) sink=(182,102) dist=56 tree=558
+  raster_fail #33: net='net_66978' src=(218,85) sink=(167,107) dist=73 tree=350
+  raster_fail #34: net='net_66978' src=(218,85) sink=(155,110) dist=88 tree=350
+  raster_fail #35: net='net_66978' src=(218,85) sink=(134,114) dist=113 tree=350
+  raster_fail #36: net='net_38851' src=(154,139) sink=(214,103) dist=96 tree=439
+  raster_fail #37: net='net_73117' src=(234,88) sink=(214,104) dist=36 tree=150
+  raster_fail #38: net='net_94747' src=(253,72) sink=(204,109) dist=86 tree=774
+  raster_fail #39: net='net_5349' src=(203,47) sink=(195,115) dist=76 tree=396
+  raster_fail #40: net='net_85833' src=(175,117) sink=(203,98) dist=47 tree=358
+  raster_fail #41: net='net_96068' src=(198,91) sink=(211,114) dist=36 tree=1
+  raster_fail #42: net='net_96068' src=(198,91) sink=(169,116) dist=54 tree=427
+  raster_fail #43: net='net_60481' src=(256,139) sink=(203,98) dist=94 tree=643
+  raster_fail #44: net='net_77665' src=(228,156) sink=(177,116) dist=91 tree=500
+  raster_fail #45: net='net_77665' src=(228,156) sink=(165,114) dist=105 tree=500
+  raster_fail #46: net='net_77665' src=(228,156) sink=(166,109) dist=109 tree=500
+  raster_fail #47: net='net_77665' src=(228,156) sink=(168,99) dist=117 tree=500
+  raster_fail #48: net='net_77665' src=(228,156) sink=(162,101) dist=121 tree=500
+  raster_fail #49: net='net_11418' src=(224,75) sink=(168,98) dist=79 tree=1
+  raster_fail #50: net='net_11418' src=(224,75) sink=(160,101) dist=90 tree=1
+  raster_fail #51: net='net_48622' src=(133,92) sink=(194,100) dist=69 tree=257
+  raster_fail #52: net='net_48622' src=(133,92) sink=(195,102) dist=72 tree=257
+  raster_fail #53: net='net_77713' src=(200,75) sink=(171,111) dist=65 tree=1
+  raster_fail #54: net='net_77713' src=(200,75) sink=(146,98) dist=77 tree=307
+  raster_fail #55: net='net_31465' src=(234,106) sink=(168,118) dist=78 tree=741
+  raster_fail #56: net='net_99959' src=(266,121) sink=(215,113) dist=59 tree=1
+  raster_fail #57: net='net_1173' src=(202,102) sink=(157,99) dist=48 tree=225
+  raster_fail #58: net='net_52724' src=(214,114) sink=(193,104) dist=31 tree=123
+  raster_fail #59: net='net_81670' src=(206,85) sink=(183,111) dist=49 tree=404
+  raster_fail #60: net='net_80476' src=(169,97) sink=(218,117) dist=69 tree=357
+  raster_fail #61: net='net_80476' src=(169,97) sink=(223,115) dist=72 tree=357
+  raster_fail #62: net='net_80476' src=(169,97) sink=(222,118) dist=74 tree=357
+  raster_fail #63: net='net_80476' src=(169,97) sink=(238,103) dist=75 tree=357
+  raster_fail #64: net='net_80476' src=(169,97) sink=(225,118) dist=77 tree=357
+  raster_fail #65: net='net_80476' src=(169,97) sink=(227,117) dist=78 tree=357
+  raster_fail #66: net='net_80476' src=(169,97) sink=(228,117) dist=79 tree=357
+  raster_fail #67: net='net_85954' src=(197,96) sink=(221,104) dist=32 tree=112
+  raster_fail #68: net='net_85954' src=(197,96) sink=(153,102) dist=50 tree=387
+  raster_fail #69: net='net_75417' src=(246,115) sink=(199,97) dist=65 tree=653
+  raster_fail #70: net='net_98931' src=(242,104) sink=(166,115) dist=87 tree=632
+  raster_fail #71: net='net_98931' src=(242,104) sink=(161,113) dist=90 tree=632
+  raster_fail #72: net='net_98931' src=(242,104) sink=(149,108) dist=97 tree=632
+  raster_fail #73: net='net_43771' src=(156,85) sink=(196,116) dist=71 tree=884
+  raster_fail #74: net='net_105093' src=(194,93) sink=(145,99) dist=55 tree=245
+  raster_fail #75: net='net_105093' src=(194,93) sink=(95,110) dist=116 tree=639
+  raster_fail #76: net='net_147' src=(126,96) sink=(209,112) dist=99 tree=1
+  raster_fail #77: net='net_147' src=(126,96) sink=(232,105) dist=115 tree=1
+  raster_fail #78: net='net_147' src=(126,96) sink=(229,109) dist=116 tree=1
+  raster_fail #79: net='net_147' src=(126,96) sink=(226,118) dist=122 tree=1
+  raster_fail #80: net='net_147' src=(126,96) sink=(243,105) dist=126 tree=1
+  raster_fail #81: net='net_147' src=(126,96) sink=(247,116) dist=141 tree=1
+  raster_fail #82: net='net_23658' src=(263,111) sink=(194,118) dist=76 tree=725
+  raster_fail #83: net='net_23658' src=(263,111) sink=(188,102) dist=84 tree=725
+  raster_fail #84: net='net_6686' src=(101,108) sink=(198,101) dist=104 tree=688
+  raster_fail #85: net='net_6686' src=(101,108) sink=(206,97) dist=116 tree=867
+  raster_fail #86: net='net_77679' src=(269,191) sink=(157,112) dist=191 tree=879
+  raster_fail #87: net='net_77679' src=(269,191) sink=(153,108) dist=199 tree=879
+  raster_fail #88: net='net_47232' src=(171,84) sink=(203,102) dist=50 tree=355
+  raster_fail #89: net='net_47232' src=(171,84) sink=(207,102) dist=54 tree=552
+  raster_fail #90: net='net_42343' src=(137,95) sink=(234,100) dist=102 tree=84
+  raster_fail #91: net='net_74712' src=(236,118) sink=(141,123) dist=100 tree=172
+  raster_fail #92: net='net_47326' src=(265,88) sink=(147,103) dist=133 tree=1
+  raster_fail #93: net='net_47326' src=(265,88) sink=(151,109) dist=135 tree=1
+  raster_fail #94: net='net_59800' src=(203,122) sink=(193,100) dist=32 tree=260
+  raster_fail #95: net='net_42629' src=(253,83) sink=(206,111) dist=75 tree=542
+  raster_fail #96: net='net_1626' src=(187,116) sink=(195,116) dist=8 tree=16
+  raster_fail #97: net='net_1626' src=(187,116) sink=(205,118) dist=20 tree=77
+  raster_fail #98: net='net_1626' src=(187,116) sink=(124,111) dist=68 tree=529
+  raster_fail #99: net='net_29687' src=(65,181) sink=(205,119) dist=202 tree=1178
+  pass 0 progress: 2146/105054 lf nets, routed=2167, failed=43, 60.0s, 35.75 nets/s  astar: reached=22170 pops/sink=3005 at_limit=74 drained=0 pops/sink=0 at_limit=0 limited=3049 pops/sink=30001 at_limit=3049
+  pass 0 progress: 3363/105054 lf nets, routed=3246, failed=181, 120.0s, 28.01 nets/s  astar: reached=27750 pops/sink=3258 at_limit=125 drained=0 pops/sink=0 at_limit=0 limited=7404 pops/sink=30001 at_limit=7404
+  pass 0 progress: 4703/105054 lf nets, routed=4359, failed=408, 180.1s, 26.12 nets/s  astar: reached=32548 pops/sink=3427 at_limit=176 drained=0 pops/sink=0 at_limit=0 limited=12133 pops/sink=30001 at_limit=12133
+  pass 0 progress: 5000/105054 lf nets, routed=4597, failed=467, 193.6s, 25.82 nets/s  astar: reached=33559 pops/sink=3447 at_limit=191 drained=0 pops/sink=0 at_limit=0 limited=13201 pops/sink=30001 at_limit=13201
+  pass 0 progress: 6403/105054 lf nets, routed=5711, failed=756, 253.7s, 25.24 nets/s  astar: reached=37649 pops/sink=3571 at_limit=230 drained=0 pops/sink=0 at_limit=0 limited=17824 pops/sink=30001 at_limit=17824
+  pass 0 progress: 7797/105054 lf nets, routed=6809, failed=1052, 313.7s, 24.86 nets/s  astar: reached=41480 pops/sink=3670 at_limit=275 drained=0 pops/sink=0 at_limit=0 limited=22357 pops/sink=30001 at_limit=22357
+  pass 0 progress: 9321/105054 lf nets, routed=7983, failed=1402, 373.7s, 24.94 nets/s  astar: reached=45183 pops/sink=3752 at_limit=323 drained=0 pops/sink=0 at_limit=0 limited=26707 pops/sink=30001 at_limit=26707
+  pass 0 progress: 10000/105054 lf nets, routed=8528, failed=1536, 399.4s, 25.03 nets/s  astar: reached=46759 pops/sink=3786 at_limit=343 drained=0 pops/sink=0 at_limit=0 limited=28526 pops/sink=30001 at_limit=28526
+  pass 0 progress: 11561/105054 lf nets, routed=9693, failed=1932, 459.5s, 25.16 nets/s  astar: reached=50170 pops/sink=3844 at_limit=390 drained=0 pops/sink=0 at_limit=0 limited=32920 pops/sink=30001 at_limit=32920
+  pass 0 progress: 13012/105054 lf nets, routed=10745, failed=2331, 519.5s, 25.05 nets/s  astar: reached=53176 pops/sink=3910 at_limit=440 drained=0 pops/sink=0 at_limit=0 limited=37169 pops/sink=30001 at_limit=37169
+  pass 0 progress: 14902/105054 lf nets, routed=12105, failed=2861, 579.6s, 25.71 nets/s  astar: reached=56438 pops/sink=3957 at_limit=503 drained=0 pops/sink=0 at_limit=0 limited=41520 pops/sink=30001 at_limit=41520
+  pass 0 progress: 15000/105054 lf nets, routed=12173, failed=2891, 582.9s, 25.74 nets/s  astar: reached=56597 pops/sink=3960 at_limit=507 drained=0 pops/sink=0 at_limit=0 limited=41753 pops/sink=30001 at_limit=41753
+  pass 0 progress: 16842/105054 lf nets, routed=13523, failed=3383, 642.9s, 26.20 nets/s  astar: reached=59781 pops/sink=3993 at_limit=551 drained=0 pops/sink=0 at_limit=0 limited=45937 pops/sink=30001 at_limit=45937
+  pass 0 progress: 18678/105054 lf nets, routed=14831, failed=3911, 702.9s, 26.57 nets/s  astar: reached=62889 pops/sink=4028 at_limit=602 drained=0 pops/sink=0 at_limit=0 limited=50173 pops/sink=30001 at_limit=50173
+  pass 0 progress: 20000/105054 lf nets, routed=15763, failed=4301, 747.9s, 26.74 nets/s  astar: reached=65011 pops/sink=4055 at_limit=635 drained=0 pops/sink=0 at_limit=0 limited=53339 pops/sink=30001 at_limit=53339
+  pass 0 progress: 22070/105054 lf nets, routed=17198, failed=4936, 807.9s, 27.32 nets/s  astar: reached=68097 pops/sink=4095 at_limit=688 drained=0 pops/sink=0 at_limit=0 limited=57691 pops/sink=30001 at_limit=57691
+  pass 0 progress: 24645/105054 lf nets, routed=19017, failed=5692, 867.9s, 28.40 nets/s  astar: reached=71600 pops/sink=4122 at_limit=736 drained=0 pops/sink=0 at_limit=0 limited=61913 pops/sink=30001 at_limit=61913
+  pass 0 progress: 25000/105054 lf nets, routed=19270, failed=5794, 876.3s, 28.53 nets/s  astar: reached=72081 pops/sink=4126 at_limit=747 drained=0 pops/sink=0 at_limit=0 limited=62497 pops/sink=30001 at_limit=62497
+  pass 0 progress: 27435/105054 lf nets, routed=20943, failed=6556, 936.3s, 29.30 nets/s  astar: reached=75255 pops/sink=4161 at_limit=803 drained=0 pops/sink=0 at_limit=0 limited=66628 pops/sink=30001 at_limit=66628
+  pass 0 progress: 29935/105054 lf nets, routed=22651, failed=7348, 996.4s, 30.04 nets/s  astar: reached=78470 pops/sink=4185 at_limit=847 drained=0 pops/sink=0 at_limit=0 limited=70913 pops/sink=30001 at_limit=70913
+  pass 0 progress: 30000/105054 lf nets, routed=22688, failed=7376, 998.1s, 30.06 nets/s  astar: reached=78542 pops/sink=4186 at_limit=851 drained=0 pops/sink=0 at_limit=0 limited=71036 pops/sink=30001 at_limit=71036
+  pass 0 progress: 32602/105054 lf nets, routed=24505, failed=8161, 1058.1s, 30.81 nets/s  astar: reached=82019 pops/sink=4209 at_limit=910 drained=0 pops/sink=0 at_limit=0 limited=75365 pops/sink=30001 at_limit=75365
+  pass 0 progress: 35000/105054 lf nets, routed=26186, failed=8878, 1113.2s, 31.44 nets/s  astar: reached=85147 pops/sink=4230 at_limit=961 drained=0 pops/sink=0 at_limit=0 limited=79431 pops/sink=30001 at_limit=79431
+  pass 0 progress: 38751/105054 lf nets, routed=28649, failed=10166, 1173.2s, 33.03 nets/s  astar: reached=88974 pops/sink=4244 at_limit=1013 drained=0 pops/sink=0 at_limit=0 limited=83739 pops/sink=30001 at_limit=83739
+  pass 0 progress: 40000/105054 lf nets, routed=29441, failed=10623, 1191.1s, 33.58 nets/s  astar: reached=90140 pops/sink=4253 at_limit=1041 drained=0 pops/sink=0 at_limit=0 limited=85071 pops/sink=30001 at_limit=85071
+  pass 0 progress: 44099/105054 lf nets, routed=32071, failed=12092, 1251.1s, 35.25 nets/s  astar: reached=93960 pops/sink=4262 at_limit=1101 drained=0 pops/sink=0 at_limit=0 limited=89449 pops/sink=30001 at_limit=89449
+  pass 0 progress: 45000/105054 lf nets, routed=32648, failed=12416, 1264.7s, 35.58 nets/s  astar: reached=94817 pops/sink=4262 at_limit=1115 drained=0 pops/sink=0 at_limit=0 limited=90394 pops/sink=30001 at_limit=90394
+  pass 0 progress: 49089/105054 lf nets, routed=35224, failed=13929, 1324.8s, 37.06 nets/s  astar: reached=98558 pops/sink=4277 at_limit=1178 drained=0 pops/sink=0 at_limit=0 limited=94831 pops/sink=30001 at_limit=94831
+  pass 0 progress: 50000/105054 lf nets, routed=35805, failed=14259, 1338.1s, 37.37 nets/s  astar: reached=99397 pops/sink=4279 at_limit=1190 drained=0 pops/sink=0 at_limit=0 limited=95814 pops/sink=30001 at_limit=95814
+  pass 0 progress: 53961/105054 lf nets, routed=38291, failed=15734, 1398.1s, 38.60 nets/s  astar: reached=103006 pops/sink=4295 at_limit=1249 drained=0 pops/sink=0 at_limit=0 limited=100127 pops/sink=30001 at_limit=100127
+  pass 0 progress: 55000/105054 lf nets, routed=38930, failed=16134, 1413.8s, 38.90 nets/s  astar: reached=103933 pops/sink=4297 at_limit=1261 drained=0 pops/sink=0 at_limit=0 limited=101278 pops/sink=30001 at_limit=101278
+  pass 0 progress: 58942/105054 lf nets, routed=41382, failed=17624, 1473.8s, 39.99 nets/s  astar: reached=107476 pops/sink=4303 at_limit=1312 drained=0 pops/sink=0 at_limit=0 limited=105619 pops/sink=30001 at_limit=105619
+  pass 0 progress: 60000/105054 lf nets, routed=42073, failed=17991, 1489.9s, 40.27 nets/s  astar: reached=108457 pops/sink=4306 at_limit=1328 drained=0 pops/sink=0 at_limit=0 limited=106754 pops/sink=30001 at_limit=106754
+  pass 0 progress: 65000/105054 lf nets, routed=45071, failed=19993, 1532.9s, 42.40 nets/s  astar: reached=111804 pops/sink=4291 at_limit=1372 drained=0 pops/sink=0 at_limit=0 limited=109751 pops/sink=30001 at_limit=109751
+  pass 0 progress: 70000/105054 lf nets, routed=48080, failed=21984, 1560.9s, 44.85 nets/s  astar: reached=114813 pops/sink=4265 at_limit=1405 drained=0 pops/sink=0 at_limit=0 limited=111742 pops/sink=30001 at_limit=111742
+  pass 0 progress: 75000/105054 lf nets, routed=50927, failed=24137, 1592.4s, 47.10 nets/s  astar: reached=117660 pops/sink=4246 at_limit=1432 drained=0 pops/sink=0 at_limit=0 limited=113895 pops/sink=30001 at_limit=113895
+  pass 0 progress: 80000/105054 lf nets, routed=53859, failed=26205, 1622.7s, 49.30 nets/s  astar: reached=120592 pops/sink=4227 at_limit=1467 drained=0 pops/sink=0 at_limit=0 limited=115963 pops/sink=30001 at_limit=115963
+  pass 0 progress: 85000/105054 lf nets, routed=56776, failed=28288, 1654.2s, 51.39 nets/s  astar: reached=123509 pops/sink=4208 at_limit=1499 drained=0 pops/sink=0 at_limit=0 limited=118046 pops/sink=30001 at_limit=118046
+  pass 0 progress: 90000/105054 lf nets, routed=59726, failed=30338, 1685.9s, 53.38 nets/s  astar: reached=126459 pops/sink=4186 at_limit=1535 drained=0 pops/sink=0 at_limit=0 limited=120096 pops/sink=30001 at_limit=120096
+  pass 0 progress: 95000/105054 lf nets, routed=62648, failed=32416, 1717.0s, 55.33 nets/s  astar: reached=129381 pops/sink=4166 at_limit=1568 drained=0 pops/sink=0 at_limit=0 limited=122174 pops/sink=30001 at_limit=122174
+  pass 0 progress: 100000/105054 lf nets, routed=65633, failed=34431, 1747.4s, 57.23 nets/s  astar: reached=132366 pops/sink=4151 at_limit=1607 drained=0 pops/sink=0 at_limit=0 limited=124189 pops/sink=30001 at_limit=124189
+  pass 0 progress: 105000/105054 lf nets, routed=68600, failed=36464, 1777.2s, 59.08 nets/s  astar: reached=135333 pops/sink=4137 at_limit=1650 drained=0 pops/sink=0 at_limit=0 limited=126222 pops/sink=30001 at_limit=126222
+RasterRouter pass 0: routed=68637, failed=36481, tile_cong=52535, wire_cong=0, max_usage=272, wl=68637, cong_w=0.05
+  pass 0 astar:  reached=135370 pops/sink=4136 at_limit=1652 drained=0 pops/sink=0 at_limit=0 limited=126239 pops/sink=30001 at_limit=126239
+  pass 0 failmode: apply_conflicts=0 empty_plans=36481  astar: reached=135370 pops/sink=4136 at_limit=1652 drained=0 pops/sink=0 at_limit=0 limited=126239 pops/sink=30001 at_limit=126239
+RasterRouter: A* cleanup for 63523 failed nets (iter 0)
+  scoped_ripup: detour cost 1480 (min 1128) accepted (applied=true)
+    reroute_from_scratch FAIL: net='net_35781' src=(199,117) sink=(249,98) bbox=[49,310]x[0,222]
+  scoped_ripup: detour cost 1673 (min 1206) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_35781' src=(199,117) sink=(249,98) bbox=[49,310]x[0,222]
+  scoped_ripup: detour cost 1204 (min 984) accepted (applied=true)
+  cleanup progress: 5/63523 nets, routed=3, ripups=2, 69.8s, 0.07 nets/s
+  scoped_ripup: detour cost 1225 (min 948) accepted (applied=true)
+  scoped_ripup: detour cost 1435 (min 1024) accepted (applied=true)
+    reroute_from_scratch FAIL: net='net_26539' src=(210,99) sink=(195,97) bbox=[135,270]x[35,159]
+  scoped_ripup: detour cost 1524 (min 1002) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_96361' src=(210,93) sink=(129,73) bbox=[0,310]x[0,222]
+  cleanup progress: 17/63523 nets, routed=5, ripups=4, 157.7s, 0.11 nets/s
+  scoped_ripup: detour cost 1570 (min 1257) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1296 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_31815' src=(111,109) sink=(224,148) bbox=[0,310]x[0,222]
+  cleanup progress: 22/63523 nets, routed=6, ripups=5, 225.5s, 0.10 nets/s
+  scoped_ripup: detour cost 1359 (min 1067) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1195 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_18023' src=(262,155) sink=(165,82) bbox=[0,310]x[0,222]
+  cleanup progress: 25/63523 nets, routed=7, ripups=6, 296.5s, 0.08 nets/s
+  scoped_ripup: detour cost 1169 (min 948) accepted (applied=true)
+  scoped_ripup: detour cost 1524 (min 1212) accepted (applied=true)
+    reroute_from_scratch FAIL: net='net_86294' src=(121,74) sink=(113,87) bbox=[53,181]x[14,147]
+  scoped_ripup: detour cost 1167 (min 917) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_101005' src=(115,92) sink=(194,108) bbox=[0,310]x[0,222]
+  cleanup progress: 34/63523 nets, routed=9, ripups=8, 381.7s, 0.09 nets/s
+  scoped_ripup: no detour at all (min_cost=1403 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_31488' src=(233,151) sink=(200,147) bbox=[0,310]x[0,222]
+  cleanup progress: 38/63523 nets, routed=9, ripups=8, 442.8s, 0.09 nets/s
+  scoped_ripup: no detour at all (min_cost=1274 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_41824' src=(152,89) sink=(255,85) bbox=[0,310]x[0,222]
+  scoped_ripup: detour cost 1495 (min 1031) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1298 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_22412' src=(257,123) sink=(140,119) bbox=[0,310]x[0,222]
+  cleanup progress: 50/63523 nets, routed=10, ripups=9, 535.4s, 0.09 nets/s
+    reroute_from_scratch FAIL: net='net_13267' src=(214,69) sink=(198,64) bbox=[42,310]x[0,211]
+  scoped_ripup: detour cost 1501 (min 1186) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_42983' src=(209,72) sink=(119,72) bbox=[0,310]x[0,222]
+  cleanup progress: 53/63523 nets, routed=10, ripups=9, 611.5s, 0.09 nets/s
+  scoped_ripup: detour cost 1213 (min 1009) accepted (applied=true)
+  scoped_ripup: detour cost 1450 (min 1098) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1136 blockers=7), ripping up
+    reroute_from_scratch FAIL: net='net_89820' src=(260,133) sink=(231,113) bbox=[111,310]x[0,222]
+  cleanup progress: 58/63523 nets, routed=12, ripups=11, 677.6s, 0.09 nets/s
+  scoped_ripup: detour cost 1646 (min 918) accepted (applied=true)
+    reroute_from_scratch FAIL: net='net_72953' src=(219,117) sink=(239,127) bbox=[159,299]x[48,187]
+  scoped_ripup: detour cost 1540 (min 1086) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_45670' src=(206,106) sink=(248,97) bbox=[0,310]x[0,222]
+  cleanup progress: 61/63523 nets, routed=13, ripups=12, 745.7s, 0.08 nets/s
+  scoped_ripup: detour cost 1356 (min 955) accepted (applied=true)
+  cleanup progress: 67/63523 nets, routed=14, ripups=13, 805.8s, 0.08 nets/s
+  scoped_ripup: no detour at all (min_cost=1218 blockers=1), ripping up
+    reroute_from_scratch FAIL: net='net_96361' src=(210,93) sink=(129,73) bbox=[0,310]x[0,222]
+  scoped_ripup: detour cost 1251 (min 918) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1211 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_11615' src=(37,60) sink=(89,111) bbox=[0,287]x[0,222]
+  cleanup progress: 71/63523 nets, routed=15, ripups=14, 889.7s, 0.08 nets/s
+    reroute_from_scratch FAIL: net='net_73752' src=(225,107) sink=(243,100) bbox=[162,309]x[37,176]
+  scoped_ripup: detour cost 1561 (min 984) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_75551' src=(139,129) sink=(170,79) bbox=[0,310]x[0,222]
+  cleanup progress: 81/63523 nets, routed=15, ripups=14, 977.5s, 0.08 nets/s
+  scoped_ripup: detour cost 1132 (min 896) accepted (applied=true)
+  scoped_ripup: detour cost 1501 (min 1103) accepted (applied=true)
+  scoped_ripup: detour cost 1514 (min 1250) accepted (applied=true)
+  scoped_ripup: detour cost 1564 (min 1059) accepted (applied=true)
+  cleanup progress: 92/63523 nets, routed=19, ripups=18, 1047.3s, 0.09 nets/s
+  scoped_ripup: no detour at all (min_cost=1286 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_9583' src=(262,111) sink=(235,108) bbox=[154,310]x[25,194]
+  scoped_ripup: no detour at all (min_cost=1190 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_40025' src=(288,82) sink=(253,69) bbox=[108,310]x[0,222]
+  cleanup progress: 95/63523 nets, routed=19, ripups=18, 1128.8s, 0.08 nets/s
+  scoped_ripup: detour cost 1537 (min 1168) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1326 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_87954' src=(192,121) sink=(161,123) bbox=[20,310]x[0,222]
+  scoped_ripup: detour cost 1399 (min 1194) accepted (applied=true)
+  cleanup progress: 100/63523 nets, routed=21, ripups=20, 1206.0s, 0.08 nets/s
+  scoped_ripup: no detour at all (min_cost=1234 blockers=5), ripping up
+    reroute_from_scratch FAIL: net='net_53048' src=(80,114) sink=(125,128) bbox=[0,310]x[0,222]
+  scoped_ripup: detour cost 1577 (min 1256) accepted (applied=true)
+  cleanup progress: 103/63523 nets, routed=22, ripups=21, 1288.6s, 0.08 nets/s
+  scoped_ripup: no detour at all (min_cost=1122 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_61577' src=(214,119) sink=(203,126) bbox=[4,310]x[0,222]
+  cleanup progress: 107/63523 nets, routed=22, ripups=21, 1364.0s, 0.08 nets/s
+  scoped_ripup: detour cost 1064 (min 906) accepted (applied=true)
+  cleanup progress: 117/63523 nets, routed=23, ripups=22, 1424.3s, 0.08 nets/s
+  scoped_ripup: detour cost 1283 (min 1269) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1160 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_77700' src=(240,108) sink=(173,98) bbox=[0,310]x[0,222]
+  cleanup progress: 122/63523 nets, routed=24, ripups=23, 1490.0s, 0.08 nets/s
+  scoped_ripup: detour cost 1285 (min 1017) accepted (applied=true)
+  scoped_ripup: detour cost 1493 (min 1338) accepted (applied=true)
+  cleanup progress: 128/63523 nets, routed=26, ripups=25, 1556.2s, 0.08 nets/s
+  scoped_ripup: detour cost 1434 (min 1111) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1150 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_25615' src=(201,119) sink=(167,101) bbox=[0,310]x[0,222]
+  scoped_ripup: no detour at all (min_cost=1193 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_99125' src=(228,84) sink=(177,96) bbox=[24,310]x[0,222]
+  cleanup progress: 132/63523 nets, routed=27, ripups=26, 1627.1s, 0.08 nets/s
+    reroute_from_scratch FAIL: net='net_93925' src=(141,95) sink=(155,125) bbox=[0,310]x[0,222]
+  scoped_ripup: detour cost 1567 (min 1038) accepted (applied=false)
+    reroute_from_scratch FAIL: net='net_93925' src=(141,95) sink=(155,125) bbox=[0,310]x[0,222]
+  scoped_ripup: no detour at all (min_cost=1298 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_104738' src=(133,99) sink=(115,119) bbox=[0,310]x[0,222]
+  cleanup progress: 135/63523 nets, routed=27, ripups=26, 1696.5s, 0.08 nets/s
+  scoped_ripup: detour cost 1421 (min 1250) accepted (applied=true)
+  scoped_ripup: no detour at all (min_cost=1281 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_63122' src=(272,90) sink=(250,104) bbox=[75,310]x[0,222]
+  cleanup progress: 141/63523 nets, routed=28, ripups=27, 1762.3s, 0.08 nets/s
+  scoped_ripup: no detour at all (min_cost=1268 blockers=2), ripping up
+    reroute_from_scratch FAIL: net='net_124' src=(255,120) sink=(217,121) bbox=[0,310]x[0,222]
+  scoped_ripup: detour cost 1356 (min 1016) accepted (applied=true)
+  scoped_ripup: detour cost 1343 (min 1084) accepted (applied=true)
