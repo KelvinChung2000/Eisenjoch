@@ -748,9 +748,11 @@ fn raster_corridor(
 /// Weighted A* cost model: uniform pip cost (g = number of pips) and
 /// manhattan heuristic. The lookahead build measures ≈2.789 pips per tile of
 /// manhattan distance, so `H_WEIGHT = 2` was still admissible and searched
-/// near-optimally; 3 overestimates by ~7.5% (returned cost ≤ 1.08 × optimal),
-/// trading that slack for a narrower search.
-const H_WEIGHT: DelayT = 3;
+/// near-optimally. 5 is ~1.79× weighted, the knee of the 2026-08-26 FPGA01
+/// sweep (measurements/route_ab/fpga01_hweight{3,4,5,6}.log): pass-0 unrouted
+/// 41560 → 17010 and wall 1005s → 469s, with 6 regressing on both failure
+/// classes.
+const H_WEIGHT: DelayT = 5;
 
 struct RasterCostModel<'a> {
     net: NetId,
