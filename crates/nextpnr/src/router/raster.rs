@@ -1996,6 +1996,7 @@ fn plan_net_overuse(
     reserved: &FxHashMap<WireId, NetId>,
     present: f32,
     missed: &FxHashMap<(NetId, WireId), u8>,
+    escalate: bool,
     cfg: &RasterRouterCfg,
 ) -> (RoutePlan, Vec<WireId>) {
     let chipdb = ctx.chipdb();
@@ -2054,7 +2055,11 @@ fn plan_net_overuse(
             });
             continue;
         }
-        let level = missed.get(&(net, sink_wire)).copied().unwrap_or(0);
+        let level = if escalate {
+            missed.get(&(net, sink_wire)).copied().unwrap_or(0)
+        } else {
+            0
+        };
         let (sink_bbox, sink_limit) = if level > 0 {
             if wide_bbox.is_none() {
                 let bel_bbox = crate::metrics::compute_bbox(ctx, net, 0);
@@ -2127,6 +2132,11 @@ fn route_nets_overuse(
     let present0 = env_f32("NPNR_ROUTE_PRESENT", 0.5);
     let growth = env_f32("NPNR_ROUTE_PRESENT_GROWTH", 1.4);
     let hist_gain = env_f32("NPNR_ROUTE_HIST_GAIN", 1.0);
+    // Escalated retries only pay once contention is low enough for them to
+    // succeed: ungated, 40k escalated sinks retried expensively every
+    // mid-game pass and mostly failed (commit 7d4ee4b), 2.5x the wall for
+    // 20% of the missing.
+    let esc_gate = env_f32("NPNR_ROUTE_ESC_GATE", 1_500_000.0) as usize;
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2217,6 +2227,7 @@ fn route_nets_overuse(
     // (net, sink) -> consecutive misses; drives the escalated retry and is
     // cleared the pass the sink routes.
     let mut missed: FxHashMap<(NetId, WireId), u8> = FxHashMap::default();
+    let mut prev_overused = usize::MAX;
     let mut present = present0;
     let t_all = std::time::Instant::now();
 
@@ -2239,6 +2250,7 @@ fn route_nets_overuse(
             break;
         }
 
+        let escalate = prev_overused < esc_gate;
         let t_pass = std::time::Instant::now();
         let mut last_progress = t_pass;
         for (i, &net) in to_route.iter().enumerate() {
@@ -2261,14 +2273,28 @@ fn route_nets_overuse(
                 &reserved,
                 present,
                 &missed,
+                escalate,
                 cfg,
             );
             let idxs = plan_wire_indices(ctx, &wt, &plan);
             for &wi in &idxs {
                 occ[wi as usize] = occ[wi as usize].saturating_add(1);
             }
+            // Decay, not clear: a sink that recovered at an escalated budget
+            // reverts to the cheap cap next replan if its entry vanishes, and
+            // re-strands under the now-higher prices — the pass-4→5 sawtooth
+            // (26415→45325 missing) was exactly the recovered population.
             for sr in &plan.sink_routes {
-                missed.remove(&(net, sr.sink_wire));
+                if let std::collections::hash_map::Entry::Occupied(mut e) =
+                    missed.entry((net, sr.sink_wire))
+                {
+                    let l = *e.get();
+                    if l <= 1 {
+                        e.remove();
+                    } else {
+                        e.insert(l - 1);
+                    }
+                }
             }
             for &s in &missing_list {
                 let e = missed.entry((net, s)).or_insert(0);
@@ -2308,17 +2334,19 @@ fn route_nets_overuse(
         }
         let missing_total: usize = plans.values().map(|e| e.missing).sum();
         eprintln!(
-            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} present={:.2} {:.1}s (total {:.1}s)",
+            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} esc_on={} present={:.2} {:.1}s (total {:.1}s)",
             iter,
             to_route.len(),
             overused,
             max_occ,
             missing_total,
             missed.len(),
+            escalate,
             present,
             t_pass.elapsed().as_secs_f64(),
             t_all.elapsed().as_secs_f64(),
         );
+        prev_overused = overused;
         present *= growth;
 
         if overused == 0 && missing_total == 0 {
