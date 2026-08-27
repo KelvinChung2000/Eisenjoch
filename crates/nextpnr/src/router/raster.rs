@@ -1978,8 +1978,14 @@ fn route_sink_overuse(
 }
 
 /// Plan one net under congestion pricing. Same tree-growth shape as
-/// `route_net_raster`; returns the plan and how many sinks stayed missing
-/// (visit cap or per-net deadline), which keeps the net dirty next pass.
+/// `route_net_raster`; returns the plan and the sinks that stayed missing
+/// (visit cap or per-net deadline), which keep the net dirty next pass.
+///
+/// A sink in `missed` failed on an earlier pass: prices push its cheapest
+/// path past what the manhattan heuristic predicts, so the default cap and
+/// margin misreport it as unroutable. It retries with the cap doubled per
+/// consecutive miss (≤8×) inside the cleanup-proven `max(60, 3·span)` bbox,
+/// while every other sink keeps the cheap limits.
 fn plan_net_overuse(
     ctx: &Context,
     net: NetId,
@@ -1989,8 +1995,9 @@ fn plan_net_overuse(
     hist: &[f32],
     reserved: &FxHashMap<WireId, NetId>,
     present: f32,
+    missed: &FxHashMap<(NetId, WireId), u8>,
     cfg: &RasterRouterCfg,
-) -> (RoutePlan, usize) {
+) -> (RoutePlan, Vec<WireId>) {
     let chipdb = ctx.chipdb();
     let sink_wires = collect_sink_wires(ctx, net);
     if sink_wires.is_empty() {
@@ -2000,7 +2007,7 @@ fn plan_net_overuse(
                 source_wire,
                 sink_routes: Vec::new(),
             },
-            0,
+            Vec::new(),
         );
     }
 
@@ -2009,15 +2016,9 @@ fn plan_net_overuse(
     } else {
         None
     };
-    let model = OveruseCostModel {
-        net,
-        bbox: bbox.as_ref(),
-        wt,
-        occ,
-        hist,
-        reserved,
-        present,
-    };
+    // Built lazily: most nets have no escalated sink, and the wide bbox is
+    // only correct to reuse because it depends on the net, not the sink.
+    let mut wide_bbox: Option<BoundingBox> = None;
 
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
@@ -2040,9 +2041,11 @@ fn plan_net_overuse(
         + std::time::Duration::from_millis(2000 + n_sinks as u64 * 10);
 
     let mut sink_routes = Vec::new();
+    let mut missing: Vec<WireId> = Vec::new();
     for (sink_wire, _, _) in remaining_sinks {
         if std::time::Instant::now() > net_deadline {
-            break;
+            missing.push(sink_wire);
+            continue;
         }
         if tree_wires.contains(&sink_wire) {
             sink_routes.push(SinkRoute {
@@ -2051,7 +2054,34 @@ fn plan_net_overuse(
             });
             continue;
         }
-        match route_sink_overuse(ctx, &model, &tree_wires, sink_wire, cfg.sink_visit_limit) {
+        let level = missed.get(&(net, sink_wire)).copied().unwrap_or(0);
+        let (sink_bbox, sink_limit) = if level > 0 {
+            if wide_bbox.is_none() {
+                let bel_bbox = crate::metrics::compute_bbox(ctx, net, 0);
+                let span = (bel_bbox.x1 - bel_bbox.x0)
+                    .max(bel_bbox.y1 - bel_bbox.y0)
+                    .max(0);
+                let margin = EXPLORE_BBOX_MARGIN_MIN.max(span * EXPLORE_BBOX_SPAN_MULT);
+                wide_bbox = Some(crate::metrics::compute_bbox(ctx, net, margin));
+            }
+            (
+                wide_bbox.as_ref(),
+                cfg.sink_visit_limit
+                    .map(|v| v << level.min(3)),
+            )
+        } else {
+            (bbox.as_ref(), cfg.sink_visit_limit)
+        };
+        let model = OveruseCostModel {
+            net,
+            bbox: sink_bbox,
+            wt,
+            occ,
+            hist,
+            reserved,
+            present,
+        };
+        match route_sink_overuse(ctx, &model, &tree_wires, sink_wire, sink_limit) {
             Some(pips) => {
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
@@ -2063,11 +2093,10 @@ fn plan_net_overuse(
                 tree_wires.insert(sink_wire);
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }
-            None => continue,
+            None => missing.push(sink_wire),
         }
     }
 
-    let missing = n_sinks - sink_routes.len();
     (
         RoutePlan {
             net,
@@ -2185,6 +2214,9 @@ fn route_nets_overuse(
         missing: usize,
     }
     let mut plans: FxHashMap<NetId, PlanEntry> = FxHashMap::default();
+    // (net, sink) -> consecutive misses; drives the escalated retry and is
+    // cleared the pass the sink routes.
+    let mut missed: FxHashMap<(NetId, WireId), u8> = FxHashMap::default();
     let mut present = present0;
     let t_all = std::time::Instant::now();
 
@@ -2219,7 +2251,7 @@ fn route_nets_overuse(
                 Ok(Some(w)) => w,
                 _ => continue,
             };
-            let (plan, missing) = plan_net_overuse(
+            let (plan, missing_list) = plan_net_overuse(
                 ctx,
                 net,
                 source_wire,
@@ -2228,12 +2260,21 @@ fn route_nets_overuse(
                 &hist,
                 &reserved,
                 present,
+                &missed,
                 cfg,
             );
             let idxs = plan_wire_indices(ctx, &wt, &plan);
             for &wi in &idxs {
                 occ[wi as usize] = occ[wi as usize].saturating_add(1);
             }
+            for sr in &plan.sink_routes {
+                missed.remove(&(net, sr.sink_wire));
+            }
+            for &s in &missing_list {
+                let e = missed.entry((net, s)).or_insert(0);
+                *e = (*e + 1).min(8);
+            }
+            let missing = missing_list.len();
             plans.insert(net, PlanEntry { plan, idxs, missing });
             if cfg.verbose
                 && ((i + 1) % 5000 == 0
@@ -2267,12 +2308,13 @@ fn route_nets_overuse(
         }
         let missing_total: usize = plans.values().map(|e| e.missing).sum();
         eprintln!(
-            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} present={:.2} {:.1}s (total {:.1}s)",
+            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} present={:.2} {:.1}s (total {:.1}s)",
             iter,
             to_route.len(),
             overused,
             max_occ,
             missing_total,
+            missed.len(),
             present,
             t_pass.elapsed().as_secs_f64(),
             t_all.elapsed().as_secs_f64(),
