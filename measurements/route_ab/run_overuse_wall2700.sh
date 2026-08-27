@@ -1,0 +1,28 @@
+#!/bin/bash
+# Seventh over-use measurement: NEG_WALL=2700 fits the full arc that
+# 1800 could not (942cdfc measured cooldown-vs-escalation as either/or:
+# 14380 vs 14587). Expected: squeeze passes 0-4, escalation ~5 (missing
+# to ~7k), two cooldown deflation passes, commit on settled state.
+# Config otherwise identical to run_overuse_cooldown.sh.
+#
+#
+set -u
+cd /home/kelvin/side-project/eisenjoch
+BIN=/tmp/rap_overuse7
+OUT=measurements/route_ab
+
+export NPNR_ROUTE_CHIPDB=chip_database/xc7_large.bin
+export NPNR_ROUTE_DESIGN=benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+export NPNR_ROUTE_ITERS=50
+export NPNR_ROUTE_SINK_VISITS=30000
+export NPNR_ROUTE_OVERUSE=1
+export NPNR_ROUTE_NEG_WALL=2700
+
+OT_ENV="NPNR_OT_MAX_ITERS=11 NPNR_OT_STEINER=1 NPNR_OT_THREADS=24 \
+NPNR_OT_DET_SWEEP=1 NPNR_OT_DET_CHUNK=16384 NPNR_OT_BPR_CAP=1.2 \
+NPNR_OT_SWEEP=jacobi_bisect NPNR_OT_ANALYTIC_UNTIL=999 NPNR_OT_CACHE_NETMAP=1 \
+NPNR_OT_SKIP_PIPES=1 NPNR_OT_CACHE_NETINFO=1 NPNR_OT_DCD_ITERS=2"
+
+echo "=== overuse hscale run started $(date -Is) ==="
+env $OT_ENV NPNR_ROUTE_PLACER=opt_trans timeout 7200 $BIN > $OUT/fpga01_overuse_wall2700.log 2>&1
+echo "overuse hscale exit=$? $(date -Is)"
