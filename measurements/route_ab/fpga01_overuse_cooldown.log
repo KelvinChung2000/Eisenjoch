@@ -1,0 +1,555 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+placer: opt_trans, route_iters: 50
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T prepare_discrete: 0.2s
+  ALG_T collect_movable: 0.2s
+  ALG_T pre_network: 0.2s
+  BUILD_T tile_type_by_node: 0.0s
+  BUILD_T coarse_aggregate: 0.0s
+  Skipped truly-null coarse cells: 0 (of 69353 total); pruned pipes: src_null=0 dst_null=0
+  Pipe capacity by span:
+  Thin span-1 pipes (cap<=2): 0 total, by tile-type pair (top 20):
+  Pipe cost: span^0.50 model (r1=1), span-1=1.000, span-12=3.464, 2×span-6=4.899, 12×span-1=12.000
+  BUILD_T pipe_loop: 0.0s
+  BUILD_T grids_and_adjacency: 0.0s
+  BUILD_T tile_templates: 0.0s
+  ALG_T network: 0.20s
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+Coordinate descent mode: 76660 cells, scale 1.00
+CellValidityMask: 76660 cells, 311x223 grid, 2 bucket masks, per-cell valid positions: min=67346 avg=67346.0 max=67346, unmapped cells=0
+MuxSlotTracker: 76660 cells (76660 with external fanout), 67346 tiles, total_cap=1077536, active_buckets=[DFF,LUT6], built in 68.8ms
+MuxSlotTracker[post-seed]: populated_cells=27114, overflow_tiles=518, at_cap_tiles=50, peak_excess=41, capacity_hist={16:67346}
+DCD placer: 76660 cells, 69353 nodes, outer_iters=11, dcd_iters_per_cell=2, graph_model=TwoLevelPip
+MEM_STATIC: pipes=0MB nodes=1MB adjacency=0MB pipe_cost_vecs=0MB validity_mask=0MB n_pipes=0 n_edges=0 rss=935MB
+Softmin position update: enabled, theta 0.250 -> 5.000 (anneal over 11 iters)
+  ALG_T dcd_setup_done: 0.09s (pre-loop)
+    analytic_phase[outer=0]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=0 enter=pre_solve rss=974MB
+    rss_probe[outer=0]: pre_refresh_rss=974MB post_pre_solve_rss=994MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=0]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=188
+  Cell placement by tile type (iter 0, 76660 cells):
+    NULL: 31596
+    CLB: 27114
+    IOB_W: 15019
+    CLK_BUFG: 2320
+    BRAM: 351
+    DSP: 182
+    IOB_E: 78
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=0 enter=dcd_sweep rss=994MB
+PHASE_MARK outer=0 leave=dcd_sweep rss=994MB
+PHASE_MARK outer=0 enter=post_refresh rss=994MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=0]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=0]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=0]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=0]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=0]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=0]: pre_post_solve=1019MB post_post_solve=1019MB after_apply=1019MB
+MuxSlotTracker[sweep 0 LEAK]: populated_cells=45673, overflow_tiles=120, at_cap_tiles=276, peak_excess=14, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=1 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   0: nets=105117 line=14011245 energy=0.000 dE=+0.000 friction=0.0 bins=3.1x(535) excess=231.3 moved=37179 disp=inf solves=0 skip=0 pops=0 theta=0.250 refresh=25ms dcd=15ms total=106ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=1]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=1 enter=pre_solve rss=1020MB
+    rss_probe[outer=1]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=1]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=187
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=1 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=1 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=1 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=1]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=1]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=1]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=1]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=1]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=1]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 1 LEAK]: populated_cells=54836, overflow_tiles=13, at_cap_tiles=223, peak_excess=8, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=2 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   1: nets=105117 line=11706218 energy=0.000 dE=+0.000 friction=0.0 bins=2.2x(360) excess=111.3 moved=45968 disp=22.567 solves=0 skip=105117 pops=0 theta=0.337 refresh=3ms dcd=16ms total=42ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=2]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=2 enter=pre_solve rss=1020MB
+    rss_probe[outer=2]: pre_refresh_rss=1020MB post_pre_solve_rss=1020MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=2]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=182
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=2 enter=dcd_sweep rss=1020MB
+PHASE_MARK outer=2 leave=dcd_sweep rss=1020MB
+PHASE_MARK outer=2 enter=post_refresh rss=1020MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=2]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=2]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=2]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=2]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=2]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=2]: pre_post_solve=1020MB post_post_solve=1020MB after_apply=1020MB
+MuxSlotTracker[sweep 2 LEAK]: populated_cells=59763, overflow_tiles=3, at_cap_tiles=184, peak_excess=5, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=3 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   2: nets=105117 line=10245611 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(264) excess=82.2 moved=50690 disp=14.557 solves=0 skip=105117 pops=0 theta=0.455 refresh=3ms dcd=16ms total=44ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1020
+    analytic_phase[outer=3]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=3 enter=pre_solve rss=1021MB
+    rss_probe[outer=3]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=3]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=188
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=3 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=3 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=3 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=3]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=3]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=3]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=3]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=3]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=3]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+MuxSlotTracker[sweep 3 LEAK]: populated_cells=62775, overflow_tiles=2, at_cap_tiles=152, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=4 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   3: nets=105117 line=9226093 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(209) excess=65.5 moved=52463 disp=10.366 solves=0 skip=105117 pops=0 theta=0.614 refresh=2ms dcd=17ms total=42ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=4]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=4 enter=pre_solve rss=1021MB
+    rss_probe[outer=4]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=4]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=177
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=4 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=4 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=4 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=4]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=4]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=4]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=4]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=4]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=4]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+MuxSlotTracker[sweep 4 LEAK]: populated_cells=64842, overflow_tiles=1, at_cap_tiles=136, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=5 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   4: nets=105117 line=8480694 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(209) excess=68.1 moved=52625 disp=7.812 solves=0 skip=105117 pops=0 theta=0.829 refresh=3ms dcd=16ms total=41ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=5]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=5 enter=pre_solve rss=1021MB
+    rss_probe[outer=5]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=5]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=177
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=5 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=5 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=5 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=5]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=5]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=5]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=5]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=5]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=5]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+MuxSlotTracker[sweep 5 LEAK]: populated_cells=66377, overflow_tiles=1, at_cap_tiles=127, peak_excess=2, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=6 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   5: nets=105117 line=7898107 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(204) excess=65.4 moved=51917 disp=6.101 solves=0 skip=105117 pops=0 theta=1.118 refresh=2ms dcd=16ms total=39ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=6]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=6 enter=pre_solve rss=1021MB
+    rss_probe[outer=6]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=6]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=176
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=6 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=6 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=6 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=6]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=6]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=6]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=6]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=6]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=6]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+MuxSlotTracker[sweep 6 LEAK]: populated_cells=67522, overflow_tiles=1, at_cap_tiles=120, peak_excess=1, capacity_hist={16:67346}
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=7 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   6: nets=105117 line=7431027 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(206) excess=67.4 moved=50240 disp=4.839 solves=0 skip=105117 pops=0 theta=1.509 refresh=2ms dcd=15ms total=39ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=7]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=7 enter=pre_solve rss=1021MB
+    rss_probe[outer=7]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=7]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=172
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=7 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=7 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=7 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=7]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=7]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=7]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=7]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=7]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=7]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=8 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   7: nets=105117 line=7050020 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(242) excess=78.8 moved=48178 disp=3.987 solves=0 skip=105117 pops=0 theta=2.035 refresh=2ms dcd=16ms total=40ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=8]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=8 enter=pre_solve rss=1021MB
+    rss_probe[outer=8]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=8]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=177
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=8 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=8 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=8 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=8]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=8]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=8]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=8]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=8]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=8]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=9 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   8: nets=105117 line=6739916 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(270) excess=81.8 moved=45861 disp=3.277 solves=0 skip=105117 pops=0 theta=2.746 refresh=3ms dcd=15ms total=38ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=9]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=9 enter=pre_solve rss=1021MB
+    rss_probe[outer=9]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=9]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=172
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=9 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=9 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=9 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=9]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=9]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=9]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=9]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=9]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=9]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=10 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD   9: nets=105117 line=6499818 energy=0.000 dE=+0.000 friction=0.0 bins=1.9x(300) excess=88.4 moved=43290 disp=2.735 solves=0 skip=105117 pops=0 theta=3.706 refresh=3ms dcd=15ms total=38ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+    analytic_phase[outer=10]: solve skipped, k=0.33
+    SwitchMatrix: type_usage_pairs=0 lookups=0 hits=0 dijkstra_calls=0 avg_us=0.0 total_ms=0.0
+PHASE_MARK outer=10 enter=pre_solve rss=1021MB
+    rss_probe[outer=10]: pre_refresh_rss=1021MB post_pre_solve_rss=1021MB cache_entries=0 cache_cap=0 cache_est_mb=5
+    pre_solve_diag[outer=10]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=174
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=0 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+PHASE_MARK outer=10 enter=dcd_sweep rss=1021MB
+PHASE_MARK outer=10 leave=dcd_sweep rss=1021MB
+PHASE_MARK outer=10 enter=post_refresh rss=1021MB
+MEM_POOL: workspaces=24 dense_usage_mb=0 n_pipes=0
+    post_solve_diag[outer=10]: solves=0 cap_armed=0 (0.0%) settle_avg=0 above_sink_avg=0 (0.0%) settle_max=0
+    load_support[outer=10]: settle_avg=0 load_nz_avg=0 (0.0%) load_material_avg=0 (0.0%)
+    prune_ceiling[outer=10]: settle_avg=0 heuristic_prunable_avg=0 (0.0%) vs oracle_zero_load=0.0%
+    settle_hist[outer=10]: <100: 0nets/0.0%work  <1k: 0nets/0.0%work  <5k: 0nets/0.0%work  <20k: 0nets/0.0%work  <60k: 0nets/0.0%work  >=60k: 0nets/0.0%work
+    fanout_hist[outer=10]: fan1: 0nets/0.0%work  fan2-4: 0nets/0.0%work  fan5-16: 0nets/0.0%work  fan17-64: 0nets/0.0%work  fan65-256: 0nets/0.0%work  fan>256: 0nets/0.0%work
+    rss_probe[outer=10]: pre_post_solve=1021MB post_post_solve=1021MB after_apply=1021MB
+    E_decomp: base=0.0 eff=0.0 cong=0.0 cong_share=0.0% sat_pipes=0 max_util=0.00  R_buckets: 1-2x=0 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=0.0 history_total=-0.0
+    SpanCache: epoch=11 entries=0 lookups=0 hits=0 misses=0 hit_rate=0.0%
+  DCD  10: nets=105117 line=6285510 energy=0.000 dE=+0.000 friction=0.0 bins=2.0x(322) excess=98.8 moved=40676 disp=2.334 solves=0 skip=105117 pops=0 theta=5.000 refresh=3ms dcd=15ms total=41ms
+    cache_stats: entries=0 capacity=0 est_mb=5 rss_mb=1021
+DCD done: energy=0.000 line=6285510 friction=0.0 bins=2.0x(322) excess=98.8
+MuxSlotTracker: 150508 commit rejections over entire DCD
+MuxSlotTracker[post-DCD]: populated_cells=70572, overflow_tiles=0, at_cap_tiles=183, peak_excess=0, capacity_hist={16:67346}
+  ALG_T dcd_done: 0.96s
+  ALG_T collect_net_infos_total: 0.07s
+  ALG_T line_estimate_total: 0.07s
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=334045 shared_mux_rejects=1492917 arch_validity_rejects=0
+  ALG_T legalize_done: 1.39s
+PLACE_RESULT placer=opt_trans place_secs=1.39 total_hpwl=4520199
+routable nets: 105118
+sink_visit_limit: Some(30000)
+cleanup_visit_limit: None
+skip_cleanup: false
+inloop_ripup: false
+overuse: true
+RasterRouter[overuse]: 105118 nets, 135749180 wires, present=0.5 growth=1.4 hist_gain=1
+RasterRouter[overuse]: 459727 reserved pin wires (0 conflicts)
+  neg pass 0 progress: 5000/105117 nets, 12.2s, 408.87 nets/s  astar: reached=46319 pops/sink=755 at_limit=0 drained=0 pops/sink=0 at_limit=0 limited=0 pops/sink=0 at_limit=0
+  neg pass 0 progress: 10000/105117 nets, 20.1s, 498.27 nets/s  astar: reached=74970 pops/sink=772 at_limit=0 drained=0 pops/sink=0 at_limit=0 limited=0 pops/sink=0 at_limit=0
+  neg pass 0 progress: 15000/105117 nets, 26.4s, 567.13 nets/s  astar: reached=98098 pops/sink=789 at_limit=0 drained=0 pops/sink=0 at_limit=0 limited=0 pops/sink=0 at_limit=0
+  neg pass 0 progress: 20000/105117 nets, 32.3s, 619.09 nets/s  astar: reached=118096 pops/sink=807 at_limit=1 drained=0 pops/sink=0 at_limit=0 limited=2 pops/sink=30001 at_limit=2
+  neg pass 0 progress: 25000/105117 nets, 37.6s, 665.17 nets/s  astar: reached=134382 pops/sink=825 at_limit=3 drained=0 pops/sink=0 at_limit=0 limited=7 pops/sink=30001 at_limit=7
+  neg pass 0 progress: 30000/105117 nets, 43.1s, 696.66 nets/s  astar: reached=149376 pops/sink=853 at_limit=4 drained=0 pops/sink=0 at_limit=0 limited=13 pops/sink=30001 at_limit=13
+  neg pass 0 progress: 35000/105117 nets, 47.7s, 733.42 nets/s  astar: reached=164366 pops/sink=861 at_limit=7 drained=0 pops/sink=0 at_limit=0 limited=23 pops/sink=30001 at_limit=23
+  neg pass 0 progress: 40000/105117 nets, 51.7s, 774.13 nets/s  astar: reached=175053 pops/sink=873 at_limit=9 drained=0 pops/sink=0 at_limit=0 limited=32 pops/sink=30001 at_limit=32
+  neg pass 0 progress: 45000/105117 nets, 55.6s, 810.01 nets/s  astar: reached=185042 pops/sink=890 at_limit=20 drained=0 pops/sink=0 at_limit=0 limited=43 pops/sink=30001 at_limit=43
+  neg pass 0 progress: 50000/105117 nets, 60.4s, 828.41 nets/s  astar: reached=195007 pops/sink=918 at_limit=26 drained=0 pops/sink=0 at_limit=0 limited=78 pops/sink=30001 at_limit=78
+  neg pass 0 progress: 55000/105117 nets, 64.4s, 854.54 nets/s  astar: reached=204974 pops/sink=930 at_limit=40 drained=0 pops/sink=0 at_limit=0 limited=111 pops/sink=30001 at_limit=111
+  neg pass 0 progress: 60000/105117 nets, 68.5s, 876.31 nets/s  astar: reached=214942 pops/sink=945 at_limit=42 drained=0 pops/sink=0 at_limit=0 limited=143 pops/sink=30001 at_limit=143
+  neg pass 0 progress: 65000/105117 nets, 70.7s, 918.99 nets/s  astar: reached=221332 pops/sink=949 at_limit=46 drained=0 pops/sink=0 at_limit=0 limited=160 pops/sink=30001 at_limit=160
+  neg pass 0 progress: 70000/105117 nets, 72.8s, 961.14 nets/s  astar: reached=226312 pops/sink=956 at_limit=49 drained=0 pops/sink=0 at_limit=0 limited=180 pops/sink=30001 at_limit=180
+  neg pass 0 progress: 75000/105117 nets, 74.7s, 1003.36 nets/s  astar: reached=231291 pops/sink=960 at_limit=55 drained=0 pops/sink=0 at_limit=0 limited=201 pops/sink=30001 at_limit=201
+  neg pass 0 progress: 80000/105117 nets, 76.8s, 1041.62 nets/s  astar: reached=236264 pops/sink=966 at_limit=61 drained=0 pops/sink=0 at_limit=0 limited=228 pops/sink=30001 at_limit=228
+  neg pass 0 progress: 85000/105117 nets, 79.6s, 1068.47 nets/s  astar: reached=241230 pops/sink=979 at_limit=71 drained=0 pops/sink=0 at_limit=0 limited=262 pops/sink=30001 at_limit=262
+  neg pass 0 progress: 90000/105117 nets, 82.2s, 1094.78 nets/s  astar: reached=246194 pops/sink=988 at_limit=83 drained=0 pops/sink=0 at_limit=0 limited=298 pops/sink=30001 at_limit=298
+  neg pass 0 progress: 95000/105117 nets, 83.7s, 1135.09 nets/s  astar: reached=251181 pops/sink=986 at_limit=90 drained=0 pops/sink=0 at_limit=0 limited=311 pops/sink=30001 at_limit=311
+  neg pass 0 progress: 100000/105117 nets, 85.7s, 1166.88 nets/s  astar: reached=256155 pops/sink=989 at_limit=97 drained=0 pops/sink=0 at_limit=0 limited=337 pops/sink=30001 at_limit=337
+  neg pass 0 progress: 105000/105117 nets, 88.0s, 1193.78 nets/s  astar: reached=261134 pops/sink=996 at_limit=104 drained=0 pops/sink=0 at_limit=0 limited=358 pops/sink=30001 at_limit=358
+RasterRouter[overuse] pass 0: replanned=105117 overused_wires=4522848 max_occ=25 missing_sinks=359 escalated=359 esc_on=false present=0.50 88.2s (total 88.2s)
+  neg pass 1 progress: 5000/85362 nets, 54.9s, 91.05 nets/s  astar: reached=304241 pops/sink=1174 at_limit=330 drained=0 pops/sink=0 at_limit=0 limited=3687 pops/sink=30001 at_limit=3687
+  neg pass 1 progress: 10000/85362 nets, 88.6s, 112.91 nets/s  astar: reached=330768 pops/sink=1256 at_limit=446 drained=0 pops/sink=0 at_limit=0 limited=5809 pops/sink=30001 at_limit=5809
+  neg pass 1 progress: 15000/85362 nets, 115.8s, 129.49 nets/s  astar: reached=352229 pops/sink=1316 at_limit=558 drained=0 pops/sink=0 at_limit=0 limited=7464 pops/sink=30001 at_limit=7464
+  neg pass 1 progress: 20000/85362 nets, 139.3s, 143.60 nets/s  astar: reached=370749 pops/sink=1359 at_limit=660 drained=0 pops/sink=0 at_limit=0 limited=8944 pops/sink=30001 at_limit=8944
+  neg pass 1 progress: 25000/85362 nets, 157.1s, 159.09 nets/s  astar: reached=385918 pops/sink=1389 at_limit=713 drained=0 pops/sink=0 at_limit=0 limited=10006 pops/sink=30001 at_limit=10006
+  neg pass 1 progress: 30000/85362 nets, 176.9s, 169.59 nets/s  astar: reached=399600 pops/sink=1427 at_limit=798 drained=0 pops/sink=0 at_limit=0 limited=11324 pops/sink=30001 at_limit=11324
+  neg pass 1 progress: 35000/85362 nets, 190.6s, 183.61 nets/s  astar: reached=413886 pops/sink=1443 at_limit=854 drained=0 pops/sink=0 at_limit=0 limited=12038 pops/sink=30001 at_limit=12038
+  neg pass 1 progress: 40000/85362 nets, 201.4s, 198.66 nets/s  astar: reached=423637 pops/sink=1457 at_limit=909 drained=0 pops/sink=0 at_limit=0 limited=12633 pops/sink=30001 at_limit=12633
+  neg pass 1 progress: 45000/85362 nets, 212.4s, 211.83 nets/s  astar: reached=432988 pops/sink=1473 at_limit=959 drained=0 pops/sink=0 at_limit=0 limited=13282 pops/sink=30001 at_limit=13282
+  neg pass 1 progress: 50000/85362 nets, 226.8s, 220.44 nets/s  astar: reached=442078 pops/sink=1501 at_limit=1021 drained=0 pops/sink=0 at_limit=0 limited=14192 pops/sink=30001 at_limit=14192
+  neg pass 1 progress: 55000/85362 nets, 235.1s, 233.93 nets/s  astar: reached=451673 pops/sink=1505 at_limit=1061 drained=0 pops/sink=0 at_limit=0 limited=14597 pops/sink=30001 at_limit=14597
+  neg pass 1 progress: 60000/85362 nets, 245.9s, 244.04 nets/s  astar: reached=460385 pops/sink=1521 at_limit=1101 drained=0 pops/sink=0 at_limit=0 limited=15172 pops/sink=30001 at_limit=15172
+  neg pass 1 progress: 65000/85362 nets, 252.8s, 257.11 nets/s  astar: reached=464980 pops/sink=1533 at_limit=1127 drained=0 pops/sink=0 at_limit=0 limited=15577 pops/sink=30001 at_limit=15577
+  neg pass 1 progress: 70000/85362 nets, 259.9s, 269.32 nets/s  astar: reached=469582 pops/sink=1546 at_limit=1161 drained=0 pops/sink=0 at_limit=0 limited=15975 pops/sink=30001 at_limit=15975
+  neg pass 1 progress: 75000/85362 nets, 269.4s, 278.40 nets/s  astar: reached=474037 pops/sink=1565 at_limit=1208 drained=0 pops/sink=0 at_limit=0 limited=16520 pops/sink=30001 at_limit=16520
+  neg pass 1 progress: 80000/85362 nets, 274.2s, 291.71 nets/s  astar: reached=478813 pops/sink=1571 at_limit=1232 drained=0 pops/sink=0 at_limit=0 limited=16744 pops/sink=30001 at_limit=16744
+  neg pass 1 progress: 85000/85362 nets, 280.9s, 302.65 nets/s  astar: reached=483465 pops/sink=1584 at_limit=1258 drained=0 pops/sink=0 at_limit=0 limited=17092 pops/sink=30001 at_limit=17092
+RasterRouter[overuse] pass 1: replanned=85362 overused_wires=3796239 max_occ=12 missing_sinks=16749 escalated=16749 esc_on=false present=0.70 281.4s (total 369.6s)
+  neg pass 2 progress: 4678/84501 nets, 60.0s, 77.96 nets/s  astar: reached=524724 pops/sink=1676 at_limit=1516 drained=0 pops/sink=0 at_limit=0 limited=20260 pops/sink=30001 at_limit=20260
+  neg pass 2 progress: 5000/84501 nets, 62.3s, 80.27 nets/s  astar: reached=526852 pops/sink=1677 at_limit=1524 drained=0 pops/sink=0 at_limit=0 limited=20386 pops/sink=30001 at_limit=20386
+  neg pass 2 progress: 10000/84501 nets, 101.8s, 98.21 nets/s  astar: reached=553147 pops/sink=1725 at_limit=1721 drained=0 pops/sink=0 at_limit=0 limited=22736 pops/sink=30001 at_limit=22736
+  neg pass 2 progress: 15000/84501 nets, 133.7s, 112.21 nets/s  astar: reached=574339 pops/sink=1761 at_limit=1874 drained=0 pops/sink=0 at_limit=0 limited=24653 pops/sink=30001 at_limit=24653
+  neg pass 2 progress: 20000/84501 nets, 161.0s, 124.22 nets/s  astar: reached=592659 pops/sink=1788 at_limit=2021 drained=0 pops/sink=0 at_limit=0 limited=26333 pops/sink=30001 at_limit=26333
+  neg pass 2 progress: 25000/84501 nets, 182.2s, 137.18 nets/s  astar: reached=607687 pops/sink=1807 at_limit=2109 drained=0 pops/sink=0 at_limit=0 limited=27506 pops/sink=30001 at_limit=27506
+  neg pass 2 progress: 30000/84501 nets, 205.4s, 146.09 nets/s  astar: reached=621235 pops/sink=1834 at_limit=2224 drained=0 pops/sink=0 at_limit=0 limited=28958 pops/sink=30001 at_limit=28958
+  neg pass 2 progress: 35000/84501 nets, 221.0s, 158.41 nets/s  astar: reached=635409 pops/sink=1843 at_limit=2289 drained=0 pops/sink=0 at_limit=0 limited=29784 pops/sink=30001 at_limit=29784
+  neg pass 2 progress: 40000/84501 nets, 233.5s, 171.31 nets/s  astar: reached=644964 pops/sink=1852 at_limit=2351 drained=0 pops/sink=0 at_limit=0 limited=30455 pops/sink=30001 at_limit=30455
+  neg pass 2 progress: 45000/84501 nets, 246.4s, 182.63 nets/s  astar: reached=654222 pops/sink=1863 at_limit=2433 drained=0 pops/sink=0 at_limit=0 limited=31197 pops/sink=30001 at_limit=31197
+  neg pass 2 progress: 50000/84501 nets, 263.4s, 189.84 nets/s  astar: reached=663210 pops/sink=1885 at_limit=2512 drained=0 pops/sink=0 at_limit=0 limited=32209 pops/sink=30001 at_limit=32209
+  neg pass 2 progress: 55000/84501 nets, 272.0s, 202.22 nets/s  astar: reached=672793 pops/sink=1886 at_limit=2544 drained=0 pops/sink=0 at_limit=0 limited=32626 pops/sink=30001 at_limit=32626
+  neg pass 2 progress: 60000/84501 nets, 284.3s, 211.03 nets/s  astar: reached=681040 pops/sink=1900 at_limit=2604 drained=0 pops/sink=0 at_limit=0 limited=33259 pops/sink=30001 at_limit=33259
+  neg pass 2 progress: 65000/84501 nets, 292.5s, 222.19 nets/s  astar: reached=685557 pops/sink=1909 at_limit=2651 drained=0 pops/sink=0 at_limit=0 limited=33742 pops/sink=30001 at_limit=33742
+  neg pass 2 progress: 70000/84501 nets, 300.9s, 232.65 nets/s  astar: reached=690090 pops/sink=1919 at_limit=2689 drained=0 pops/sink=0 at_limit=0 limited=34209 pops/sink=30001 at_limit=34209
+  neg pass 2 progress: 75000/84501 nets, 311.4s, 240.84 nets/s  astar: reached=694441 pops/sink=1934 at_limit=2737 drained=0 pops/sink=0 at_limit=0 limited=34858 pops/sink=30001 at_limit=34858
+  neg pass 2 progress: 80000/84501 nets, 316.7s, 252.63 nets/s  astar: reached=699193 pops/sink=1937 at_limit=2765 drained=0 pops/sink=0 at_limit=0 limited=35106 pops/sink=30001 at_limit=35106
+RasterRouter[overuse] pass 2: replanned=84501 overused_wires=3648062 max_occ=9 missing_sinks=18391 escalated=18393 esc_on=false present=0.98 324.2s (total 693.9s)
+  neg pass 3 progress: 3015/84019 nets, 60.0s, 50.25 nets/s  astar: reached=731184 pops/sink=2005 at_limit=3107 drained=0 pops/sink=0 at_limit=0 limited=39482 pops/sink=30001 at_limit=39482
+  neg pass 3 progress: 5000/84019 nets, 87.2s, 57.37 nets/s  astar: reached=743746 pops/sink=2027 at_limit=3243 drained=0 pops/sink=0 at_limit=0 limited=41373 pops/sink=30001 at_limit=41373
+  neg pass 3 progress: 10000/84019 nets, 136.6s, 73.20 nets/s  astar: reached=769038 pops/sink=2066 at_limit=3467 drained=0 pops/sink=0 at_limit=0 limited=44726 pops/sink=30001 at_limit=44726
+  neg pass 3 progress: 15000/84019 nets, 176.1s, 85.18 nets/s  astar: reached=789592 pops/sink=2097 at_limit=3674 drained=0 pops/sink=0 at_limit=0 limited=47274 pops/sink=30001 at_limit=47274
+  neg pass 3 progress: 20000/84019 nets, 208.6s, 95.86 nets/s  astar: reached=807381 pops/sink=2118 at_limit=3833 drained=0 pops/sink=0 at_limit=0 limited=49485 pops/sink=30001 at_limit=49485
+  neg pass 3 progress: 25000/84019 nets, 233.9s, 106.89 nets/s  astar: reached=821971 pops/sink=2135 at_limit=3975 drained=0 pops/sink=0 at_limit=0 limited=51083 pops/sink=30001 at_limit=51083
+  neg pass 3 progress: 30000/84019 nets, 261.8s, 114.61 nets/s  astar: reached=835052 pops/sink=2156 at_limit=4126 drained=0 pops/sink=0 at_limit=0 limited=53002 pops/sink=30001 at_limit=53002
+  neg pass 3 progress: 35000/84019 nets, 281.4s, 124.38 nets/s  astar: reached=848917 pops/sink=2166 at_limit=4238 drained=0 pops/sink=0 at_limit=0 limited=54137 pops/sink=30001 at_limit=54137
+  neg pass 3 progress: 40000/84019 nets, 296.6s, 134.86 nets/s  astar: reached=858245 pops/sink=2174 at_limit=4326 drained=0 pops/sink=0 at_limit=0 limited=55028 pops/sink=30001 at_limit=55028
+  neg pass 3 progress: 45000/84019 nets, 311.7s, 144.37 nets/s  astar: reached=867280 pops/sink=2184 at_limit=4408 drained=0 pops/sink=0 at_limit=0 limited=55993 pops/sink=30001 at_limit=55993
+  neg pass 3 progress: 50000/84019 nets, 332.0s, 150.60 nets/s  astar: reached=875956 pops/sink=2202 at_limit=4535 drained=0 pops/sink=0 at_limit=0 limited=57317 pops/sink=30001 at_limit=57317
+  neg pass 3 progress: 55000/84019 nets, 343.2s, 160.26 nets/s  astar: reached=885405 pops/sink=2205 at_limit=4600 drained=0 pops/sink=0 at_limit=0 limited=57868 pops/sink=30001 at_limit=57868
+  neg pass 3 progress: 60000/84019 nets, 357.2s, 167.97 nets/s  astar: reached=893307 pops/sink=2217 at_limit=4676 drained=0 pops/sink=0 at_limit=0 limited=58682 pops/sink=30001 at_limit=58682
+  neg pass 3 progress: 65000/84019 nets, 367.8s, 176.72 nets/s  astar: reached=897687 pops/sink=2226 at_limit=4725 drained=0 pops/sink=0 at_limit=0 limited=59302 pops/sink=30001 at_limit=59302
+  neg pass 3 progress: 70000/84019 nets, 377.8s, 185.27 nets/s  astar: reached=902068 pops/sink=2236 at_limit=4789 drained=0 pops/sink=0 at_limit=0 limited=59921 pops/sink=30001 at_limit=59921
+  neg pass 3 progress: 75000/84019 nets, 389.1s, 192.74 nets/s  astar: reached=906333 pops/sink=2247 at_limit=4847 drained=0 pops/sink=0 at_limit=0 limited=60656 pops/sink=30001 at_limit=60656
+  neg pass 3 progress: 80000/84019 nets, 395.8s, 202.14 nets/s  astar: reached=911020 pops/sink=2252 at_limit=4889 drained=0 pops/sink=0 at_limit=0 limited=60969 pops/sink=30001 at_limit=60969
+RasterRouter[overuse] pass 3: replanned=84019 overused_wires=1573172 max_occ=9 missing_sinks=25930 escalated=27113 esc_on=false present=1.37 403.4s (total 1097.3s)
+  neg pass 4 progress: 2543/71432 nets, 60.0s, 42.38 nets/s  astar: reached=938102 pops/sink=2282 at_limit=5139 drained=0 pops/sink=0 at_limit=0 limited=65992 pops/sink=30001 at_limit=65992
+  neg pass 4 progress: 5000/71432 nets, 96.9s, 51.62 nets/s  astar: reached=953507 pops/sink=2295 at_limit=5267 drained=0 pops/sink=0 at_limit=0 limited=68803 pops/sink=30001 at_limit=68803
+  neg pass 4 progress: 10000/71432 nets, 149.2s, 67.04 nets/s  astar: reached=978124 pops/sink=2311 at_limit=5462 drained=0 pops/sink=0 at_limit=0 limited=72721 pops/sink=30001 at_limit=72721
+  neg pass 4 progress: 15000/71432 nets, 189.9s, 78.97 nets/s  astar: reached=998050 pops/sink=2326 at_limit=5643 drained=0 pops/sink=0 at_limit=0 limited=75680 pops/sink=30001 at_limit=75680
+  neg pass 4 progress: 20000/71432 nets, 224.2s, 89.21 nets/s  astar: reached=1015616 pops/sink=2338 at_limit=5787 drained=0 pops/sink=0 at_limit=0 limited=78114 pops/sink=30001 at_limit=78114
+  neg pass 4 progress: 25000/71432 nets, 249.8s, 100.10 nets/s  astar: reached=1029394 pops/sink=2346 at_limit=5908 drained=0 pops/sink=0 at_limit=0 limited=79842 pops/sink=30001 at_limit=79842
+  neg pass 4 progress: 30000/71432 nets, 276.0s, 108.70 nets/s  astar: reached=1042564 pops/sink=2357 at_limit=6027 drained=0 pops/sink=0 at_limit=0 limited=81672 pops/sink=30001 at_limit=81672
+  neg pass 4 progress: 35000/71432 nets, 296.6s, 118.02 nets/s  astar: reached=1054376 pops/sink=2364 at_limit=6136 drained=0 pops/sink=0 at_limit=0 limited=82940 pops/sink=30001 at_limit=82940
+  neg pass 4 progress: 40000/71432 nets, 315.0s, 126.98 nets/s  astar: reached=1063153 pops/sink=2373 at_limit=6247 drained=0 pops/sink=0 at_limit=0 limited=84163 pops/sink=30001 at_limit=84163
+  neg pass 4 progress: 45000/71432 nets, 336.0s, 133.93 nets/s  astar: reached=1071726 pops/sink=2386 at_limit=6367 drained=0 pops/sink=0 at_limit=0 limited=85590 pops/sink=30001 at_limit=85590
+  neg pass 4 progress: 50000/71432 nets, 348.9s, 143.30 nets/s  astar: reached=1081010 pops/sink=2388 at_limit=6417 drained=0 pops/sink=0 at_limit=0 limited=86306 pops/sink=30001 at_limit=86306
+  neg pass 4 progress: 55000/71432 nets, 364.6s, 150.86 nets/s  astar: reached=1087573 pops/sink=2398 at_limit=6495 drained=0 pops/sink=0 at_limit=0 limited=87258 pops/sink=30001 at_limit=87258
+  neg pass 4 progress: 60000/71432 nets, 376.4s, 159.41 nets/s  astar: reached=1091806 pops/sink=2408 at_limit=6558 drained=0 pops/sink=0 at_limit=0 limited=88025 pops/sink=30001 at_limit=88025
+  neg pass 4 progress: 65000/71432 nets, 389.5s, 166.88 nets/s  astar: reached=1095946 pops/sink=2418 at_limit=6629 drained=0 pops/sink=0 at_limit=0 limited=88885 pops/sink=30001 at_limit=88885
+  neg pass 4 progress: 70000/71432 nets, 398.9s, 175.50 nets/s  astar: reached=1100442 pops/sink=2425 at_limit=6686 drained=0 pops/sink=0 at_limit=0 limited=89389 pops/sink=30001 at_limit=89389
+RasterRouter[overuse] pass 4: replanned=71432 overused_wires=1234504 max_occ=5 missing_sinks=28147 escalated=29156 esc_on=false present=1.92 402.2s (total 1499.5s)
+RasterRouter[overuse]: 300s wall left, escalation cooling down for commit
+  neg pass 5 progress: 3759/69292 nets, 60.0s, 62.65 nets/s  astar: reached=1136153 pops/sink=2444 at_limit=6930 drained=0 pops/sink=0 at_limit=0 limited=92716 pops/sink=30001 at_limit=92716
+  neg pass 5 progress: 5000/69292 nets, 74.1s, 67.51 nets/s  astar: reached=1144009 pops/sink=2448 at_limit=6993 drained=0 pops/sink=0 at_limit=0 limited=93547 pops/sink=30001 at_limit=93547
+  neg pass 5 progress: 10000/69292 nets, 117.2s, 85.35 nets/s  astar: reached=1170077 pops/sink=2457 at_limit=7197 drained=0 pops/sink=0 at_limit=0 limited=95951 pops/sink=30001 at_limit=95951
+  neg pass 5 progress: 15000/69292 nets, 151.6s, 98.95 nets/s  astar: reached=1190943 pops/sink=2466 at_limit=7339 drained=0 pops/sink=0 at_limit=0 limited=97885 pops/sink=30001 at_limit=97885
+  neg pass 5 progress: 20000/69292 nets, 180.7s, 110.68 nets/s  astar: reached=1209246 pops/sink=2471 at_limit=7454 drained=0 pops/sink=0 at_limit=0 limited=99582 pops/sink=30001 at_limit=99582
+  neg pass 5 progress: 25000/69292 nets, 202.5s, 123.48 nets/s  astar: reached=1223334 pops/sink=2476 at_limit=7559 drained=0 pops/sink=0 at_limit=0 limited=100792 pops/sink=30001 at_limit=100792
+  neg pass 5 progress: 30000/69292 nets, 225.1s, 133.25 nets/s  astar: reached=1237034 pops/sink=2483 at_limit=7667 drained=0 pops/sink=0 at_limit=0 limited=102092 pops/sink=30001 at_limit=102092
+  neg pass 5 progress: 35000/69292 nets, 242.9s, 144.07 nets/s  astar: reached=1248630 pops/sink=2487 at_limit=7743 drained=0 pops/sink=0 at_limit=0 limited=103065 pops/sink=30001 at_limit=103065
+  neg pass 5 progress: 40000/69292 nets, 259.3s, 154.25 nets/s  astar: reached=1257669 pops/sink=2493 at_limit=7826 drained=0 pops/sink=0 at_limit=0 limited=104026 pops/sink=30001 at_limit=104026
+  neg pass 5 progress: 45000/69292 nets, 277.2s, 162.31 nets/s  astar: reached=1266621 pops/sink=2501 at_limit=7905 drained=0 pops/sink=0 at_limit=0 limited=105074 pops/sink=30001 at_limit=105074
+  neg pass 5 progress: 50000/69292 nets, 289.6s, 172.67 nets/s  astar: reached=1275987 pops/sink=2504 at_limit=7966 drained=0 pops/sink=0 at_limit=0 limited=105708 pops/sink=30001 at_limit=105708
+  neg pass 5 progress: 55000/69292 nets, 302.9s, 181.59 nets/s  astar: reached=1281518 pops/sink=2511 at_limit=8034 drained=0 pops/sink=0 at_limit=0 limited=106463 pops/sink=30001 at_limit=106463
+  neg pass 5 progress: 60000/69292 nets, 314.2s, 190.96 nets/s  astar: reached=1285785 pops/sink=2518 at_limit=8084 drained=0 pops/sink=0 at_limit=0 limited=107196 pops/sink=30001 at_limit=107196
+  neg pass 5 progress: 65000/69292 nets, 324.0s, 200.63 nets/s  astar: reached=1290201 pops/sink=2523 at_limit=8128 drained=0 pops/sink=0 at_limit=0 limited=107780 pops/sink=30001 at_limit=107780
+RasterRouter[overuse] pass 5: replanned=69292 overused_wires=1030382 max_occ=6 missing_sinks=18694 escalated=25278 esc_on=false present=2.69 332.5s (total 1832.1s)
+RasterRouter[overuse]: negotiation wall budget spent at pass 6, committing
+RasterRouter[overuse]: committed=71150 (3197 partial) conflicts=29865 1834.7s total
+RasterRouter[overuse]: 37165 nets to the exclusive finisher
+RasterRouter: 37165 nets on 311x223, beam_width=128, max_steps=1000
+RasterRouter: pre-reserved 261025 BEL-pin wires (0 conflicts)
+Lookahead pip-cost model: cost = 11*sqrt(span) + orig_delay/span
+Lookahead class 0 (LUT6): 8085 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 1 (DFF): 8365 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 2 (IOB): 8877 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 3 (GND_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 4 (VCC_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 5 (RAMB18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 6 (FIFO18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 7 (RAMBFIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 8 (RAMB36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 9 (FIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 10 (BUFG): 8661 reachable pips, rate = 159/209 ≈ 0.761/tile
+Lookahead class 11 (DSP48E1): 16919 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead: 12 driver classes, default=10 (BUFG)
+  priority top-5 (score, fanout): [(9300000.0, 93000), (2900.0, 29), (2800.0, 28), (2800.0, 28), (2600.0, 26)]
+  raster_fail #0: net='net_77835' src=(308,79) sink=(277,79) dist=31 tree=101
+  raster_fail #1: net='net_5184' src=(209,81) sink=(209,82) dist=1 tree=1
+  raster_fail #2: net='net_74239' src=(307,188) sink=(305,147) dist=43 tree=176
+  raster_fail #3: net='net_11388' src=(104,102) sink=(181,111) dist=86 tree=571
+  raster_fail #4: net='net_77788' src=(233,129) sink=(194,114) dist=54 tree=122
+  raster_fail #5: net='net_1574' src=(183,142) sink=(182,114) dist=29 tree=87
+  raster_fail #6: net='net_41824' src=(102,88) sink=(249,90) dist=149 tree=103
+  raster_fail #7: net='net_74238' src=(308,128) sink=(307,144) dist=17 tree=49
+  high-fanout: 56/57 routed sequentially
+  raster_fail #8: net='net_56984' src=(79,104) sink=(66,104) dist=13 tree=25
+  raster_fail #9: net='net_87346' src=(295,174) sink=(242,109) dist=118 tree=508
+  raster_fail #10: net='net_25404' src=(236,118) sink=(142,114) dist=98 tree=618
+  raster_fail #11: net='net_77762' src=(290,130) sink=(283,123) dist=14 tree=37
+  raster_fail #12: net='net_77806' src=(231,141) sink=(246,120) dist=36 tree=281
+  raster_fail #13: net='net_52648' src=(308,133) sink=(308,88) dist=45 tree=197
+  raster_fail #14: net='net_31790' src=(45,127) sink=(222,128) dist=178 tree=1
+  raster_fail #15: net='net_77751' src=(308,193) sink=(258,126) dist=117 tree=551
+  raster_fail #16: net='net_30142' src=(201,96) sink=(187,100) dist=18 tree=174
+  raster_fail #17: net='net_29711' src=(189,119) sink=(189,117) dist=2 tree=9
+  raster_fail #18: net='net_36663' src=(218,97) sink=(218,97) dist=0 tree=8
+  raster_fail #19: net='net_95109' src=(219,117) sink=(231,103) dist=26 tree=194
+  raster_fail #20: net='net_31703' src=(283,194) sink=(240,133) dist=104 tree=328
+  raster_fail #21: net='net_37087' src=(306,196) sink=(307,139) dist=58 tree=174
+  raster_fail #22: net='net_40580' src=(261,86) sink=(261,86) dist=0 tree=2
+  raster_fail #23: net='net_40580' src=(261,86) sink=(262,124) dist=39 tree=156
+  raster_fail #24: net='net_44209' src=(204,107) sink=(183,108) dist=22 tree=18
+  raster_fail #25: net='net_65469' src=(304,124) sink=(303,139) dist=16 tree=103
+  raster_fail #26: net='net_31323' src=(163,124) sink=(163,105) dist=19 tree=88
+  raster_fail #27: net='net_31323' src=(163,124) sink=(141,106) dist=40 tree=173
+  raster_fail #28: net='net_104531' src=(236,106) sink=(270,97) dist=43 tree=280
+  raster_fail #29: net='net_75026' src=(275,101) sink=(178,105) dist=101 tree=519
+  raster_fail #30: net='net_33876' src=(129,106) sink=(124,106) dist=5 tree=2
+  raster_fail #31: net='net_77725' src=(300,217) sink=(305,12) dist=210 tree=794
+  raster_fail #32: net='net_11358' src=(125,119) sink=(153,112) dist=35 tree=1
+  raster_fail #33: net='net_63094' src=(269,102) sink=(269,108) dist=6 tree=1
+  raster_fail #34: net='net_52427' src=(299,118) sink=(279,121) dist=23 tree=122
+  raster_fail #35: net='net_32162' src=(255,130) sink=(216,109) dist=60 tree=417
+  raster_fail #36: net='net_11439' src=(307,116) sink=(187,83) dist=153 tree=738
+  raster_fail #37: net='net_41588' src=(246,111) sink=(246,111) dist=0 tree=1
+  raster_fail #38: net='net_31556' src=(159,112) sink=(159,109) dist=3 tree=1
+  raster_fail #39: net='net_60377' src=(266,107) sink=(266,127) dist=20 tree=238
+  raster_fail #40: net='net_74484' src=(290,22) sink=(306,19) dist=19 tree=106
+  raster_fail #41: net='net_5582' src=(271,111) sink=(271,120) dist=9 tree=136
+  raster_fail #42: net='net_102575' src=(171,114) sink=(214,116) dist=45 tree=225
+  raster_fail #43: net='net_71875' src=(199,8) sink=(199,1) dist=7 tree=11
+  raster_fail #44: net='net_52593' src=(159,118) sink=(238,113) dist=84 tree=453
+  raster_fail #45: net='net_70093' src=(308,118) sink=(307,117) dist=2 tree=11
+  raster_fail #46: net='net_91995' src=(146,105) sink=(123,100) dist=28 tree=187
+  raster_fail #47: net='net_32161' src=(115,107) sink=(134,98) dist=28 tree=1
+  raster_fail #48: net='net_43783' src=(143,87) sink=(162,102) dist=34 tree=1
+  raster_fail #49: net='net_65837' src=(306,207) sink=(285,148) dist=80 tree=55
+  raster_fail #50: net='net_12840' src=(105,85) sink=(105,86) dist=1 tree=1
+  raster_fail #51: net='net_1967' src=(174,111) sink=(216,127) dist=58 tree=624
+  raster_fail #52: net='net_63578' src=(128,124) sink=(200,114) dist=82 tree=1
+  raster_fail #53: net='net_63578' src=(128,124) sink=(207,114) dist=89 tree=409
+  raster_fail #54: net='net_95502' src=(180,111) sink=(155,112) dist=26 tree=1
+  raster_fail #55: net='net_56274' src=(242,92) sink=(242,101) dist=9 tree=49
+  raster_fail #56: net='net_67249' src=(307,50) sink=(307,100) dist=50 tree=51
+  raster_fail #57: net='net_31633' src=(202,126) sink=(213,118) dist=19 tree=243
+  raster_fail #58: net='net_8916' src=(242,104) sink=(243,101) dist=4 tree=35
+  raster_fail #59: net='net_45266' src=(189,107) sink=(215,106) dist=27 tree=119
+  raster_fail #60: net='net_72326' src=(307,187) sink=(306,183) dist=5 tree=35
+  raster_fail #61: net='net_104661' src=(175,118) sink=(222,118) dist=47 tree=1
+  raster_fail #62: net='net_41029' src=(303,143) sink=(295,125) dist=26 tree=134
+  raster_fail #63: net='net_56800' src=(277,109) sink=(294,112) dist=20 tree=144
+  raster_fail #64: net='net_75397' src=(130,109) sink=(249,106) dist=122 tree=600
+  raster_fail #65: net='net_52792' src=(308,19) sink=(275,99) dist=113 tree=1
+  raster_fail #66: net='net_36780' src=(288,154) sink=(293,154) dist=5 tree=1
+  raster_fail #67: net='net_73047' src=(306,41) sink=(307,70) dist=30 tree=64
+  raster_fail #68: net='net_87339' src=(117,56) sink=(181,103) dist=111 tree=559
+  raster_fail #69: net='net_52421' src=(296,7) sink=(284,109) dist=114 tree=246
+  raster_fail #70: net='net_98458' src=(223,98) sink=(251,70) dist=56 tree=402
+  raster_fail #71: net='net_31477' src=(170,111) sink=(170,116) dist=5 tree=1
+  raster_fail #72: net='net_52863' src=(306,160) sink=(303,124) dist=39 tree=1
+  raster_fail #73: net='net_62173' src=(253,114) sink=(254,114) dist=1 tree=18
+  raster_fail #74: net='net_51846' src=(34,112) sink=(104,110) dist=72 tree=424
+  raster_fail #75: net='net_52977' src=(280,110) sink=(96,111) dist=185 tree=538
+  raster_fail #76: net='net_31903' src=(307,39) sink=(308,38) dist=2 tree=17
+  raster_fail #77: net='net_31903' src=(307,39) sink=(304,86) dist=50 tree=155
+  raster_fail #78: net='net_4802' src=(306,101) sink=(303,116) dist=18 tree=81
+  raster_fail #79: net='net_75761' src=(298,220) sink=(308,77) dist=153 tree=201
+  raster_fail #80: net='net_25938' src=(87,106) sink=(114,105) dist=28 tree=35
+  raster_fail #81: net='net_77151' src=(303,9) sink=(307,11) dist=6 tree=59
+  raster_fail #82: net='net_28100' src=(200,138) sink=(119,111) dist=108 tree=146
+  raster_fail #83: net='net_28100' src=(200,138) sink=(100,111) dist=127 tree=146
+  raster_fail #84: net='net_100863' src=(186,102) sink=(134,113) dist=63 tree=103
+  raster_fail #85: net='net_61826' src=(167,111) sink=(163,111) dist=4 tree=75
+  raster_fail #86: net='net_63557' src=(236,97) sink=(236,94) dist=3 tree=1
+  raster_fail #87: net='net_31752' src=(235,101) sink=(237,105) dist=6 tree=17
+  raster_fail #88: net='net_82656' src=(305,16) sink=(308,49) dist=36 tree=119
+  raster_fail #89: net='net_76362' src=(300,219) sink=(303,214) dist=8 tree=55
+  raster_fail #90: net='net_30834' src=(217,110) sink=(227,119) dist=19 tree=82
+  raster_fail #91: net='net_43876' src=(217,139) sink=(217,138) dist=1 tree=2
+  raster_fail #92: net='net_47227' src=(284,172) sink=(266,127) dist=63 tree=168
+  raster_fail #93: net='net_25925' src=(224,115) sink=(224,110) dist=5 tree=1
+  raster_fail #94: net='net_22324' src=(223,74) sink=(134,126) dist=141 tree=592
+  raster_fail #95: net='net_22324' src=(223,74) sink=(130,123) dist=142 tree=592
+  raster_fail #96: net='net_98819' src=(308,105) sink=(308,18) dist=87 tree=94
+  raster_fail #97: net='net_6273' src=(100,95) sink=(98,62) dist=35 tree=193
+  raster_fail #98: net='net_29628' src=(105,114) sink=(204,113) dist=100 tree=474
+  raster_fail #99: net='net_40544' src=(285,195) sink=(144,112) dist=224 tree=499
+  pass 0 progress: 5000/37108 lf nets, routed=5025, failed=32, 55.0s, 90.99 nets/s  astar: reached=1336798 pops/sink=2500 at_limit=8248 drained=0 pops/sink=0 at_limit=0 limited=109655 pops/sink=30001 at_limit=109655
+  pass 0 progress: 8725/37108 lf nets, routed=8635, failed=147, 115.0s, 75.88 nets/s  astar: reached=1354269 pops/sink=2503 at_limit=8388 drained=0 pops/sink=0 at_limit=0 limited=112033 pops/sink=30001 at_limit=112033
+  pass 0 progress: 10000/37108 lf nets, routed=9840, failed=217, 137.3s, 72.86 nets/s  astar: reached=1358978 pops/sink=2506 at_limit=8440 drained=0 pops/sink=0 at_limit=0 limited=112996 pops/sink=30001 at_limit=112996
+  pass 0 progress: 13581/37108 lf nets, routed=13179, failed=459, 197.3s, 68.85 nets/s  astar: reached=1370569 pops/sink=2514 at_limit=8567 drained=0 pops/sink=0 at_limit=0 limited=115729 pops/sink=30001 at_limit=115729
+  pass 0 progress: 15000/37108 lf nets, routed=14461, failed=596, 218.8s, 68.57 nets/s  astar: reached=1374179 pops/sink=2518 at_limit=8621 drained=0 pops/sink=0 at_limit=0 limited=116693 pops/sink=30001 at_limit=116693
+  pass 0 progress: 18975/37108 lf nets, routed=18056, failed=976, 278.8s, 68.07 nets/s  astar: reached=1383333 pops/sink=2528 at_limit=8740 drained=0 pops/sink=0 at_limit=0 limited=119464 pops/sink=30001 at_limit=119464
+  pass 0 progress: 20000/37108 lf nets, routed=18972, failed=1085, 295.5s, 67.69 nets/s  astar: reached=1385607 pops/sink=2531 at_limit=8772 drained=0 pops/sink=0 at_limit=0 limited=120265 pops/sink=30001 at_limit=120265
+  pass 0 progress: 24625/37108 lf nets, routed=22839, failed=1843, 355.5s, 69.27 nets/s  astar: reached=1392543 pops/sink=2543 at_limit=8897 drained=0 pops/sink=0 at_limit=0 limited=123153 pops/sink=30001 at_limit=123153
+  pass 0 progress: 25000/37108 lf nets, routed=23147, failed=1910, 359.9s, 69.46 nets/s  astar: reached=1393055 pops/sink=2544 at_limit=8908 drained=0 pops/sink=0 at_limit=0 limited=123391 pops/sink=30001 at_limit=123391
+  pass 0 progress: 29647/37108 lf nets, routed=26848, failed=2856, 419.9s, 70.60 nets/s  astar: reached=1399171 pops/sink=2556 at_limit=9033 drained=0 pops/sink=0 at_limit=0 limited=126501 pops/sink=30001 at_limit=126501
+  pass 0 progress: 30000/37108 lf nets, routed=27010, failed=3047, 423.4s, 70.85 nets/s  astar: reached=1399335 pops/sink=2556 at_limit=9036 drained=0 pops/sink=0 at_limit=0 limited=126690 pops/sink=30001 at_limit=126690
+  pass 0 progress: 35000/37108 lf nets, routed=29542, failed=5515, 468.5s, 74.71 nets/s  astar: reached=1401887 pops/sink=2566 at_limit=9137 drained=0 pops/sink=0 at_limit=0 limited=129138 pops/sink=30001 at_limit=129138
+RasterRouter pass 0: routed=30537, failed=6628, tile_cong=58289, wire_cong=0, max_usage=549, wl=30537, cong_w=0.05
+  pass 0 astar:  reached=1402884 pops/sink=2570 at_limit=9181 drained=0 pops/sink=0 at_limit=0 limited=130249 pops/sink=30001 at_limit=130249
+  pass 0 failmode: apply_conflicts=51 empty_plans=6577  astar: reached=1402884 pops/sink=2570 at_limit=9181 drained=0 pops/sink=0 at_limit=0 limited=130249 pops/sink=30001 at_limit=130249
+RasterRouter: A* cleanup for 14587 failed nets (iter 0)
+  cleanup progress: 13/14587 nets, routed=1, ripups=0, 71.5s, 0.18 nets/s
+  scoped_ripup: no detour at all (min_cost=1203 blockers=5), ripping up
