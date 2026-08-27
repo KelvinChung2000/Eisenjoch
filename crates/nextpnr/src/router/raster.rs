@@ -2159,6 +2159,16 @@ fn route_nets_overuse(
     // nets stop seeing each other's same-pass choices — which negotiation
     // absorbs as slightly higher over-use per pass.
     let par_plan = std::env::var("NPNR_ROUTE_PAR").ok().as_deref() == Some("1");
+    // Present is a within-pass separator, not the long-run one: uncapped it
+    // compounded to 78 by pass 15 and froze the system (every wire
+    // astronomical, relative differences gone, over-use RISING). History
+    // carries the durable separation, so present saturates here.
+    let present_max = env_f32("NPNR_ROUTE_PRESENT_MAX", 8.0);
+    // Fraction of dirty nets replanned per pass. Frozen-cost planning makes
+    // colliding nets move in lockstep — both sides of a shared wire detour
+    // identically and re-collide; replanning only a (net, pass)-hashed
+    // subset breaks the duel asymmetrically.
+    let par_frac = env_f32("NPNR_ROUTE_PAR_FRAC", 0.5);
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2255,7 +2265,7 @@ fn route_nets_overuse(
     let t_all = std::time::Instant::now();
 
     for iter in 0..cfg.max_iterations {
-        let to_route: Vec<NetId> = if iter == 0 {
+        let dirty: Vec<NetId> = if iter == 0 {
             ordinary.clone()
         } else {
             ordinary
@@ -2269,8 +2279,28 @@ fn route_nets_overuse(
                 })
                 .collect()
         };
-        if to_route.is_empty() {
+        // Convergence is judged on the full dirty set; the fraction filter
+        // below only spreads its replanning over passes.
+        if dirty.is_empty() {
             break;
+        }
+        let to_route: Vec<NetId> = if par_plan && par_frac < 1.0 && iter > 0 {
+            dirty
+                .into_iter()
+                .filter(|n| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = rustc_hash::FxHasher::default();
+                    (*n, iter).hash(&mut h);
+                    (h.finish() % 1000) < (par_frac * 1000.0) as u64
+                })
+                .collect()
+        } else {
+            dirty
+        };
+        if to_route.is_empty() {
+            // The hash left this pass's subset empty; spin the pass cheaply.
+            present = (present * growth).min(present_max);
+            continue;
         }
 
         if t_all.elapsed() >= neg_wall {
@@ -2456,7 +2486,7 @@ fn route_nets_overuse(
         );
         prev_overused = overused;
         last_pass_secs = t_pass.elapsed().as_secs_f64();
-        present *= growth;
+        present = (present * growth).min(present_max);
 
         if overused == 0 && missing_total == 0 {
             eprintln!("RasterRouter[overuse]: negotiation converged at pass {}", iter);
