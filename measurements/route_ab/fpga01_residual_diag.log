@@ -471,3 +471,12 @@ RasterRouter: A* cleanup for 15182 failed nets (iter 0)
   cleanup progress: 31/15182 nets, routed=2, ripups=1, 222.3s, 0.14 nets/s
   cleanup progress: 38/15182 nets, routed=2, ripups=1, 282.9s, 0.13 nets/s
   scoped_ripup: no detour at all (min_cost=1355 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_24473' src=(203,116) sink=(217,116) bbox=[17,310]x[0,222]
+  scoped_ripup: no detour at all (min_cost=1122 blockers=3), ripping up
+    reroute_from_scratch FAIL: net='net_52525' src=(277,149) sink=(308,217) bbox=[0,310]x[0,222]
+  cleanup progress: 44/15182 nets, routed=2, ripups=1, 343.6s, 0.13 nets/s
+  scoped_ripup: no detour at all (min_cost=937 blockers=4), ripping up
+    reroute_from_scratch FAIL: net='net_40724' src=(302,127) sink=(307,126) bbox=[242,310]x[63,187]
+  scoped_ripup: detour cost 1553 (min 1232) accepted (applied=true)
+  cleanup progress: 57/15182 nets, routed=3, ripups=2, 418.5s, 0.14 nets/s
+  cleanup progress: 67/15182 nets, routed=3, ripups=2, 489.9s, 0.14 nets/s
