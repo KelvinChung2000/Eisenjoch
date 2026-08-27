@@ -1887,6 +1887,15 @@ impl WireTable {
     fn idx(&self, w: WireId) -> usize {
         self.offsets[w.tile() as usize] as usize + w.index() as usize
     }
+
+    /// Inverse of `idx` at tile granularity, by binary search over the
+    /// per-tile offsets. Used only by the per-pass residual histogram.
+    fn tile_of(&self, i: usize) -> i32 {
+        match self.offsets.binary_search(&(i as u32)) {
+            Ok(t) => t as i32,
+            Err(t) => (t - 1) as i32,
+        }
+    }
 }
 
 /// Canonical flat indices a plan occupies: source, every pip destination and
@@ -2181,6 +2190,13 @@ fn route_nets_overuse(
     // visibility. Chunks bound the staleness to chunk_size nets: usage
     // applies between chunks, so later chunks price earlier chunks' moves.
     let par_chunk = env_f32("NPNR_ROUTE_PAR_CHUNK", 4096.0) as usize;
+    // Asymmetric conflict resolution. Both owners of a contested node used to
+    // replan every pass, so both fled and both re-collided elsewhere: over-use
+    // oscillated without progress, and 67% of it was plain pairs (occ=2)
+    // smeared over 83% of the tiles. Here nets claim their wires in a fixed
+    // order and only the net that finds a wire already claimed yields, so each
+    // contested node keeps an incumbent and sheds exactly one occupant.
+    let single_mover = std::env::var("NPNR_ROUTE_SINGLE_MOVER").ok().as_deref() == Some("1");
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2280,6 +2296,30 @@ fn route_nets_overuse(
     for iter in 0..cfg.max_iterations {
         let dirty: Vec<NetId> = if iter == 0 {
             ordinary.clone()
+        } else if single_mover {
+            // One sequential claim sweep in net order; a bitset over the
+            // flat wire space keeps it O(total plan wires).
+            let mut claimed = vec![0u64; (wt.n + 63) / 64];
+            let mut movers: Vec<NetId> = Vec::new();
+            for &n in &ordinary {
+                let Some(e) = plans.get(&n) else {
+                    movers.push(n);
+                    continue;
+                };
+                let contested = e.idxs.iter().any(|&i| {
+                    let i = i as usize;
+                    claimed[i >> 6] & (1u64 << (i & 63)) != 0
+                });
+                if contested || e.missing > 0 {
+                    movers.push(n);
+                } else {
+                    for &i in &e.idxs {
+                        let i = i as usize;
+                        claimed[i >> 6] |= 1u64 << (i & 63);
+                    }
+                }
+            }
+            movers
         } else {
             ordinary
                 .iter()
@@ -2485,6 +2525,13 @@ fn route_nets_overuse(
         let mut max_occ = 0u16;
         let mut pen_sum = 0f64;
         let mut pen_cnt = 0usize;
+        // Structure of the residual, not just its size: occ=2 smeared over
+        // the chip is a pricing failure, occ>=4 concentrated in a few tiles
+        // is a capacity wall, and the two want opposite fixes.
+        let mut occ2 = 0usize;
+        let mut occ3 = 0usize;
+        let mut occ4p = 0usize;
+        let mut tile_over: FxHashMap<i32, u32> = FxHashMap::default();
         for i in 0..wt.n {
             if hist[i] > 0.0 {
                 hist[i] *= hist_decay;
@@ -2503,12 +2550,30 @@ fn route_nets_overuse(
             }
             if o > 1 {
                 overused += 1;
+                match o {
+                    2 => occ2 += 1,
+                    3 => occ3 += 1,
+                    _ => occ4p += 1,
+                }
+                *tile_over.entry(wt.tile_of(i)).or_insert(0) += 1;
                 hist[i] += (o - 1) as f32 * hist_gain;
                 if o > max_occ {
                     max_occ = o;
                 }
             }
         }
+        // Concentration: what share of the over-use sits in the worst 1% of
+        // tiles that carry any. Near 1% means smeared, near 50% means a wall.
+        let mut tile_counts: Vec<u32> = tile_over.values().copied().collect();
+        tile_counts.sort_unstable_by(|a, b| b.cmp(a));
+        let top1 = (tile_counts.len() / 100).max(1);
+        let top_share = if overused > 0 {
+            tile_counts[..top1.min(tile_counts.len())].iter().map(|&c| c as usize).sum::<usize>()
+                as f64 / overused as f64
+        } else {
+            0.0
+        };
+        let tiles_touched = tile_counts.len();
         mean_pen = if pen_cnt > 0 {
             (pen_sum / pen_cnt as f64) as f32
         } else {
@@ -2516,7 +2581,7 @@ fn route_nets_overuse(
         };
         let missing_total: usize = plans.values().map(|e| e.missing).sum();
         eprintln!(
-            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} esc_on={} present={:.2} mean_pen={:.2} {:.1}s (total {:.1}s)",
+            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} esc_on={} present={:.2} mean_pen={:.2} occ[2={} 3={} 4+={}] tiles={} top1%={:.1}% {:.1}s (total {:.1}s)",
             iter,
             to_route.len(),
             overused,
@@ -2526,6 +2591,11 @@ fn route_nets_overuse(
             escalate,
             present,
             mean_pen,
+            occ2,
+            occ3,
+            occ4p,
+            tiles_touched,
+            top_share * 100.0,
             t_pass.elapsed().as_secs_f64(),
             t_all.elapsed().as_secs_f64(),
         );
