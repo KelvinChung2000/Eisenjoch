@@ -1926,6 +1926,11 @@ struct OveruseCostModel<'a> {
     hist: &'a [f32],
     reserved: &'a FxHashMap<WireId, NetId>,
     present: f32,
+    /// Price-aware heuristic multiplier, ≥ 1.0. Prices inflate g while a
+    /// manhattan h estimates base cost only, so pruning decays as present
+    /// grows — pass walls went 92s → 1950s on that mechanism alone. The
+    /// caller scales this with the price level to keep search width flat.
+    h_scale: f32,
 }
 
 impl<'a> PathCostModel for OveruseCostModel<'a> {
@@ -1947,8 +1952,8 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
         let chipdb = ctx.chipdb();
         let (wx, wy) = chipdb.tile_xy(wire.tile());
         let (dx, dy) = chipdb.tile_xy(dst.tile());
-        let m = ((wx - dx).abs() + (wy - dy).abs()) as DelayT;
-        m.saturating_mul(H_WEIGHT)
+        let m = ((wx - dx).abs() + (wy - dy).abs()) as f32;
+        (m * H_WEIGHT as f32 * self.h_scale) as DelayT
     }
 
     fn bboxes(&self) -> &[BoundingBox] {
@@ -1997,6 +2002,7 @@ fn plan_net_overuse(
     present: f32,
     missed: &FxHashMap<(NetId, WireId), u8>,
     escalate: bool,
+    h_scale: f32,
     cfg: &RasterRouterCfg,
 ) -> (RoutePlan, Vec<WireId>) {
     let chipdb = ctx.chipdb();
@@ -2085,6 +2091,7 @@ fn plan_net_overuse(
             hist,
             reserved,
             present,
+            h_scale,
         };
         match route_sink_overuse(ctx, &model, &tree_wires, sink_wire, sink_limit) {
             Some(pips) => {
@@ -2137,6 +2144,15 @@ fn route_nets_overuse(
     // mid-game pass and mostly failed (commit 7d4ee4b), 2.5x the wall for
     // 20% of the missing.
     let esc_gate = env_f32("NPNR_ROUTE_ESC_GATE", 1_500_000.0) as usize;
+    // Heuristic scale per unit of present price. Prices inflate g while the
+    // manhattan h estimates base cost only, so search width grows with the
+    // price level; scaling h back restores the pruning at the cost of extra
+    // inadmissibility on top of H_WEIGHT's.
+    let h_price = env_f32("NPNR_ROUTE_H_PRICE", 0.5);
+    // Wall budget for the negotiation loop. On expiry the loop exits and
+    // commits best-effort, so every run yields an end-to-end unrouted count
+    // comparable with the exclusive baseline instead of dying mid-pass.
+    let neg_wall = std::time::Duration::from_secs_f32(env_f32("NPNR_ROUTE_NEG_WALL", 1800.0));
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2250,7 +2266,15 @@ fn route_nets_overuse(
             break;
         }
 
+        if t_all.elapsed() >= neg_wall {
+            eprintln!(
+                "RasterRouter[overuse]: negotiation wall budget spent at pass {}, committing",
+                iter
+            );
+            break;
+        }
         let escalate = prev_overused < esc_gate;
+        let h_scale = 1.0 + h_price * present;
         let t_pass = std::time::Instant::now();
         let mut last_progress = t_pass;
         for (i, &net) in to_route.iter().enumerate() {
@@ -2274,6 +2298,7 @@ fn route_nets_overuse(
                 present,
                 &missed,
                 escalate,
+                h_scale,
                 cfg,
             );
             let idxs = plan_wire_indices(ctx, &wt, &plan);
@@ -2355,13 +2380,22 @@ fn route_nets_overuse(
         }
     }
 
-    // Commit. Plans are consistent when negotiation converged; conflicts here
-    // mean it did not (max_iterations hit) and the losing nets fall through
-    // to the finisher unbound.
+    // Commit. Plans are consistent when negotiation converged. When the wall
+    // budget cut it short, nets whose plans touch no shared wire cannot
+    // conflict with each other and commit first; the still-contended rest
+    // commit greedily and the losers fall through to the finisher unbound.
+    let mut commit_order: Vec<NetId> = ordinary.clone();
+    commit_order.sort_by_key(|n| {
+        let dirty = plans
+            .get(n)
+            .map(|e| e.idxs.iter().any(|&i| occ[i as usize] > 1))
+            .unwrap_or(true);
+        (dirty, *n)
+    });
     let mut committed = 0usize;
     let mut commit_conflicts = 0usize;
     let mut commit_partial = 0usize;
-    for &net in &ordinary {
+    for &net in &commit_order {
         let Some(e) = plans.get(&net) else { continue };
         if !e.plan.source_wire.is_valid() || e.plan.sink_routes.is_empty() {
             continue;
