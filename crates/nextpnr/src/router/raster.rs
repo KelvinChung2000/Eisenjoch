@@ -2169,6 +2169,18 @@ fn route_nets_overuse(
     // identically and re-collide; replanning only a (net, pass)-hashed
     // subset breaks the duel asymmetrically.
     let par_frac = env_f32("NPNR_ROUTE_PAR_FRAC", 0.5);
+    // Without decay, chronic wires accumulate history without bound: real
+    // path costs outrun any fixed heuristic scale (pass cost compounded 25s
+    // -> 115s by pass 40) and stale congestion stays repellent after the
+    // contention has moved. Decayed each pass before the new excess lands.
+    let hist_decay = env_f32("NPNR_ROUTE_HIST_DECAY", 0.9);
+    let h_max = env_f32("NPNR_ROUTE_H_MAX", 6.0);
+    // Chunk size for parallel planning. Whole-pass frozen costs drain
+    // over-use at ~0.3%/pass because colliding nets never see each other
+    // move; the sequential regime's 20-50%/pass drain is intra-pass
+    // visibility. Chunks bound the staleness to chunk_size nets: usage
+    // applies between chunks, so later chunks price earlier chunks' moves.
+    let par_chunk = env_f32("NPNR_ROUTE_PAR_CHUNK", 4096.0) as usize;
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2261,6 +2273,7 @@ fn route_nets_overuse(
     let mut missed: FxHashMap<(NetId, WireId), u8> = FxHashMap::default();
     let mut prev_overused = usize::MAX;
     let mut last_pass_secs = 0f64;
+    let mut mean_pen = 0f32;
     let mut present = present0;
     let t_all = std::time::Instant::now();
 
@@ -2316,7 +2329,10 @@ fn route_nets_overuse(
         // left, escalation yields to cheap deflation passes so commit lands
         // on a settled state.
         let remaining = neg_wall.as_secs_f64() - t_all.elapsed().as_secs_f64();
-        let cooldown = last_pass_secs > 0.0 && remaining < 2.5 * last_pass_secs;
+        // Sequential-only: in the parallel regime the 2.5x window flip-flops
+        // as escalated and cheap passes alternate, bouncing recoveries in and
+        // out, and the finisher absorbs commit conflicts anyway.
+        let cooldown = !par_plan && last_pass_secs > 0.0 && remaining < 2.5 * last_pass_secs;
         if cooldown && prev_overused < esc_gate {
             eprintln!(
                 "RasterRouter[overuse]: {:.0}s wall left, escalation cooling down for commit",
@@ -2324,68 +2340,75 @@ fn route_nets_overuse(
             );
         }
         let escalate = prev_overused < esc_gate && !cooldown;
-        let h_scale = 1.0 + h_price * present;
+        // The ceiling is the negotiation-blindness bound: at h_scale ~14 the
+        // par4 run froze — searches beeline, detours are invisible to the
+        // heuristic, and over-use sat at 2.78M for fifteen flat passes with
+        // every price signal screaming. Width costs pops; blindness costs
+        // convergence.
+        let h_scale = (1.0 + h_price * (present + mean_pen)).min(h_max);
         let t_pass = std::time::Instant::now();
         if par_plan {
-            // Frozen-occupancy parallel pass: remove every replanned net's
-            // usage first so all workers price against the same state, plan
-            // in parallel, then apply usage and miss bookkeeping in input
-            // order so the pass stays deterministic.
-            for &net in &to_route {
-                if let Some(e) = plans.get(&net) {
-                    for &wi in &e.idxs {
-                        occ[wi as usize] = occ[wi as usize].saturating_sub(1);
-                    }
-                }
-            }
-            let ctx_ref: &Context = ctx;
-            let occ_ref: &[u16] = &occ;
-            let missed_ref = &missed;
+            // Chunked parallel pass: within a chunk workers price against
+            // frozen state, between chunks usage applies, so a chunk is the
+            // staleness bound. Application stays in input order per chunk,
+            // keeping the pass deterministic.
             use rayon::prelude::*;
-            let results: Vec<(NetId, RoutePlan, Vec<u32>, Vec<WireId>)> = to_route
-                .par_iter()
-                .filter_map(|&net| {
-                    let source_wire = resolve_source_wire(ctx_ref, net).ok().flatten()?;
-                    let (plan, missing_list) = plan_net_overuse(
-                        ctx_ref,
-                        net,
-                        source_wire,
-                        &wt,
-                        occ_ref,
-                        &hist,
-                        &reserved,
-                        present,
-                        missed_ref,
-                        escalate,
-                        h_scale,
-                        cfg,
-                    );
-                    let idxs = plan_wire_indices(ctx_ref, &wt, &plan);
-                    Some((net, plan, idxs, missing_list))
-                })
-                .collect();
-            for (net, plan, idxs, missing_list) in results {
-                for &wi in &idxs {
-                    occ[wi as usize] = occ[wi as usize].saturating_add(1);
-                }
-                for sr in &plan.sink_routes {
-                    if let std::collections::hash_map::Entry::Occupied(mut e) =
-                        missed.entry((net, sr.sink_wire))
-                    {
-                        let l = *e.get();
-                        if l <= 1 {
-                            e.remove();
-                        } else {
-                            e.insert(l - 1);
+            for chunk_nets in to_route.chunks(par_chunk.max(1)) {
+                for &net in chunk_nets {
+                    if let Some(e) = plans.get(&net) {
+                        for &wi in &e.idxs {
+                            occ[wi as usize] = occ[wi as usize].saturating_sub(1);
                         }
                     }
                 }
-                for &s in &missing_list {
-                    let e = missed.entry((net, s)).or_insert(0);
-                    *e = (*e + 1).min(8);
+                let ctx_ref: &Context = ctx;
+                let occ_ref: &[u16] = &occ;
+                let missed_ref = &missed;
+                let results: Vec<(NetId, RoutePlan, Vec<u32>, Vec<WireId>)> = chunk_nets
+                    .par_iter()
+                    .filter_map(|&net| {
+                        let source_wire = resolve_source_wire(ctx_ref, net).ok().flatten()?;
+                        let (plan, missing_list) = plan_net_overuse(
+                            ctx_ref,
+                            net,
+                            source_wire,
+                            &wt,
+                            occ_ref,
+                            &hist,
+                            &reserved,
+                            present,
+                            missed_ref,
+                            escalate,
+                            h_scale,
+                            cfg,
+                        );
+                        let idxs = plan_wire_indices(ctx_ref, &wt, &plan);
+                        Some((net, plan, idxs, missing_list))
+                    })
+                    .collect();
+                for (net, plan, idxs, missing_list) in results {
+                    for &wi in &idxs {
+                        occ[wi as usize] = occ[wi as usize].saturating_add(1);
+                    }
+                    for sr in &plan.sink_routes {
+                        if let std::collections::hash_map::Entry::Occupied(mut e) =
+                            missed.entry((net, sr.sink_wire))
+                        {
+                            let l = *e.get();
+                            if l <= 1 {
+                                e.remove();
+                            } else {
+                                e.insert(l - 1);
+                            }
+                        }
+                    }
+                    for &s in &missing_list {
+                        let e = missed.entry((net, s)).or_insert(0);
+                        *e = (*e + 1).min(8);
+                    }
+                    let missing = missing_list.len();
+                    plans.insert(net, PlanEntry { plan, idxs, missing });
                 }
-                let missing = missing_list.len();
-                plans.insert(net, PlanEntry { plan, idxs, missing });
             }
         } else {
         let mut last_progress = t_pass;
@@ -2460,8 +2483,24 @@ fn route_nets_overuse(
 
         let mut overused = 0usize;
         let mut max_occ = 0u16;
+        let mut pen_sum = 0f64;
+        let mut pen_cnt = 0usize;
         for i in 0..wt.n {
+            if hist[i] > 0.0 {
+                hist[i] *= hist_decay;
+                if hist[i] < 0.01 {
+                    hist[i] = 0.0;
+                }
+            }
             let o = occ[i];
+            if o > 0 {
+                // The mean penalty a route actually pays per used wire; the
+                // next pass's heuristic scales by it, so search width tracks
+                // the real price level (present AND history) instead of a
+                // stale proxy frozen at the present cap.
+                pen_sum += (present * o as f32 + hist[i]) as f64;
+                pen_cnt += 1;
+            }
             if o > 1 {
                 overused += 1;
                 hist[i] += (o - 1) as f32 * hist_gain;
@@ -2470,9 +2509,14 @@ fn route_nets_overuse(
                 }
             }
         }
+        mean_pen = if pen_cnt > 0 {
+            (pen_sum / pen_cnt as f64) as f32
+        } else {
+            0.0
+        };
         let missing_total: usize = plans.values().map(|e| e.missing).sum();
         eprintln!(
-            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} esc_on={} present={:.2} {:.1}s (total {:.1}s)",
+            "RasterRouter[overuse] pass {}: replanned={} overused_wires={} max_occ={} missing_sinks={} escalated={} esc_on={} present={:.2} mean_pen={:.2} {:.1}s (total {:.1}s)",
             iter,
             to_route.len(),
             overused,
@@ -2481,6 +2525,7 @@ fn route_nets_overuse(
             missed.len(),
             escalate,
             present,
+            mean_pen,
             t_pass.elapsed().as_secs_f64(),
             t_all.elapsed().as_secs_f64(),
         );
