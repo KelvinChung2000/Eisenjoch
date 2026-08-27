@@ -117,6 +117,16 @@ fn main() {
     let overuse = env::var("NPNR_ROUTE_OVERUSE").ok().as_deref() == Some("1");
     eprintln!("overuse: {overuse}");
 
+    // Per-net bbox margin. The default 8 fences every search into a corridor
+    // holding a fraction of the fabric's ~1957 wires per tile, while the
+    // hottest tile on the chip uses ~700 of them: the residual demand fails
+    // for want of reachable capacity, not existing capacity.
+    let bbox_margin: i32 = env::var("NPNR_ROUTE_BBOX_MARGIN")
+        .ok()
+        .map(|v| v.parse().expect("NPNR_ROUTE_BBOX_MARGIN must be an integer"))
+        .unwrap_or(8);
+    eprintln!("bbox_margin: {bbox_margin}");
+
     let cfg = RasterRouterCfg {
         max_iterations: route_iters,
         verbose: true,
@@ -125,6 +135,7 @@ fn main() {
         skip_cleanup,
         inloop_ripup,
         overuse,
+        bbox_margin,
         ..RasterRouterCfg::default()
     };
     let t_route = Instant::now();
