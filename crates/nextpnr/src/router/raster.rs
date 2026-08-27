@@ -2244,6 +2244,7 @@ fn route_nets_overuse(
     // cleared the pass the sink routes.
     let mut missed: FxHashMap<(NetId, WireId), u8> = FxHashMap::default();
     let mut prev_overused = usize::MAX;
+    let mut last_pass_secs = 0f64;
     let mut present = present0;
     let t_all = std::time::Instant::now();
 
@@ -2273,7 +2274,20 @@ fn route_nets_overuse(
             );
             break;
         }
-        let escalate = prev_overused < esc_gate;
+        // Escalation reinflates over-use by design (readmitted demand), so
+        // committing straight after an escalated pass maximises conflicts
+        // (33430 on the 8881045 run). With under ~2.5 pass-times of wall
+        // left, escalation yields to cheap deflation passes so commit lands
+        // on a settled state.
+        let remaining = neg_wall.as_secs_f64() - t_all.elapsed().as_secs_f64();
+        let cooldown = last_pass_secs > 0.0 && remaining < 2.5 * last_pass_secs;
+        if cooldown && prev_overused < esc_gate {
+            eprintln!(
+                "RasterRouter[overuse]: {:.0}s wall left, escalation cooling down for commit",
+                remaining
+            );
+        }
+        let escalate = prev_overused < esc_gate && !cooldown;
         let h_scale = 1.0 + h_price * present;
         let t_pass = std::time::Instant::now();
         let mut last_progress = t_pass;
@@ -2372,6 +2386,7 @@ fn route_nets_overuse(
             t_all.elapsed().as_secs_f64(),
         );
         prev_overused = overused;
+        last_pass_secs = t_pass.elapsed().as_secs_f64();
         present *= growth;
 
         if overused == 0 && missing_total == 0 {
