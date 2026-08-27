@@ -2153,6 +2153,12 @@ fn route_nets_overuse(
     // commits best-effort, so every run yields an end-to-end unrouted count
     // comparable with the exclusive baseline instead of dying mid-pass.
     let neg_wall = std::time::Duration::from_secs_f32(env_f32("NPNR_ROUTE_NEG_WALL", 1800.0));
+    // Parallel planning against occupancy frozen at pass start. Plans never
+    // bind ctx in this mode, so the historical objection (60% bind-conflict
+    // rejections) is structurally void; the cost is in-pass staleness —
+    // nets stop seeing each other's same-pass choices — which negotiation
+    // absorbs as slightly higher over-use per pass.
+    let par_plan = std::env::var("NPNR_ROUTE_PAR").ok().as_deref() == Some("1");
 
     let wt = WireTable::build(ctx.chipdb());
     let mut occ = vec![0u16; wt.n];
@@ -2290,6 +2296,68 @@ fn route_nets_overuse(
         let escalate = prev_overused < esc_gate && !cooldown;
         let h_scale = 1.0 + h_price * present;
         let t_pass = std::time::Instant::now();
+        if par_plan {
+            // Frozen-occupancy parallel pass: remove every replanned net's
+            // usage first so all workers price against the same state, plan
+            // in parallel, then apply usage and miss bookkeeping in input
+            // order so the pass stays deterministic.
+            for &net in &to_route {
+                if let Some(e) = plans.get(&net) {
+                    for &wi in &e.idxs {
+                        occ[wi as usize] = occ[wi as usize].saturating_sub(1);
+                    }
+                }
+            }
+            let ctx_ref: &Context = ctx;
+            let occ_ref: &[u16] = &occ;
+            let missed_ref = &missed;
+            use rayon::prelude::*;
+            let results: Vec<(NetId, RoutePlan, Vec<u32>, Vec<WireId>)> = to_route
+                .par_iter()
+                .filter_map(|&net| {
+                    let source_wire = resolve_source_wire(ctx_ref, net).ok().flatten()?;
+                    let (plan, missing_list) = plan_net_overuse(
+                        ctx_ref,
+                        net,
+                        source_wire,
+                        &wt,
+                        occ_ref,
+                        &hist,
+                        &reserved,
+                        present,
+                        missed_ref,
+                        escalate,
+                        h_scale,
+                        cfg,
+                    );
+                    let idxs = plan_wire_indices(ctx_ref, &wt, &plan);
+                    Some((net, plan, idxs, missing_list))
+                })
+                .collect();
+            for (net, plan, idxs, missing_list) in results {
+                for &wi in &idxs {
+                    occ[wi as usize] = occ[wi as usize].saturating_add(1);
+                }
+                for sr in &plan.sink_routes {
+                    if let std::collections::hash_map::Entry::Occupied(mut e) =
+                        missed.entry((net, sr.sink_wire))
+                    {
+                        let l = *e.get();
+                        if l <= 1 {
+                            e.remove();
+                        } else {
+                            e.insert(l - 1);
+                        }
+                    }
+                }
+                for &s in &missing_list {
+                    let e = missed.entry((net, s)).or_insert(0);
+                    *e = (*e + 1).min(8);
+                }
+                let missing = missing_list.len();
+                plans.insert(net, PlanEntry { plan, idxs, missing });
+            }
+        } else {
         let mut last_progress = t_pass;
         for (i, &net) in to_route.iter().enumerate() {
             if let Some(e) = plans.get(&net) {
@@ -2357,6 +2425,7 @@ fn route_nets_overuse(
                     astar_probe::summary(),
                 );
             }
+        }
         }
 
         let mut overused = 0usize;
