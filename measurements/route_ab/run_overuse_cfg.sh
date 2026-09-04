@@ -33,5 +33,10 @@ NPNR_OT_SKIP_PIPES=1 NPNR_OT_CACHE_NETINFO=1 NPNR_OT_DCD_ITERS=2"
 
 echo "=== $NAME started $(date -Is) overrides: $* ==="
 { echo "CONFIG $NAME overrides: $*"; env | grep '^NPNR_ROUTE_' | sort; } > $OUT/fpga01_$NAME.log
-env $OT_ENV NPNR_ROUTE_PLACER=opt_trans timeout 2400 $BIN >> $OUT/fpga01_$NAME.log 2>&1
+env $OT_ENV NPNR_ROUTE_PLACER=opt_trans timeout 1800 $BIN >> $OUT/fpga01_$NAME.log 2>&1
 echo "$NAME exit=$? $(date -Is)"
+
+# The metric is the "A* cleanup for N failed nets" line, which lands around
+# 1400s; NPNR_ROUTE_SKIP_CLEANUP is not a cheaper way to reach it because it
+# also rips up partial trees at the in-loop gate (raster.rs:2982), changing
+# the configuration rather than only where it stops.
