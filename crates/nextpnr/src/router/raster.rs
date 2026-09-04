@@ -1922,6 +1922,15 @@ fn plan_wire_indices(ctx: &Context, wt: &WireTable, plan: &RoutePlan) -> Vec<u32
     v
 }
 
+/// Fixed-point scale for every term of the over-use cost model. `DelayT` is
+/// an integer and `wire_penalty` used to cast an unscaled `present × occ +
+/// history` straight to it, so every price below 1.0 truncated to zero: at
+/// present 0.5-0.86 plain pair sharing was free for the first four passes,
+/// and history accrued in 0.25 steps the cast discarded. Pip cost, wire
+/// penalty and heuristic all carry this factor, so the ratios between them
+/// are unchanged and only the resolution improves.
+const OVERUSE_COST_SCALE: DelayT = 16;
+
 /// Congestion-priced cost model: a shared wire costs `present × occupancy`
 /// now and `history` for every past pass it stayed shared, instead of the
 /// exclusive model's `DelayT::MAX/4` wall. BEL-pin reservations stay walls —
@@ -1944,7 +1953,7 @@ struct OveruseCostModel<'a> {
 
 impl<'a> PathCostModel for OveruseCostModel<'a> {
     fn pip_cost(&self, _ctx: &Context, _pip: PipId) -> DelayT {
-        1
+        OVERUSE_COST_SCALE
     }
 
     fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
@@ -1954,7 +1963,8 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
             }
         }
         let i = self.wt.idx(wire);
-        (self.present * self.occ[i] as f32 + self.hist[i]) as DelayT
+        let price = self.present * self.occ[i] as f32 + self.hist[i];
+        (price * OVERUSE_COST_SCALE as f32).round() as DelayT
     }
 
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
@@ -1962,7 +1972,7 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
         let (wx, wy) = chipdb.tile_xy(wire.tile());
         let (dx, dy) = chipdb.tile_xy(dst.tile());
         let m = ((wx - dx).abs() + (wy - dy).abs()) as f32;
-        (m * H_WEIGHT as f32 * self.h_scale) as DelayT
+        (m * H_WEIGHT as f32 * self.h_scale * OVERUSE_COST_SCALE as f32) as DelayT
     }
 
     fn bboxes(&self) -> &[BoundingBox] {
