@@ -1991,6 +1991,16 @@ fn route_sink_overuse(
     res.path
 }
 
+/// One net's planning result. `deadline_missing` counts the sinks skipped by
+/// the wall-clock `net_deadline` rather than exhausted by the A*: that branch
+/// makes a pass's outcome depend on machine load, so it has to be observable
+/// before any A/B on this loop can be called deterministic.
+struct PlanOutcome {
+    plan: RoutePlan,
+    missing: Vec<WireId>,
+    deadline_missing: usize,
+}
+
 /// Plan one net under congestion pricing. Same tree-growth shape as
 /// `route_net_raster`; returns the plan and the sinks that stayed missing
 /// (visit cap or per-net deadline), which keep the net dirty next pass.
@@ -2013,18 +2023,19 @@ fn plan_net_overuse(
     escalate: bool,
     h_scale: f32,
     cfg: &RasterRouterCfg,
-) -> (RoutePlan, Vec<WireId>) {
+) -> PlanOutcome {
     let chipdb = ctx.chipdb();
     let sink_wires = collect_sink_wires(ctx, net);
     if sink_wires.is_empty() {
-        return (
-            RoutePlan {
+        return PlanOutcome {
+            plan: RoutePlan {
                 net,
                 source_wire,
                 sink_routes: Vec::new(),
             },
-            Vec::new(),
-        );
+            missing: Vec::new(),
+            deadline_missing: 0,
+        };
     }
 
     let bbox = if cfg.bbox_margin > 0 {
@@ -2058,9 +2069,11 @@ fn plan_net_overuse(
 
     let mut sink_routes = Vec::new();
     let mut missing: Vec<WireId> = Vec::new();
+    let mut deadline_missing = 0usize;
     for (sink_wire, _, _) in remaining_sinks {
         if std::time::Instant::now() > net_deadline {
             missing.push(sink_wire);
+            deadline_missing += 1;
             continue;
         }
         if tree_wires.contains(&sink_wire) {
@@ -2118,14 +2131,15 @@ fn plan_net_overuse(
         }
     }
 
-    (
-        RoutePlan {
+    PlanOutcome {
+        plan: RoutePlan {
             net,
             source_wire,
             sink_routes,
         },
         missing,
-    )
+        deadline_missing,
+    }
 }
 
 /// PathFinder pass loop. Plans live in router-owned state, wires may be
@@ -2292,17 +2306,32 @@ fn route_nets_overuse(
     let mut mean_pen = 0f32;
     let mut present = present0;
     let t_all = std::time::Instant::now();
+    // Fixed-point diagnostics. The pass line reports the residual's size and
+    // shape; these report who produces it — whether the same nets yield every
+    // pass, what they collide with, and whether replanning moves them at all.
+    let mut prev_movers: FxHashSet<NetId> = FxHashSet::default();
+    let mut yield_streak: FxHashMap<NetId, u32> = FxHashMap::default();
 
     for iter in 0..cfg.max_iterations {
+        // Claims survive the pass so the diagnostic can separate mover-vs-
+        // incumbent collisions from mover-vs-mover ones; empty outside
+        // single-mover mode, where no net holds a claim.
+        let mut claimed: Vec<u64> = Vec::new();
+        let mut mover_contested = 0usize;
+        let mut mover_missing = 0usize;
+        let mut mover_noplan = 0usize;
+        let mut plan_unchanged = 0usize;
+        let mut deadline_missing_total = 0usize;
         let dirty: Vec<NetId> = if iter == 0 {
             ordinary.clone()
         } else if single_mover {
             // One sequential claim sweep in net order; a bitset over the
             // flat wire space keeps it O(total plan wires).
-            let mut claimed = vec![0u64; (wt.n + 63) / 64];
+            claimed = vec![0u64; (wt.n + 63) / 64];
             let mut movers: Vec<NetId> = Vec::new();
             for &n in &ordinary {
                 let Some(e) = plans.get(&n) else {
+                    mover_noplan += 1;
                     movers.push(n);
                     continue;
                 };
@@ -2310,7 +2339,11 @@ fn route_nets_overuse(
                     let i = i as usize;
                     claimed[i >> 6] & (1u64 << (i & 63)) != 0
                 });
-                if contested || e.missing > 0 {
+                if contested {
+                    mover_contested += 1;
+                    movers.push(n);
+                } else if e.missing > 0 {
+                    mover_missing += 1;
                     movers.push(n);
                 } else {
                     for &i in &e.idxs {
@@ -2404,11 +2437,11 @@ fn route_nets_overuse(
                 let ctx_ref: &Context = ctx;
                 let occ_ref: &[u16] = &occ;
                 let missed_ref = &missed;
-                let results: Vec<(NetId, RoutePlan, Vec<u32>, Vec<WireId>)> = chunk_nets
+                let results: Vec<(NetId, PlanOutcome, Vec<u32>)> = chunk_nets
                     .par_iter()
                     .filter_map(|&net| {
                         let source_wire = resolve_source_wire(ctx_ref, net).ok().flatten()?;
-                        let (plan, missing_list) = plan_net_overuse(
+                        let outcome = plan_net_overuse(
                             ctx_ref,
                             net,
                             source_wire,
@@ -2422,11 +2455,20 @@ fn route_nets_overuse(
                             h_scale,
                             cfg,
                         );
-                        let idxs = plan_wire_indices(ctx_ref, &wt, &plan);
-                        Some((net, plan, idxs, missing_list))
+                        let idxs = plan_wire_indices(ctx_ref, &wt, &outcome.plan);
+                        Some((net, outcome, idxs))
                     })
                     .collect();
-                for (net, plan, idxs, missing_list) in results {
+                for (net, outcome, idxs) in results {
+                    let PlanOutcome {
+                        plan,
+                        missing: missing_list,
+                        deadline_missing,
+                    } = outcome;
+                    deadline_missing_total += deadline_missing;
+                    if plans.get(&net).is_some_and(|e| e.idxs == idxs) {
+                        plan_unchanged += 1;
+                    }
                     for &wi in &idxs {
                         occ[wi as usize] = occ[wi as usize].saturating_add(1);
                     }
@@ -2462,7 +2504,11 @@ fn route_nets_overuse(
                 Ok(Some(w)) => w,
                 _ => continue,
             };
-            let (plan, missing_list) = plan_net_overuse(
+            let PlanOutcome {
+                plan,
+                missing: missing_list,
+                deadline_missing,
+            } = plan_net_overuse(
                 ctx,
                 net,
                 source_wire,
@@ -2476,7 +2522,11 @@ fn route_nets_overuse(
                 h_scale,
                 cfg,
             );
+            deadline_missing_total += deadline_missing;
             let idxs = plan_wire_indices(ctx, &wt, &plan);
+            if plans.get(&net).is_some_and(|e| e.idxs == idxs) {
+                plan_unchanged += 1;
+            }
             for &wi in &idxs {
                 occ[wi as usize] = occ[wi as usize].saturating_add(1);
             }
@@ -2598,6 +2648,79 @@ fn route_nets_overuse(
             top_share * 100.0,
             t_pass.elapsed().as_secs_f64(),
             t_all.elapsed().as_secs_f64(),
+        );
+        // A mover blocked by a claimed wire is blocked by an incumbent that
+        // will not move this pass; a mover on an unclaimed shared wire is
+        // blocked by another mover. The two want opposite fixes, so they are
+        // counted apart.
+        let mut mover_on_claimed = 0usize;
+        let mut mover_on_shared = 0usize;
+        for &n in &to_route {
+            let Some(e) = plans.get(&n) else { continue };
+            for &i in &e.idxs {
+                let i = i as usize;
+                if !claimed.is_empty() && claimed[i >> 6] & (1u64 << (i & 63)) != 0 {
+                    mover_on_claimed += 1;
+                } else if occ[i] > 1 {
+                    mover_on_shared += 1;
+                }
+            }
+        }
+        let overlap_prev = to_route.iter().filter(|n| prev_movers.contains(n)).count();
+        prev_movers = to_route.iter().copied().collect();
+        yield_streak.retain(|n, _| prev_movers.contains(n));
+        for &n in &to_route {
+            *yield_streak.entry(n).or_insert(0) += 1;
+        }
+        let mut streak = [0usize; 4];
+        for &v in yield_streak.values() {
+            let b = match v {
+                0..=1 => 0,
+                2..=4 => 1,
+                5..=14 => 2,
+                _ => 3,
+            };
+            streak[b] += 1;
+        }
+        // Fanout of the nets sitting on the occ>=4 nodes that now dominate the
+        // residual: if a few high-fanout trees own them, fanout-first
+        // incumbency is the wrong claim order for exactly those nodes.
+        let mut occ4_fanout = [0usize; 5];
+        for e in plans.values() {
+            let b = match ctx.net(e.plan.net).num_users() {
+                0..=1 => 0,
+                2..=4 => 1,
+                5..=16 => 2,
+                17..=64 => 3,
+                _ => 4,
+            };
+            for &i in &e.idxs {
+                if occ[i as usize] >= 4 {
+                    occ4_fanout[b] += 1;
+                }
+            }
+        }
+        let pct = |a: usize, b: usize| if b > 0 { 100.0 * a as f64 / b as f64 } else { 0.0 };
+        eprintln!(
+            "RasterRouter[overuse] diag pass {}: movers[contested={} missing={} noplan={}] overlap_prev={:.1}% unchanged={:.1}% mover_wires[claimed={} shared={}] streak[1={} 2-4={} 5-14={} 15+={}] occ4_fanout[1={} 2-4={} 5-16={} 17-64={} 65+={}] deadline_miss={}",
+            iter,
+            mover_contested,
+            mover_missing,
+            mover_noplan,
+            pct(overlap_prev, to_route.len()),
+            pct(plan_unchanged, to_route.len()),
+            mover_on_claimed,
+            mover_on_shared,
+            streak[0],
+            streak[1],
+            streak[2],
+            streak[3],
+            occ4_fanout[0],
+            occ4_fanout[1],
+            occ4_fanout[2],
+            occ4_fanout[3],
+            occ4_fanout[4],
+            deadline_missing_total,
         );
         prev_overused = overused;
         last_pass_secs = t_pass.elapsed().as_secs_f64();
