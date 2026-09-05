@@ -1,0 +1,5 @@
+=== cost_scale started 2026-09-04T23:40:14+01:00 overrides:  ===
+cost_scale exit=124 2026-09-05T00:10:15+01:00
+=== cost_scale_h1 started 2026-09-05T00:10:15+01:00 overrides: NPNR_ROUTE_H_MAX=1 ===
+cost_scale_h1 exit=124 2026-09-05T00:40:15+01:00
+=== cost_scale_chunk1024 started 2026-09-05T00:40:15+01:00 overrides: NPNR_ROUTE_PAR_CHUNK=1024 ===
