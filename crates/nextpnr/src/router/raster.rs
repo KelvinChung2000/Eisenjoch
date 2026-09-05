@@ -1717,6 +1717,102 @@ fn route_net_greedy(
 /// is a bbox-pruned raster expansion, not an A* with a cost-to-go heuristic.
 /// (The lookahead built in `route_raster` is for the A* cleanup path, which
 /// does consume it.) The parameter used to be threaded in here and ignored.
+/// Population census of why a finisher net ends part-built. The `raster_fail`
+/// print is capped at the first 100 ever and covers only the A* failure arm,
+/// so it cannot see the per-net deadline break: that path leaves the tail of
+/// `remaining_sinks` unattempted and prints nothing. Counted over every net
+/// and printed once per pass beside `failmode`, so the two halves of the
+/// unrouted count can be attributed rather than inferred.
+mod partial_census {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    pub static NETS: AtomicU64 = AtomicU64::new(0);
+    pub static NETS_PART: AtomicU64 = AtomicU64::new(0);
+    pub static NETS_DEADLINE: AtomicU64 = AtomicU64::new(0);
+    pub static LOST_ONE: AtomicU64 = AtomicU64::new(0);
+    pub static LOST_FEW: AtomicU64 = AtomicU64::new(0);
+    pub static LOST_MANY: AtomicU64 = AtomicU64::new(0);
+    pub static LOST_ALL: AtomicU64 = AtomicU64::new(0);
+    pub static SINKS_ASTAR: AtomicU64 = AtomicU64::new(0);
+    pub static SINKS_DEADLINE: AtomicU64 = AtomicU64::new(0);
+    static D_0_15: AtomicU64 = AtomicU64::new(0);
+    static D_16_63: AtomicU64 = AtomicU64::new(0);
+    static D_64_255: AtomicU64 = AtomicU64::new(0);
+    static D_256UP: AtomicU64 = AtomicU64::new(0);
+    static T_0: AtomicU64 = AtomicU64::new(0);
+    static T_1_31: AtomicU64 = AtomicU64::new(0);
+    static T_32_255: AtomicU64 = AtomicU64::new(0);
+    static T_256UP: AtomicU64 = AtomicU64::new(0);
+
+    /// One A*-failed sink, bucketed by remaining Manhattan distance and by the
+    /// size of the tree already built for the net.
+    pub fn note_astar_fail(dist: i32, tree: usize) {
+        SINKS_ASTAR.fetch_add(1, Relaxed);
+        match dist {
+            i32::MIN..=15 => &D_0_15,
+            16..=63 => &D_16_63,
+            64..=255 => &D_64_255,
+            _ => &D_256UP,
+        }
+        .fetch_add(1, Relaxed);
+        match tree {
+            0 => &T_0,
+            1..=31 => &T_1_31,
+            32..=255 => &T_32_255,
+            _ => &T_256UP,
+        }
+        .fetch_add(1, Relaxed);
+    }
+
+    /// One net's outcome. `lost` counts sinks with no route, whatever the
+    /// cause; `hit_deadline` records that the sink loop broke early, so the
+    /// unattempted tail is separable from sinks A* genuinely could not reach.
+    pub fn note_net(total: usize, lost: usize, hit_deadline: bool) {
+        NETS.fetch_add(1, Relaxed);
+        if hit_deadline {
+            NETS_DEADLINE.fetch_add(1, Relaxed);
+        }
+        if lost == 0 {
+            return;
+        }
+        NETS_PART.fetch_add(1, Relaxed);
+        if lost == total {
+            LOST_ALL.fetch_add(1, Relaxed);
+        } else if lost == 1 {
+            LOST_ONE.fetch_add(1, Relaxed);
+        } else if lost <= 3 {
+            LOST_FEW.fetch_add(1, Relaxed);
+        } else {
+            LOST_MANY.fetch_add(1, Relaxed);
+        }
+    }
+
+    pub fn summary() -> String {
+        format!(
+            "nets={} part={} [lost 1={} 2-3={} 4+={} all={}] \
+sinks[astar={} deadline={}] nets_hit_deadline={} \
+dist[0-15={} 16-63={} 64-255={} 256+={}] tree[0={} 1-31={} 32-255={} 256+={}]",
+            NETS.load(Relaxed),
+            NETS_PART.load(Relaxed),
+            LOST_ONE.load(Relaxed),
+            LOST_FEW.load(Relaxed),
+            LOST_MANY.load(Relaxed),
+            LOST_ALL.load(Relaxed),
+            SINKS_ASTAR.load(Relaxed),
+            SINKS_DEADLINE.load(Relaxed),
+            NETS_DEADLINE.load(Relaxed),
+            D_0_15.load(Relaxed),
+            D_16_63.load(Relaxed),
+            D_64_255.load(Relaxed),
+            D_256UP.load(Relaxed),
+            T_0.load(Relaxed),
+            T_1_31.load(Relaxed),
+            T_32_255.load(Relaxed),
+            T_256UP.load(Relaxed),
+        )
+    }
+}
+
 fn route_net_raster(
     ctx: &Context,
     net: NetId,
@@ -1786,9 +1882,14 @@ fn route_net_raster(
         + std::time::Duration::from_millis(2000 + remaining_sinks.len() as u64 * 10);
 
     let mut sink_routes = Vec::new();
+    let n_sinks = remaining_sinks.len();
+    let mut hit_deadline = false;
 
-    for (sink_wire, sink_x, sink_y) in remaining_sinks {
+    for (si, (sink_wire, sink_x, sink_y)) in remaining_sinks.into_iter().enumerate() {
         if std::time::Instant::now() > net_deadline {
+            hit_deadline = true;
+            partial_census::SINKS_DEADLINE
+                .fetch_add((n_sinks - si) as u64, std::sync::atomic::Ordering::Relaxed);
             break;
         }
         if tree_wires.contains(&sink_wire) {
@@ -1825,10 +1926,11 @@ fn route_net_raster(
                 static FAIL_COUNT: std::sync::atomic::AtomicUsize =
                     std::sync::atomic::AtomicUsize::new(0);
                 let n = FAIL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (sxw, syw) = chipdb.tile_xy(source_wire.tile());
+                let dist = (sink_x - sxw).abs() + (sink_y - syw).abs();
+                partial_census::note_astar_fail(dist, tree_wires.len());
                 if n < 100 {
                     let net_name = ctx.net(net).name_id();
-                    let (sxw, syw) = chipdb.tile_xy(source_wire.tile());
-                    let dist = (sink_x - sxw).abs() + (sink_y - syw).abs();
                     eprintln!(
                         "  raster_fail #{}: net='{}' src=({},{}) sink=({},{}) dist={} tree={}",
                         n,
@@ -1847,6 +1949,8 @@ fn route_net_raster(
             }
         }
     }
+
+    partial_census::note_net(n_sinks, n_sinks - sink_routes.len(), hit_deadline);
 
     Ok(RoutePlan {
         net,
@@ -3199,6 +3303,7 @@ fn route_nets_exclusive(
                 "  pass {} failmode: apply_conflicts={} empty_plans={}  astar:{}",
                 iter, apply_conflicts, empty_plans, astar_probe::summary(),
             );
+            eprintln!("  pass {} partials: {}", iter, partial_census::summary());
 
             if routed > best_routed || (routed == best_routed && wl < best_wl) {
                 best_routed = routed;
