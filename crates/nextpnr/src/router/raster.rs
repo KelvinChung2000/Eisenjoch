@@ -1242,7 +1242,7 @@ fn route_sink_astar(
     cong: &CongestionMap,
     cong_weight: f32,
     sink_visit_limit: Option<usize>,
-) -> (Option<Vec<PipId>>, AStarExit) {
+) -> (Option<Vec<PipId>>, AStarExit, usize) {
     let model = RasterCostModel {
         net,
         bbox,
@@ -1257,7 +1257,7 @@ fn route_sink_astar(
     };
     let res = astar_search(ctx, &model, src_wires, dst_wire, &opts);
     astar_probe::record(res.trace.exit, res.trace.visit_count, res.trace.max_visits);
-    (res.path, res.trace.exit)
+    (res.path, res.trace.exit, res.trace.min_approach)
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,15 +1764,32 @@ mod partial_census {
     static TD_4_15: AtomicU64 = AtomicU64::new(0);
     static TD_16_63: AtomicU64 = AtomicU64::new(0);
     static TD_64UP: AtomicU64 = AtomicU64::new(0);
+    static AP_0_3: AtomicU64 = AtomicU64::new(0);
+    static AP_4_15: AtomicU64 = AtomicU64::new(0);
+    static AP_16_63: AtomicU64 = AtomicU64::new(0);
+    static AP_64UP: AtomicU64 = AtomicU64::new(0);
 
     /// One A*-failed sink, bucketed by remaining Manhattan distance and by the
     /// size of the tree already built for the net.
-    pub fn note_astar_fail(dist: i32, tree: usize, tree_dist: i32, exit: super::AStarExit) {
+    pub fn note_astar_fail(
+        dist: i32,
+        tree: usize,
+        tree_dist: i32,
+        exit: super::AStarExit,
+        approach: usize,
+    ) {
         SINKS_ASTAR.fetch_add(1, Relaxed);
         match exit {
             super::AStarExit::VisitLimit => &X_LIMIT,
             super::AStarExit::HeapDrained => &X_DRAIN,
             super::AStarExit::Reached => &X_REACHED,
+        }
+        .fetch_add(1, Relaxed);
+        match approach {
+            0..=3 => &AP_0_3,
+            4..=15 => &AP_4_15,
+            16..=63 => &AP_16_63,
+            _ => &AP_64UP,
         }
         .fetch_add(1, Relaxed);
         match tree_dist {
@@ -1826,7 +1843,8 @@ mod partial_census {
             "nets={} part={} [lost 1={} 2-3={} 4+={} all={}] \
 sinks[astar={} deadline={}] nets_hit_deadline={} \
 dist[0-15={} 16-63={} 64-255={} 256+={}] tree[0={} 1-31={} 32-255={} 256+={}] \
-exit[limit={} drain={} reached={}] treedist[0-3={} 4-15={} 16-63={} 64+={}]",
+exit[limit={} drain={} reached={}] treedist[0-3={} 4-15={} 16-63={} 64+={}] \
+approach[0-3={} 4-15={} 16-63={} 64+={}]",
             NETS.load(Relaxed),
             NETS_PART.load(Relaxed),
             LOST_ONE.load(Relaxed),
@@ -1851,6 +1869,10 @@ exit[limit={} drain={} reached={}] treedist[0-3={} 4-15={} 16-63={} 64+={}]",
             TD_4_15.load(Relaxed),
             TD_16_63.load(Relaxed),
             TD_64UP.load(Relaxed),
+            AP_0_3.load(Relaxed),
+            AP_4_15.load(Relaxed),
+            AP_16_63.load(Relaxed),
+            AP_64UP.load(Relaxed),
         )
     }
 }
@@ -1945,7 +1967,7 @@ fn route_net_raster(
             continue;
         }
 
-        let (sink_path, sink_exit) = route_sink_astar(
+        let (sink_path, sink_exit, sink_approach) = route_sink_astar(
             ctx,
             net,
             &tree_wires,
@@ -1986,7 +2008,7 @@ fn route_net_raster(
                     })
                     .min()
                     .unwrap_or(dist);
-                partial_census::note_astar_fail(dist, tree_wires.len(), tree_dist, sink_exit);
+                partial_census::note_astar_fail(dist, tree_wires.len(), tree_dist, sink_exit, sink_approach);
                 if n < 100 {
                     let net_name = ctx.net(net).name_id();
                     eprintln!(
