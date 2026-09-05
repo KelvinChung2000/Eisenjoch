@@ -870,6 +870,18 @@ pub struct RasterRouterCfg {
     /// Same budget for the per-iteration cleanup A*, which the pass-0 cap does
     /// not reach. `None` keeps the derived default.
     pub cleanup_visit_limit: Option<usize>,
+    /// Same budget for the exclusive finisher's per-sink A*. The flat cap that
+    /// makes negotiation tractable starves the finisher: every one of its 20477
+    /// lost sinks exits on `VisitLimit`, and 95% of them sit 16 or more tiles
+    /// from the nearest wire already in their own tree. `None` restores the
+    /// derived default, which scales as the square of that same tree distance.
+    pub finish_visit_limit: Option<usize>,
+    /// Base of the finisher's per-net wall-clock budget, before the 10ms per
+    /// sink it adds. `None` removes the deadline, leaving `finish_visit_limit`
+    /// as the only bound; a larger pop budget pushes per-sink cost up by the
+    /// same factor, so a fixed wall would abandon sinks the budget was raised
+    /// to reach and measure the deadline instead.
+    pub finish_net_deadline: Option<std::time::Duration>,
     /// Drop the per-iteration cleanup stage and let the pass loop's tile
     /// congestion history carry the design on its own. Also unfreezes partial
     /// trees at the rip-up gate: they are preserved only so cleanup A* can
@@ -905,6 +917,8 @@ impl Default for RasterRouterCfg {
             use_greedy: false,
             sink_visit_limit: None,
             cleanup_visit_limit: None,
+            finish_visit_limit: None,
+            finish_net_deadline: Some(std::time::Duration::from_millis(2000)),
             skip_cleanup: false,
             inloop_ripup: false,
             overuse: false,
@@ -1904,17 +1918,20 @@ fn route_net_raster(
         .collect();
     remaining_sinks.sort_by_key(|&(_, sx, sy)| (sx - src_x).abs() + (sy - src_y).abs());
 
-    // Per-net time budget: 2s base + 10ms per sink. Prevents high-fanout nets
-    // from monopolizing routing time across rip-up-reroute passes.
-    let net_deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(2000 + remaining_sinks.len() as u64 * 10);
+    // Per-net time budget: a base plus 10ms per sink, stopping high-fanout nets
+    // from monopolizing routing time across rip-up-reroute passes. Wall-clock,
+    // so it makes a net's outcome depend on machine load; `None` drops it and
+    // leaves the per-sink pop budget as the only bound.
+    let net_deadline = cfg.finish_net_deadline.map(|base| {
+        std::time::Instant::now() + base + std::time::Duration::from_millis(remaining_sinks.len() as u64 * 10)
+    });
 
     let mut sink_routes = Vec::new();
     let n_sinks = remaining_sinks.len();
     let mut hit_deadline = false;
 
     for (si, (sink_wire, sink_x, sink_y)) in remaining_sinks.into_iter().enumerate() {
-        if std::time::Instant::now() > net_deadline {
+        if net_deadline.is_some_and(|d| std::time::Instant::now() > d) {
             hit_deadline = true;
             partial_census::SINKS_DEADLINE
                 .fetch_add((n_sinks - si) as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1936,7 +1953,7 @@ fn route_net_raster(
             bbox.as_ref(),
             cong,
             cong_weight,
-            cfg.sink_visit_limit,
+            cfg.finish_visit_limit,
         );
         match sink_path {
             Some(pips) => {
