@@ -103,6 +103,31 @@ fn main() {
         .map(|v| v.parse().expect("NPNR_ROUTE_CLEANUP_VISITS must be an integer"));
     eprintln!("cleanup_visit_limit: {cleanup_visit_limit:?}");
 
+    // The finisher shared the negotiation cap until this knob split them, so
+    // unset it inherits `sink_visit_limit` and every earlier measurement stays
+    // comparable. `0` selects the kernel default, which scales with the sink's
+    // distance from the tree instead of sitting flat.
+    let finish_visit_limit = match env::var("NPNR_ROUTE_FINISH_VISITS").ok() {
+        None => sink_visit_limit,
+        Some(v) => match v.parse().expect("NPNR_ROUTE_FINISH_VISITS must be an integer") {
+            0 => None,
+            n => Some(n),
+        },
+    };
+    eprintln!("finish_visit_limit: {finish_visit_limit:?}");
+
+    // `0` removes the finisher's wall-clock per-net deadline. Raising the pop
+    // budget raises per-sink cost by the same factor, so a fixed wall would
+    // abandon the sinks the budget was raised to reach.
+    let finish_net_deadline = match env::var("NPNR_ROUTE_FINISH_DEADLINE_MS").ok() {
+        None => Some(std::time::Duration::from_millis(2000)),
+        Some(v) => match v.parse().expect("NPNR_ROUTE_FINISH_DEADLINE_MS must be an integer") {
+            0 => None,
+            ms => Some(std::time::Duration::from_millis(ms)),
+        },
+    };
+    eprintln!("finish_net_deadline: {finish_net_deadline:?}");
+
     // Cleanup recovers 1.4% of failed nets at 8.1s each. Skipping it asks
     // whether the pass loop's tile congestion history converges on its own.
     let skip_cleanup = env::var("NPNR_ROUTE_SKIP_CLEANUP").ok().as_deref() == Some("1");
@@ -132,6 +157,8 @@ fn main() {
         verbose: true,
         sink_visit_limit,
         cleanup_visit_limit,
+        finish_visit_limit,
+        finish_net_deadline,
         skip_cleanup,
         inloop_ripup,
         overuse,
