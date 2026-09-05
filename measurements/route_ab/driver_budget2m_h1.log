@@ -1,0 +1,4 @@
+=== budget2m_h1 started 2026-09-05T06:37:33+01:00 overrides: NPNR_ROUTE_H_MAX=1 NPNR_ROUTE_FINISH_VISITS=2000000 NPNR_ROUTE_FINISH_DEADLINE_MS=0 ===
+measurements/route_ab/run_overuse_cfg.sh: line 36: 986861 Killed                  env $OT_ENV NPNR_ROUTE_PLACER=opt_trans timeout ${TMO:-1800} $BIN >> $OUT/fpga01_$NAME.log 2>&1
+budget2m_h1 exit=137 2026-09-05T07:15:58+01:00
+=== budget2m_h1 complete 2026-09-05T07:15:58+01:00 ===
