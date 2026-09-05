@@ -153,6 +153,11 @@ pub struct AStarTrace {
     pub best_score: DelayT,
     /// Reason the loop exited.
     pub exit: AStarExit,
+    /// Smallest manhattan tile distance to `dst` over every wire popped. A
+    /// failure that got within a tile or two of the sink and still exhausted
+    /// its budget was walled at the pin rather than starved en route, and the
+    /// two want opposite fixes. `usize::MAX` when nothing was popped.
+    pub min_approach: usize,
     /// Full visited map: `wire -> (cost, penalty, parent_pip, came_from_wire)`.
     /// `parent_pip` is `None` when the wire was reached by a free node hop
     /// (the parent pip belongs to `came_from_wire`'s traversal). Used for
@@ -456,6 +461,7 @@ pub fn astar_search<M: PathCostModel>(
                 max_visits: 0,
                 best_score: 0,
                 exit: AStarExit::Reached,
+                min_approach: 0,
                 visited: if opts.retain_trace {
                     let mut visited = FxHashMap::default();
                     visited.insert(dst_wire, (0, 0, None, dst_wire));
@@ -513,6 +519,7 @@ pub fn astar_search<M: PathCostModel>(
     let mut best_score: DelayT = DelayT::MAX;
     let mut hit_visit_limit = false;
     let mut reached = false;
+    let mut min_approach = usize::MAX;
     let stop_on_touch = opts.stop_on_first_touch && !opts.exhaustive;
 
     while let Some(entry) = heap.pop() {
@@ -521,6 +528,9 @@ pub fn astar_search<M: PathCostModel>(
             hit_visit_limit = true;
             break;
         }
+
+        let (ex, ey) = chipdb.tile_xy(entry.wire.tile());
+        min_approach = min_approach.min(((ex - dst_x).abs() + (ey - dst_y).abs()) as usize);
 
         // Stale skip: if we already reached this wire at a strictly lower
         // score, the current entry is obsolete.
@@ -666,6 +676,7 @@ pub fn astar_search<M: PathCostModel>(
             max_visits,
             best_score,
             exit,
+            min_approach,
             visited: visited.into_trace_visited(),
         },
     }
