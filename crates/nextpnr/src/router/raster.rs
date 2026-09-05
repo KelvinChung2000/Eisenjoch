@@ -1228,7 +1228,7 @@ fn route_sink_astar(
     cong: &CongestionMap,
     cong_weight: f32,
     sink_visit_limit: Option<usize>,
-) -> Option<Vec<PipId>> {
+) -> (Option<Vec<PipId>>, AStarExit) {
     let model = RasterCostModel {
         net,
         bbox,
@@ -1243,7 +1243,7 @@ fn route_sink_astar(
     };
     let res = astar_search(ctx, &model, src_wires, dst_wire, &opts);
     astar_probe::record(res.trace.exit, res.trace.visit_count, res.trace.max_visits);
-    res.path
+    (res.path, res.trace.exit)
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,11 +1743,31 @@ mod partial_census {
     static T_1_31: AtomicU64 = AtomicU64::new(0);
     static T_32_255: AtomicU64 = AtomicU64::new(0);
     static T_256UP: AtomicU64 = AtomicU64::new(0);
+    static X_LIMIT: AtomicU64 = AtomicU64::new(0);
+    static X_DRAIN: AtomicU64 = AtomicU64::new(0);
+    static X_REACHED: AtomicU64 = AtomicU64::new(0);
+    static TD_0_3: AtomicU64 = AtomicU64::new(0);
+    static TD_4_15: AtomicU64 = AtomicU64::new(0);
+    static TD_16_63: AtomicU64 = AtomicU64::new(0);
+    static TD_64UP: AtomicU64 = AtomicU64::new(0);
 
     /// One A*-failed sink, bucketed by remaining Manhattan distance and by the
     /// size of the tree already built for the net.
-    pub fn note_astar_fail(dist: i32, tree: usize) {
+    pub fn note_astar_fail(dist: i32, tree: usize, tree_dist: i32, exit: super::AStarExit) {
         SINKS_ASTAR.fetch_add(1, Relaxed);
+        match exit {
+            super::AStarExit::VisitLimit => &X_LIMIT,
+            super::AStarExit::HeapDrained => &X_DRAIN,
+            super::AStarExit::Reached => &X_REACHED,
+        }
+        .fetch_add(1, Relaxed);
+        match tree_dist {
+            i32::MIN..=3 => &TD_0_3,
+            4..=15 => &TD_4_15,
+            16..=63 => &TD_16_63,
+            _ => &TD_64UP,
+        }
+        .fetch_add(1, Relaxed);
         match dist {
             i32::MIN..=15 => &D_0_15,
             16..=63 => &D_16_63,
@@ -1791,7 +1811,8 @@ mod partial_census {
         format!(
             "nets={} part={} [lost 1={} 2-3={} 4+={} all={}] \
 sinks[astar={} deadline={}] nets_hit_deadline={} \
-dist[0-15={} 16-63={} 64-255={} 256+={}] tree[0={} 1-31={} 32-255={} 256+={}]",
+dist[0-15={} 16-63={} 64-255={} 256+={}] tree[0={} 1-31={} 32-255={} 256+={}] \
+exit[limit={} drain={} reached={}] treedist[0-3={} 4-15={} 16-63={} 64+={}]",
             NETS.load(Relaxed),
             NETS_PART.load(Relaxed),
             LOST_ONE.load(Relaxed),
@@ -1809,6 +1830,13 @@ dist[0-15={} 16-63={} 64-255={} 256+={}] tree[0={} 1-31={} 32-255={} 256+={}]",
             T_1_31.load(Relaxed),
             T_32_255.load(Relaxed),
             T_256UP.load(Relaxed),
+            X_LIMIT.load(Relaxed),
+            X_DRAIN.load(Relaxed),
+            X_REACHED.load(Relaxed),
+            TD_0_3.load(Relaxed),
+            TD_4_15.load(Relaxed),
+            TD_16_63.load(Relaxed),
+            TD_64UP.load(Relaxed),
         )
     }
 }
@@ -1900,7 +1928,7 @@ fn route_net_raster(
             continue;
         }
 
-        match route_sink_astar(
+        let (sink_path, sink_exit) = route_sink_astar(
             ctx,
             net,
             &tree_wires,
@@ -1909,7 +1937,8 @@ fn route_net_raster(
             cong,
             cong_weight,
             cfg.sink_visit_limit,
-        ) {
+        );
+        match sink_path {
             Some(pips) => {
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
@@ -1928,7 +1957,19 @@ fn route_net_raster(
                 let n = FAIL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (sxw, syw) = chipdb.tile_xy(source_wire.tile());
                 let dist = (sink_x - sxw).abs() + (sink_y - syw).abs();
-                partial_census::note_astar_fail(dist, tree_wires.len());
+                // The search starts from `tree_wires`, so source-to-sink
+                // distance describes only the first sink of a net. A sink 200
+                // tiles from the source can sit 5 tiles from a branch, and
+                // long-search and locally-blocked want opposite fixes.
+                let tree_dist = tree_wires
+                    .iter()
+                    .map(|&w| {
+                        let (tx, ty) = chipdb.tile_xy(w.tile());
+                        (sink_x - tx).abs() + (sink_y - ty).abs()
+                    })
+                    .min()
+                    .unwrap_or(dist);
+                partial_census::note_astar_fail(dist, tree_wires.len(), tree_dist, sink_exit);
                 if n < 100 {
                     let net_name = ctx.net(net).name_id();
                     eprintln!(
@@ -3920,7 +3961,7 @@ mod tests {
         let cong = CongestionMap::new(ctx.chipdb().width(), ctx.chipdb().height());
         let mut src = FxHashSet::default();
         src.insert(W0);
-        route_sink_astar(ctx, net, &src, W1, None, &cong, 0.0, Some(10_000))
+        route_sink_astar(ctx, net, &src, W1, None, &cong, 0.0, Some(10_000)).0
     }
 
     #[test]
