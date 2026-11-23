@@ -1,5 +1,7 @@
+mod interconnect;
 mod library;
 mod role;
+mod session;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -16,6 +18,14 @@ use thiserror::Error;
 use crate::context::Context;
 use crate::netlist::{CellId, CellPin, NetId, PortType};
 use role::{CellRole, Roles};
+
+pub use interconnect::{
+    ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
+};
+pub use ruststa::engine::incr::{ArcTiming, Criticality};
+pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};
+
+const PS_IN_NS: f64 = 0.001;
 
 #[derive(Debug, Error)]
 pub enum StaBuildError {

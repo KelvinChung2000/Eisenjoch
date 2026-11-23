@@ -3,14 +3,12 @@ use std::collections::BTreeMap;
 use rusteda_core::liberty::{Cell, Direction, Library, Pin, Table, TimingArc, Units};
 
 use super::role::{CellRole, Roles};
-use super::StaBuildError;
+use super::{StaBuildError, PS_IN_NS};
 use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
 use crate::context::Context;
 use crate::netlist::PortType;
 use crate::timing::{ClockEdge, DelayT};
-
-const PS_IN_NS: f64 = 0.001;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TypePort {
