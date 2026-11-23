@@ -858,11 +858,15 @@ fn table_estimate_equals_exact_search_on_placed_design(
         if info.clock_constraint > 0 {
             continue;
         }
+        let users: Vec<u32> = (0..info.users().len())
+            .filter(|&user| info.users()[user].is_valid())
+            .map(|user| u32::try_from(user).expect("few users"))
+            .collect();
         let searched = exact
-            .net_delays(&ctx, InterconnectStage::Placed, net)
+            .net_delays(&ctx, InterconnectStage::Placed, net, &users)
             .expect("every data connection has a timed path");
         let looked_up = table
-            .net_delays(&ctx, InterconnectStage::Placed, net)
+            .net_delays(&ctx, InterconnectStage::Placed, net, &users)
             .expect("the table holds every data connection");
         connections += searched.len();
         assert_eq!(looked_up, searched, "net {}", ctx.name_of(info.name));
@@ -962,10 +966,6 @@ fn clock_sinks_are_ideal(
             Err(StaSessionError::IdealClockSink(sink)) if sink == clock_sink
         ));
     }
-    assert!(matches!(
-        model(&ctx, NOTIONAL, PlacedEstimate::DelayTable).net_delays(&ctx, InterconnectStage::Placed, chain.clk),
-        Err(InterconnectError::ClockNotTabulated { net }) if net == "clk"
-    ));
 }
 
 fn clock_also_drives_lut(ctx: &mut Context) -> (Chain, NetSink) {
@@ -1021,4 +1021,25 @@ fn clock_net_data_sink_keeps_its_delay(
         }
     }
     assert!(table.connection_delay(data_sink).unwrap().late_ps > 0);
+}
+
+#[rstest]
+#[case::net_constraint(ClockDefinition::NetConstraint, "clk")]
+#[case::user_sdc_named_apart(ClockDefinition::UserSdcNamedApart, ClockDefinition::USER_SDC_NAME)]
+fn propagated_clock_is_rejected(#[case] clock: ClockDefinition, #[case] name: &str) {
+    let mut ctx = common::make_example_context();
+    let chain = placed(&mut ctx);
+    clock.apply(&mut ctx, chain.clk);
+    ctx.design
+        .sdc
+        .push_str(&format!("set_propagated_clock [get_clocks {{{name}}}]\n"));
+    let built = StaSession::build(
+        &ctx,
+        model(&ctx, NOTIONAL, PlacedEstimate::DelayTable),
+        InterconnectStage::Placed,
+    );
+    assert!(matches!(
+        built,
+        Err(StaSessionError::PropagatedClock { clock }) if clock == name
+    ));
 }

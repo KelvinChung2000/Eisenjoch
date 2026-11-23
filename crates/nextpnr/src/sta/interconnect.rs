@@ -7,11 +7,11 @@ use ruststa::engine::delay::annotate::ArcDelays;
 use thiserror::Error;
 
 use super::delay_table::{DelayTable, Reach, TableEntry, TableKey, TileOffset};
-use super::{is_clock_net, PS_IN_NS};
+use super::PS_IN_NS;
 use crate::chipdb::{ChipDb, PipId, TimingValue, WireId};
+use crate::common::DelayT;
 use crate::context::{BelPin, Context};
 use crate::netlist::{CellPin, NetId, NetInfo, PipMap};
-use crate::common::DelayT;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DelayBounds {
@@ -114,8 +114,6 @@ pub enum InterconnectError {
         offset: TileOffset,
         reason: Untabulated,
     },
-    #[error("net '{net}' is a clock net; clocks are ideal and the delay table does not hold them")]
-    ClockNotTabulated { net: String },
     #[error("net '{net}': pin '{port}' of cell '{cell}' is not routed")]
     Unrouted {
         net: String,
@@ -276,19 +274,17 @@ impl InterconnectModel {
         ctx: &Context,
         stage: InterconnectStage,
         net: NetId,
+        users: &[u32],
     ) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
         let info = ctx.design.net(net);
         let driver = info.driver().ok_or_else(|| InterconnectError::Undriven {
             net: ctx.name_of(info.name).to_owned(),
         })?;
         let source = pin_wire(ctx, driver)?;
-        let sinks = info
-            .users()
+        let sinks = users
             .iter()
-            .enumerate()
-            .filter(|(_, sink)| sink.is_valid())
-            .map(|(user, &sink)| {
-                let user = u32::try_from(user).expect("net user index fits in u32");
+            .map(|&user| {
+                let sink = info.users()[user as usize];
                 Ok((user, sink, pin_wire(ctx, sink)?))
             })
             .collect::<Result<Vec<_>, InterconnectError>>()?;
@@ -408,11 +404,6 @@ fn look_up(
     source: WireId,
     sinks: &[(u32, CellPin, WireId)],
 ) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
-    if is_clock_net(net) {
-        return Err(InterconnectError::ClockNotTabulated {
-            net: ctx.name_of(net.name).to_owned(),
-        });
-    }
     let chipdb = ctx.chipdb();
     sinks
         .iter()

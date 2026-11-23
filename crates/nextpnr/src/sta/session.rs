@@ -10,7 +10,7 @@ use ruststa::engine::types::{ClockId, NodeId};
 use thiserror::Error;
 
 use super::interconnect::{DelayBounds, InterconnectError, InterconnectModel, InterconnectStage};
-use super::{is_clock_net, NetSink, RustSta, StaBuildError};
+use super::{NetSink, RustSta, StaBuildError};
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
 
@@ -81,8 +81,10 @@ pub enum StaSessionError {
     UnknownSink(NetSink),
     #[error("{sink:?} has no timing arc: {reason:?}")]
     UntimedSink { sink: NetSink, reason: Untimed },
-    #[error("{0:?} is a sink of a clock net; clocks are ideal and carry no interconnect delay")]
+    #[error("{0:?} is a clock pin of an ideal clock and carries no interconnect delay")]
     IdealClockSink(NetSink),
+    #[error("clock '{clock}' is propagated, but clock pins carry no interconnect delay, so its skew would time as zero")]
+    PropagatedClock { clock: String },
     #[error("the check records of the corner were released")]
     CheckRecordsReleased,
 }
@@ -184,7 +186,7 @@ impl StaSession {
     ) -> Result<Self, StaSessionError> {
         let mut sta = RustSta::build(ctx)?;
         let index = SinkIndex::new(ctx);
-        let mut links = sink_links(ctx, &sta, &index);
+        let mut links = sink_links(ctx, &sta, &index)?;
         let graph_net_arcs = sta
             .session
             .graph()
@@ -207,13 +209,11 @@ impl StaSession {
             .flat_map(|stage| index.nets.iter().flatten().map(move |&net| (net, stage)));
         for (net, stage) in annotated_nets {
             let range = index.range(net)?;
-            if !links[range.clone()]
-                .iter()
-                .any(|link| matches!(link, SinkLink::Arc(_)))
-            {
+            let users = timed_users(&links[range.clone()]);
+            if users.is_empty() {
                 continue;
             }
-            for (user, delay) in model.net_delays(ctx, stage, net)? {
+            for (user, delay) in model.net_delays(ctx, stage, net, &users)? {
                 let SinkLink::Arc(link) = &mut links[range.start + user as usize] else {
                     unreachable!("every placed user of a timed net has a timing arc");
                 };
@@ -265,14 +265,11 @@ impl StaSession {
     ) -> Result<IncrementalStats, StaSessionError> {
         let mut delays = Vec::new();
         for &net in nets {
-            let range = self.index.range(net)?;
-            if !self.links[range]
-                .iter()
-                .any(|link| matches!(link, SinkLink::Arc(_)))
-            {
+            let users = timed_users(&self.links[self.index.range(net)?]);
+            if users.is_empty() {
                 continue;
             }
-            for (user, delay) in self.model.net_delays(ctx, stage, net)? {
+            for (user, delay) in self.model.net_delays(ctx, stage, net, &users)? {
                 delays.push((NetSink { net, user }, delay));
             }
         }
@@ -357,8 +354,46 @@ impl StaSession {
     }
 }
 
-fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> {
+fn timed_users(links: &[SinkLink]) -> Vec<u32> {
+    links
+        .iter()
+        .enumerate()
+        .filter(|(_, link)| matches!(link, SinkLink::Arc(_)))
+        .map(|(user, _)| u32::try_from(user).expect("net user index fits in u32"))
+        .collect()
+}
+
+fn ideal_clock_pins(session: &TimingSession) -> Result<FxHashSet<NodeId>, StaSessionError> {
+    let graph = session.graph();
+    let clock_model = &session.default_corner().clock_model;
+    let clock_pins: Vec<NodeId> = graph
+        .launches()
+        .iter()
+        .map(|launch| launch.clock_pin)
+        .chain(graph.checks().iter().map(|check| check.clock_pin))
+        .filter(|&pin| !clock_model.node_clocks(pin).is_empty())
+        .collect();
+    let clocks = &session.state().constraints.clocks;
+    if let Some(clock) = clock_pins
+        .iter()
+        .flat_map(|&pin| clock_model.node_clocks(pin))
+        .map(|&(clock, _)| &clocks[clock.index()])
+        .find(|clock| clock.propagated)
+    {
+        return Err(StaSessionError::PropagatedClock {
+            clock: clock.name.clone(),
+        });
+    }
+    Ok(clock_pins.into_iter().collect())
+}
+
+fn sink_links(
+    ctx: &Context,
+    sta: &RustSta,
+    index: &SinkIndex,
+) -> Result<Vec<SinkLink>, StaSessionError> {
     let ids = sta.ids();
+    let clock_pins = ideal_clock_pins(&sta.session)?;
     let mut links = Vec::with_capacity(index.len());
     for net in index.nets.iter().flatten().copied() {
         let info = ctx.design.net(net);
@@ -366,7 +401,9 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
         for (user, &sink) in info.users().iter().enumerate() {
             let user = u32::try_from(user).expect("net user index fits in u32");
             let link = match (ids.net_arcs.get(&NetSink { net, user }), info.driver()) {
-                (Some(&arc), Some(_)) if is_clock_net(info) => SinkLink::IdealClock { arc },
+                (Some(&arc), Some(_)) if clock_pins.contains(&ids.pins[&sink].node) => {
+                    SinkLink::IdealClock { arc }
+                }
                 (Some(&arc), Some(driver)) => SinkLink::Arc(ArcLink {
                     from: ids.pins[&driver].key,
                     to: ids.pins[&sink].key,
@@ -381,7 +418,7 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
             links.push(link);
         }
     }
-    links
+    Ok(links)
 }
 
 fn domain_summaries(session: &TimingSession) -> Result<Vec<DomainSummary>, StaSessionError> {
