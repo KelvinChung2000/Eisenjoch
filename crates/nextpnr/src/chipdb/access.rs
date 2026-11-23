@@ -144,6 +144,60 @@ impl ChipDb {
             .expect("bel_info: BEL index out of bounds")
     }
 
+    /// Whether the chipdb declares `bel` a global buffer: himbaechel's
+    /// `BEL_FLAG_GLOBAL`, which the arch's database generator sets. Nets a
+    /// global buffer drives run on dedicated global routing.
+    #[inline]
+    pub fn bel_is_global(&self, bel: BelId) -> bool {
+        let flags: u32 = unsafe { read_packed!(*self.bel_info(bel), flags) };
+        flags & BelDataPod::FLAG_GLOBAL != 0
+    }
+
+    /// The dedicated global routing network: every node that only global
+    /// buffers can drive, directly or through other such nodes. Empty when
+    /// the chipdb flags no BEL as global.
+    ///
+    /// "Only" is what keeps this to dedicated resources: a node that general
+    /// fabric can also drive — a local mux a clock can enter, a BEL input —
+    /// is ordinary routing even when a global reaches it. The network is
+    /// identified from the chipdb's own flags and connectivity, so no arch's
+    /// wire names are involved. Built once, on first use.
+    pub fn global_network(&self) -> &rustc_hash::FxHashSet<WireId> {
+        self.global_network.get_or_init(|| {
+            let mut net: rustc_hash::FxHashSet<WireId> = Default::default();
+            let mut queue: Vec<WireId> = Vec::new();
+            for bel in self.bels().filter(|&b| self.bel_is_global(b)) {
+                for pin in self.bel_info(bel).pins.get() {
+                    let (_, wire_idx, dir) = self.bel_pin_fields(pin);
+                    if dir != PortType::Out as i32 {
+                        continue;
+                    }
+                    let wire = self.canonical_wire(WireId::new(bel.tile(), wire_idx));
+                    if net.insert(wire) {
+                        queue.push(wire);
+                    }
+                }
+            }
+            while let Some(node) = queue.pop() {
+                let mut next: Vec<WireId> = Vec::new();
+                self.pips_downhill_cb(node, |pip| next.push(self.pip_dst_wire(pip)));
+                for dst in next {
+                    if net.contains(&dst) {
+                        continue;
+                    }
+                    let mut only_global = true;
+                    self.pips_uphill_cb(dst, |pip| {
+                        only_global &= net.contains(&self.pip_src_wire(pip));
+                    });
+                    if only_global && net.insert(dst) {
+                        queue.push(dst);
+                    }
+                }
+            }
+            net
+        })
+    }
+
     /// Extract (name_constid, wire_index, dir) from a BEL pin.
     #[inline]
     pub fn bel_pin_fields(&self, pin: &BelPinPod) -> (i32, i32, i32) {
@@ -266,7 +320,16 @@ impl ChipDb {
             .flat_map(|(tile, count)| (0..count).map(move |i| BelId::new(tile, i as i32)))
     }
 
+    /// Every routing node once, as its [canonical](Self::canonical_wire) wire.
     pub fn wires(&self) -> impl Iterator<Item = WireId> + '_ {
+        self.tile_wires()
+            .filter(move |&wire| self.canonical_wire(wire) == wire)
+    }
+
+    /// Every tile wire, node members included. Only for code that walks the
+    /// chipdb's own per-tile structure; routing state is keyed by
+    /// [`ChipDb::wires`].
+    pub fn tile_wires(&self) -> impl Iterator<Item = WireId> + '_ {
         self.iter_tile_elements(|tt| tt.wires.get().len())
             .flat_map(|(tile, count)| (0..count).map(move |i| WireId::new(tile, i as i32)))
     }
@@ -297,18 +360,64 @@ impl ChipDb {
         unsafe { read_packed!(*info, timing_idx) }
     }
 
+    /// The node a pip is driven from, as its [canonical](Self::canonical_wire)
+    /// wire.
     #[inline]
     pub fn pip_src_wire(&self, pip: PipId) -> WireId {
+        self.canonical_wire(self.pip_src_tile_wire(pip))
+    }
+
+    /// The node a pip drives, as its [canonical](Self::canonical_wire) wire.
+    #[inline]
+    pub fn pip_dst_wire(&self, pip: PipId) -> WireId {
+        self.canonical_wire(self.pip_dst_tile_wire(pip))
+    }
+
+    /// The pip's source as the tile wire in the pip's own tile: where the
+    /// pip physically sits, not which node it reads.
+    #[inline]
+    pub fn pip_src_tile_wire(&self, pip: PipId) -> WireId {
         let info = self.pip_info(pip);
         let src_wire: i32 = unsafe { read_packed!(*info, src_wire) };
         WireId::new(pip.tile(), src_wire)
     }
 
+    /// The pip's destination as the tile wire in the pip's own tile: where a
+    /// search enters the driven node, which can be far from the node's root.
     #[inline]
-    pub fn pip_dst_wire(&self, pip: PipId) -> WireId {
+    pub fn pip_dst_tile_wire(&self, pip: PipId) -> WireId {
         let info = self.pip_info(pip);
         let dst_wire: i32 = unsafe { read_packed!(*info, dst_wire) };
         WireId::new(pip.tile(), dst_wire)
+    }
+
+    /// Call `f` for every tile wire of `wire`'s node, `wire` included.
+    #[inline]
+    pub fn node_members_cb<F: FnMut(WireId)>(&self, wire: WireId, mut f: F) {
+        f(wire);
+        self.node_wires_cb(wire, f);
+    }
+
+    /// Call `f` for every pip driven by `wire`'s node, from whichever of its
+    /// tiles the pip sits in.
+    #[inline]
+    pub fn pips_downhill_cb<F: FnMut(PipId)>(&self, wire: WireId, mut f: F) {
+        self.node_members_cb(wire, |member| {
+            for &pip_idx in self.wire_info(member).pips_downhill.get() {
+                f(PipId::new(member.tile(), pip_idx));
+            }
+        });
+    }
+
+    /// Call `f` for every pip driving `wire`'s node, from whichever of its
+    /// tiles the pip sits in.
+    #[inline]
+    pub fn pips_uphill_cb<F: FnMut(PipId)>(&self, wire: WireId, mut f: F) {
+        self.node_members_cb(wire, |member| {
+            for &pip_idx in self.wire_info(member).pips_uphill.get() {
+                f(PipId::new(member.tile(), pip_idx));
+            }
+        });
     }
 
     #[inline]
@@ -512,6 +621,40 @@ impl ChipDb {
         // Tile-local wire: use wire's own timing_idx.
         let wire_data = self.wire_info(wire);
         unsafe { read_packed!(*wire_data, timing_idx) }
+    }
+
+    /// The one identity of the routing node `wire` belongs to: the node's root
+    /// tile wire, or `wire` itself when it is tile-local or already the root.
+    ///
+    /// A node is one electrical conductor that the chipdb spreads over every
+    /// tile it crosses, so it has as many tile wires as tiles. Routing state
+    /// keyed by tile wire therefore grows with node length; keyed by this, it
+    /// grows with the number of nodes. Every `WireId` the chipdb hands out
+    /// (pip endpoints, BEL pin wires, [`ChipDb::wires`]) is already canonical;
+    /// this is for ids built from raw tile-wire indices.
+    ///
+    /// Matches upstream himbaechel's `normalise_wire`.
+    #[inline]
+    pub fn canonical_wire(&self, wire: WireId) -> WireId {
+        let tile = wire.tile();
+        let Some(node_ref) = self
+            .tile_shape(tile)
+            .wire_to_node
+            .get()
+            .get(wire.index() as usize)
+        else {
+            return wire;
+        };
+        let dx_mode: i16 = unsafe { read_packed!(*node_ref, dx_mode) };
+        if dx_mode == RelNodeRefPod::MODE_TILE_WIRE || dx_mode == RelNodeRefPod::MODE_IS_ROOT {
+            return wire;
+        }
+        let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
+        let root_wire: u16 = unsafe { read_packed!(*node_ref, wire) };
+        WireId::new(
+            self.rel_tile(tile, dx_mode as i32, dy as i32),
+            root_wire as i32,
+        )
     }
 
     /// Return a stable identifier for the multi-tile routing node `wire`

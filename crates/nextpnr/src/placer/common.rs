@@ -1968,7 +1968,7 @@ impl MuxSlotTracker {
                         continue;
                     }
                     let wire = WireId::new(bel_id.tile(), pin.wire());
-                    roots.insert(node_root(ctx, wire));
+                    roots.insert(ctx.chipdb().canonical_wire(wire));
                 }
             }
             if !roots.is_empty() {
@@ -2266,22 +2266,6 @@ fn cell_drives_external(ctx: &Context, cell_id: CellId) -> bool {
         }
     }
     false
-}
-
-/// Canonical node root: the (tile, index)-lexicographically smallest wire
-/// across the routing node containing `wire`. Two wires share a node iff
-/// they have the same root.
-fn node_root(ctx: &Context, wire: WireId) -> WireId {
-    let mut root = wire;
-    let mut root_key = (wire.tile(), wire.index());
-    ctx.chipdb().node_wires_cb(wire, |nw| {
-        let key = (nw.tile(), nw.index());
-        if key < root_key {
-            root = nw;
-            root_key = key;
-        }
-    });
-    root
 }
 
 #[cfg(test)]

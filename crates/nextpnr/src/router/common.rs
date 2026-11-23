@@ -105,15 +105,9 @@ pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) -> Result<(), WireI
                 for &p in &bound_pips {
                     ctx.unbind_pip(p);
                 }
-                // Re-read node equivalents for each previously-bound wire and
-                // unbind every one — mirrors what try_bind_wire_node did.
+                // Each bound wire is one node binding.
                 for &w in &bound_wires {
                     ctx.unbind_wire(w);
-                    let mut equivs: Vec<WireId> = Vec::new();
-                    ctx.chipdb().node_wires_cb(w, |nw| equivs.push(nw));
-                    for nw in equivs {
-                        ctx.unbind_wire(nw);
-                    }
                 }
                 for w in net_wire_entries.iter().rev() {
                     ctx.design.net_edit(plan.net).remove_wire(*w);
@@ -243,54 +237,25 @@ pub fn source_wire_const_value(ctx: &Context, source_wire: WireId) -> i32 {
 /// wire — callers should fall back to generic routing in that case.
 pub fn find_local_const_pip(ctx: &Context, sink: WireId, const_value: i32) -> Option<PipId> {
     let chipdb = ctx.chipdb();
-    for &pip_idx in chipdb.wire_info(sink).pips_uphill.get() {
-        let pip = PipId::new(sink.tile(), pip_idx);
-        if chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value {
-            return Some(pip);
-        }
-    }
     let mut result: Option<PipId> = None;
-    chipdb.node_wires_cb(sink, |peer| {
-        if result.is_some() {
-            return;
-        }
-        for &pip_idx in chipdb.wire_info(peer).pips_uphill.get() {
-            let pip = PipId::new(peer.tile(), pip_idx);
-            if chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value {
-                result = Some(pip);
-                return;
-            }
+    chipdb.pips_uphill_cb(sink, |pip| {
+        if result.is_none()
+            && chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value
+        {
+            result = Some(pip);
         }
     });
     result
 }
 
-/// Return true for global-clock wires in XC7-style chipdbs.
-pub fn is_global_clock_wire(ctx: &Context, wire: WireId) -> bool {
-    let wire_type = ctx.chipdb().wire_type(wire);
-    matches!(
-        wire_type,
-        "GCLK_SPINE"
-            | "CLK_IN"
-            | "GCLK"
-            | "GLOBAL"
-            | "BUFGROUT"
-            | "NODE_GLOBAL_BUFG"
-            | "NODE_GLOBAL_VROUTE"
-            | "NODE_GLOBAL_HROUTE"
-            | "NODE_GLOBAL_HDISTR"
-            | "NODE_GLOBAL_VDISTR"
-            | "NODE_GLOBAL_LEAF"
-    ) || wire_type.contains("GCLK")
-        || wire_type.contains("HCLK")
-        || wire_type.contains("BUFG")
-}
-
-/// Return true when a PIP touches a global-clock wire.
-pub fn is_global_clock_pip(ctx: &Context, pip: PipId) -> bool {
-    let chipdb = ctx.chipdb();
-    is_global_clock_wire(ctx, chipdb.pip_src_wire(pip))
-        || is_global_clock_wire(ctx, chipdb.pip_dst_wire(pip))
+/// True iff `net` is driven by a global buffer: a placed driver on a BEL the
+/// chipdb flags global (see [`crate::chipdb::ChipDb::bel_is_global`]). Such a
+/// net reaches its sinks over dedicated global routing, wherever they are.
+pub fn is_global_net(ctx: &Context, net: NetId) -> bool {
+    ctx.net(net)
+        .driver_cell_port()
+        .and_then(|d| ctx.cell(d.cell).bel())
+        .is_some_and(|bel| ctx.bel_global_buf(bel.id()))
 }
 
 /// Validate the routed design against the cell netlist.
@@ -458,17 +423,8 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                 continue;
             }
         };
-        // Same node-peer tolerance as the sink check below: the router can
-        // bind a node-peer of the source instead of the source wire itself.
-        let source_in_tree = net.wires().contains_key(&source_wire) || {
-            let mut hit = false;
-            chipdb.node_wires_cb(source_wire, |peer| {
-                if !hit && net.wires().contains_key(&peer) {
-                    hit = true;
-                }
-            });
-            hit
-        };
+        // Wires are canonical: a node is in the tree under exactly one id.
+        let source_in_tree = net.wires().contains_key(&source_wire);
         if !source_in_tree {
             let sn = chipdb.wire_name(source_wire).to_owned();
             let wires_len = net.wires().len();
@@ -514,23 +470,7 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                     continue;
                 }
             };
-            // A sink reached via a free node hop (one electrical wire
-            // spanning multiple tiles) ends its route at a PIP whose dst
-            // wire is a NODE PEER of the sink rather than the sink wire
-            // itself; `apply_route_plan` binds the PIP dst and only
-            // implicitly claims the sink via `try_bind_wire_node` (which
-            // locks all peers at the ctx level but does not expand the
-            // net's wire map). Treat the sink as routed whenever it or
-            // any of its node peers landed in the net's tree.
-            let sink_in_tree = net.wires().contains_key(&sink_wire) || {
-                let mut hit = false;
-                chipdb.node_wires_cb(sink_wire, |peer| {
-                    if !hit && net.wires().contains_key(&peer) {
-                        hit = true;
-                    }
-                });
-                hit
-            };
+            let sink_in_tree = net.wires().contains_key(&sink_wire);
             if !sink_in_tree {
                 let sn = chipdb.wire_name(sink_wire).to_owned();
                 let cell_name = user_cell.name().to_owned();
@@ -549,24 +489,13 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
             // rather than at the driver's wire: each tile's switch matrix has
             // its own tied const wire, so different sinks legitimately anchor
             // on different local const wires. See `find_local_const_pip`.
-            //
-            // A* expansion treats all node peers as one electrical wire and may
-            // record a PIP whose src_wire is a peer of a tree-bound wire rather
-            // than the tree-bound wire itself. When `cur` isn't in the tree,
-            // consult `node_wires_cb` for a peer that is — a free node hop is
-            // not a break in the chain.
             let source_const_value = chipdb.wire_info(source_wire).const_value;
-            let source_node_id = chipdb.node_id(source_wire);
             let mut cur = sink_wire;
             let mut seen: FxHashSet<WireId> = FxHashSet::default();
             let mut reached_source = false;
             let mut cause = "reached a wire with no parent pip";
             loop {
                 if cur == source_wire {
-                    reached_source = true;
-                    break;
-                }
-                if source_node_id.is_some() && chipdb.node_id(cur) == source_node_id {
                     reached_source = true;
                     break;
                 }
@@ -581,29 +510,9 @@ pub fn validate_all_routed(ctx: &Context) -> Result<(), super::RouterError> {
                     cause = "cycle detected in parent-pip chain";
                     break;
                 }
-                let pm = match net.wires().get(&cur) {
-                    Some(pm) => pm,
-                    None => {
-                        // Free node hop: find a peer of `cur` that is in the
-                        // tree and continue from there. Peers are electrically
-                        // the same wire; binding any one binds the whole node.
-                        let mut peer_in_tree: Option<WireId> = None;
-                        chipdb.node_wires_cb(cur, |peer| {
-                            if peer_in_tree.is_none() && net.wires().contains_key(&peer) {
-                                peer_in_tree = Some(peer);
-                            }
-                        });
-                        match peer_in_tree {
-                            Some(peer) => {
-                                cur = peer;
-                                continue;
-                            }
-                            None => {
-                                cause = "parent chain left the routing tree";
-                                break;
-                            }
-                        }
-                    }
+                let Some(pm) = net.wires().get(&cur) else {
+                    cause = "parent chain left the routing tree";
+                    break;
                 };
                 let Some(parent_pip) = pm.pip else {
                     cause = "reached a wire with no parent pip before hitting the source";
@@ -761,7 +670,8 @@ pub fn diagnose_unroutable_net(
     let src_wire = src_wire_v.id();
     let chipdb = ctx.chipdb();
     let (sx, sy) = chipdb.tile_xy(src_wire.tile());
-    let src_downhill = chipdb.wire_info(src_wire).pips_downhill.get().len();
+    let mut src_downhill = 0usize;
+    chipdb.pips_downhill_cb(src_wire, |_| src_downhill += 1);
     eprintln!(
         "  driver: cell='{}' port='{}' bel='{}' wire='{}' ({}) at ({},{}); pips_downhill={}",
         driver_cell.name(),
@@ -806,7 +716,8 @@ pub fn diagnose_unroutable_net(
         let dst_wire = dst_wire_v.id();
         let (dx, dy) = chipdb.tile_xy(dst_wire.tile());
         let manhattan = (dx - sx).abs() + (dy - sy).abs();
-        let dst_uphill = chipdb.wire_info(dst_wire).pips_uphill.get().len();
+        let mut dst_uphill = 0usize;
+        chipdb.pips_uphill_cb(dst_wire, |_| dst_uphill += 1);
         eprintln!(
             "  user[{}]: cell='{}' port='{}' bel='{}' wire='{}' ({}) at ({},{}); manhattan={}; pips_uphill={}",
             ui,

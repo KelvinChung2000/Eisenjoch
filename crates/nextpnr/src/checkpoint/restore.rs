@@ -121,7 +121,11 @@ pub fn restore(
         }
 
         // Bind the source wire.
-        let src_wire = WireId::new(nr.source_wire_tile, nr.source_wire_index);
+        // Checkpoints written before wires were node-canonical may name any
+        // member of the source node.
+        let src_wire = ctx
+            .chipdb()
+            .canonical_wire(WireId::new(nr.source_wire_tile, nr.source_wire_index));
         if src_wire.is_valid() && ctx.wire(src_wire).is_available() {
             ctx.bind_wire(src_wire, net_idx, PlaceStrength::Strong);
             ctx.design

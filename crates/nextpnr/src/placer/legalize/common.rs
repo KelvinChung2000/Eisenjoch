@@ -217,25 +217,18 @@ pub fn cell_pin_wires_pub(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(Wi
 /// a single net. This is the placer-side gate that prevents the router's
 /// later `try_bind_wire_node` from rejecting a pre-reservation as a conflict.
 ///
-/// Storage is per-node, not per-wire. The previous implementation expanded
-/// every claimed wire's node-equivalence class into `claimed` at record
-/// time and re-walked the class at is_legal time. Both walks were O(peers),
-/// and mega-nodes (BUFG ≈ 65 k peers) were silently truncated at
-/// `NODE_PEER_CAP`. Keying directly on `chipdb.node_id(w)` makes record and
-/// is_legal both O(1) per pin, and the mega-node truncation goes away.
+/// Storage is per node: pin wires are canonical, so one entry covers a node
+/// however many tiles it spans, and record and is_legal are O(1) per pin.
 pub(crate) struct DriverNodeRegistry {
-    /// Multi-tile node id -> owning NetId. Populated for every BEL-pin wire
-    /// of a placed cell whose `chipdb.node_id(...)` returns `Some(_)`.
-    claimed_nodes: FxHashMap<u64, NetId>,
-    /// Tile-local wires (no multi-tile node) keyed directly.
-    claimed_local: FxHashMap<WireId, NetId>,
+    /// Canonical node wire -> owning NetId, for every BEL-pin wire of a
+    /// placed cell.
+    claimed: FxHashMap<WireId, NetId>,
 }
 
 impl DriverNodeRegistry {
     fn with_capacity(pins: usize) -> Self {
         Self {
-            claimed_nodes: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
-            claimed_local: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
+            claimed: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
         }
     }
 
@@ -259,22 +252,12 @@ impl DriverNodeRegistry {
 
     #[inline]
     fn lookup(&self, ctx: &Context, wire: WireId) -> Option<NetId> {
-        match ctx.chipdb().node_id(wire) {
-            Some(node) => self.claimed_nodes.get(&node).copied(),
-            None => self.claimed_local.get(&wire).copied(),
-        }
+        self.claimed.get(&ctx.chipdb().canonical_wire(wire)).copied()
     }
 
     #[inline]
     fn insert(&mut self, ctx: &Context, wire: WireId, net: NetId) {
-        match ctx.chipdb().node_id(wire) {
-            Some(node) => {
-                self.claimed_nodes.insert(node, net);
-            }
-            None => {
-                self.claimed_local.insert(wire, net);
-            }
-        }
+        self.claimed.insert(ctx.chipdb().canonical_wire(wire), net);
     }
 
     /// True iff placing `cell_id` at `bel` would not collide with an existing
@@ -539,22 +522,18 @@ pub(crate) fn verify_shared_mux_legality(ctx: &Context) -> Result<(), PlacerErro
 
     for (cid, bel) in bound {
         for (w, net) in cell_pin_wires(ctx, cid, bel) {
-            let mut node_wires: Vec<WireId> = Vec::with_capacity(8);
-            node_wires.push(w);
-            ctx.chipdb().node_wires_cb(w, |nw| node_wires.push(nw));
-            for nw in node_wires {
-                if let Some(&(other_cid, other_net)) = seen.get(&nw) {
-                    if other_net != net {
-                        return Err(PlacerError::PlacementFailed(format!(
-                            "Shared-mux conflict: {} and {} both claim node containing wire {:?}",
-                            describe_cell(ctx, cid),
-                            describe_cell(ctx, other_cid),
-                            nw,
-                        )));
-                    }
-                } else {
-                    seen.insert(nw, (cid, net));
+            let node = ctx.chipdb().canonical_wire(w);
+            if let Some(&(other_cid, other_net)) = seen.get(&node) {
+                if other_net != net {
+                    return Err(PlacerError::PlacementFailed(format!(
+                        "Shared-mux conflict: {} and {} both claim node {:?}",
+                        describe_cell(ctx, cid),
+                        describe_cell(ctx, other_cid),
+                        node,
+                    )));
                 }
+            } else {
+                seen.insert(node, (cid, net));
             }
         }
     }

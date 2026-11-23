@@ -20,7 +20,7 @@ use super::astar::{
 };
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
-    is_global_clock_wire, resolve_source_wire, source_wire_const_value, unroute_net,
+    is_global_net, resolve_source_wire, source_wire_const_value, unroute_net,
     validate_all_routed, RoutePlan, SinkRoute,
 };
 use super::maze::{
@@ -29,12 +29,11 @@ use super::maze::{
 };
 use super::RouterError;
 
-/// True iff every valid sink of `net` is bound to the net (directly or via a
-/// node-equivalent peer). Used to identify nets the primary pass left
-/// partially unrouted so the cleanup A* can finish them.
+/// True iff every valid sink of `net` is in the net's routing tree. Used to
+/// identify nets the primary pass left partially unrouted so the cleanup A*
+/// can finish them.
 fn net_fully_routed(ctx: &Context, net_id: NetId) -> bool {
     let net = ctx.net(net_id);
-    let chipdb = ctx.chipdb();
     for user in net.users().iter() {
         if !user.is_valid() {
             continue;
@@ -45,17 +44,7 @@ fn net_fully_routed(ctx: &Context, net_id: NetId) -> bool {
         let Some(sink_wv) = bel.pin_wire(user.port) else {
             continue;
         };
-        let sink_wire = sink_wv.id();
-        if net.wires().contains_key(&sink_wire) {
-            continue;
-        }
-        let mut peer_in_tree = false;
-        chipdb.node_wires_cb(sink_wire, |peer| {
-            if !peer_in_tree && net.wires().contains_key(&peer) {
-                peer_in_tree = true;
-            }
-        });
-        if !peer_in_tree {
+        if !net.wires().contains_key(&sink_wv.id()) {
             return false;
         }
     }
@@ -169,31 +158,6 @@ fn snapshot_net(ctx: &Context, net: NetId) -> NetSnapshot {
     NetSnapshot { net, wires }
 }
 
-/// Fully unroute a net: unbind every wire (including node-equivalents) and
-/// every PIP it owns, and clear its wire map. Differs from
-/// `super::common::unroute_net` in that it also walks `node_wires_cb` to
-/// release node-equivalent bindings that `try_bind_wire_node` installed,
-/// ensuring the corridor is truly free for the net we're trying to place.
-fn ripup_net_with_equivs(ctx: &mut Context, net: NetId) {
-    let entries: Vec<(WireId, Option<PipId>)> = ctx
-        .net(net)
-        .wires()
-        .iter()
-        .map(|(&w, pm)| (w, pm.pip))
-        .collect();
-    for (wire, pip) in &entries {
-        let mut equivs: Vec<WireId> = Vec::new();
-        ctx.chipdb().node_wires_cb(*wire, |nw| equivs.push(nw));
-        ctx.unbind_wire(*wire);
-        for nw in equivs {
-            ctx.unbind_wire(nw);
-        }
-        if let Some(p) = pip {
-            ctx.unbind_pip(*p);
-        }
-    }
-    ctx.design.net_edit(net).clear_wires();
-}
 
 /// Re-apply a snapshot after a failed rip-up attempt. Returns false if any
 /// wire re-bind fails (which would indicate external state corruption — the
@@ -240,9 +204,6 @@ fn reroute_from_scratch(
 
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
-    ctx.chipdb().node_wires_cb(source_wire, |nw| {
-        tree_wires.insert(nw);
-    });
 
     let mut sink_routes = Vec::new();
     for &sink_wire in &sink_wires {
@@ -266,11 +227,7 @@ fn reroute_from_scratch(
         ) {
             Some(pips) => {
                 for &pip in &pips {
-                    let dw = ctx.chipdb().pip_dst_wire(pip);
-                    tree_wires.insert(dw);
-                    ctx.chipdb().node_wires_cb(dw, |nw| {
-                        tree_wires.insert(nw);
-                    });
+                    tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
                 }
                 sink_routes.push(SinkRoute { sink_wire, pips });
             }
@@ -325,12 +282,8 @@ fn scoped_ripup_route(
         return false;
     }
 
-    // Build source wire set (source + node equivalents).
     let mut src_set: FxHashSet<WireId> = FxHashSet::default();
     src_set.insert(source_wire);
-    ctx.chipdb().node_wires_cb(source_wire, |nw| {
-        src_set.insert(nw);
-    });
 
     // Step 1: theoretical-min path (ignore bindings). Establishes the timing
     // baseline (`min_cost`) and the full set of foreign nets occupying it.
@@ -367,22 +320,13 @@ fn scoped_ripup_route(
 
     let mut blockers: FxHashSet<NetId> = FxHashSet::default();
     for &pip in &explore_path {
+        // Binding is per node, so the node's one binding names its owner.
         let dst = ctx.chipdb().pip_dst_wire(pip);
-        // Binding is at node granularity (try_bind_wire_node), so a wire
-        // whose dst is unbound can still be unroutable if any node-equivalent
-        // wire belongs to another net. Walk the node to catch all blockers.
         if let Some((owner, _)) = ctx.wire_binding(dst) {
             if owner != net {
                 blockers.insert(owner);
             }
         }
-        ctx.chipdb().node_wires_cb(dst, |nw| {
-            if let Some((owner, _)) = ctx.wire_binding(nw) {
-                if owner != net {
-                    blockers.insert(owner);
-                }
-            }
-        });
     }
     if blockers.is_empty() {
         // Corridor already clear — normal A* should have succeeded but hit
@@ -446,7 +390,7 @@ fn scoped_ripup_route(
     let snapshots: Vec<NetSnapshot> = blocker_list.iter().map(|&b| snapshot_net(ctx, b)).collect();
 
     for &b in &blocker_list {
-        ripup_net_with_equivs(ctx, b);
+        unroute_net(ctx, b);
         neg_state.bump_rip_up(b);
     }
 
@@ -461,10 +405,7 @@ fn scoped_ripup_route(
         Some(&explore_bbox),
     ) {
         // Our net still can't route — undo and restore blockers.
-        // Use equiv-aware ripup because apply_route_plan binds node
-        // equivalents via try_bind_wire_node; plain unroute_net would
-        // leave them stale and cause the subsequent restore_net to fail.
-        ripup_net_with_equivs(ctx, net);
+        unroute_net(ctx, net);
         for snap in &snapshots {
             if !restore_net(ctx, snap) {
                 eprintln!(
@@ -501,10 +442,10 @@ fn scoped_ripup_route(
             // against node-equiv leaks anyway), undo our net, then undo
             // any blockers we already successfully re-routed earlier in
             // the loop, then restore every original snapshot.
-            ripup_net_with_equivs(ctx, b);
-            ripup_net_with_equivs(ctx, net);
+            unroute_net(ctx, b);
+            unroute_net(ctx, net);
             for snap in &snapshots[..i] {
-                ripup_net_with_equivs(ctx, snap.net);
+                unroute_net(ctx, snap.net);
             }
             for snap in &snapshots {
                 if !restore_net(ctx, snap) {
@@ -594,18 +535,8 @@ fn inloop_ripup_net(
         return false;
     }
 
-    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
-    let mut grow_tree = |tree: &mut FxHashSet<WireId>, ctx: &Context, w: WireId| {
-        tree.insert(w);
-        ctx.chipdb().node_wires_cb(w, |nw| {
-            tree.insert(nw);
-        });
-    };
-    grow_tree(&mut tree_wires, ctx, source_wire);
-    let existing: Vec<WireId> = ctx.net(net).wires().keys().copied().collect();
-    for w in existing {
-        grow_tree(&mut tree_wires, ctx, w);
-    }
+    let mut tree_wires: FxHashSet<WireId> = ctx.net(net).wires().keys().copied().collect();
+    tree_wires.insert(source_wire);
 
     let missing: Vec<WireId> = sink_wires
         .iter()
@@ -696,13 +627,6 @@ fn inloop_ripup_net(
                     blockers.insert(owner);
                 }
             }
-            ctx.chipdb().node_wires_cb(dst, |nw| {
-                if let Some((owner, _)) = ctx.wire_binding(nw) {
-                    if owner != net {
-                        blockers.insert(owner);
-                    }
-                }
-            });
         }
 
         let mut blocker_list: Vec<NetId> = blockers.into_iter().collect();
@@ -732,7 +656,7 @@ fn inloop_ripup_net(
         let snapshots: Vec<NetSnapshot> =
             blocker_list.iter().map(|&b| snapshot_net(ctx, b)).collect();
         for &b in &blocker_list {
-            ripup_net_with_equivs(ctx, b);
+            unroute_net(ctx, b);
             *victim_ledger.entry(b).or_insert(0) += 1;
             neg_state.bump_rip_up(b);
         }
@@ -795,10 +719,10 @@ fn inloop_ripup_net(
             ) {
                 // Roll back: the failed victim, our extension, the victims
                 // already rerouted, then restore every snapshot.
-                ripup_net_with_equivs(ctx, b);
-                ripup_net_with_equivs(ctx, net);
+                unroute_net(ctx, b);
+                unroute_net(ctx, net);
                 for snap in &snapshots[..i] {
-                    ripup_net_with_equivs(ctx, snap.net);
+                    unroute_net(ctx, snap.net);
                 }
                 if !restore_net(ctx, &own_snapshot) {
                     eprintln!(
@@ -826,10 +750,9 @@ fn inloop_ripup_net(
         // Sink landed: fold its corridor into the tree for the next sink.
         for sr in &plan.sink_routes {
             for &pip in &sr.pips {
-                let dw = ctx.chipdb().pip_dst_wire(pip);
-                grow_tree(&mut tree_wires, ctx, dw);
+                tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
             }
-            grow_tree(&mut tree_wires, ctx, sr.sink_wire);
+            tree_wires.insert(sr.sink_wire);
         }
         stats.sinks_recovered += 1;
         if blocker_list.is_empty() {
@@ -1343,9 +1266,10 @@ fn corridor_bboxes(
     out
 }
 
-/// Pick a representative wire in `target_tile`: the wire with the most
+/// Pick a representative wire in `target_tile`: the tile wire with the most
 /// `pips_uphill`, so it's reachable from many directions. Used as the
 /// destination anchor when the actual goal is "any wire in `target_tile`".
+/// Returned as its node's canonical wire, which is what searches reach.
 fn representative_wire_in_tile(chipdb: &crate::chipdb::ChipDb, target_tile: i32) -> Option<WireId> {
     let tt = chipdb.tile_type(target_tile);
     let n_wires = tt.wires.get().len();
@@ -1358,7 +1282,14 @@ fn representative_wire_in_tile(chipdb: &crate::chipdb::ChipDb, target_tile: i32)
             _ => best = Some((w, up)),
         }
     }
-    best.map(|(w, _)| w)
+    best.map(|(w, _)| chipdb.canonical_wire(w))
+}
+
+/// True iff `wire`'s node has a tile wire in `tile`.
+fn node_touches_tile(chipdb: &crate::chipdb::ChipDb, wire: WireId, tile: i32) -> bool {
+    let mut hit = false;
+    chipdb.node_members_cb(wire, |m| hit |= m.tile() == tile);
+    hit
 }
 
 /// Confined A* search within a segment's tile region.
@@ -1420,13 +1351,13 @@ fn segment_astar(
     match final_dst {
         Some(dst) => result.path.map(|pips| (pips, dst)),
         None => {
-            // Scan the visited map for the lowest-cost wire that landed
-            // in `target_tile`; reconstruct a path to it. This
+            // Scan the visited map for the lowest-cost node that reaches
+            // into `target_tile`; reconstruct a path to it. This
             // generalises the old "accept any wire in target_tile" hit
             // condition without adding multi-goal support to the kernel.
             let mut best: Option<(WireId, DelayT)> = None;
             for (&w, &(cost, pen, _, _)) in result.trace.visited.iter() {
-                if w.tile() != target_tile {
+                if !node_touches_tile(chipdb, w, target_tile) {
                     continue;
                 }
                 let score = cost + pen;
@@ -1485,16 +1416,8 @@ fn segment_route(
 ) -> Option<Vec<PipId>> {
     let chipdb = ctx.chipdb();
 
-    let mut dst_nodes: FxHashSet<WireId> = FxHashSet::default();
-    dst_nodes.insert(dst_wire);
-    chipdb.node_wires_cb(dst_wire, |nw| {
-        dst_nodes.insert(nw);
-    });
-
-    for src in src_wires {
-        if dst_nodes.contains(src) {
-            return Some(Vec::new());
-        }
+    if src_wires.contains(&dst_wire) {
+        return Some(Vec::new());
     }
 
     // Same-tile: use local route (no tile confinement, generous budget).
@@ -1540,16 +1463,9 @@ fn segment_route(
                 // Update current wires for next segment.
                 current_wires.clear();
                 current_wires.insert(end_wire);
-                chipdb.node_wires_cb(end_wire, |nw| {
-                    current_wires.insert(nw);
-                });
                 // Also add PIP destination wires.
                 for &pip in &pips {
-                    let dw = chipdb.pip_dst_wire(pip);
-                    current_wires.insert(dw);
-                    chipdb.node_wires_cb(dw, |nw| {
-                        current_wires.insert(nw);
-                    });
+                    current_wires.insert(chipdb.pip_dst_wire(pip));
                 }
             }
             None => {
@@ -1627,9 +1543,6 @@ fn route_net_greedy(
     let mut tree_tiles: Vec<(i32, i32)> = vec![(src_x, src_y)];
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
-    chipdb.node_wires_cb(source_wire, |nw| {
-        tree_wires.insert(nw);
-    });
 
     let mut remaining_sinks: Vec<(WireId, i32, i32)> = sink_wires
         .iter()
@@ -1694,12 +1607,10 @@ fn route_net_greedy(
             Some(pips) => {
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
-                    let (tx, ty) = chipdb.tile_xy(dst.tile());
+                    // Where the pip sits, not where its node is rooted.
+                    let (tx, ty) = chipdb.tile_xy(pip.tile());
                     tree_tiles.push((tx, ty));
                     tree_wires.insert(dst);
-                    chipdb.node_wires_cb(dst, |nw| {
-                        tree_wires.insert(nw);
-                    });
                 }
                 tree_wires.insert(sink_wire);
                 sink_routes.push(SinkRoute { sink_wire, pips });
@@ -1924,9 +1835,6 @@ fn route_net_raster(
 
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
-    chipdb.node_wires_cb(source_wire, |nw| {
-        tree_wires.insert(nw);
-    });
 
     // Nearest-unrouted-sink Steiner heuristic: route the sink with smallest
     // manhattan to source first; subsequent sinks attach via tree_wires.
@@ -1982,9 +1890,6 @@ fn route_net_raster(
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
                     tree_wires.insert(dst);
-                    chipdb.node_wires_cb(dst, |nw| {
-                        tree_wires.insert(nw);
-                    });
                 }
                 tree_wires.insert(sink_wire);
 
@@ -2043,69 +1948,6 @@ fn route_net_raster(
 // Over-use negotiation (PathFinder)
 // ---------------------------------------------------------------------------
 
-/// Dense per-wire indexing so occupancy and history live in flat vectors.
-/// The 2.5M-wire chipdb makes hash maps the wrong shape for a value read on
-/// every A* expansion.
-struct WireTable {
-    offsets: Vec<u32>,
-    n: usize,
-}
-
-impl WireTable {
-    fn build(chipdb: &crate::chipdb::ChipDb) -> Self {
-        let n_tiles = chipdb.num_tiles();
-        let mut offsets = Vec::with_capacity(n_tiles as usize + 1);
-        let mut total = 0u32;
-        for t in 0..n_tiles {
-            offsets.push(total);
-            total += chipdb.tile_type(t).wires.get().len() as u32;
-        }
-        offsets.push(total);
-        Self {
-            offsets,
-            n: total as usize,
-        }
-    }
-
-    #[inline]
-    fn idx(&self, w: WireId) -> usize {
-        self.offsets[w.tile() as usize] as usize + w.index() as usize
-    }
-
-    /// Inverse of `idx` at tile granularity, by binary search over the
-    /// per-tile offsets. Used only by the per-pass residual histogram.
-    fn tile_of(&self, i: usize) -> i32 {
-        match self.offsets.binary_search(&(i as u32)) {
-            Ok(t) => t as i32,
-            Err(t) => (t - 1) as i32,
-        }
-    }
-}
-
-/// Canonical flat indices a plan occupies: source, every pip destination and
-/// every sink, each expanded over its node peers and deduplicated, so one net
-/// contributes exactly one unit of demand per routing node it crosses.
-fn plan_wire_indices(ctx: &Context, wt: &WireTable, plan: &RoutePlan) -> Vec<u32> {
-    let chipdb = ctx.chipdb();
-    let mut set: FxHashSet<u32> = FxHashSet::default();
-    let mut add = |set: &mut FxHashSet<u32>, w: WireId| {
-        set.insert(wt.idx(w) as u32);
-        chipdb.node_wires_cb(w, |nw| {
-            set.insert(wt.idx(nw) as u32);
-        });
-    };
-    add(&mut set, plan.source_wire);
-    for sr in &plan.sink_routes {
-        add(&mut set, sr.sink_wire);
-        for &pip in &sr.pips {
-            add(&mut set, chipdb.pip_dst_wire(pip));
-        }
-    }
-    let mut v: Vec<u32> = set.into_iter().collect();
-    v.sort_unstable();
-    v
-}
-
 /// Fixed-point scale for every term of the over-use cost model. `DelayT` is
 /// an integer and `wire_penalty` used to cast an unscaled `present × occ +
 /// history` straight to it, so every price below 1.0 truncated to zero: at
@@ -2115,15 +1957,83 @@ fn plan_wire_indices(ctx: &Context, wt: &WireTable, plan: &RoutePlan) -> Vec<u32
 /// are unchanged and only the resolution improves.
 const OVERUSE_COST_SCALE: DelayT = 16;
 
-/// Congestion-priced cost model: a shared wire costs `present × occupancy`
-/// now and `history` for every past pass it stayed shared, instead of the
+/// Compact indices for the routing nodes negotiation has seen, so occupancy
+/// and history live in flat vectors that grow with the nodes plans actually
+/// use. A table over every tile wire on the chip costs memory in proportion
+/// to the device whatever the design, and every multi-tile node in it was
+/// counted once per tile it crosses.
+struct NodeTable {
+    ids: FxHashMap<WireId, u32>,
+    wires: Vec<WireId>,
+}
+
+impl NodeTable {
+    fn new() -> Self {
+        Self {
+            ids: FxHashMap::default(),
+            wires: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.wires.len()
+    }
+
+    /// Index of a node some plan has used, or `None` if none has: it then
+    /// has no occupancy and no history.
+    #[inline]
+    fn get(&self, w: WireId) -> Option<usize> {
+        self.ids.get(&w).map(|&i| i as usize)
+    }
+
+    fn intern(&mut self, w: WireId) -> u32 {
+        *self.ids.entry(w).or_insert_with(|| {
+            let i = u32::try_from(self.wires.len()).expect("more than u32::MAX routed nodes");
+            self.wires.push(w);
+            i
+        })
+    }
+
+    fn tile_of(&self, i: usize) -> i32 {
+        self.wires[i].tile()
+    }
+}
+
+/// Node indices a plan occupies: source, every pip destination and every
+/// sink, deduplicated, so one net contributes exactly one unit of demand per
+/// routing node it crosses. Interns new nodes and grows `occ` and `hist` to
+/// cover them.
+fn plan_wire_indices(
+    ctx: &Context,
+    nt: &mut NodeTable,
+    occ: &mut Vec<u16>,
+    hist: &mut Vec<f32>,
+    plan: &RoutePlan,
+) -> Vec<u32> {
+    let chipdb = ctx.chipdb();
+    let mut v: Vec<u32> = Vec::with_capacity(1 + plan.sink_routes.len());
+    v.push(nt.intern(plan.source_wire));
+    for sr in &plan.sink_routes {
+        v.push(nt.intern(sr.sink_wire));
+        for &pip in &sr.pips {
+            v.push(nt.intern(chipdb.pip_dst_wire(pip)));
+        }
+    }
+    occ.resize(nt.len(), 0);
+    hist.resize(nt.len(), 0.0);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// exclusive model's `DelayT::MAX/4` wall. BEL-pin reservations stay walls —
 /// a foreign net planning through a sink pin's node can never be priced out
 /// of the way, only displaced, which negotiation cannot express.
 struct OveruseCostModel<'a> {
     net: NetId,
     bbox: Option<&'a BoundingBox>,
-    wt: &'a WireTable,
+    nt: &'a NodeTable,
     occ: &'a [u16],
     hist: &'a [f32],
     reserved: &'a FxHashMap<WireId, NetId>,
@@ -2146,7 +2056,9 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
                 return DelayT::MAX / 4;
             }
         }
-        let i = self.wt.idx(wire);
+        let Some(i) = self.nt.get(wire) else {
+            return 0;
+        };
         let price = self.present * self.occ[i] as f32 + self.hist[i];
         (price * OVERUSE_COST_SCALE as f32).round() as DelayT
     }
@@ -2208,7 +2120,7 @@ fn plan_net_overuse(
     ctx: &Context,
     net: NetId,
     source_wire: WireId,
-    wt: &WireTable,
+    nt: &NodeTable,
     occ: &[u16],
     hist: &[f32],
     reserved: &FxHashMap<WireId, NetId>,
@@ -2243,9 +2155,6 @@ fn plan_net_overuse(
 
     let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
     tree_wires.insert(source_wire);
-    chipdb.node_wires_cb(source_wire, |nw| {
-        tree_wires.insert(nw);
-    });
 
     let (src_x, src_y) = chipdb.tile_xy(source_wire.tile());
     let mut remaining_sinks: Vec<(WireId, i32, i32)> = sink_wires
@@ -2302,7 +2211,7 @@ fn plan_net_overuse(
         let model = OveruseCostModel {
             net,
             bbox: sink_bbox,
-            wt,
+            nt,
             occ,
             hist,
             reserved,
@@ -2314,9 +2223,6 @@ fn plan_net_overuse(
                 for &pip in &pips {
                     let dst = chipdb.pip_dst_wire(pip);
                     tree_wires.insert(dst);
-                    chipdb.node_wires_cb(dst, |nw| {
-                        tree_wires.insert(nw);
-                    });
                 }
                 tree_wires.insert(sink_wire);
                 sink_routes.push(SinkRoute { sink_wire, pips });
@@ -2406,13 +2312,12 @@ fn route_nets_overuse(
     // contested node keeps an incumbent and sheds exactly one occupant.
     let single_mover = std::env::var("NPNR_ROUTE_SINGLE_MOVER").ok().as_deref() == Some("1");
 
-    let wt = WireTable::build(ctx.chipdb());
-    let mut occ = vec![0u16; wt.n];
-    let mut hist = vec![0f32; wt.n];
+    let mut nt = NodeTable::new();
+    let mut occ: Vec<u16> = Vec::new();
+    let mut hist: Vec<f32> = Vec::new();
     eprintln!(
-        "RasterRouter[overuse]: {} nets, {} wires, present={} growth={} hist_gain={}",
+        "RasterRouter[overuse]: {} nets, present={} growth={} hist_gain={}",
         nets.len(),
-        wt.n,
         present0,
         growth,
         hist_gain,
@@ -2446,17 +2351,13 @@ fn route_nets_overuse(
             }
         }
         for w in pins {
-            let mut node: Vec<WireId> = vec![w];
-            ctx.chipdb().node_wires_cb(w, |nw| node.push(nw));
-            for nw in node {
-                match reserved.entry(nw) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(net);
-                    }
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        if *e.get() != net {
-                            reservation_conflicts += 1;
-                        }
+            match reserved.entry(w) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(net);
+                }
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    if *e.get() != net {
+                        reservation_conflicts += 1;
                     }
                 }
             }
@@ -2468,18 +2369,15 @@ fn route_nets_overuse(
         reservation_conflicts,
     );
 
-    // Const and clock sources never route through the priced A* — the const
-    // fast path and the clock-backbone seeding live in the exclusive
+    // Const and global nets never route through the priced A* — the const
+    // fast path and the whole-chip global search live in the exclusive
     // cleanup — so they go straight to the finisher.
     let mut ordinary: Vec<NetId> = Vec::new();
     for &net in nets {
-        match resolve_source_wire(ctx, net) {
-            Ok(Some(w)) => {
-                if source_wire_const_value(ctx, w) == 0 && !is_global_clock_wire(ctx, w) {
-                    ordinary.push(net);
-                }
+        if let Ok(Some(w)) = resolve_source_wire(ctx, net) {
+            if source_wire_const_value(ctx, w) == 0 && !is_global_net(ctx, net) {
+                ordinary.push(net);
             }
-            _ => {}
         }
     }
     // High fanout first, then net id: identical ordering intent to the
@@ -2521,7 +2419,7 @@ fn route_nets_overuse(
         } else if single_mover {
             // One sequential claim sweep in net order; a bitset over the
             // flat wire space keeps it O(total plan wires).
-            claimed = vec![0u64; (wt.n + 63) / 64];
+            claimed = vec![0u64; (nt.len() + 63) / 64];
             let mut movers: Vec<NetId> = Vec::new();
             for &n in &ordinary {
                 let Some(e) = plans.get(&n) else {
@@ -2631,7 +2529,9 @@ fn route_nets_overuse(
                 let ctx_ref: &Context = ctx;
                 let occ_ref: &[u16] = &occ;
                 let missed_ref = &missed;
-                let results: Vec<(NetId, PlanOutcome, Vec<u32>)> = chunk_nets
+                let nt_ref: &NodeTable = &nt;
+                let hist_ref: &[f32] = &hist;
+                let results: Vec<(NetId, PlanOutcome)> = chunk_nets
                     .par_iter()
                     .filter_map(|&net| {
                         let source_wire = resolve_source_wire(ctx_ref, net).ok().flatten()?;
@@ -2639,9 +2539,9 @@ fn route_nets_overuse(
                             ctx_ref,
                             net,
                             source_wire,
-                            &wt,
+                            nt_ref,
                             occ_ref,
-                            &hist,
+                            hist_ref,
                             &reserved,
                             present,
                             missed_ref,
@@ -2649,11 +2549,13 @@ fn route_nets_overuse(
                             h_scale,
                             cfg,
                         );
-                        let idxs = plan_wire_indices(ctx_ref, &wt, &outcome.plan);
-                        Some((net, outcome, idxs))
+                        Some((net, outcome))
                     })
                     .collect();
-                for (net, outcome, idxs) in results {
+                for (net, outcome) in results {
+                    // Interning is sequential and in input order, so node
+                    // indices stay deterministic across runs.
+                    let idxs = plan_wire_indices(ctx, &mut nt, &mut occ, &mut hist, &outcome.plan);
                     let PlanOutcome {
                         plan,
                         missing: missing_list,
@@ -2706,7 +2608,7 @@ fn route_nets_overuse(
                 ctx,
                 net,
                 source_wire,
-                &wt,
+                &nt,
                 &occ,
                 &hist,
                 &reserved,
@@ -2717,7 +2619,7 @@ fn route_nets_overuse(
                 cfg,
             );
             deadline_missing_total += deadline_missing;
-            let idxs = plan_wire_indices(ctx, &wt, &plan);
+            let idxs = plan_wire_indices(ctx, &mut nt, &mut occ, &mut hist, &plan);
             if plans.get(&net).is_some_and(|e| e.idxs == idxs) {
                 plan_unchanged += 1;
             }
@@ -2776,7 +2678,7 @@ fn route_nets_overuse(
         let mut occ3 = 0usize;
         let mut occ4p = 0usize;
         let mut tile_over: FxHashMap<i32, u32> = FxHashMap::default();
-        for i in 0..wt.n {
+        for i in 0..nt.len() {
             if hist[i] > 0.0 {
                 hist[i] *= hist_decay;
                 if hist[i] < 0.01 {
@@ -2799,7 +2701,7 @@ fn route_nets_overuse(
                     3 => occ3 += 1,
                     _ => occ4p += 1,
                 }
-                *tile_over.entry(wt.tile_of(i)).or_insert(0) += 1;
+                *tile_over.entry(nt.tile_of(i)).or_insert(0) += 1;
                 hist[i] += (o - 1) as f32 * hist_gain;
                 if o > max_occ {
                     max_occ = o;
@@ -2853,7 +2755,9 @@ fn route_nets_overuse(
             let Some(e) = plans.get(&n) else { continue };
             for &i in &e.idxs {
                 let i = i as usize;
-                if !claimed.is_empty() && claimed[i >> 6] & (1u64 << (i & 63)) != 0 {
+                // Plans made this pass can name nodes interned after the
+                // claim sweep sized the bitset; those are unclaimed.
+                if claimed.get(i >> 6).is_some_and(|word| word & (1u64 << (i & 63)) != 0) {
                     mover_on_claimed += 1;
                 } else if occ[i] > 1 {
                     mover_on_shared += 1;
@@ -3520,17 +3424,14 @@ fn route_nets_exclusive(
                     .collect();
                 failed = failed_nets.len();
                 // Ordinary nets had their in-loop chance; only the cleanup
-                // stage's deterministic const and clock-backbone fast paths
-                // still earn their cost.
+                // stage's deterministic const fast path and whole-chip global
+                // search still earn their cost.
                 if !cfg.skip_cleanup {
                     failed_nets.retain(|&n| {
                         resolve_source_wire(ctx, n)
                             .ok()
                             .flatten()
-                            .map(|w| {
-                                source_wire_const_value(ctx, w) != 0
-                                    || is_global_clock_wire(ctx, w)
-                            })
+                            .map(|w| source_wire_const_value(ctx, w) != 0 || is_global_net(ctx, n))
                             .unwrap_or(false)
                     });
                 }
@@ -3563,12 +3464,7 @@ fn route_nets_exclusive(
                         .unwrap_or(0);
                     if cv != 0 {
                         0
-                    } else if resolve_source_wire(ctx, n)
-                        .ok()
-                        .flatten()
-                        .map(|w| is_global_clock_wire(ctx, w))
-                        .unwrap_or(false)
-                    {
+                    } else if is_global_net(ctx, n) {
                         1
                     } else {
                         2
@@ -3588,27 +3484,6 @@ fn route_nets_exclusive(
                             )
                         })
                         .collect();
-
-                    // Hoist clock-backbone enumeration out of the per-net
-                    // loop. Iterating every wire in the chipdb for each failed
-                    // net costs ~2.5M wires × ~16 nets per cleanup pass —
-                    // slow enough to eat the entire 30 s wall budget before
-                    // the first A* runs. Compute once per iteration.
-                    let mut clock_backbone_wires: Vec<WireId> = Vec::new();
-                    let needs_clock_backbone = failed_nets.iter().any(|&n| {
-                        resolve_source_wire(ctx, n)
-                            .ok()
-                            .flatten()
-                            .map(|w| is_global_clock_wire(ctx, w))
-                            .unwrap_or(false)
-                    });
-                    if needs_clock_backbone {
-                        for w in ctx.chipdb().wires() {
-                            if is_global_clock_wire(ctx, w) {
-                                clock_backbone_wires.push(w);
-                            }
-                        }
-                    }
 
                     eprintln!(
                         "RasterRouter: A* cleanup for {} failed nets (iter {})",
@@ -3658,28 +3533,17 @@ fn route_nets_exclusive(
 
                         let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
                         tree_wires.insert(source_wire);
-                        ctx.chipdb().node_wires_cb(source_wire, |nw| {
-                            tree_wires.insert(nw);
-                        });
                         // Seed the partial-routed tree so cleanup A* can reach
                         // unrouted sinks via the net's existing pip chain.
                         for &w in ctx.net(net).wires().keys() {
                             tree_wires.insert(w);
-                            ctx.chipdb().node_wires_cb(w, |nw| {
-                                tree_wires.insert(nw);
-                            });
                         }
 
-                        // Global-clock nets are driven by a single BUFG output
-                        // whose `pips_downhill` is near-empty. Seeding A* with
-                        // the whole clock backbone lets the search start from
-                        // anywhere nearby — without this the heap drains after
-                        // ≤4 expansions and no sink is reachable.
-                        if is_global_clock_wire(ctx, source_wire) {
-                            for &w in &clock_backbone_wires {
-                                tree_wires.insert(w);
-                            }
-                        }
+                        // A global net leaves its buffer on dedicated routing
+                        // that can run far outside the sinks' box, so its
+                        // searches get the whole chip (below). It starts from
+                        // its own driver, so every route traces back to it.
+                        let global = is_global_net(ctx, net);
 
                         let mut sink_routes = Vec::new();
                         // For constant nets, remember each sink's switch-matrix
@@ -3704,9 +3568,6 @@ fn route_nets_exclusive(
                                     // (if triggered) skips re-routing to it.
                                     tree_wires.insert(anchor);
                                     tree_wires.insert(sink_wire);
-                                    ctx.chipdb().node_wires_cb(sink_wire, |nw| {
-                                        tree_wires.insert(nw);
-                                    });
                                     sink_routes.push(SinkRoute {
                                         sink_wire,
                                         pips: vec![pip],
@@ -3743,8 +3604,20 @@ fn route_nets_exclusive(
                             // overrides it; `None` keeps the derived default.
                             let cleanup_margin =
                                 EXPLORE_BBOX_MARGIN_MIN.max(manhattan * EXPLORE_BBOX_SPAN_MULT);
-                            let cleanup_bbox =
-                                crate::metrics::compute_bbox(ctx, net, cleanup_margin);
+                            // A global net's dedicated routing can leave the
+                            // sinks' box far behind (a buffer at the chip's
+                            // centre feeding one corner), so it searches the
+                            // whole chip.
+                            let cleanup_bbox = if global {
+                                BoundingBox {
+                                    x0: 0,
+                                    y0: 0,
+                                    x1: ctx.chipdb().width() - 1,
+                                    y1: ctx.chipdb().height() - 1,
+                                }
+                            } else {
+                                crate::metrics::compute_bbox(ctx, net, cleanup_margin)
+                            };
                             let per_sink_limit: Option<usize> = cfg.cleanup_visit_limit;
 
                             let route_fn = if manhattan > 50 {
@@ -3807,9 +3680,6 @@ fn route_nets_exclusive(
                                     for &pip in &pips {
                                         let dw = ctx.chipdb().pip_dst_wire(pip);
                                         tree_wires.insert(dw);
-                                        ctx.chipdb().node_wires_cb(dw, |nw| {
-                                            tree_wires.insert(nw);
-                                        });
                                     }
                                     sink_routes.push(SinkRoute { sink_wire, pips });
                                 }
@@ -3829,13 +3699,23 @@ fn route_nets_exclusive(
                                         chip_w,
                                         chip_h,
                                     );
+                                    // Once per node: history is keyed by node, and a
+                                    // node crossing several corridor tiles is still
+                                    // one conductor.
+                                    let mut corridor_nodes: FxHashSet<WireId> =
+                                        FxHashSet::default();
                                     for &tile_idx in &corridor_tiles {
                                         let tile = tile_idx as i32;
                                         let num_wires =
                                             ctx.chipdb().tile_type(tile).wires.get().len();
                                         for wi in 0..num_wires {
-                                            let w = WireId::new(tile, wi as i32);
-                                            *neg_state.wire_history.entry(w).or_insert(0.0) += 0.5;
+                                            let w = ctx
+                                                .chipdb()
+                                                .canonical_wire(WireId::new(tile, wi as i32));
+                                            if corridor_nodes.insert(w) {
+                                                *neg_state.wire_history.entry(w).or_insert(0.0) +=
+                                                    0.5;
+                                            }
                                         }
                                     }
                                     continue;

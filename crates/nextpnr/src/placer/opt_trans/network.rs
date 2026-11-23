@@ -1129,17 +1129,14 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
 /// the BPR congestion function's mild-overflow tolerance).
 type SpanHistogram = FxHashMap<(i32, i32), usize>;
 
-/// Return true if the wire name is a global/clock network (GCLK, HCLK, VCC,
-/// GND) that should be excluded from span histograms. These wires can span
-/// the entire chip and would otherwise corrupt the coarse pipe capacity model
-/// with pipes whose span exceeds anything that physical routing offers.
-fn is_global_network_wire(name: &str) -> bool {
-    name.contains("GCLK")
-        || name.contains("HCLK")
-        || name.contains("GND")
-        || name.contains("VCC")
-        || name.contains("CLK_HROW")
-        || name.contains("CLK_BUFG")
+/// True for wires excluded from span histograms: constant (GND/VCC) wires and
+/// the dedicated global network. Both can span the whole chip and would
+/// otherwise corrupt the coarse pipe capacity model with pipes whose span
+/// exceeds anything general routing offers. Read from the chipdb's
+/// `const_value` and global-buffer flags, not from wire names.
+fn is_global_network_wire(chipdb: &ChipDb, wire: crate::chipdb::WireId) -> bool {
+    let wire = chipdb.canonical_wire(wire);
+    chipdb.wire_info(wire).const_value != 0 || chipdb.global_network().contains(&wire)
 }
 
 /// Analyze chipdb routing node shapes to build per-tile-type span histograms.
@@ -1180,7 +1177,7 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     // internal to the home composite tile (absorbed, not exposed to fabric).
     let wire_reach = |tile: i32, wire_idx: usize| -> Option<(i32, i32)> {
         let wid = crate::chipdb::WireId::new(tile, wire_idx as i32);
-        if is_global_network_wire(chipdb.wire_name(wid)) {
+        if is_global_network_wire(chipdb, wid) {
             return None;
         }
         let ns = chipdb.wire_node_shape(tile, wire_idx)?;

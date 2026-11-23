@@ -14,11 +14,11 @@ use nextpnr::router::{Router, Router2};
 fn default_config() {
     let cfg = Router2Cfg::default();
     assert_eq!(cfg.max_iterations, 50);
-    assert!((cfg.base_cost - 1.0).abs() < f64::EPSILON);
-    assert!((cfg.present_cost_multiplier - 2.0).abs() < f64::EPSILON);
-    assert!((cfg.history_cost_multiplier - 1.0).abs() < f64::EPSILON);
-    assert!((cfg.initial_present_cost - 1.0).abs() < f64::EPSILON);
-    assert!((cfg.present_cost_growth - 1.5).abs() < f64::EPSILON);
+    assert!((cfg.negotiation.base_cost - 1.0).abs() < f64::EPSILON);
+    assert!((cfg.negotiation.present_cost_multiplier - 2.0).abs() < f64::EPSILON);
+    assert!((cfg.negotiation.history_cost_multiplier - 1.0).abs() < f64::EPSILON);
+    assert!((cfg.negotiation.initial_present_cost - 1.0).abs() < f64::EPSILON);
+    assert!((cfg.negotiation.present_cost_growth - 1.5).abs() < f64::EPSILON);
     assert_eq!(cfg.bb_margin, 3);
     assert!(!cfg.verbose);
 }
