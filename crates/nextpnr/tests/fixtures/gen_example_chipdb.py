@@ -243,10 +243,20 @@ def set_timings(ch):
     )
     lut = ch.timing.add_cell_variant(speed, "LUT6")
     for j in range(K):
-        lut.add_comb_arc(f"I[{j}]", "F", TimingValue(150 + j * 15))
+        late = 150 + j * 15
+        lut.add_comb_arc(
+            f"I[{j}]",
+            "F",
+            TimingValue(fast_min=100 + j * 10, fast_max=late, slow_min=late, slow_max=late),
+        )
     dff = ch.timing.add_cell_variant(speed, "DFF")
     dff.add_setup_hold("CLK", "D", ClockEdge.RISING, TimingValue(150), TimingValue(25))
-    dff.add_clock_out("CLK", "Q", ClockEdge.RISING, TimingValue(200))
+    dff.add_clock_out(
+        "CLK",
+        "Q",
+        ClockEdge.RISING,
+        TimingValue(fast_min=120, fast_max=200, slow_min=200, slow_max=200),
+    )
 
 
 def main():

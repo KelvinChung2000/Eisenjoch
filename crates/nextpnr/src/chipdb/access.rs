@@ -1,8 +1,8 @@
 use super::chip::ConstIdStr;
 use super::*;
+use crate::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use crate::netlist::PortType;
 use crate::read_packed;
-use crate::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use std::ffi::CStr;
 
 impl ChipDb {
@@ -663,6 +663,21 @@ impl ChipDb {
         from_port: i32,
         to_port: i32,
     ) -> Option<DelayQuad> {
+        let delay = self.cell_comb_timing(speed_grade, type_idx, from_port, to_port)?;
+        Some(DelayQuad::new(
+            DelayPair::new(delay.fast_min, delay.fast_max),
+            DelayPair::new(delay.slow_min, delay.slow_max),
+        ))
+    }
+
+    /// The four-corner combinational delay of a cell arc, as stored in the chipdb.
+    pub fn cell_comb_timing(
+        &self,
+        speed_grade: &SpeedGradePod,
+        type_idx: usize,
+        from_port: i32,
+        to_port: i32,
+    ) -> Option<TimingValue> {
         let ct = &speed_grade.cell_types.get()[type_idx];
         let pins = ct.pins.get();
         let to_pin_idx =
@@ -675,11 +690,7 @@ impl ChipDb {
             from_port,
         )?;
         let arc = &comb_arcs[arc_idx];
-        let delay = unsafe { read_packed!(*arc, delay) };
-        Some(DelayQuad::new(
-            DelayPair::new(delay.fast_min, delay.fast_max),
-            DelayPair::new(delay.slow_min, delay.slow_max),
-        ))
+        Some(unsafe { read_packed!(*arc, delay) })
     }
 
     /// Look up register timing arcs (setup/hold/clk_to_q) for a cell pin.
@@ -734,6 +745,11 @@ impl ChipDb {
                 }
             }
         }
+    }
+
+    /// The four-corner clock-to-output delay of a register arc, as stored in the chipdb.
+    pub fn reg_arc_clock_to_q(arc: &CellPinRegArcPod) -> TimingValue {
+        unsafe { read_packed!(*arc, clk_q) }
     }
 
     /// Extract clocking info from a register timing arc.

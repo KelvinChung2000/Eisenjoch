@@ -13,7 +13,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use rusteda_core::liberty::{Direction, Library};
 use rusteda_core::netlist::{self as gate, Conn, GateNetlist, NetlistError, PinDir, PortDir};
 use ruststa::engine::analysis::{AnalysisOptions, WireModelOption};
-use ruststa::engine::incr::{SessionError, SessionNodeKey, TimingSession};
+use ruststa::engine::delay::annotate::DelayAnnotations;
+use ruststa::engine::incr::{IncrementalStats, SessionError, SessionNodeKey, TimingSession};
 use ruststa::engine::session_api::EndpointSlack;
 use ruststa::engine::types::NodeId;
 use thiserror::Error;
@@ -32,10 +33,10 @@ pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(Delay
     early_ps: 100,
     late_ps: 100,
 });
-pub use ruststa::engine::incr::{ArcTiming, Criticality};
-pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
-pub use ruststa::engine::types::ClockId;
 pub use criticality::{CritNorm, PairBudget};
+pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
+pub use ruststa::engine::incr::{ArcTiming, Criticality};
+pub use ruststa::engine::types::ClockId;
 pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};
 
 const PS_IN_NS: f64 = 0.001;
@@ -107,6 +108,7 @@ pub struct StaIds {
 pub struct RustSta {
     session: TimingSession,
     ids: StaIds,
+    cell_delays: DelayAnnotations<SessionNodeKey>,
 }
 
 impl RustSta {
@@ -117,12 +119,14 @@ impl RustSta {
                 index: ctx.speed_grade_idx(),
             })?;
         let roles = role::roles(ctx, speed_grade)?;
-        let library = library::library(ctx, speed_grade, &library::cell_types(ctx, &roles)?)?;
+        let types = library::cell_types(ctx, speed_grade, &roles)?;
+        let library = library::library(ctx, speed_grade, &types)?;
         let GateDesign {
             netlist,
             pins,
             nets,
         } = gate_design(ctx, &library, &roles)?;
+        let cell_delays = library::cell_delay_annotations(ctx, &roles, &types, &pins);
         let sdc = format!("{}{}", clock_sdc(ctx, &roles)?, ctx.design.sdc);
         let options = AnalysisOptions {
             wire_model: WireModelOption::Ideal,
@@ -130,7 +134,25 @@ impl RustSta {
         };
         let session = TimingSession::new(netlist, vec![library], &sdc, options)?;
         let ids = link_ids(ctx, &session, roles, pins, nets);
-        Ok(Self { session, ids })
+        let mut sta = Self {
+            session,
+            ids,
+            cell_delays,
+        };
+        sta.set_net_delays(DelayAnnotations::new())?;
+        Ok(sta)
+    }
+
+    fn set_net_delays(
+        &mut self,
+        nets: DelayAnnotations<SessionNodeKey>,
+    ) -> Result<IncrementalStats, SessionError> {
+        let mut annotations = self.cell_delays.clone();
+        for (&(from, to), &delays) in nets.iter() {
+            annotations.insert(from, to, delays);
+        }
+        let corner = self.session.default_corner().corner_name.clone();
+        self.session.set_delay_annotations(&corner, annotations)
     }
 
     pub fn session(&self) -> &TimingSession {

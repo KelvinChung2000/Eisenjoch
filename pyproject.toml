@@ -29,3 +29,9 @@ benchmark = ["matplotlib", "numpy"]
 # collecting them turns `pytest` into a benchmark run that dies on the first
 # missing chipdb. Exclude them so `uv run pytest` reports honestly.
 norecursedirs = ["python/nextpnr/benchmarks", "chip_database", "target", ".venv"]
+
+[dependency-groups]
+chipdb = ["sdf-toolkit"]
+
+[tool.uv.sources]
+sdf-toolkit = { path = "../sdf-toolkit", editable = true }

@@ -230,8 +230,8 @@ impl StaSession {
                 annotations.insert(link.from, link.to, link.delay.arc_delays());
             }
         }
+        sta.set_net_delays(annotations)?;
         let corner = sta.session.default_corner().corner_name.clone();
-        sta.session.set_delay_annotations(&corner, annotations)?;
         let table = sta.session.arc_timing(&corner)?;
         let mut session = Self {
             sta,

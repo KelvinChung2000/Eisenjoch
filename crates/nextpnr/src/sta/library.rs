@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
 use rusteda_core::liberty::{Cell, Direction, Library, Pin, Table, TimingArc, Units};
+use ruststa::engine::delay::annotate::DelayAnnotations;
+use ruststa::engine::incr::SessionNodeKey;
 
+use super::interconnect::DelayBounds;
 use super::role::{CellRole, Roles};
 use super::{StaBuildError, PS_IN_NS};
 use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
-use crate::context::Context;
-use crate::netlist::PortType;
 use crate::common::{ClockEdge, DelayT};
+use crate::context::Context;
+use crate::netlist::{CellPin, PortType};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TypePort {
@@ -16,14 +20,30 @@ pub(super) struct TypePort {
     pub dir: PortType,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DelayArcKind {
+    Combinational,
+    Launch(ClockEdge),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DelayArc {
+    from: TypePort,
+    to: TypePort,
+    kind: DelayArcKind,
+    bounds: DelayBounds,
+}
+
 #[derive(Debug)]
 pub(super) struct CellType {
     pub type_idx: usize,
     pub ports: BTreeMap<String, TypePort>,
+    delay_arcs: Vec<DelayArc>,
 }
 
 pub(super) fn cell_types(
     ctx: &Context,
+    speed_grade: &SpeedGradePod,
     roles: &Roles,
 ) -> Result<BTreeMap<String, CellType>, StaBuildError> {
     let mut types: BTreeMap<String, CellType> = BTreeMap::new();
@@ -35,6 +55,7 @@ pub(super) fn cell_types(
         let cell_type = types.entry(type_name.clone()).or_insert_with(|| CellType {
             type_idx,
             ports: BTreeMap::new(),
+            delay_arcs: Vec::new(),
         });
         for (&port, data) in &cell.ports {
             let port_name = ctx.name_of(port);
@@ -55,7 +76,79 @@ pub(super) fn cell_types(
             }
         }
     }
+    for (name, cell_type) in &mut types {
+        cell_type.delay_arcs = delay_arcs(ctx, speed_grade, name, cell_type)?;
+    }
     Ok(types)
+}
+
+fn delay_arcs(
+    ctx: &Context,
+    speed_grade: &SpeedGradePod,
+    type_name: &str,
+    cell_type: &CellType,
+) -> Result<Vec<DelayArc>, StaBuildError> {
+    let chipdb = ctx.chipdb();
+    let outputs = cell_type
+        .ports
+        .values()
+        .filter(|port| matches!(port.dir, PortType::Out | PortType::InOut));
+    let mut arcs = Vec::new();
+    for &output in outputs {
+        for input in cell_type
+            .ports
+            .values()
+            .filter(|port| port.dir == PortType::In)
+        {
+            let timing = chipdb.cell_comb_timing(
+                speed_grade,
+                cell_type.type_idx,
+                input.id.index(),
+                output.id.index(),
+            );
+            if let Some(timing) = timing {
+                arcs.push(DelayArc {
+                    from: *input,
+                    to: output,
+                    kind: DelayArcKind::Combinational,
+                    bounds: DelayBounds::of(timing),
+                });
+            }
+        }
+        for (clock, edge, pod) in register_arcs(ctx, speed_grade, cell_type.type_idx, &output) {
+            arcs.push(DelayArc {
+                from: cell_type.ports[&clock_pin(type_name, cell_type, clock)?],
+                to: output,
+                kind: DelayArcKind::Launch(edge),
+                bounds: DelayBounds::of(ChipDb::reg_arc_clock_to_q(pod)),
+            });
+        }
+    }
+    Ok(arcs)
+}
+
+pub(super) fn cell_delay_annotations(
+    ctx: &Context,
+    roles: &Roles,
+    types: &BTreeMap<String, CellType>,
+    pins: &FxHashMap<CellPin, SessionNodeKey>,
+) -> DelayAnnotations<SessionNodeKey> {
+    let mut annotations = DelayAnnotations::new();
+    for (cell_id, cell) in ctx.design.iter_alive_cells() {
+        let CellRole::Timed { .. } = roles.cells[&cell_id] else {
+            continue;
+        };
+        for arc in &types[ctx.name_of(cell.cell_type)].delay_arcs {
+            let ends = (
+                pins.get(&CellPin::new(cell_id, arc.from.id)),
+                pins.get(&CellPin::new(cell_id, arc.to.id)),
+            );
+            if let (Some(&from), Some(&to)) = ends {
+                annotations.insert(from, to, arc.bounds.arc_delays());
+            }
+        }
+    }
+    annotations
 }
 
 pub(super) fn library(
@@ -85,27 +178,18 @@ fn liberty_cell(
     name: &str,
     cell_type: &CellType,
 ) -> Result<Cell, StaBuildError> {
-    let chipdb = ctx.chipdb();
-    let type_idx = cell_type.type_idx;
     let pins = cell_type
         .ports
         .iter()
         .map(|(pin_name, port)| {
             let arcs = match port.dir {
-                PortType::In => check_arcs(ctx, speed_grade, type_idx, name, cell_type, port)?,
-                PortType::Out | PortType::InOut => {
-                    let mut arcs =
-                        combinational_arcs(chipdb, speed_grade, type_idx, cell_type, port);
-                    arcs.extend(launch_arcs(
-                        ctx,
-                        speed_grade,
-                        type_idx,
-                        name,
-                        cell_type,
-                        port,
-                    )?);
-                    arcs
-                }
+                PortType::In => check_arcs(ctx, speed_grade, name, cell_type, port)?,
+                PortType::Out | PortType::InOut => cell_type
+                    .delay_arcs
+                    .iter()
+                    .filter(|arc| arc.to.id == port.id)
+                    .map(|arc| delay_arc(ctx, arc))
+                    .collect(),
             };
             Ok(Pin {
                 name: pin_name.clone(),
@@ -122,59 +206,32 @@ fn liberty_cell(
     })
 }
 
-fn combinational_arcs(
-    chipdb: &ChipDb,
-    speed_grade: &SpeedGradePod,
-    type_idx: usize,
-    cell_type: &CellType,
-    output: &TypePort,
-) -> Vec<TimingArc> {
-    cell_type
-        .ports
-        .iter()
-        .filter(|(_, input)| input.dir == PortType::In)
-        .filter_map(|(input_name, input)| {
-            let delay =
-                chipdb.cell_delay(speed_grade, type_idx, input.id.index(), output.id.index())?;
-            Some(TimingArc {
-                related_pin: input_name.clone(),
-                timing_sense: Some(String::from("non_unate")),
-                timing_type: String::from("combinational"),
-                ..delay_tables(delay.max_delay())
-            })
-        })
-        .collect()
-}
-
-fn launch_arcs(
-    ctx: &Context,
-    speed_grade: &SpeedGradePod,
-    type_idx: usize,
-    type_name: &str,
-    cell_type: &CellType,
-    output: &TypePort,
-) -> Result<Vec<TimingArc>, StaBuildError> {
-    register_arcs(ctx, speed_grade, type_idx, output)
-        .map(|(clock, edge, info)| {
-            Ok(TimingArc {
-                related_pin: clock_pin(type_name, cell_type, clock)?,
-                timing_type: format!("{}_edge", edge_name(edge)),
-                ..delay_tables(info.clock_to_q.max_delay())
-            })
-        })
-        .collect()
+fn delay_arc(ctx: &Context, arc: &DelayArc) -> TimingArc {
+    let (timing_sense, timing_type) = match arc.kind {
+        DelayArcKind::Combinational => (
+            Some(String::from("non_unate")),
+            String::from("combinational"),
+        ),
+        DelayArcKind::Launch(edge) => (None, format!("{}_edge", edge_name(edge))),
+    };
+    TimingArc {
+        related_pin: ctx.name_of(arc.from.id).to_owned(),
+        timing_sense,
+        timing_type,
+        ..delay_tables(arc.bounds.late_ps)
+    }
 }
 
 fn check_arcs(
     ctx: &Context,
     speed_grade: &SpeedGradePod,
-    type_idx: usize,
     type_name: &str,
     cell_type: &CellType,
     input: &TypePort,
 ) -> Result<Vec<TimingArc>, StaBuildError> {
     let mut arcs = Vec::new();
-    for (clock, edge, info) in register_arcs(ctx, speed_grade, type_idx, input) {
+    for (clock, edge, pod) in register_arcs(ctx, speed_grade, cell_type.type_idx, input) {
+        let info = ChipDb::reg_arc_info(pod);
         let related_pin = clock_pin(type_name, cell_type, clock)?;
         for (check, value) in [
             ("setup", info.setup.max_delay),
@@ -197,14 +254,14 @@ fn register_arcs<'a>(
     speed_grade: &'a SpeedGradePod,
     type_idx: usize,
     port: &TypePort,
-) -> impl Iterator<Item = (&'a str, ClockEdge, crate::chipdb::RegArcInfo)> + 'a {
+) -> impl Iterator<Item = (&'a str, ClockEdge, &'a crate::chipdb::CellPinRegArcPod)> + 'a {
     ctx.chipdb()
         .cell_reg_arcs(speed_grade, type_idx, port.id.index())
         .unwrap_or_default()
         .iter()
         .map(|pod| {
             let info = ChipDb::reg_arc_info(pod);
-            (ctx.name_of(IdString(info.clock_port)), info.edge, info)
+            (ctx.name_of(IdString(info.clock_port)), info.edge, pod)
         })
 }
 

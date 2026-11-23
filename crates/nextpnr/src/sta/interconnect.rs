@@ -26,7 +26,7 @@ impl DelayBounds {
         late_ps: 0,
     };
 
-    fn of(value: TimingValue) -> Self {
+    pub(super) fn of(value: TimingValue) -> Self {
         Self {
             early_ps: value.fast_min,
             late_ps: value.slow_max,
