@@ -102,9 +102,7 @@ fn cache_slack_int() -> u32 {
     use super::network::DIST_SCALE;
     static SLACK: OnceLock<u32> = OnceLock::new();
     *SLACK.get_or_init(|| {
-        let tiles = std::env::var("NPNR_OT_CACHE_SLACK_TILES")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
+        let tiles = crate::env::var::<u32>("NPNR_OT_CACHE_SLACK_TILES")
             .unwrap_or(CACHE_SLACK_TILES_DEFAULT);
         tiles.saturating_mul(DIST_SCALE as u32)
     })
@@ -123,9 +121,7 @@ fn corridor_params() -> CorridorParams {
     static PARAMS: OnceLock<CorridorParams> = OnceLock::new();
     *PARAMS.get_or_init(|| {
         let tight = std::env::var("NPNR_OT_CORRIDOR_TIGHT").ok().as_deref() == Some("1");
-        let max_halo = std::env::var("NPNR_OT_CORRIDOR_HALO_MAX")
-            .ok()
-            .and_then(|s| s.parse::<i32>().ok())
+        let max_halo = crate::env::var::<i32>("NPNR_OT_CORRIDOR_HALO_MAX")
             .map(|v| v.max(1))
             .unwrap_or(CORRIDOR_MAX_HALO_DEFAULT);
         if tight {

@@ -405,9 +405,7 @@ fn cache_radius_tiles() -> i32 {
     use std::sync::OnceLock;
     static RADIUS: OnceLock<i32> = OnceLock::new();
     *RADIUS.get_or_init(|| {
-        std::env::var("NPNR_OT_CACHE_RADIUS")
-            .ok()
-            .and_then(|s| s.parse::<i32>().ok())
+        crate::env::var::<i32>("NPNR_OT_CACHE_RADIUS")
             .map(|v| v.max(0))
             .unwrap_or(12)
     })
@@ -3404,10 +3402,7 @@ fn build_cell_coloring(
 
 /// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): print the coloring stats and exit.
 fn measure_cell_coloring(net_infos: &[NetInfo], cell_net_map: &CellNetMap, n: usize) {
-    let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(16);
+    let threshold = crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
     let col = build_cell_coloring(net_infos, cell_net_map, n, threshold);
     let mut sizes: Vec<usize> = vec![0; col.num_colors as usize];
     for &c in &col.colors {
@@ -3565,10 +3560,7 @@ fn place_dcd_sweep_colored_gs(
     // small per-sweep steps let the outer congestion refresh keep pace. Default
     // = unlimited (i32::MAX) so behaviour is unchanged unless NPNR_OT_COLOR_MOVE_CAP
     // is set.
-    let move_cap: i32 = std::env::var("NPNR_OT_COLOR_MOVE_CAP")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(i32::MAX);
+    let move_cap = crate::env::var::<i32>("NPNR_OT_COLOR_MOVE_CAP").unwrap_or(i32::MAX);
 
     let mut by_color: Vec<Vec<usize>> = vec![Vec::new(); coloring.num_colors as usize];
     for ci in 0..n {
@@ -4551,14 +4543,10 @@ pub fn run_inner_outer(
     // not depend on the BPR ramp). NPNR_OT_DISP_TOL sets the average-tile
     // threshold (default 0.5); NPNR_OT_DISP_STALL sets how many consecutive
     // sub-threshold iters trigger stop (default 3).
-    let disp_tol = std::env::var("NPNR_OT_DISP_TOL")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
+    let disp_tol = crate::env::var::<f64>("NPNR_OT_DISP_TOL")
         .map(|v| v.max(0.0))
         .unwrap_or(0.5);
-    let max_disp_stalls = std::env::var("NPNR_OT_DISP_STALL")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    let max_disp_stalls = crate::env::var::<usize>("NPNR_OT_DISP_STALL")
         .unwrap_or(3);
     let mut disp_stalls = 0usize;
     let mut prev_cell_x: Option<Vec<f64>> = None;
@@ -5587,10 +5575,8 @@ pub fn run_inner_outer(
                 &mut diag_ctx,
             ),
             super::config::SweepMode::ColoredGs => {
-                let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(16);
+                let threshold =
+                    crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
                 let coloring = build_cell_coloring(&net_infos, &cell_net_map, n, threshold);
                 if outer == 0 {
                     eprintln!(
@@ -6007,10 +5993,7 @@ pub fn run_inner_outer(
         // and skips driver-side cost. If many pairs show improvement, the
         // plateau is a CD trap; if few, the plateau is driven by driver-
         // blindness or missing cluster moves.
-        if let Some(n_probe) = std::env::var("NPNR_OT_SWAP_PROBE")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-        {
+        if let Some(n_probe) = crate::env::var::<usize>("NPNR_OT_SWAP_PROBE") {
             if n_probe > 0 && n >= 2 {
                 // xorshift64 (no external rand dep needed for a diagnostic)
                 let mut rng_state = cfg

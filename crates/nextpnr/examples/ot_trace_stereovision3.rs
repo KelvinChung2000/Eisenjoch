@@ -122,37 +122,21 @@ fn main() {
 
     let mut cfg = OptTransPlacerCfg::default();
     cfg.seed = 42;
-    cfg.timing_weight = env::var("NPNR_OT_TRACE_TIMING_WEIGHT")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
+    cfg.timing_weight = nextpnr::env::var::<f64>("NPNR_OT_TRACE_TIMING_WEIGHT")
         .unwrap_or(0.0);
-    cfg.report_interval = env::var("NPNR_OT_TRACE_REPORT_INTERVAL")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    cfg.report_interval = nextpnr::env::var::<usize>("NPNR_OT_TRACE_REPORT_INTERVAL")
         .unwrap_or(1)
         .max(1);
-    if let Some(num_threads) = env::var("NPNR_OT_TRACE_NUM_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-    {
+    if let Some(num_threads) = nextpnr::env::var::<usize>("NPNR_OT_TRACE_NUM_THREADS") {
         cfg.num_threads = num_threads.max(1);
     }
-    if let Some(batch_size) = env::var("NPNR_OT_TRACE_NET_BATCH_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-    {
+    if let Some(batch_size) = nextpnr::env::var::<usize>("NPNR_OT_TRACE_NET_BATCH_SIZE") {
         cfg.net_parallel_batch_size = batch_size.max(1);
     }
-    if let Some(v) = env::var("NPNR_OT_MAX_OUTER")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-    {
+    if let Some(v) = nextpnr::env::var::<usize>("NPNR_OT_MAX_OUTER") {
         cfg.max_outer_iters = v.max(1);
     }
-    if let Some(v) = env::var("NPNR_OT_DCD_ITERS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-    {
+    if let Some(v) = nextpnr::env::var::<usize>("NPNR_OT_DCD_ITERS") {
         cfg.dcd_iters_per_cell = v.max(1);
     }
     if env::var("NPNR_OT_SEQUENTIAL_BISECTION").ok().as_deref() == Some("1") {
@@ -167,17 +151,11 @@ fn main() {
         cfg.sweep_mode = nextpnr::placer::opt_trans::SweepMode::JacobiBB;
         eprintln!("sweep_mode: JacobiBB");
     }
-    if let Some(v) = env::var("NPNR_OT_BISECT_REGION")
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-    {
+    if let Some(v) = nextpnr::env::var::<i32>("NPNR_OT_BISECT_REGION") {
         cfg.bisect_refresh_region = v.max(1);
         eprintln!("bisect_refresh_region: {}", cfg.bisect_refresh_region);
     }
-    if let Some(v) = env::var("NPNR_OT_BISECT_K")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-    {
+    if let Some(v) = nextpnr::env::var::<usize>("NPNR_OT_BISECT_K") {
         cfg.bisect_seed_k = v.max(2);
         eprintln!("bisect_seed_k: {}", cfg.bisect_seed_k);
     }

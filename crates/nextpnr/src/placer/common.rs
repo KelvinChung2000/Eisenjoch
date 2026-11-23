@@ -1061,10 +1061,8 @@ pub fn init_positions_topological(
     // per SLICE = ~4.8 cells/tile mean). Without this, the natural layered
     // layout spans the full chip and ends up at ~1.2 cells/tile, leaving DCD
     // stuck in a low-density local minimum.
-    let target_density: f64 = std::env::var("NPNR_OT_TOPO_DENSITY")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.6);
+    let target_density =
+        crate::env::var::<f64>("NPNR_OT_TOPO_DENSITY").unwrap_or(0.6);
     if target_density > 0.0 && target_density < 1.0 && n >= 2 {
         const CAP_PER_TILE: f64 = 8.0;
         let target_tiles = (n as f64 / (target_density * CAP_PER_TILE)).max(1.0);

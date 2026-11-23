@@ -29,9 +29,7 @@ pub(crate) const BPR_BETA_DEFAULT: f64 = 4.0;
 pub(crate) fn bpr_alpha() -> f64 {
     static ALPHA: OnceLock<f64> = OnceLock::new();
     *ALPHA.get_or_init(|| {
-        std::env::var("NPNR_OT_BPR_ALPHA")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
+        crate::env::var::<f64>("NPNR_OT_BPR_ALPHA")
             .map(|v| v.max(0.0))
             .unwrap_or(BPR_ALPHA_DEFAULT)
     })
@@ -45,9 +43,7 @@ pub(crate) fn bpr_alpha() -> f64 {
 pub(crate) fn bpr_beta() -> f64 {
     static BETA: OnceLock<f64> = OnceLock::new();
     *BETA.get_or_init(|| {
-        std::env::var("NPNR_OT_BPR_BETA")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
+        crate::env::var::<f64>("NPNR_OT_BPR_BETA")
             .map(|v| v.max(1.0))
             .unwrap_or(BPR_BETA_DEFAULT)
     })
@@ -67,9 +63,7 @@ pub(crate) fn bpr_beta() -> f64 {
 pub(crate) fn bpr_cap() -> f64 {
     static CAP: OnceLock<f64> = OnceLock::new();
     *CAP.get_or_init(|| {
-        std::env::var("NPNR_OT_BPR_CAP")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
+        crate::env::var::<f64>("NPNR_OT_BPR_CAP")
             .map(|v| v.max(1.0))
             .unwrap_or(f64::INFINITY)
     })

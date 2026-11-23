@@ -2,6 +2,7 @@ pub mod checkpoint;
 pub mod chipdb;
 pub mod common;
 pub mod context;
+pub mod env;
 pub mod frontend;
 pub mod metrics;
 pub mod netlist;

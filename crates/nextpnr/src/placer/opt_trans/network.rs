@@ -471,10 +471,7 @@ impl PipeNetwork {
         // lines as a delay/resistance proxy (current default). exp=1.0 makes the
         // base cost linear in span, so the driver-star Dijkstra distance tracks
         // routed wirelength (matches an HPWL/wirelength objective like elfPlace).
-        let pipe_cost_exp: f64 = std::env::var("NPNR_OT_PIPE_COST_EXP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.5);
+        let pipe_cost_exp = crate::env::var::<f64>("NPNR_OT_PIPE_COST_EXP").unwrap_or(0.5);
         let mut n_span1 = 0usize;
         let mut n_long_range = 0usize;
         let mut n_skipped_null_src = 0usize;
