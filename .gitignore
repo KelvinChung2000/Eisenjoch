@@ -9,6 +9,7 @@
 .venv
 .worktrees
 benchmark/output
+measurements/
 benchmark/ispd/raw/
 benchmark/ispd/extracted/
 benchmark/ispd/manifests/
