@@ -515,14 +515,15 @@ def run_flow(
     preplace_fixed_ios(ctx, fixed_port_names)
     ctx.place(placer=placer, seed=42)
     ctx.route(router=router, bb_margin=max(3, ctx.width // 10))
-    timing = ctx.timing_report()
+    timing = ctx.timing_report(stage="routed")
     print(
         json.dumps(
             {
                 "cells": len(ctx.cells),
                 "nets": len(ctx.nets),
-                "fmax_mhz": timing.fmax,
-                "worst_slack_ps": timing.worst_slack,
+                "fmax_mhz": timing.fmax_mhz,
+                "wns_ns": timing.wns_ns,
+                "tns_ns": timing.tns_ns,
                 "num_failing": timing.num_failing,
                 "num_endpoints": timing.num_endpoints,
             },

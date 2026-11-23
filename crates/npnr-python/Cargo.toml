@@ -10,3 +10,4 @@ crate-type = ["cdylib"]
 [dependencies]
 nextpnr = { workspace = true }
 pyo3 = { workspace = true }
+rustc-hash = { workspace = true }

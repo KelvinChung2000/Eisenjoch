@@ -405,10 +405,11 @@ def run_pnr(benchmark_name, json_path, chipdb_path, placer, router, results):
 
     # Timing
     t0 = time.time()
-    timing = ctx.timing_report()
+    timing = ctx.timing_report(stage="routed")
     results["timing_time"] = time.time() - t0
-    results["fmax_mhz"] = timing.fmax
-    results["worst_slack_ps"] = timing.worst_slack
+    results["fmax_mhz"] = timing.fmax_mhz
+    results["wns_ns"] = timing.wns_ns
+    results["tns_ns"] = timing.tns_ns
     results["failing_endpoints"] = timing.num_failing
     results["total_endpoints"] = timing.num_endpoints
 

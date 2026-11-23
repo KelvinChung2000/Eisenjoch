@@ -56,10 +56,8 @@ print()
 
 # Timing report
 print("--- Timing Report ---")
-timing = ctx.timing_report()
-print(f"  Fmax:              {timing.fmax:.2f} MHz")
-print(f"  Worst slack:       {timing.worst_slack} ps")
-print(f"  Failing endpoints: {timing.num_failing}/{timing.num_endpoints}")
+timing = ctx.timing_report(stage="routed")
+print(timing)
 print()
 
 print("=" * 60)

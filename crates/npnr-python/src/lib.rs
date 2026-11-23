@@ -9,7 +9,7 @@ use ::nextpnr::checkpoint;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::Context;
 use ::nextpnr::frontend::parse_json;
-use ::nextpnr::netlist::Rect;
+use ::nextpnr::netlist::{NetId, Rect};
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
 use ::nextpnr::placer::opt_trans::config::InitStrategy;
@@ -21,7 +21,11 @@ use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::common::DelayT;
-use ::nextpnr::timing::TimingAnalyser;
+use ::nextpnr::sta::{
+    Criticality, InterconnectModel, InterconnectStage, StaSession, StaSessionError,
+    NOTIONAL_CLASSLESS_PIPS,
+};
+use rustc_hash::FxHashMap;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------
@@ -31,11 +35,10 @@ use std::path::Path;
 /// Main Context class exposed to Python.
 ///
 /// Wraps the Rust `Context` (chip database + design netlist + placement/routing
-/// state) and a `TimingAnalyser` for static timing analysis.
+/// state).
 #[pyclass(name = "Context")]
 pub struct PyContext {
     ctx: Context,
-    timing: TimingAnalyser,
 }
 
 #[pymethods]
@@ -67,7 +70,6 @@ impl PyContext {
 
         Ok(Self {
             ctx: Context::new(db),
-            timing: TimingAnalyser::new(),
         })
     }
 
@@ -272,13 +274,7 @@ impl PyContext {
                 };
                 cfg.legalization = legalization.to_string();
                 if cfg.timing_weight > 0.0 {
-                    self.timing.setup_and_run(&self.ctx);
-                    cfg.timing_criticality = self
-                        .ctx
-                        .design
-                        .iter_alive_nets()
-                        .map(|(net_id, _)| (net_id, self.timing.net_criticality(net_id)))
-                        .collect();
+                    cfg.timing_criticality = ideal_net_criticality(&self.ctx).map_err(sta_error)?;
                 }
                 if let Some(iters) = max_iters {
                     cfg.max_outer_iters = iters;
@@ -407,36 +403,65 @@ impl PyContext {
         }
     }
 
-    /// Add a clock constraint.
+    /// Constrain a clock net to a frequency; raises ValueError for an unknown net.
     ///
     /// Args:
     ///     net_name: Name of the clock net.
     ///     freq_mhz: Clock frequency in MHz.
+    #[pyo3(signature = (net_name, *, freq_mhz))]
     fn add_clock(&mut self, net_name: &str, freq_mhz: f64) -> PyResult<()> {
-        let id = self.ctx.id_pool.intern(net_name);
-        self.timing.add_clock_constraint(id, freq_mhz);
-        if let Some(net_idx) = self.ctx.design.net_by_name(id) {
-            let period_ps = (1_000_000.0 / freq_mhz) as DelayT;
-            self.ctx
-                .design
-                .net_edit(net_idx)
-                .set_clock_constraint(period_ps);
+        if !(freq_mhz.is_finite() && freq_mhz > 0.0) {
+            return Err(PyValueError::new_err(format!(
+                "Clock frequency must be positive and finite, got {freq_mhz} MHz"
+            )));
         }
+        let net = self
+            .ctx
+            .design
+            .net_by_name(self.ctx.id_pool.intern(net_name))
+            .ok_or_else(|| PyValueError::new_err(format!("Unknown clock net: {net_name}")))?;
+        let period_ps = (PS_PER_US / freq_mhz).round() as DelayT;
+        self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
         Ok(())
     }
 
-    /// Run timing analysis and return a report.
+    /// Append SDC commands (times in ns) to the design constraints.
     ///
-    /// Returns:
-    ///     A TimingReport with fmax, worst slack, and endpoint counts.
-    fn timing_report(&mut self) -> PyResult<PyTimingReport> {
-        self.timing.analyse(&self.ctx.design, &self.ctx.id_pool);
-        let report = self.timing.report();
+    /// Args:
+    ///     sdc: SDC text, read by RustSTA at the next timing analysis.
+    #[pyo3(signature = (*, sdc))]
+    fn apply_sdc(&mut self, sdc: &str) {
+        self.ctx.design.sdc.push_str(sdc);
+        self.ctx.design.sdc.push('\n');
+    }
+
+    /// Run static timing analysis and return a report.
+    ///
+    /// Args:
+    ///     stage: Interconnect delay source, "placed" (estimate) or "routed" (pip delays).
+    ///     paths_per_domain: Worst paths kept per clock domain pair. Default 1.
+    #[pyo3(signature = (*, stage, paths_per_domain=1))]
+    fn timing_report(&self, stage: &str, paths_per_domain: usize) -> PyResult<PyTimingReport> {
+        let stage = match stage {
+            "placed" => InterconnectStage::Placed,
+            "routed" => InterconnectStage::Routed,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Unknown timing stage: {other}. Available: placed, routed"
+                )))
+            }
+        };
+        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS)
+            .map_err(|e| sta_error(StaSessionError::from(e)))?;
+        let session = StaSession::build(&self.ctx, model, stage).map_err(sta_error)?;
+        let report = session.report(&self.ctx, paths_per_domain).map_err(sta_error)?;
         Ok(PyTimingReport {
-            fmax: report.fmax,
-            worst_slack: report.worst_slack,
-            num_failing: report.num_failing,
-            num_endpoints: report.num_endpoints,
+            fmax_mhz: report.fmax_mhz(),
+            wns_ns: report.wns_ns(),
+            tns_ns: report.tns_ns(),
+            num_failing: report.failing_endpoints(),
+            num_endpoints: report.endpoints(),
+            text: report.to_string(),
         })
     }
 
@@ -588,31 +613,67 @@ impl PyContext {
 // PyTimingReport
 // ---------------------------------------------------------------------------
 
-/// Summary report of timing analysis results.
+/// Setup timing summary over all clock domain pairs; `str()` gives the per-pair report.
 #[pyclass(name = "TimingReport")]
 pub struct PyTimingReport {
-    /// Maximum achievable frequency in MHz.
+    /// Lowest same-clock Fmax in MHz, or None without a same-clock domain pair.
     #[pyo3(get)]
-    pub fmax: f64,
-    /// Worst negative slack in picoseconds.
+    pub fmax_mhz: Option<f64>,
+    /// Worst setup slack in ns, or None without a constrained endpoint.
     #[pyo3(get)]
-    pub worst_slack: DelayT,
-    /// Number of endpoints with negative slack (failing timing).
+    pub wns_ns: Option<f64>,
+    /// Total negative setup slack in ns.
+    #[pyo3(get)]
+    pub tns_ns: f64,
+    /// Endpoints with negative setup slack, summed over domain pairs.
     #[pyo3(get)]
     pub num_failing: usize,
-    /// Total number of timing endpoints analysed.
+    /// Constrained setup endpoints, summed over domain pairs.
     #[pyo3(get)]
     pub num_endpoints: usize,
+    text: String,
 }
 
 #[pymethods]
 impl PyTimingReport {
     fn __repr__(&self) -> String {
+        let optional = |value: Option<f64>| value.map_or("None".to_owned(), |v| format!("{v:.3}"));
         format!(
-            "TimingReport(fmax={:.2} MHz, worst_slack={} ps, failing={}/{})",
-            self.fmax, self.worst_slack, self.num_failing, self.num_endpoints
+            "TimingReport(fmax_mhz={}, wns_ns={}, tns_ns={:.3}, failing={}/{})",
+            optional(self.fmax_mhz),
+            optional(self.wns_ns),
+            self.tns_ns,
+            self.num_failing,
+            self.num_endpoints
         )
     }
+
+    fn __str__(&self) -> String {
+        self.text.clone()
+    }
+}
+
+const PS_PER_US: f64 = 1_000_000.0;
+
+fn sta_error(error: StaSessionError) -> PyErr {
+    PyRuntimeError::new_err(format!("Timing analysis error: {error}"))
+}
+
+fn ideal_net_criticality(ctx: &Context) -> Result<FxHashMap<NetId, f32>, StaSessionError> {
+    let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS)?;
+    let session = StaSession::build_ideal(ctx, model)?;
+    ctx.design
+        .iter_alive_nets()
+        .map(|(net, _)| {
+            let criticality = session
+                .net_sinks(net)?
+                .iter()
+                .filter_map(|sink| sink.criticality())
+                .map(Criticality::value)
+                .fold(0.0, f64::max);
+            Ok((net, criticality as f32))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

@@ -130,17 +130,10 @@ def main(
 
     # Apply SDC constraints
     if sdc is not None:
-        from nextpnr.sdc import parse_sdc
-
         try:
-            sdc_data = parse_sdc(str(sdc))
+            ctx.apply_sdc(sdc=sdc.read_text())
             if verbose:
-                typer.echo(
-                    f"Loaded SDC: {len(sdc_data.clocks)} clocks, "
-                    f"{len(sdc_data.input_delays)} input delays, "
-                    f"{len(sdc_data.output_delays)} output delays"
-                )
-            ctx.apply_sdc(sdc_data.to_dict())
+                typer.echo(f"Loaded SDC constraints from {sdc}")
         except Exception as e:
             typer.echo(f"Error loading SDC constraints: {e}", err=True)
             if not force:
@@ -181,7 +174,7 @@ def main(
 
     # Set frequency constraint
     if freq is not None:
-        ctx.add_clock("clk", freq)
+        ctx.add_clock("clk", freq_mhz=freq)
 
     # Run P&R flow
     try:
@@ -212,20 +205,17 @@ def main(
 
     # Timing report
     try:
-        timing = ctx.timing_report()
+        timing = ctx.timing_report(stage="routed")
         if verbose or report is not None:
-            typer.echo(f"Fmax: {timing.fmax:.2f} MHz")
-            typer.echo(f"Worst slack: {timing.worst_slack} ps")
-            typer.echo(
-                f"Failing endpoints: {timing.num_failing}/{timing.num_endpoints}"
-            )
+            typer.echo(str(timing))
 
         if report is not None:
             import json as json_mod
 
             report_data = {
-                "fmax_mhz": timing.fmax,
-                "worst_slack_ps": timing.worst_slack,
+                "fmax_mhz": timing.fmax_mhz,
+                "wns_ns": timing.wns_ns,
+                "tns_ns": timing.tns_ns,
                 "num_failing": timing.num_failing,
                 "num_endpoints": timing.num_endpoints,
             }
