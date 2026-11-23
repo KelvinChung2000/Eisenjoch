@@ -22,8 +22,6 @@ pub(crate) struct PyrLevel {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RegionMinPyramid {
-    pub width: i32,
-    pub height: i32,
     /// `levels[k-1]` is pyramid level `k` (level 0 is the dist grid itself).
     pub levels: Vec<PyrLevel>,
 }
@@ -118,11 +116,7 @@ impl RegionMinPyramid {
             cur_h = h_next;
         }
 
-        Self {
-            width,
-            height,
-            levels,
-        }
+        Self { levels }
     }
 
     /// Total stored bytes (for diagnostics).

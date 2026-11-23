@@ -232,10 +232,6 @@ pub(crate) struct DriverNodeRegistry {
 }
 
 impl DriverNodeRegistry {
-    pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
     fn with_capacity(pins: usize) -> Self {
         Self {
             claimed_nodes: FxHashMap::with_capacity_and_hasher(pins, Default::default()),

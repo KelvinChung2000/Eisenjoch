@@ -37,8 +37,6 @@ impl BoundingBox {
 pub(super) struct CostModel {
     /// Dense index -> net, upstream's `net_by_udata`.
     nets: Vec<NetId>,
-    /// Net -> dense index, upstream's `NetInfo::udata`.
-    index: FxHashMap<NetId, usize>,
     /// `ignore_net`: no driver, unplaced driver, or a global-buffer driver.
     ignored: Vec<bool>,
     bounds: Vec<BoundingBox>,
@@ -81,7 +79,6 @@ impl CostModel {
         let n = nets.len();
         Self {
             nets,
-            index,
             ignored: vec![false; n],
             bounds: vec![BoundingBox::default(); n],
             arc_cost: vec![Vec::new(); n],

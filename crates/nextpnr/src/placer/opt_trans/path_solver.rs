@@ -69,7 +69,6 @@ fn use_fsm() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| std::env::var("NPNR_OT_USE_FSM").ok().as_deref() == Some("1"))
 }
-const REASONABLE_EPS: f64 = 1e-10;
 const CORRIDOR_STRETCH_DEFAULT: f64 = 1.35;
 const CORRIDOR_MIN_HALO_DEFAULT: i32 = 12;
 const CORRIDOR_REL_HALO_NUM_DEFAULT: i32 = 1;
@@ -502,12 +501,14 @@ impl PathSolverWorkspace {
         self.edge_load[pipe_idx] += flow;
     }
 
-    /// Drain the current net's edge usage as `(pipe, flow)` pairs.
+    /// Drain the current net's edge usage as `(pipe, flow)` pairs. Only the
+    /// tests read it; the solver folds usage in through `accumulate_edge_usage`.
     ///
     /// Only the pipes this net actually touched are emitted, so the cost is
     /// proportional to the net's corridor rather than to the chip. Abandoned
     /// attempts need no rollback: nothing has been published yet, and
     /// `begin_net` clears `edge_load` / `edge_touched` before the retry.
+    #[cfg(test)]
     pub(crate) fn drain_edge_usage(&self, out: &mut Vec<(u32, f64)>) {
         out.reserve(self.edge_touched.len());
         for &pipe in &self.edge_touched {
@@ -2021,81 +2022,6 @@ mod tests {
             y0: 0,
             zero_bel_tiles: 0,
             total_bels: n_nodes,
-            coarsen: 1,
-        };
-        net.refresh_flat_edge_costs();
-        net
-    }
-
-    fn test_network_with_coords(
-        coords: &[(i32, i32)],
-        edges: &[(usize, usize, f64)],
-    ) -> PipeNetwork {
-        let nodes: Vec<Node> = coords
-            .iter()
-            .map(|&(tile_x, tile_y)| Node {
-                tile_x,
-                tile_y,
-                pressure: 0.0,
-            })
-            .collect();
-        let mut pipes = Vec::new();
-        let mut node_pipes = vec![Vec::new(); coords.len()];
-        for &(from, to, cost) in edges {
-            let idx = pipes.len();
-            pipes.push(Pipe {
-                from,
-                to,
-                base_resistance: cost,
-                capacity: 10.0,
-                flow: 0.0,
-                net_count: 0.0,
-                raw_cell_density: 0.0,
-                cell_density: 0.0,
-                eff_conductance: 1.0 / cost,
-                pipe_type: PipeType::InterTile(Direction::East),
-            });
-            node_pipes[from].push(idx);
-            node_pipes[to].push(idx);
-        }
-        let width = coords.iter().map(|&(x, _)| x).max().unwrap_or(0) + 1;
-        let height = coords.iter().map(|&(_, y)| y).max().unwrap_or(0) + 1;
-        let pipe_costs: Vec<f64> = pipes
-            .iter()
-            .map(|p| 1.0 / p.eff_conductance.max(1e-12))
-            .collect();
-        let pipe_costs_int: Vec<u32> = pipe_costs
-            .iter()
-            .map(|&c| ((c * crate::placer::opt_trans::network::DIST_SCALE).round() as u32).max(1))
-            .collect();
-        let tile_grid =
-            crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, width, height);
-        let flat_adjacency =
-            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
-        let tile_templates = std::sync::Arc::new(Vec::new());
-        let n_pipe_entries = pipes.len();
-        let n_node_entries = nodes.len();
-        let mut net = PipeNetwork {
-            nodes,
-            pipes,
-            node_pipes,
-            pipe_costs,
-            pipe_history: vec![0.0; pipe_costs_int.len()],
-            pipe_costs_int,
-            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
-                n_pipe_entries,
-            ),
-            flat_adjacency,
-            tile_templates,
-            tile_grid,
-            pipe_lookup: FxHashMap::default(),
-            tile_type_by_node: vec![0; n_node_entries],
-            width,
-            height,
-            x0: 0,
-            y0: 0,
-            zero_bel_tiles: 0,
-            total_bels: coords.len(),
             coarsen: 1,
         };
         net.refresh_flat_edge_costs();

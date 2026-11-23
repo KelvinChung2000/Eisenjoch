@@ -149,7 +149,6 @@ fn left_io_reaches_right_io() {
         return;
     };
 
-    let w = db.width();
     let h = db.height();
 
     let (mut min_iob_x, mut max_iob_x) = (i32::MAX, i32::MIN);

@@ -115,7 +115,6 @@ pub fn legalize_ring(
 
     let mut total_displacement = 0.0;
     let t_assign_start = std::time::Instant::now();
-    let mut probe_assign_phase_ms: u128 = 0;
     let mut probe_islegal_only_us: u128 = 0;
     let mut probe_islegal_sample_count: u64 = 0;
 
@@ -330,7 +329,7 @@ pub fn legalize_ring(
         }
     }
 
-    probe_assign_phase_ms = t_assign_start.elapsed().as_millis();
+    let probe_assign_phase_ms = t_assign_start.elapsed().as_millis();
     let n = idx_to_cell.len() as f64;
     let rms_disp = (total_displacement / n.max(1.0)).sqrt();
     let _max_disp = total_displacement;

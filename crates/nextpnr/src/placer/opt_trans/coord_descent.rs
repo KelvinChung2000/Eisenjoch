@@ -255,12 +255,6 @@ impl DistCache {
         }
     }
 
-    fn reset(&mut self) {
-        for row in &mut self.rows {
-            row.clear();
-        }
-    }
-
     #[inline]
     fn row(&self, net_idx: usize) -> &FxHashMap<u32, f32> {
         &self.rows[net_idx]
@@ -378,17 +372,6 @@ impl DistCache {
             } else {
                 f32::NAN
             };
-        }
-    }
-
-    /// Copy this net's sparse row into a dense scratch buffer of length
-    /// `n_nodes`. Absent entries become `f32::INFINITY`. Used by code paths
-    /// that need contiguous random-access reads (BB-pyramid build).
-    fn materialize_row(&self, net_idx: usize, scratch: &mut [f32]) {
-        debug_assert_eq!(scratch.len(), self.n_nodes);
-        scratch.fill(f32::INFINITY);
-        for (&node, &v) in &self.rows[net_idx] {
-            scratch[node as usize] = v;
         }
     }
 
@@ -794,24 +777,12 @@ fn position_to_node(network: &PipeNetwork, x: f64, y: f64) -> usize {
     coord_to_node(network, gx, gy)
 }
 
-/// Pin position in tile coords plus the index of the cell whose motion
-/// drives this pin. Cluster children move rigidly with their root, so their
-/// pin position is `root_pos + (constr_x, constr_y)` and the gradient is
-/// attributed to the root index — this is what tells the optimizer that
-/// minimizing wirelength on a cluster-child net should move the root.
-fn pin_pos(
-    ctx: &Context,
-    cell_id: CellId,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    network: &PipeNetwork,
-) -> (f64, f64, Option<usize>) {
-    let (x, y, idx, _) = pin_pos_src(ctx, cell_id, cell_to_idx, cell_x, cell_y, network);
-    (x, y, idx)
-}
-
-/// As [`pin_pos`], also returning the [`PinSource`] the position came from.
+/// Pin position in tile coords, the index of the cell whose motion drives this
+/// pin, and the [`PinSource`] the position came from. Cluster children move
+/// rigidly with their root, so their pin position is
+/// `root_pos + (constr_x, constr_y)` and the gradient is attributed to the root
+/// index. That is what tells the optimizer that minimizing wirelength on a
+/// cluster-child net should move the root.
 fn pin_pos_src(
     ctx: &Context,
     cell_id: CellId,
@@ -3094,7 +3065,6 @@ fn place_dcd_sweep(
         }
         if collect_stats {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -3552,7 +3522,6 @@ fn place_dcd_sweep_median(
         }
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -3667,7 +3636,6 @@ fn place_dcd_sweep_colored_gs(
             }
             if diag.enabled {
                 diag.record_move(MoveRecord {
-                    cell_idx: ci,
                     old_gx: ogx,
                     old_gy: ogy,
                     new_gx: ngx,
@@ -3768,7 +3736,6 @@ fn place_dcd_sweep_jacobi_bisection(
         }
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -4166,7 +4133,6 @@ fn place_dcd_sweep_jacobi_bb(
                         }
                         if diag.enabled {
                             diag.record_move(MoveRecord {
-                                cell_idx: ci,
                                 old_gx,
                                 old_gy,
                                 new_gx: cx,
@@ -4191,7 +4157,6 @@ fn place_dcd_sweep_jacobi_bb(
             }
             if diag.enabled {
                 diag.record_move(MoveRecord {
-                    cell_idx: ci,
                     old_gx,
                     old_gy,
                     new_gx,
@@ -4452,7 +4417,6 @@ fn place_dcd_sweep_sequential_bisection(
 
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,

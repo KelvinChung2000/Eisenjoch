@@ -16,7 +16,6 @@ use std::time::Instant;
 
 struct Report {
     label: String,
-    steiner: f64,
     place_secs: f64,
     hpwl: f64,
     route_secs: f64,
@@ -133,7 +132,6 @@ fn run_one(steiner: f64, chipdb_path: &str, design_path: &str) -> Report {
         println!("{} place FAILED: {}", label, e);
         return Report {
             label,
-            steiner,
             place_secs,
             hpwl: f64::NAN,
             route_secs: 0.0,
@@ -166,7 +164,6 @@ fn run_one(steiner: f64, chipdb_path: &str, design_path: &str) -> Report {
 
     Report {
         label,
-        steiner,
         place_secs,
         hpwl,
         route_secs,
