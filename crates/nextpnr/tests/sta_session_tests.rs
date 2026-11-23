@@ -892,15 +892,54 @@ fn table_session_equals_exact_session(#[case] design: fn(&mut Context)) {
     assert_eq!(snapshot(&ctx, &table), snapshot(&ctx, &exact));
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ClockDefinition {
+    NetConstraint,
+    UserSdcNamedApart,
+    Undefined,
+}
+
+impl ClockDefinition {
+    const USER_SDC_NAME: &str = "sys";
+
+    fn apply(self, ctx: &mut Context, clk: NetId) {
+        let period_ps = ctx.design.net(clk).clock_constraint;
+        match self {
+            ClockDefinition::NetConstraint => {}
+            ClockDefinition::UserSdcNamedApart => {
+                ctx.design.net_edit(clk).set_clock_constraint(0);
+                ctx.design.sdc = format!(
+                    "create_clock -name {} -period {} [get_ports {{clk}}]\n",
+                    Self::USER_SDC_NAME,
+                    f64::from(period_ps) / 1000.0
+                );
+            }
+            ClockDefinition::Undefined => {
+                ctx.design.net_edit(clk).set_clock_constraint(0);
+            }
+        }
+    }
+
+    fn ideal_users(self) -> &'static [u32] {
+        match self {
+            ClockDefinition::NetConstraint | ClockDefinition::UserSdcNamedApart => &[0, 1],
+            ClockDefinition::Undefined => &[],
+        }
+    }
+}
+
 #[rstest]
 #[case::placed(placed, InterconnectStage::Placed)]
 #[case::routed(routed_direct, InterconnectStage::Routed)]
 fn clock_sinks_are_ideal(
     #[case] design: fn(&mut Context) -> Chain,
     #[case] stage: InterconnectStage,
+    #[values(ClockDefinition::NetConstraint, ClockDefinition::UserSdcNamedApart)]
+    clock: ClockDefinition,
 ) {
     let mut ctx = common::make_example_context();
     let chain = design(&mut ctx);
+    clock.apply(&mut ctx, chain.clk);
     let mut session = session(&ctx, stage);
     for user in 0..2 {
         let clock_sink = NetSink {
@@ -927,4 +966,59 @@ fn clock_sinks_are_ideal(
         model(&ctx, NOTIONAL, PlacedEstimate::DelayTable).net_delays(&ctx, InterconnectStage::Placed, chain.clk),
         Err(InterconnectError::ClockNotTabulated { net }) if net == "clk"
     ));
+}
+
+fn clock_also_drives_lut(ctx: &mut Context) -> (Chain, NetSink) {
+    let chain = placed(ctx);
+    let user = u32::try_from(ctx.design.net(chain.clk).users().len()).expect("few users");
+    sink(ctx, chain.clk, chain.lut, "I[4]");
+    let data_sink = NetSink {
+        net: chain.clk,
+        user,
+    };
+    (chain, data_sink)
+}
+
+#[rstest]
+#[case::net_constraint(ClockDefinition::NetConstraint, PlacedEstimate::DelayTable)]
+#[case::user_sdc_named_apart(ClockDefinition::UserSdcNamedApart, PlacedEstimate::DelayTable)]
+#[case::undefined_clock_pins_untabulated(ClockDefinition::Undefined, PlacedEstimate::ExactSearch)]
+fn clock_net_data_sink_keeps_its_delay(
+    #[case] clock: ClockDefinition,
+    #[case] estimate: PlacedEstimate,
+) {
+    let mut ctx = common::make_example_context();
+    let (chain, data_sink) = clock_also_drives_lut(&mut ctx);
+    clock.apply(&mut ctx, chain.clk);
+    let build = |placed_estimate| {
+        StaSession::build(
+            &ctx,
+            model(&ctx, NOTIONAL, placed_estimate),
+            InterconnectStage::Placed,
+        )
+        .expect("session builds the design")
+    };
+    let (table, exact) = (build(estimate), build(PlacedEstimate::ExactSearch));
+    for user in 0..=data_sink.user {
+        let sink = NetSink {
+            net: chain.clk,
+            user,
+        };
+        match clock.ideal_users().contains(&user) {
+            true => assert!(matches!(
+                table.connection_delay(sink),
+                Err(StaSessionError::IdealClockSink(ideal)) if ideal == sink
+            )),
+            false => assert_eq!(
+                table
+                    .connection_delay(sink)
+                    .expect("a data sink has a delay"),
+                exact
+                    .connection_delay(sink)
+                    .expect("a data sink has a delay"),
+                "{sink:?}"
+            ),
+        }
+    }
+    assert!(table.connection_delay(data_sink).unwrap().late_ps > 0);
 }
