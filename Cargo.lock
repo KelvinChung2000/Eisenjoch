@@ -1424,7 +1424,7 @@ dependencies = [
 [[package]]
 name = "rusteda-compute"
 version = "0.1.0"
-source = "git+https://github.com/lab-emi/RustEDA-Common.git?rev=ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56#ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56"
+source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "rayon",
@@ -1434,7 +1434,7 @@ dependencies = [
 [[package]]
 name = "rusteda-core"
 version = "0.1.0"
-source = "git+https://github.com/lab-emi/RustEDA-Common.git?rev=ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56#ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56"
+source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "rustc-hash",
@@ -1443,7 +1443,7 @@ dependencies = [
 [[package]]
 name = "rusteda-formats"
 version = "0.1.0"
-source = "git+https://github.com/lab-emi/RustEDA-Common.git?rev=ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56#ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56"
+source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "flate2",
  "rayon",
@@ -1457,7 +1457,7 @@ dependencies = [
 [[package]]
 name = "rusteda-workspace"
 version = "0.1.0"
-source = "git+https://github.com/lab-emi/RustEDA-Common.git?rev=ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56#ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56"
+source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "memmap2",

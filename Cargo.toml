@@ -19,3 +19,9 @@ rayon = "1"
 ndarray = "0.16"
 lapjv = "0.3"
 nextpnr = { path = "crates/nextpnr" }
+
+[patch."https://github.com/lab-emi/RustEDA-Common.git"]
+rusteda-core = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-workspace = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-compute = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-formats = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
