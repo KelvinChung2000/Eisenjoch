@@ -11,7 +11,7 @@ use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
     ArcTiming, ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
-    NetSink, SinkTiming, StaSession, StaSessionError, Untimed,
+    NetSink, PlacedEstimate, SinkTiming, StaSession, StaSessionError, Untimed,
 };
 use nextpnr::timing::DelayT;
 use rstest::rstest;
@@ -192,7 +192,8 @@ fn routed_chain(ctx: &mut Context, route: QRoute, period_ps: DelayT) -> Chain {
 }
 
 fn session(ctx: &Context, stage: InterconnectStage) -> StaSession {
-    let model = InterconnectModel::new(ctx, NOTIONAL).expect("example chipdb has pip classes");
+    let model = InterconnectModel::new(ctx, NOTIONAL, PlacedEstimate::DelayTable)
+        .expect("example chipdb has pip classes");
     StaSession::build(ctx, model, stage).expect("session builds the chain")
 }
 
@@ -486,8 +487,8 @@ fn build_rejects_missing_interconnect_delay(
 ) {
     let mut ctx = common::make_example_context();
     design(&mut ctx);
-    let model =
-        InterconnectModel::new(&ctx, classless_pips).expect("example chipdb has pip classes");
+    let model = InterconnectModel::new(&ctx, classless_pips, PlacedEstimate::DelayTable)
+        .expect("example chipdb has pip classes");
     let err = StaSession::build(&ctx, model, stage).expect_err("a connection has no delay");
     assert!(expected(&err), "unexpected error: {err}");
 }

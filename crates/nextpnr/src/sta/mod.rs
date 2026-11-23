@@ -1,3 +1,4 @@
+mod delay_table;
 mod interconnect;
 mod library;
 mod role;
@@ -16,16 +17,22 @@ use ruststa::engine::types::NodeId;
 use thiserror::Error;
 
 use crate::context::Context;
-use crate::netlist::{CellId, CellPin, NetId, PortType};
+use crate::netlist::{CellId, CellPin, NetId, NetInfo, PortType};
 use role::{CellRole, Roles};
 
+pub use delay_table::{DelayTable, PinWire, Reach, TableEntry, TableKey, TileOffset};
 pub use interconnect::{
     ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
+    PlacedEstimate, Untabulated,
 };
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};
 
 const PS_IN_NS: f64 = 0.001;
+
+fn is_clock_net(net: &NetInfo) -> bool {
+    net.clock_constraint > 0
+}
 
 #[derive(Debug, Error)]
 pub enum StaBuildError {
@@ -205,7 +212,7 @@ fn gate_design(
 fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
     let mut sdc = String::new();
     for (net_id, net) in ctx.design.iter_alive_nets() {
-        if net.clock_constraint <= 0 {
+        if !is_clock_net(net) {
             continue;
         }
         let driver = net

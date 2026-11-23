@@ -6,7 +6,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use ruststa::engine::delay::annotate::ArcDelays;
 use thiserror::Error;
 
-use super::PS_IN_NS;
+use super::delay_table::{DelayTable, Reach, TableEntry, TableKey, TileOffset};
+use super::{is_clock_net, PS_IN_NS};
 use crate::chipdb::{ChipDb, PipId, TimingValue, WireId};
 use crate::context::{BelPin, Context};
 use crate::netlist::{CellPin, NetId, NetInfo, PipMap};
@@ -63,6 +64,18 @@ pub enum InterconnectStage {
     Routed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Untabulated {
+    NoSample,
+    VariesWithSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacedEstimate {
+    DelayTable,
+    ExactSearch,
+}
+
 #[derive(Debug, Error)]
 pub enum InterconnectError {
     #[error("chipdb has no speed grade {index}")]
@@ -91,6 +104,18 @@ pub enum InterconnectError {
         cell: String,
         port: String,
     },
+    #[error(
+        "net '{net}': the delay table holds no delay for pin '{port}' of cell '{cell}' at offset {offset:?}: {reason:?}"
+    )]
+    Untabulated {
+        net: String,
+        cell: String,
+        port: String,
+        offset: TileOffset,
+        reason: Untabulated,
+    },
+    #[error("net '{net}' is a clock net; clocks are ideal and the delay table does not hold them")]
+    ClockNotTabulated { net: String },
     #[error("net '{net}': pin '{port}' of cell '{cell}' is not routed")]
     Unrouted {
         net: String,
@@ -108,13 +133,85 @@ pub enum InterconnectError {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct PipDelays {
+    classes: Vec<DelayBounds>,
+    classless: ClasslessPips,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SearchGoal {
+    AllWires,
+    Sinks(FxHashSet<WireId>),
+}
+
+impl PipDelays {
+    fn delay(&self, chipdb: &ChipDb, pip: PipId) -> Option<DelayBounds> {
+        match usize::try_from(chipdb.pip_timing_index(pip)) {
+            Ok(class) => Some(self.classes[class]),
+            Err(_) => match self.classless {
+                ClasslessPips::Notional(delay) => Some(delay),
+                ClasslessPips::Reject => None,
+            },
+        }
+    }
+
+    pub(super) fn shortest_delays(
+        &self,
+        chipdb: &ChipDb,
+        source: WireId,
+        mut goal: SearchGoal,
+    ) -> FxHashMap<WireId, DelayBounds> {
+        let mut settled: FxHashMap<WireId, DelayBounds> = FxHashMap::default();
+        let mut frontier = BinaryHeap::new();
+        frontier.push(Reverse(SearchEntry::new(DelayBounds::ZERO, source)));
+        while let Some(Reverse(entry)) = frontier.pop() {
+            let (wire, delay) = (entry.wire(), entry.delay());
+            if settled.contains_key(&wire) {
+                continue;
+            }
+            settled.insert(wire, delay);
+            if let SearchGoal::Sinks(pending) = &mut goal {
+                pending.remove(&wire);
+                if pending.is_empty() {
+                    break;
+                }
+            }
+            chipdb.node_wires_cb(wire, |peer| {
+                frontier.push(Reverse(SearchEntry::new(delay, peer)));
+            });
+            for &pip_index in chipdb.wire_info(wire).pips_downhill.get() {
+                let pip = PipId::new(wire.tile(), pip_index);
+                let Some(pip_delay) = self.delay(chipdb, pip) else {
+                    continue;
+                };
+                frontier.push(Reverse(SearchEntry::new(
+                    delay + pip_delay,
+                    chipdb.pip_dst_wire(pip),
+                )));
+            }
+        }
+        settled
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PlacedEstimator {
+    Table(DelayTable),
+    Search,
+}
+
+#[derive(Debug, Clone)]
 pub struct InterconnectModel {
-    pip_classes: Vec<DelayBounds>,
-    classless_pips: ClasslessPips,
+    pips: PipDelays,
+    placed: PlacedEstimator,
 }
 
 impl InterconnectModel {
-    pub fn new(ctx: &Context, classless_pips: ClasslessPips) -> Result<Self, InterconnectError> {
+    pub fn new(
+        ctx: &Context,
+        classless_pips: ClasslessPips,
+        placed: PlacedEstimate,
+    ) -> Result<Self, InterconnectError> {
         let speed_grade =
             ctx.speed_grade()
                 .ok_or_else(|| InterconnectError::MissingSpeedGrade {
@@ -126,7 +223,7 @@ impl InterconnectModel {
                 count: node_classes,
             });
         }
-        let pip_classes: Vec<DelayBounds> = speed_grade
+        let classes: Vec<DelayBounds> = speed_grade
             .pip_classes
             .get()
             .iter()
@@ -135,28 +232,43 @@ impl InterconnectModel {
         let chipdb = ctx.chipdb();
         if let Some(pip) = chipdb
             .pips()
-            .find(|&pip| chipdb.pip_timing_index(pip) >= pip_classes.len() as i32)
+            .find(|&pip| chipdb.pip_timing_index(pip) >= classes.len() as i32)
         {
             return Err(InterconnectError::PipClassOutOfRange {
                 pip,
                 class: chipdb.pip_timing_index(pip),
-                classes: pip_classes.len(),
+                classes: classes.len(),
             });
         }
-        Ok(Self {
-            pip_classes,
-            classless_pips,
-        })
+        let pips = PipDelays {
+            classes,
+            classless: classless_pips,
+        };
+        let placed = match placed {
+            PlacedEstimate::DelayTable => PlacedEstimator::Table(DelayTable::build(chipdb, &pips)),
+            PlacedEstimate::ExactSearch => PlacedEstimator::Search,
+        };
+        Ok(Self { pips, placed })
     }
 
     pub fn pip_delay(&self, chipdb: &ChipDb, pip: PipId) -> Option<DelayBounds> {
-        match usize::try_from(chipdb.pip_timing_index(pip)) {
-            Ok(class) => Some(self.pip_classes[class]),
-            Err(_) => match self.classless_pips {
-                ClasslessPips::Notional(delay) => Some(delay),
-                ClasslessPips::Reject => None,
-            },
+        self.pips.delay(chipdb, pip)
+    }
+
+    pub fn delay_table(&self) -> Option<&DelayTable> {
+        match &self.placed {
+            PlacedEstimator::Table(table) => Some(table),
+            PlacedEstimator::Search => None,
         }
+    }
+
+    pub fn exact_delays_from(
+        &self,
+        chipdb: &ChipDb,
+        source: WireId,
+    ) -> FxHashMap<WireId, DelayBounds> {
+        self.pips
+            .shortest_delays(chipdb, source, SearchGoal::AllWires)
     }
 
     pub fn net_delays(
@@ -180,9 +292,14 @@ impl InterconnectModel {
                 Ok((user, sink, pin_wire(ctx, sink)?))
             })
             .collect::<Result<Vec<_>, InterconnectError>>()?;
-        match stage {
-            InterconnectStage::Placed => self.estimate(ctx, info, source, &sinks),
-            InterconnectStage::Routed => sinks
+        match (stage, &self.placed) {
+            (InterconnectStage::Placed, PlacedEstimator::Search) => {
+                self.estimate(ctx, info, source, &sinks)
+            }
+            (InterconnectStage::Placed, PlacedEstimator::Table(table)) => {
+                look_up(table, ctx, info, source, &sinks)
+            }
+            (InterconnectStage::Routed, _) => sinks
                 .iter()
                 .map(|&(user, sink, wire)| Ok((user, self.routed(ctx, info, source, sink, wire)?)))
                 .collect(),
@@ -196,44 +313,15 @@ impl InterconnectModel {
         source: WireId,
         sinks: &[(u32, CellPin, WireId)],
     ) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
-        let chipdb = ctx.chipdb();
-        let mut pending: FxHashSet<WireId> = sinks.iter().map(|&(_, _, wire)| wire).collect();
-        let mut settled: FxHashMap<WireId, DelayBounds> = FxHashMap::default();
-        let mut frontier = BinaryHeap::new();
-        frontier.push(Reverse(SearchEntry::new(DelayBounds::ZERO, source)));
-        while let Some(Reverse(entry)) = frontier.pop() {
-            let (wire, delay) = (entry.wire(), entry.delay());
-            if settled.contains_key(&wire) {
-                continue;
-            }
-            settled.insert(wire, delay);
-            pending.remove(&wire);
-            if pending.is_empty() {
-                break;
-            }
-            chipdb.node_wires_cb(wire, |peer| {
-                frontier.push(Reverse(SearchEntry::new(delay, peer)));
-            });
-            for &pip_index in chipdb.wire_info(wire).pips_downhill.get() {
-                let pip = PipId::new(wire.tile(), pip_index);
-                let Some(pip_delay) = self.pip_delay(chipdb, pip) else {
-                    continue;
-                };
-                frontier.push(Reverse(SearchEntry::new(
-                    delay + pip_delay,
-                    chipdb.pip_dst_wire(pip),
-                )));
-            }
-        }
+        let pending = sinks.iter().map(|&(_, _, wire)| wire).collect();
+        let settled = self
+            .pips
+            .shortest_delays(ctx.chipdb(), source, SearchGoal::Sinks(pending));
         sinks
             .iter()
             .map(|&(user, sink, wire)| match settled.get(&wire) {
                 Some(&delay) => Ok((user, delay)),
-                None => Err(InterconnectError::Unreachable {
-                    net: ctx.name_of(net.name).to_owned(),
-                    cell: cell_name(ctx, sink),
-                    port: ctx.name_of(sink.port).to_owned(),
-                }),
+                None => Err(unreachable(ctx, net, sink)),
             })
             .collect()
     }
@@ -274,7 +362,8 @@ impl InterconnectModel {
                 .ok_or_else(|| error(false))?;
             delay = delay
                 + self
-                    .pip_delay(chipdb, pip)
+                    .pips
+                    .delay(chipdb, pip)
                     .ok_or(InterconnectError::ClasslessPip { pip })?;
             wire = chipdb.pip_src_wire(pip);
         }
@@ -309,6 +398,56 @@ impl SearchEntry {
             early_ps: self.early_ps,
             late_ps: self.late_ps,
         }
+    }
+}
+
+fn look_up(
+    table: &DelayTable,
+    ctx: &Context,
+    net: &NetInfo,
+    source: WireId,
+    sinks: &[(u32, CellPin, WireId)],
+) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
+    if is_clock_net(net) {
+        return Err(InterconnectError::ClockNotTabulated {
+            net: ctx.name_of(net.name).to_owned(),
+        });
+    }
+    let chipdb = ctx.chipdb();
+    sinks
+        .iter()
+        .map(|&(user, sink, wire)| {
+            let key = TableKey::between(chipdb, source, wire);
+            let untabulated = |reason| InterconnectError::Untabulated {
+                net: ctx.name_of(net.name).to_owned(),
+                cell: cell_name(ctx, sink),
+                port: ctx.name_of(sink.port).to_owned(),
+                offset: key.offset,
+                reason,
+            };
+            match table.get(&key) {
+                Some(TableEntry::Sampled {
+                    reach: Reach::Delay(delay),
+                    ..
+                }) => Ok((user, delay)),
+                Some(TableEntry::Sampled {
+                    reach: Reach::Unreachable,
+                    ..
+                }) => Err(unreachable(ctx, net, sink)),
+                Some(TableEntry::VariesWithSource) => {
+                    Err(untabulated(Untabulated::VariesWithSource))
+                }
+                None => Err(untabulated(Untabulated::NoSample)),
+            }
+        })
+        .collect()
+}
+
+fn unreachable(ctx: &Context, net: &NetInfo, sink: CellPin) -> InterconnectError {
+    InterconnectError::Unreachable {
+        net: ctx.name_of(net.name).to_owned(),
+        cell: cell_name(ctx, sink),
+        port: ctx.name_of(sink.port).to_owned(),
     }
 }
 
