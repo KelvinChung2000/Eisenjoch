@@ -3,9 +3,9 @@
 use rustc_hash::FxHashMap;
 
 use super::constraints::SdcConstraints;
-use super::delay::{DelayPair, DelayT};
+use crate::common::{DelayPair, DelayT};
 use super::domain::{ClockDomain, ClockDomainPair, DomainRegistry};
-use super::kinds::TimingPortClass;
+use crate::common::TimingPortClass;
 use super::path::TimingPath;
 use crate::common::IdString;
 use crate::netlist::{CellPin, NetId, PortType};

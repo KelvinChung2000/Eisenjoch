@@ -10,7 +10,7 @@ use super::PS_IN_NS;
 use crate::chipdb::{ChipDb, PipId, TimingValue, WireId};
 use crate::context::{BelPin, Context};
 use crate::netlist::{CellPin, NetId, NetInfo, PipMap};
-use crate::timing::DelayT;
+use crate::common::DelayT;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DelayBounds {

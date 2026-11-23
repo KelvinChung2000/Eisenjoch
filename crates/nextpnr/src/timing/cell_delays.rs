@@ -1,9 +1,9 @@
 //! Cell delay computation from chipdb timing data.
 
 use super::analyser::TimingAnalyser;
-use super::delay::{DelayPair, DelayQuad};
+use crate::common::{DelayPair, DelayQuad};
 use super::domain::CellArc;
-use super::kinds::TimingPortClass;
+use crate::common::TimingPortClass;
 use crate::chipdb::ChipDb;
 use crate::common::IdString;
 use crate::context::Context;

@@ -1,7 +1,7 @@
 use crate::chipdb::SpeedGradePod;
 use crate::chipdb::WireId;
 use crate::netlist::NetId;
-use crate::timing::DelayT;
+use crate::common::DelayT;
 
 use super::Context;
 

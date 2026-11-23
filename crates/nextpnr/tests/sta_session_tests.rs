@@ -13,7 +13,7 @@ use nextpnr::sta::{
     ArcTiming, ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
     NetSink, SinkTiming, StaSession, StaSessionError, Untimed,
 };
-use nextpnr::timing::DelayT;
+use nextpnr::common::DelayT;
 use rstest::rstest;
 
 const SLACK_TOLERANCE_NS: f64 = 1e-9;

@@ -3,7 +3,7 @@
 
 use nextpnr::chipdb::{ChipDb, PipId, WireId};
 use nextpnr::context::Context;
-use nextpnr::timing::DelayT;
+use nextpnr::common::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;

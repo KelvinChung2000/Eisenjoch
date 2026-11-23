@@ -1,9 +1,9 @@
 //! STA forward and backward propagation.
 
 use super::analyser::{TimingAnalyser, DEFAULT_COMB_DELAY};
-use super::delay::DelayT;
+use crate::common::DelayT;
 use super::domain::CellArcType;
-use super::kinds::TimingPortClass;
+use crate::common::TimingPortClass;
 use crate::netlist::{CellId, CellPin, Design, PortType};
 
 impl TimingAnalyser {

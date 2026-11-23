@@ -8,7 +8,7 @@ use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
 use crate::context::Context;
 use crate::netlist::PortType;
-use crate::timing::{ClockEdge, DelayT};
+use crate::common::{ClockEdge, DelayT};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TypePort {

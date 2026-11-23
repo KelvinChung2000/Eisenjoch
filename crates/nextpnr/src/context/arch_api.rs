@@ -18,7 +18,7 @@
 use crate::chipdb::{BelId, Loc, WireId};
 use crate::common::IdString;
 use crate::netlist::{CellId, CellPin, NetId};
-use crate::timing::{DelayT, TimingPortClass};
+use crate::common::{DelayT, TimingPortClass};
 
 use super::Context;
 

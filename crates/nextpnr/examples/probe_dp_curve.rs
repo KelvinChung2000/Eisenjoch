@@ -5,7 +5,7 @@ use nextpnr::chipdb::{ChipDb, WireId};
 use nextpnr::context::Context;
 use nextpnr::router::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 use nextpnr::router::lookahead::Lookahead;
-use nextpnr::timing::DelayT;
+use nextpnr::common::DelayT;
 use rustc_hash::FxHashSet;
 use std::path::Path;
 

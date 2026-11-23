@@ -88,7 +88,7 @@ impl CellInfo {
     }
 
     #[inline]
-    pub fn port_budget(&self, name: IdString) -> Option<crate::timing::DelayT> {
+    pub fn port_budget(&self, name: IdString) -> Option<crate::common::DelayT> {
         self.port_data(name).map(|port| port.budget())
     }
 
@@ -107,7 +107,7 @@ impl CellInfo {
     }
 
     #[inline]
-    pub fn set_port_budget(&mut self, name: IdString, budget: crate::timing::DelayT) {
+    pub fn set_port_budget(&mut self, name: IdString, budget: crate::common::DelayT) {
         if let Some(port) = self.port_data_mut(name) {
             port.set_budget(budget);
         }

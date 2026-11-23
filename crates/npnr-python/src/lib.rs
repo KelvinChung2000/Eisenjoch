@@ -20,7 +20,8 @@ use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg};
 use ::nextpnr::router::Router;
-use ::nextpnr::timing::{DelayT, TimingAnalyser};
+use ::nextpnr::common::DelayT;
+use ::nextpnr::timing::TimingAnalyser;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------

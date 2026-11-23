@@ -18,20 +18,16 @@ mod queries;
 mod slack;
 
 pub mod constraints;
-pub mod delay;
 pub mod domain;
-pub mod kinds;
 pub mod path;
 pub mod report;
 pub mod sort;
 
 pub use analyser::TimingAnalyser;
 pub use constraints::SdcConstraints;
-pub use delay::{DelayPair, DelayQuad, DelayT};
 pub use domain::{
     CellArc, CellArcType, ClockDomain, ClockDomainId, ClockDomainPair, DomainRegistry,
 };
-pub use kinds::{ClockEdge, TimingPortClass};
 pub use oracle::TimingOracle;
 pub use path::{PathSegment, TimingEndpoint, TimingPath, TimingPortInfo, TimingReport};
 pub use report::{

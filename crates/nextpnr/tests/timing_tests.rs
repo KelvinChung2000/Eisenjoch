@@ -1,7 +1,8 @@
 use nextpnr::common::{IdString, IdStringPool};
 use nextpnr::netlist::PortType;
 use nextpnr::netlist::{CellId, Design, NetId};
-use nextpnr::timing::{topological_sort, ClockDomain, ClockEdge, TimingAnalyser, TimingPortClass};
+use nextpnr::common::{ClockEdge, TimingPortClass};
+use nextpnr::timing::{topological_sort, ClockDomain, TimingAnalyser};
 use std::collections::HashSet;
 
 // =========================================================================

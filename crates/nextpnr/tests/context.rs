@@ -9,7 +9,7 @@ use nextpnr::chipdb::{BelId, PipId, WireId};
 use nextpnr::common::{IdString, PlaceStrength};
 use nextpnr::context::BelPin;
 use nextpnr::netlist::{PortType, Property};
-use nextpnr::timing::{DelayQuad, DelayT};
+use nextpnr::common::{DelayQuad, DelayT};
 use rstest::rstest;
 
 // =========================================================================

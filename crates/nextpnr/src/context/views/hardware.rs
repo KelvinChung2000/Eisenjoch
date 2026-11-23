@@ -1,7 +1,7 @@
 use crate::chipdb::{BelId, Loc, PipId, WireId};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::timing::DelayQuad;
+use crate::common::DelayQuad;
 
 use super::common::define_hardware_view;
 use super::design::{Cell, Net};

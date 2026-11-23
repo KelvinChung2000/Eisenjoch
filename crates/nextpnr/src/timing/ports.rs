@@ -3,9 +3,9 @@
 use rustc_hash::FxHashMap;
 
 use super::analyser::{PerPort, TimingAnalyser};
-use super::delay::DelayT;
+use crate::common::DelayT;
 use super::domain::{CellArcType, ClockDomain};
-use super::kinds::{ClockEdge, TimingPortClass};
+use crate::common::{ClockEdge, TimingPortClass};
 use crate::common::IdString;
 use crate::netlist::{CellPin, Design, PortType};
 

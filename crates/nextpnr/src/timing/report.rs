@@ -2,7 +2,7 @@
 
 use crate::common::{IdString, IdStringPool};
 use crate::netlist::NetId;
-use crate::timing::DelayT;
+use crate::common::DelayT;
 
 use super::path::TimingPath;
 use super::TimingAnalyser;

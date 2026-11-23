@@ -39,7 +39,7 @@ use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::{CellPin, NetId};
 use crate::router::astar::{astar_search, AStarExit, AStarOptions, PathCostModel};
-use crate::timing::DelayT;
+use crate::common::DelayT;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;

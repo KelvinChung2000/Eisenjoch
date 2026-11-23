@@ -776,7 +776,7 @@ pub fn diagnose_unroutable_net(
 
     let mut src_set = rustc_hash::FxHashSet::default();
     src_set.insert(src_wire);
-    let empty_penalty: FxHashMap<WireId, crate::timing::DelayT> = FxHashMap::default();
+    let empty_penalty: FxHashMap<WireId, crate::common::DelayT> = FxHashMap::default();
 
     let mut failed = 0usize;
     for (ui, user) in net.users().iter().enumerate() {

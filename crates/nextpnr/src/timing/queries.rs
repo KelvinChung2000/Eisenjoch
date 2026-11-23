@@ -3,7 +3,7 @@
 use rustc_hash::FxHashMap;
 
 use super::analyser::TimingAnalyser;
-use super::delay::DelayT;
+use crate::common::DelayT;
 use super::domain::{ClockDomain, DomainRegistry};
 use super::path::{TimingPath, TimingReport};
 use super::sort::topological_sort;
@@ -260,7 +260,7 @@ impl TimingAnalyser {
         &self,
         cell: CellId,
         port: IdString,
-    ) -> Option<super::kinds::TimingPortClass> {
+    ) -> Option<crate::common::TimingPortClass> {
         self.port_data
             .get(&CellPin::new(cell, port))
             .map(|pd| pd.port_class)

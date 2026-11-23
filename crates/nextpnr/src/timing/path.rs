@@ -3,7 +3,7 @@
 use super::domain::ClockDomain;
 use crate::common::IdString;
 use crate::netlist::{CellId, NetId};
-use crate::timing::{DelayPair, DelayT, TimingPortClass};
+use crate::common::{DelayPair, DelayT, TimingPortClass};
 
 /// Classification of a cell port for timing analysis.
 ///

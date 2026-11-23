@@ -2,7 +2,7 @@
 
 use crate::common::IdString;
 use crate::netlist::CellPin;
-use crate::timing::{DelayPair, DelayT};
+use crate::common::{DelayPair, DelayT};
 
 use super::domain::ClockDomainPair;
 use rustc_hash::FxHashMap;

@@ -1,7 +1,7 @@
 use nextpnr::chipdb::{BelId, Loc, PipId, WireId};
 use nextpnr::common::{IdString, IdStringPool, PlaceStrength};
 use nextpnr::netlist::{PortType, Property};
-use nextpnr::timing::{ClockEdge, DelayPair, DelayQuad, TimingPortClass};
+use nextpnr::common::{ClockEdge, DelayPair, DelayQuad, TimingPortClass};
 
 // ============================================================================
 // Tests from ids.rs

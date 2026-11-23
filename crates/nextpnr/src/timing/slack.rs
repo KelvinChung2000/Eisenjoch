@@ -3,8 +3,8 @@
 use rustc_hash::FxHashSet;
 
 use super::analyser::TimingAnalyser;
-use super::delay::DelayT;
-use super::kinds::TimingPortClass;
+use crate::common::DelayT;
+use crate::common::TimingPortClass;
 use super::path::{PathSegment, TimingEndpoint, TimingPath};
 use crate::netlist::{CellPin, Design, NetId};
 

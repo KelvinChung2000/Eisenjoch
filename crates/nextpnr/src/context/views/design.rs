@@ -103,7 +103,7 @@ impl<'a> Net<'a> {
     }
 
     #[inline]
-    pub fn clock_constraint(&self) -> crate::timing::DelayT {
+    pub fn clock_constraint(&self) -> crate::common::DelayT {
         self.info().clock_constraint
     }
 

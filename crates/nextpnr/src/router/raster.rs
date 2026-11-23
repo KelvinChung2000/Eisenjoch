@@ -11,7 +11,7 @@ use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::NetId;
-use crate::timing::DelayT;
+use crate::common::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::astar::AStarExit;
@@ -3419,14 +3419,14 @@ fn route_nets_exclusive(
             // A*. Each attempt either fully routes the net or rolls back to
             // the exact prior state, so partial trees survive a failed try.
             if cfg.inloop_ripup && !failed_nets.is_empty() {
-                let wire_penalty: FxHashMap<WireId, crate::timing::DelayT> = neg_state
+                let wire_penalty: FxHashMap<WireId, crate::common::DelayT> = neg_state
                     .wire_history
                     .iter()
                     .map(|(&w, &h)| {
                         (
                             w,
                             (h * neg_state.cfg.history_cost_multiplier)
-                                as crate::timing::DelayT,
+                                as crate::common::DelayT,
                         )
                     })
                     .collect();
@@ -3577,14 +3577,14 @@ fn route_nets_exclusive(
 
                 if !failed_nets.is_empty() {
                     // Build wire penalty from negotiation state for A* cost.
-                    let wire_penalty: FxHashMap<WireId, crate::timing::DelayT> = neg_state
+                    let wire_penalty: FxHashMap<WireId, crate::common::DelayT> = neg_state
                         .wire_history
                         .iter()
                         .map(|(&w, &h)| {
                             (
                                 w,
                                 (h * neg_state.cfg.history_cost_multiplier)
-                                    as crate::timing::DelayT,
+                                    as crate::common::DelayT,
                             )
                         })
                         .collect();

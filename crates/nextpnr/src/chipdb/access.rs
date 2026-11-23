@@ -2,7 +2,7 @@ use super::chip::ConstIdStr;
 use super::*;
 use crate::netlist::PortType;
 use crate::read_packed;
-use crate::timing::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
+use crate::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use std::ffi::CStr;
 
 impl ChipDb {

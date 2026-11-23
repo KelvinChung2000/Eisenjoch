@@ -13,7 +13,7 @@ use nextpnr::placer::heap::{place_heap, PlacerHeapCfg};
 use nextpnr::read_packed;
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
-use nextpnr::timing::ClockEdge;
+use nextpnr::common::ClockEdge;
 
 // =====================================================================
 // Test helpers

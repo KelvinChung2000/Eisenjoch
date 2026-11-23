@@ -149,7 +149,7 @@ impl CostModel {
         }
         // TMG_IGNORE on the driver port means the net carries no timing.
         if ctx.port_timing_class(info.driver.cell, info.driver.port)
-            == crate::timing::TimingPortClass::Ignore
+            == crate::common::TimingPortClass::Ignore
         {
             return vec![0.0; info.users.len()];
         }

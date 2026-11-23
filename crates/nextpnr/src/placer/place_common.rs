@@ -32,7 +32,7 @@ use crate::context::Context;
 use crate::netlist::{CellId, NetId, Property};
 use crate::placer::fast_bels::FastBels;
 use crate::placer::PlacerError;
-use crate::timing::TimingPortClass;
+use crate::common::TimingPortClass;
 
 /// `wirelen_t`.
 pub type WirelenT = i64;

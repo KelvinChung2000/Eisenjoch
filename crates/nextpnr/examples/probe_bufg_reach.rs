@@ -18,7 +18,7 @@ use nextpnr::packer;
 use nextpnr::placer::opt_trans::{place_opt_trans, OptTransPlacerCfg};
 use nextpnr::router::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
 use nextpnr::router::common::{collect_sink_wires, resolve_source_wire};
-use nextpnr::timing::DelayT;
+use nextpnr::common::DelayT;
 use rustc_hash::FxHashSet;
 use std::path::Path;
 

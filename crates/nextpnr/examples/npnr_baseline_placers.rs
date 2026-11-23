@@ -384,7 +384,7 @@ fn main() {
                 continue;
             };
             if ref_ctx.port_timing_class(d.cell, d.port)
-                != nextpnr::timing::TimingPortClass::Ignore
+                != nextpnr::common::TimingPortClass::Ignore
             {
                 non_ignore += 1;
             }

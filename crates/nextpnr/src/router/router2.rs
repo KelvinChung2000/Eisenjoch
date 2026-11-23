@@ -16,7 +16,7 @@ use crate::chipdb::{PipId, WireId};
 use crate::context::Context;
 use crate::metrics::{compute_bbox, BoundingBox};
 use crate::netlist::NetId;
-use crate::timing::DelayT;
+use crate::common::DelayT;
 use rustc_hash::FxHashSet;
 
 use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};

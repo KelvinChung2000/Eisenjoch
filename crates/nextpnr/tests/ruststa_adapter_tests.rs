@@ -6,7 +6,7 @@ use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::netlist::{CellId, CellPin, NetId, PortType};
 use nextpnr::sta::{RustSta, StaBuildError};
-use nextpnr::timing::DelayT;
+use nextpnr::common::DelayT;
 use rstest::rstest;
 use rusteda_core::netlist::PortDir;
 
