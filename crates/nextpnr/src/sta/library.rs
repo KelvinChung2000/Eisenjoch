@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use rusteda_core::liberty::{Cell, Direction, Library, Pin, Table, TimingArc, Units};
 
+use super::role::{CellRole, Roles};
 use super::StaBuildError;
 use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
@@ -19,16 +20,22 @@ pub(super) struct TypePort {
 
 #[derive(Debug)]
 pub(super) struct CellType {
-    pub id: IdString,
+    pub type_idx: usize,
     pub ports: BTreeMap<String, TypePort>,
 }
 
-pub(super) fn cell_types(ctx: &Context) -> Result<BTreeMap<String, CellType>, StaBuildError> {
+pub(super) fn cell_types(
+    ctx: &Context,
+    roles: &Roles,
+) -> Result<BTreeMap<String, CellType>, StaBuildError> {
     let mut types: BTreeMap<String, CellType> = BTreeMap::new();
-    for (_, cell) in ctx.design.iter_alive_cells() {
+    for (cell_id, cell) in ctx.design.iter_alive_cells() {
+        let CellRole::Timed { type_idx } = roles[&cell_id] else {
+            continue;
+        };
         let type_name = ctx.name_of(cell.cell_type).to_owned();
         let cell_type = types.entry(type_name.clone()).or_insert_with(|| CellType {
-            id: cell.cell_type,
+            type_idx,
             ports: BTreeMap::new(),
         });
         for (&port, data) in &cell.ports {
@@ -81,11 +88,7 @@ fn liberty_cell(
     cell_type: &CellType,
 ) -> Result<Cell, StaBuildError> {
     let chipdb = ctx.chipdb();
-    let type_idx = chipdb
-        .cell_timing_index(speed_grade, cell_type.id.index())
-        .ok_or_else(|| StaBuildError::CellTypeWithoutTiming {
-            cell_type: name.to_owned(),
-        })?;
+    let type_idx = cell_type.type_idx;
     let pins = cell_type
         .ports
         .iter()

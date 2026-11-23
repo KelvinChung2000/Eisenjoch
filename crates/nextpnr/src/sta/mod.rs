@@ -1,11 +1,12 @@
 mod library;
+mod role;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use rustc_hash::FxHashMap;
 use rusteda_core::liberty::{Direction, Library};
-use rusteda_core::netlist::{self as gate, Conn, GateNetlist, NetlistError, PinDir};
+use rusteda_core::netlist::{self as gate, Conn, GateNetlist, NetlistError, PinDir, PortDir};
 use ruststa::engine::analysis::{AnalysisOptions, WireModelOption};
 use ruststa::engine::incr::{SessionError, SessionNodeKey, TimingSession};
 use ruststa::engine::session_api::EndpointSlack;
@@ -14,6 +15,7 @@ use thiserror::Error;
 
 use crate::context::Context;
 use crate::netlist::{CellId, CellPin, NetId, PortType};
+use role::{CellRole, Roles};
 
 #[derive(Debug, Error)]
 pub enum StaBuildError {
@@ -30,8 +32,14 @@ pub enum StaBuildError {
     },
     #[error("chipdb register arc of cell type '{cell_type}' names clock pin '{pin}', which the cell type does not have")]
     UnknownPin { cell_type: String, pin: String },
+    #[error("IO cell '{cell}' is not named after a top-level port")]
+    PadWithoutPortName { cell: String },
+    #[error("IO cell '{cell}' has {ports} ports, a pad has exactly one")]
+    PadPortCount { cell: String, ports: usize },
     #[error("clock net '{net}' has no driver")]
     ClockNetWithoutDriver { net: String },
+    #[error("clock net '{net}' is driven by a constant")]
+    ClockNetDrivenByConstant { net: String },
     #[error("RustSTA netlist: {0}")]
     Netlist(#[from] NetlistError),
     #[error("RustSTA session: {0}")]
@@ -46,7 +54,7 @@ pub struct NetSink {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinLink {
-    pub gate: gate::PinId,
+    pub key: SessionNodeKey,
     pub node: NodeId,
 }
 
@@ -71,19 +79,20 @@ impl RustSta {
             .ok_or_else(|| StaBuildError::MissingSpeedGrade {
                 index: ctx.speed_grade_idx(),
             })?;
-        let library = library::library(ctx, speed_grade, &library::cell_types(ctx)?)?;
+        let roles = role::roles(ctx, speed_grade)?;
+        let library = library::library(ctx, speed_grade, &library::cell_types(ctx, &roles)?)?;
         let GateDesign {
             netlist,
             pins,
             nets,
-        } = gate_design(ctx, &library)?;
-        let sdc = clock_sdc(ctx)?;
+        } = gate_design(ctx, &library, &roles)?;
+        let sdc = clock_sdc(ctx, &roles)?;
         let options = AnalysisOptions {
             wire_model: WireModelOption::Ideal,
             ..AnalysisOptions::default()
         };
         let session = TimingSession::new(netlist, vec![library], &sdc, options)?;
-        let ids = link_ids(ctx, &session, pins, nets);
+        let ids = link_ids(ctx, &session, &roles, pins, nets);
         Ok(Self { session, ids })
     }
 
@@ -112,11 +121,15 @@ impl RustSta {
 
 struct GateDesign {
     netlist: GateNetlist,
-    pins: FxHashMap<CellPin, gate::PinId>,
+    pins: FxHashMap<CellPin, SessionNodeKey>,
     nets: FxHashMap<NetId, gate::NetId>,
 }
 
-fn gate_design(ctx: &Context, library: &Library) -> Result<GateDesign, StaBuildError> {
+fn gate_design(
+    ctx: &Context,
+    library: &Library,
+    roles: &Roles,
+) -> Result<GateDesign, StaBuildError> {
     let mut netlist = GateNetlist::new("top")?;
     let mut cell_types = BTreeMap::new();
     for cell in &library.cells {
@@ -136,14 +149,40 @@ fn gate_design(ctx: &Context, library: &Library) -> Result<GateDesign, StaBuildE
     }
     let mut pins = FxHashMap::default();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
-        let inst = netlist.add_instance(
-            &instance_name(cell_id),
-            cell_types[ctx.name_of(cell.cell_type)],
-        )?;
-        for (&port, data) in &cell.ports {
-            let Some(net) = data.net() else { continue };
-            let pin = netlist.connect(inst, ctx.name_of(port), Conn::Net(nets[&net]))?;
-            pins.insert(CellPin::new(cell_id, port), pin);
+        match &roles[&cell_id] {
+            CellRole::Timed { .. } => {
+                let inst = netlist.add_instance(
+                    &instance_name(cell_id),
+                    cell_types[ctx.name_of(cell.cell_type)],
+                )?;
+                for (&port, data) in &cell.ports {
+                    let Some(net) = data.net() else { continue };
+                    let pin = netlist.connect(inst, ctx.name_of(port), Conn::Net(nets[&net]))?;
+                    pins.insert(CellPin::new(cell_id, port), SessionNodeKey::Pin(pin));
+                }
+            }
+            CellRole::Pad(pad) => {
+                let port = netlist.add_port(&pad.name, pad.dir, None)?;
+                let Some(net) = pad.net else { continue };
+                let (design_net, port_net) = (nets[&net], netlist.ports()[port].bits[0]);
+                match pad.dir {
+                    PortDir::Input | PortDir::Inout => {
+                        netlist.add_assign(design_net, Conn::Net(port_net))?
+                    }
+                    PortDir::Output => netlist.add_assign(port_net, Conn::Net(design_net))?,
+                }
+                let bit = u32::try_from(port).expect("scalar port index fits in u32");
+                pins.insert(
+                    CellPin::new(cell_id, pad.port),
+                    SessionNodeKey::PortBit(bit),
+                );
+            }
+            CellRole::Constant(level) => {
+                for data in cell.ports.values() {
+                    let Some(net) = data.net() else { continue };
+                    netlist.add_assign(nets[&net], Conn::Const(level.is_high()))?;
+                }
+            }
         }
     }
     Ok(GateDesign {
@@ -153,7 +192,7 @@ fn gate_design(ctx: &Context, library: &Library) -> Result<GateDesign, StaBuildE
     })
 }
 
-fn clock_sdc(ctx: &Context) -> Result<String, StaBuildError> {
+fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
     let mut sdc = String::new();
     for (net_id, net) in ctx.design.iter_alive_nets() {
         if net.clock_constraint <= 0 {
@@ -164,13 +203,24 @@ fn clock_sdc(ctx: &Context) -> Result<String, StaBuildError> {
             .ok_or_else(|| StaBuildError::ClockNetWithoutDriver {
                 net: ctx.name_of(net.name).to_owned(),
             })?;
+        let source = match &roles[&driver.cell] {
+            CellRole::Timed { .. } => format!(
+                "get_pins {{{}/{}}}",
+                instance_name(driver.cell),
+                glob_escape(ctx.name_of(driver.port)),
+            ),
+            CellRole::Pad(pad) => format!("get_ports {{{}}}", glob_escape(&pad.name)),
+            CellRole::Constant(_) => {
+                return Err(StaBuildError::ClockNetDrivenByConstant {
+                    net: ctx.name_of(net.name).to_owned(),
+                });
+            }
+        };
         writeln!(
             sdc,
-            "create_clock -name {} -period {} [get_pins {{{}/{}}}]",
+            "create_clock -name {} -period {} [{source}]",
             net_name(net_id),
             net.clock_constraint,
-            instance_name(driver.cell),
-            glob_escape(ctx.name_of(driver.port)),
         )
         .expect("writing to a String cannot fail");
     }
@@ -180,24 +230,19 @@ fn clock_sdc(ctx: &Context) -> Result<String, StaBuildError> {
 fn link_ids(
     ctx: &Context,
     session: &TimingSession,
-    gate_pins: FxHashMap<CellPin, gate::PinId>,
+    roles: &Roles,
+    gate_pins: FxHashMap<CellPin, SessionNodeKey>,
     nets: FxHashMap<NetId, gate::NetId>,
 ) -> StaIds {
     let mut node_pins = vec![None; session.graph().num_nodes()];
     let pins: FxHashMap<CellPin, PinLink> = gate_pins
         .into_iter()
-        .map(|(cell_pin, gate_pin)| {
+        .map(|(cell_pin, key)| {
             let node = session
-                .node_of_key(SessionNodeKey::Pin(gate_pin))
-                .expect("every connected pin is a timing graph node");
+                .node_of_key(key)
+                .expect("every connected pin and port is a timing graph node");
             node_pins[node.index()] = Some(cell_pin);
-            (
-                cell_pin,
-                PinLink {
-                    gate: gate_pin,
-                    node,
-                },
-            )
+            (cell_pin, PinLink { key, node })
         })
         .collect();
     let arc_by_nodes: FxHashMap<(NodeId, NodeId), usize> = session
@@ -211,6 +256,9 @@ fn link_ids(
     let mut net_arcs = FxHashMap::default();
     for (net_id, net) in ctx.design.iter_alive_nets() {
         let Some(driver) = net.driver() else { continue };
+        if let CellRole::Constant(_) = roles[&driver.cell] {
+            continue;
+        }
         let driver_node = pins[&driver].node;
         for (user, &sink) in net.users().iter().enumerate() {
             if !sink.is_valid() {

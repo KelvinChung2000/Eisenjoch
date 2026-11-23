@@ -12,6 +12,8 @@ use super::helpers::{
     parse_property, port_bit_name, BitValue,
 };
 
+pub const IO_CELL_PREFIX: &str = "$io$";
+
 /// Find the top module in the JSON modules object.
 ///
 /// The top module is the one with attribute `"top"` set to a value that
@@ -269,7 +271,7 @@ fn parse_top_port(
             PortType::InOut => ("$nextpnr_IOBUF", "IO", PortType::InOut),
         };
 
-        let cell_name = format!("$io${}", actual_port_name);
+        let cell_name = format!("{IO_CELL_PREFIX}{actual_port_name}");
         let cell_name_id = pool.intern(&cell_name);
         let cell_type_id = pool.intern(cell_type);
         let internal_port_id = pool.intern(internal_port_name);

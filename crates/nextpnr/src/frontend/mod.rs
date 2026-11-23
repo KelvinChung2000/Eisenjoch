@@ -8,4 +8,4 @@ mod helpers;
 mod parser;
 
 pub use helpers::{parse_bit_value, parse_port_direction, parse_property, port_bit_name, BitValue};
-pub use parser::parse_json;
+pub use parser::{parse_json, IO_CELL_PREFIX};

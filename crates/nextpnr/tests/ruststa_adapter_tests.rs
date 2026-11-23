@@ -6,6 +6,7 @@ use nextpnr::netlist::{CellId, CellPin, NetId, PortType};
 use nextpnr::sta::{RustSta, StaBuildError};
 use nextpnr::timing::DelayT;
 use rstest::rstest;
+use rusteda_core::netlist::PortDir;
 
 const SLACK_TOLERANCE_NS: f64 = 1e-9;
 
@@ -29,12 +30,43 @@ fn drive(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
 }
 
 fn sink(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
+    sink_as(ctx, net, cell, port, PortType::In);
+}
+
+fn sink_as(ctx: &mut Context, net: NetId, cell: CellId, port: &str, port_type: PortType) {
     let port = ctx.id(port);
     let user = ctx.design.net_edit(net).add_user(cell, port);
     ctx.design
         .cell_edit(cell)
-        .add_port(port, PortType::In)
+        .add_port(port, port_type)
         .set_port_net(port, Some(net), Some(user));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PadCells {
+    Pseudo,
+    Packed,
+}
+
+impl PadCells {
+    fn cell_type(self, dir: PortDir) -> &'static str {
+        match (self, dir) {
+            (PadCells::Packed, _) => "IOB",
+            (PadCells::Pseudo, PortDir::Input) => "$nextpnr_IBUF",
+            (PadCells::Pseudo, PortDir::Output) => "$nextpnr_OBUF",
+            (PadCells::Pseudo, PortDir::Inout) => "$nextpnr_IOBUF",
+        }
+    }
+}
+
+fn pad(ctx: &mut Context, cells: PadCells, dir: PortDir, port_name: &str, net: NetId) -> CellId {
+    let cell = add_cell(ctx, &format!("$io${port_name}"), cells.cell_type(dir));
+    match dir {
+        PortDir::Input => drive(ctx, net, cell, "O"),
+        PortDir::Output => sink(ctx, net, cell, "I"),
+        PortDir::Inout => sink_as(ctx, net, cell, "IO", PortType::InOut),
+    }
+    cell
 }
 
 fn register_chain(ctx: &mut Context, lut_inputs: &[usize], period_ps: DelayT) -> CellId {
@@ -114,6 +146,56 @@ fn assert_slack_ns(actual_ns: Option<f64>, expected_ps: DelayT) {
     );
 }
 
+fn padded_register_chain(
+    ctx: &mut Context,
+    cells: PadCells,
+    clock_port: &str,
+    lut_input: usize,
+    period_ps: DelayT,
+) -> CellId {
+    let clk = add_net(ctx, "clk");
+    pad(ctx, cells, PortDir::Input, clock_port, clk);
+    ctx.design.net_edit(clk).set_clock_constraint(period_ps);
+    let (din, q, d, dout) = (
+        add_net(ctx, "din"),
+        add_net(ctx, "q"),
+        add_net(ctx, "d"),
+        add_net(ctx, "dout"),
+    );
+    pad(ctx, cells, PortDir::Input, "din", din);
+    let launch = add_cell(ctx, "launch", "DFF");
+    let lut = add_cell(ctx, "lut", "LUT6");
+    let capture = add_cell(ctx, "capture", "DFF");
+    sink(ctx, clk, launch, "CLK");
+    sink(ctx, clk, capture, "CLK");
+    sink(ctx, din, launch, "D");
+    drive(ctx, q, launch, "Q");
+    sink(ctx, q, lut, &format!("I[{lut_input}]"));
+    drive(ctx, d, lut, "F");
+    sink(ctx, d, capture, "D");
+    drive(ctx, dout, capture, "Q");
+    pad(ctx, cells, PortDir::Output, "dout", dout);
+    capture
+}
+
+fn assert_chain_slack(ctx: &Context, capture: CellId, lut_inputs: &[usize], period_ps: DelayT) {
+    let timing = ChipTiming::read(ctx);
+    let lut_sum_ps: DelayT = lut_inputs
+        .iter()
+        .map(|&input| timing.lut_input_to_f_ps[input])
+        .sum();
+    let data_arrival_ps = timing.clk_to_q_ps + lut_sum_ps;
+    let expected_setup_ps = period_ps - (data_arrival_ps + timing.setup_ps);
+    let expected_hold_ps = data_arrival_ps - timing.hold_ps;
+
+    let sta = RustSta::build(ctx).expect("adapter builds the chain");
+    let slack = sta
+        .endpoint_slack(CellPin::new(capture, ctx.id("D")))
+        .expect("capture D is an endpoint");
+    assert_slack_ns(slack.setup_ns, expected_setup_ps);
+    assert_slack_ns(slack.hold_ns, expected_hold_ps);
+}
+
 #[rstest]
 #[case::register_to_register(&[], 1000)]
 #[case::one_lut(&[0], 1000)]
@@ -123,28 +205,83 @@ fn assert_slack_ns(actual_ns: Option<f64>, expected_ps: DelayT) {
 fn capture_slack_is_chipdb_arc_sum(#[case] lut_inputs: &[usize], #[case] period_ps: DelayT) {
     let mut ctx = common::make_example_context();
     let capture = register_chain(&mut ctx, lut_inputs, period_ps);
-    let timing = ChipTiming::read(&ctx);
-
-    let lut_sum_ps: DelayT = lut_inputs
-        .iter()
-        .map(|&input| timing.lut_input_to_f_ps[input])
-        .sum();
-    let data_arrival_ps = timing.clk_to_q_ps + lut_sum_ps;
-    let expected_setup_ps = period_ps - (data_arrival_ps + timing.setup_ps);
-    let expected_hold_ps = data_arrival_ps - timing.hold_ps;
-
-    let sta = RustSta::build(&ctx).expect("adapter builds the chain");
-    let slack = sta
-        .endpoint_slack(CellPin::new(capture, ctx.id("D")))
-        .expect("capture D is an endpoint");
-    assert_slack_ns(slack.setup_ns, expected_setup_ps);
-    assert_slack_ns(slack.hold_ns, expected_hold_ps);
+    assert_chain_slack(&ctx, capture, lut_inputs, period_ps);
 }
 
-#[test]
-fn net_sinks_map_to_their_wire_arcs() {
+#[rstest]
+#[case::pseudo_pads(PadCells::Pseudo, "clk", 2, 1000)]
+#[case::packed_pads(PadCells::Packed, "clk", 2, 1000)]
+#[case::packed_pads_violating(PadCells::Packed, "clk", 5, 300)]
+#[case::bus_bit_clock_port(PadCells::Packed, "sys_clk[0]", 0, 1000)]
+fn padded_capture_slack_is_chipdb_arc_sum(
+    #[case] cells: PadCells,
+    #[case] clock_port: &str,
+    #[case] lut_input: usize,
+    #[case] period_ps: DelayT,
+) {
     let mut ctx = common::make_example_context();
-    register_chain(&mut ctx, &[0, 1], 1000);
+    let capture = padded_register_chain(&mut ctx, cells, clock_port, lut_input, period_ps);
+    assert_chain_slack(&ctx, capture, &[lut_input], period_ps);
+}
+
+#[rstest]
+#[case::pseudo_input(PadCells::Pseudo, PortDir::Input)]
+#[case::pseudo_output(PadCells::Pseudo, PortDir::Output)]
+#[case::pseudo_inout(PadCells::Pseudo, PortDir::Inout)]
+#[case::packed_input(PadCells::Packed, PortDir::Input)]
+#[case::packed_output(PadCells::Packed, PortDir::Output)]
+fn pads_become_top_level_ports(#[case] cells: PadCells, #[case] dir: PortDir) {
+    let mut ctx = common::make_example_context();
+    let net = add_net(&mut ctx, "pad_net");
+    let lut = add_cell(&mut ctx, "lut", "LUT6");
+    match dir {
+        PortDir::Input => sink(&mut ctx, net, lut, "I[0]"),
+        PortDir::Output | PortDir::Inout => drive(&mut ctx, net, lut, "F"),
+    }
+    pad(&mut ctx, cells, dir, "data[3]", net);
+
+    let sta = RustSta::build(&ctx).expect("adapter builds the padded design");
+    let netlist = sta.session().netlist();
+    let port = netlist
+        .find_port("data[3]")
+        .expect("the pad is a port named after the design port");
+    assert_eq!(port.dir, dir);
+    assert_eq!(netlist.instance_count(), 1);
+}
+
+#[rstest]
+#[case::gnd("GND", "Y")]
+#[case::vcc("VCC", "Y")]
+#[case::gnd_drv("GND_DRV", "GND")]
+#[case::vcc_drv("VCC_DRV", "VCC")]
+fn constant_lut_input_leaves_chain_slack(#[case] cell_type: &str, #[case] port: &str) {
+    let mut ctx = common::make_example_context();
+    let capture = register_chain(&mut ctx, &[0], 1000);
+    let tie = add_net(&mut ctx, "tie");
+    let tie_cell = add_cell(&mut ctx, "$PACKER_TIE", cell_type);
+    drive(&mut ctx, tie, tie_cell, port);
+    let lut = ctx
+        .design
+        .cell_by_name(ctx.id("lut0"))
+        .expect("chain has lut0");
+    sink(&mut ctx, tie, lut, "I[3]");
+    assert_chain_slack(&ctx, capture, &[0], 1000);
+}
+
+fn unpadded_design(ctx: &mut Context) {
+    register_chain(ctx, &[0, 1], 1000);
+}
+
+fn padded_design(ctx: &mut Context) {
+    padded_register_chain(ctx, PadCells::Packed, "clk", 1, 1000);
+}
+
+#[rstest]
+#[case::unpadded(unpadded_design)]
+#[case::padded(padded_design)]
+fn net_sinks_map_to_their_wire_arcs(#[case] design: fn(&mut Context)) {
+    let mut ctx = common::make_example_context();
+    design(&mut ctx);
     let sta = RustSta::build(&ctx).expect("adapter builds the chain");
     let (ids, arcs) = (sta.ids(), sta.session().graph().arcs());
 
@@ -164,14 +301,14 @@ fn net_sinks_map_to_their_wire_arcs() {
     }
 }
 
-#[derive(Debug)]
-enum ExpectedError {
-    CellTypeWithoutTiming(&'static str),
-    ClockNetWithoutDriver(&'static str),
+fn untimed_cell(ctx: &mut Context) {
+    add_cell(ctx, "buf", "INBUF");
 }
 
-fn untimed_cell(ctx: &mut Context) {
-    add_cell(ctx, "pad", "IOB");
+fn pad_without_port_name(ctx: &mut Context) {
+    let net = add_net(ctx, "pad_net");
+    let pad = add_cell(ctx, "pad", "IOB");
+    drive(ctx, net, pad, "O");
 }
 
 fn undriven_clock(ctx: &mut Context) {
@@ -181,24 +318,38 @@ fn undriven_clock(ctx: &mut Context) {
     sink(ctx, clk, ff, "CLK");
 }
 
+fn constant_clock(ctx: &mut Context) {
+    let clk = add_net(ctx, "clk");
+    ctx.design.net_edit(clk).set_clock_constraint(1000);
+    let gnd = add_cell(ctx, "$PACKER_GND", "GND");
+    drive(ctx, clk, gnd, "Y");
+    let ff = add_cell(ctx, "ff", "DFF");
+    sink(ctx, clk, ff, "CLK");
+}
+
 #[rstest]
-#[case::cell_type_without_timing(untimed_cell, ExpectedError::CellTypeWithoutTiming("IOB"))]
-#[case::clock_net_without_driver(undriven_clock, ExpectedError::ClockNetWithoutDriver("clk"))]
-fn build_rejects_design(#[case] design: fn(&mut Context), #[case] expected: ExpectedError) {
+#[case::cell_type_without_timing(
+    untimed_cell,
+    |err: &StaBuildError| matches!(err, StaBuildError::CellTypeWithoutTiming { cell_type } if cell_type == "INBUF")
+)]
+#[case::pad_without_port_name(
+    pad_without_port_name,
+    |err: &StaBuildError| matches!(err, StaBuildError::PadWithoutPortName { cell } if cell == "pad")
+)]
+#[case::clock_net_without_driver(
+    undriven_clock,
+    |err: &StaBuildError| matches!(err, StaBuildError::ClockNetWithoutDriver { net } if net == "clk")
+)]
+#[case::clock_net_driven_by_constant(
+    constant_clock,
+    |err: &StaBuildError| matches!(err, StaBuildError::ClockNetDrivenByConstant { net } if net == "clk")
+)]
+fn build_rejects_design(
+    #[case] design: fn(&mut Context),
+    #[case] expected: fn(&StaBuildError) -> bool,
+) {
     let mut ctx = common::make_example_context();
     design(&mut ctx);
     let err = RustSta::build(&ctx).expect_err("adapter rejects the design");
-    match (&err, &expected) {
-        (
-            StaBuildError::CellTypeWithoutTiming { cell_type },
-            ExpectedError::CellTypeWithoutTiming(name),
-        ) => assert_eq!(cell_type, name),
-        (
-            StaBuildError::ClockNetWithoutDriver { net },
-            ExpectedError::ClockNetWithoutDriver(name),
-        ) => {
-            assert_eq!(net, name)
-        }
-        _ => panic!("expected {expected:?}, got {err}"),
-    }
+    assert!(expected(&err), "unexpected error: {err}");
 }
