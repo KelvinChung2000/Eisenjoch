@@ -747,12 +747,12 @@ impl ChipDb {
         }
     }
 
-    /// Extract clocking info from a register timing arc.
     /// The four-corner clock-to-output delay of a register arc, as stored in the chipdb.
     pub fn reg_arc_clock_to_q(arc: &CellPinRegArcPod) -> TimingValue {
         unsafe { read_packed!(*arc, clk_q) }
     }
 
+    /// Extract clocking info from a register timing arc.
     pub fn reg_arc_info(arc: &CellPinRegArcPod) -> RegArcInfo {
         let clock: i32 = unsafe { read_packed!(*arc, clock) };
         let edge: i32 = unsafe { read_packed!(*arc, edge) };
