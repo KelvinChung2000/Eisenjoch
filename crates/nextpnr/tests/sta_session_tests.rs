@@ -5,6 +5,7 @@ use common::{add_cell, add_net, drive, sink};
 use std::collections::HashMap;
 
 use nextpnr::chipdb::{parse_constids_inc, BelId, ChipDb, PipId, WireId};
+use nextpnr::common::DelayT;
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
@@ -15,10 +16,11 @@ use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
     ArcTiming, ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
-    NetSink, SinkTiming, StaSession, StaSessionError, Untimed,
+    NetSink, PlacedEstimate, Reach, SinkTiming, StaSession, StaSessionError, TableEntry, Untimed,
 };
-use nextpnr::common::DelayT;
+use rayon::prelude::*;
 use rstest::rstest;
+use rustc_hash::FxHashMap;
 use ruststa::engine::incr::SessionNodeKey;
 
 const SLACK_TOLERANCE_NS: f64 = 1e-9;
@@ -75,6 +77,12 @@ fn pip_at(ctx: &Context, tile: (i32, i32), src: &str, dst: &str) -> PipId {
             dst_wire.tile() == src_wire.tile() && chipdb.wire_name(dst_wire) == dst
         })
         .unwrap_or_else(|| panic!("tile {tile:?} has pip {src} -> {dst}"))
+}
+
+fn capture_register(ctx: &Context) -> CellId {
+    ctx.design
+        .cell_by_name(ctx.id("capture"))
+        .expect("chain has a capture register")
 }
 
 fn place(ctx: &mut Context, cell: CellId, tile: (i32, i32), bel: &str) {
@@ -197,8 +205,8 @@ fn routed_chain(ctx: &mut Context, route: QRoute, period_ps: DelayT) -> Chain {
 }
 
 fn session(ctx: &Context, stage: InterconnectStage) -> StaSession {
-    let model = InterconnectModel::new(ctx, NOTIONAL).expect("example chipdb has pip classes");
-    StaSession::build(ctx, model, stage).expect("session builds the chain")
+    StaSession::build(ctx, model(ctx, NOTIONAL, PlacedEstimate::DelayTable), stage)
+        .expect("session builds the chain")
 }
 
 fn assert_ns(actual_ns: f64, expected_ps: DelayT) {
@@ -321,13 +329,19 @@ fn ideal_wires_time_an_unplaced_chain_at_zero_interconnect_delay(#[case] period_
     let chain = placed_chain(&mut ctx, 0, period_ps);
     let bel = ctx.design.cell(chain.lut).bel.expect("lut is placed");
     ctx.unbind_bel(bel);
-    let model = InterconnectModel::new(&ctx, NOTIONAL).expect("example chipdb has pip classes");
+    let model = InterconnectModel::new(&ctx, NOTIONAL, PlacedEstimate::DelayTable)
+        .expect("example chipdb has pip classes");
     let session = StaSession::build_ideal(&ctx, model).expect("ideal wires need no placement");
 
     for sink in [chain.q_sink(), chain.d_sink()] {
         assert_eq!(session.connection_delay(sink).unwrap(), DelayBounds::ZERO);
     }
-    let expected = expected(period_ps, chain.lut_input, DelayBounds::ZERO, DelayBounds::ZERO);
+    let expected = expected(
+        period_ps,
+        chain.lut_input,
+        DelayBounds::ZERO,
+        DelayBounds::ZERO,
+    );
     assert_chain_timing(&session, &chain, &expected);
 }
 
@@ -373,10 +387,7 @@ fn constant_input_and_output_pad_leave_chain_slack() {
     let gnd = add_cell(&mut ctx, "$PACKER_GND", "GND");
     drive(&mut ctx, tie, gnd, "Y");
     sink(&mut ctx, tie, chain.lut, "I[4]");
-    let capture = ctx
-        .design
-        .cell_by_name(ctx.id("capture"))
-        .expect("chain has a capture register");
+    let capture = capture_register(&ctx);
     let dout = add_net(&mut ctx, "dout");
     drive(&mut ctx, dout, capture, "Q");
     let pad = add_cell(&mut ctx, "$io$dout", "IOB");
@@ -404,20 +415,21 @@ fn constant_input_and_output_pad_leave_chain_slack() {
 #[derive(Debug, Clone, Copy)]
 enum Edit {
     MoveLut,
+    MoveCapture,
     RerouteQ,
 }
 
 impl Edit {
     fn stage(self) -> InterconnectStage {
         match self {
-            Edit::MoveLut => InterconnectStage::Placed,
+            Edit::MoveLut | Edit::MoveCapture => InterconnectStage::Placed,
             Edit::RerouteQ => InterconnectStage::Routed,
         }
     }
 
     fn design(self, ctx: &mut Context) -> Chain {
         match self {
-            Edit::MoveLut => placed_chain(ctx, 0, 1000),
+            Edit::MoveLut | Edit::MoveCapture => placed_chain(ctx, 0, 1000),
             Edit::RerouteQ => routed_chain(ctx, QRoute::Direct, 1000),
         }
     }
@@ -432,6 +444,17 @@ impl Edit {
                     chain.lut,
                     MOVED_LUT_TILE,
                     &format!("L{CAPTURE_SLICE}_LUT"),
+                );
+            }
+            Edit::MoveCapture => {
+                let capture = capture_register(ctx);
+                let bel = ctx.design.cell(capture).bel.expect("capture is placed");
+                ctx.unbind_bel(bel);
+                place(
+                    ctx,
+                    capture,
+                    MOVED_LUT_TILE,
+                    &format!("L{CAPTURE_SLICE}_FF"),
                 );
             }
             Edit::RerouteQ => {
@@ -449,6 +472,7 @@ impl Edit {
     ) -> Result<(), StaSessionError> {
         match self {
             Edit::MoveLut => session.update_cells(ctx, self.stage(), &[chain.lut]),
+            Edit::MoveCapture => session.update_cells(ctx, self.stage(), &[capture_register(ctx)]),
             Edit::RerouteQ => session.update_nets(ctx, self.stage(), &[chain.q]),
         }
         .map(|_| ())
@@ -475,6 +499,7 @@ fn snapshot(ctx: &Context, session: &StaSession) -> Vec<String> {
 
 #[rstest]
 #[case::move_lut(Edit::MoveLut)]
+#[case::move_capture_on_clock_net(Edit::MoveCapture)]
 #[case::reroute_q(Edit::RerouteQ)]
 fn incremental_update_equals_fresh_build(#[case] edit: Edit) {
     let mut ctx = common::make_example_context();
@@ -491,18 +516,19 @@ fn incremental_update_equals_fresh_build(#[case] edit: Edit) {
     assert_eq!(after, snapshot(&ctx, &session(&ctx, edit.stage())));
 }
 
-fn routed_direct(ctx: &mut Context) {
-    routed_chain(ctx, QRoute::Direct, 1000);
+fn routed_direct(ctx: &mut Context) -> Chain {
+    routed_chain(ctx, QRoute::Direct, 1000)
 }
 
-fn placed(ctx: &mut Context) {
-    placed_chain(ctx, 0, 1000);
+fn placed(ctx: &mut Context) -> Chain {
+    placed_chain(ctx, 0, 1000)
 }
 
-fn lut_unplaced(ctx: &mut Context) {
+fn lut_unplaced(ctx: &mut Context) -> Chain {
     let chain = placed_chain(ctx, 0, 1000);
     let bel = ctx.design.cell(chain.lut).bel.expect("lut is placed");
     ctx.unbind_bel(bel);
+    chain
 }
 
 #[rstest]
@@ -531,16 +557,17 @@ fn lut_unplaced(ctx: &mut Context) {
     |err: &StaSessionError| matches!(err, StaSessionError::Interconnect(InterconnectError::Unrouted { .. }))
 )]
 fn build_rejects_missing_interconnect_delay(
-    #[case] design: fn(&mut Context),
+    #[case] design: fn(&mut Context) -> Chain,
     #[case] classless_pips: ClasslessPips,
     #[case] stage: InterconnectStage,
+    #[values(PlacedEstimate::DelayTable, PlacedEstimate::ExactSearch)]
+    placed_estimate: PlacedEstimate,
     #[case] expected: fn(&StaSessionError) -> bool,
 ) {
     let mut ctx = common::make_example_context();
     design(&mut ctx);
-    let model =
-        InterconnectModel::new(&ctx, classless_pips).expect("example chipdb has pip classes");
-    let err = StaSession::build(&ctx, model, stage).expect_err("a connection has no delay");
+    let err = StaSession::build(&ctx, model(&ctx, classless_pips, placed_estimate), stage)
+        .expect_err("a connection has no delay");
     assert!(expected(&err), "unexpected error: {err}");
 }
 
@@ -587,13 +614,18 @@ fn placed_npnr_baseline(trim_top_ports: bool) -> Context {
 }
 
 fn constrain_baseline_clock_net(ctx: &mut Context) {
-    let clk_buf = ctx.design.cell_by_name(ctx.id("clk_buf")).expect("fixture has clk_buf");
+    let clk_buf = ctx
+        .design
+        .cell_by_name(ctx.id("clk_buf"))
+        .expect("fixture has clk_buf");
     let clk = ctx
         .design
         .cell(clk_buf)
         .port_net(ctx.id("O"))
         .expect("clk_buf drives the clock");
-    ctx.design.net_edit(clk).set_clock_constraint(BASELINE_PERIOD_PS);
+    ctx.design
+        .net_edit(clk)
+        .set_clock_constraint(BASELINE_PERIOD_PS);
 }
 
 const BASELINE_SDC_CLOCK: &str = "create_clock -name sys -period 4 [get_ports {clk_pad}]\n";
@@ -628,7 +660,9 @@ fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
         .cell(din_buf)
         .port_net(ctx.id("PAD"))
         .expect("the buffer has a pad net");
-    let pad_sinks = session.net_sinks(pad_net).expect("the pad net is a design net");
+    let pad_sinks = session
+        .net_sinks(pad_net)
+        .expect("the pad net is a design net");
     assert!(pad_sinks
         .iter()
         .all(|sink| *sink == SinkTiming::Untimed(Untimed::OffChip)));
@@ -676,4 +710,221 @@ fn input_delay_from_user_sdc_seeds_the_pad_arrival(
         (from_inputs.pins[0].arrival_ns - INPUT_DELAY_NS).abs() < SLACK_TOLERANCE_NS,
         "the input delay is the pad arrival: {report}"
     );
+}
+
+const LOGIC_ROWS: [i32; 7] = [1, 2, 3, 4, 5, 6, 8];
+const LOGIC_COLUMNS: std::ops::RangeInclusive<i32> = 1..=8;
+const FANOUT_STRIDES: [usize; 3] = [1, 7, 29];
+const INPUT_PAD_TILES: [(i32, i32); 3] = [(0, 4), (5, 0), (9, 8)];
+const OUTPUT_PAD_TILES: [(i32, i32); 2] = [(0, 2), (6, 9)];
+const BRAM_TILE: (i32, i32) = (4, 7);
+
+struct Scattered {
+    luts: Vec<CellId>,
+    ffs: Vec<CellId>,
+}
+
+fn scattered(ctx: &mut Context) -> Scattered {
+    let clk = add_net(ctx, "clk");
+    ctx.design.net_edit(clk).set_clock_constraint(5000);
+    let clock_pad = add_cell(ctx, "$io$clk", "IOB");
+    drive(ctx, clk, clock_pad, "O");
+    place(ctx, clock_pad, CLOCK_PAD_TILE, "IO0");
+    let tiles: Vec<(i32, i32)> = LOGIC_ROWS
+        .iter()
+        .flat_map(|&y| LOGIC_COLUMNS.map(move |x| (x, y)))
+        .collect();
+    let (mut luts, mut ffs) = (Vec::new(), Vec::new());
+    for (k, &tile) in tiles.iter().enumerate() {
+        let slice = k % 8;
+        let ff = add_cell(ctx, &format!("ff{k}"), "DFF");
+        let lut = add_cell(ctx, &format!("lut{k}"), "LUT6");
+        place(ctx, ff, tile, &format!("L{slice}_FF"));
+        place(ctx, lut, tile, &format!("L{slice}_LUT"));
+        sink(ctx, clk, ff, "CLK");
+        let d = add_net(ctx, &format!("d{k}"));
+        drive(ctx, d, lut, "F");
+        sink(ctx, d, ff, "D");
+        luts.push(lut);
+        ffs.push(ff);
+    }
+    for (k, &ff) in ffs.iter().enumerate() {
+        let q = add_net(ctx, &format!("q{k}"));
+        drive(ctx, q, ff, "Q");
+        for (input, stride) in FANOUT_STRIDES.iter().enumerate() {
+            let lut = luts[(k + stride) % luts.len()];
+            sink(ctx, q, lut, &format!("I[{input}]"));
+        }
+    }
+    for (k, &tile) in INPUT_PAD_TILES.iter().enumerate() {
+        let pad = add_cell(ctx, &format!("$io$in{k}"), "IOB");
+        place(ctx, pad, tile, "IO1");
+        let net = add_net(ctx, &format!("in{k}"));
+        drive(ctx, net, pad, "O");
+        for lut in luts.iter().skip(k).step_by(11) {
+            sink(ctx, net, *lut, "I[3]");
+        }
+    }
+    for (k, &tile) in OUTPUT_PAD_TILES.iter().enumerate() {
+        let pad = add_cell(ctx, &format!("$io$out{k}"), "IOB");
+        place(ctx, pad, tile, "IO0");
+        let q = ctx
+            .design
+            .net_by_name(ctx.id(&format!("q{}", 17 * k)))
+            .expect("q nets exist");
+        sink(ctx, q, pad, "I");
+    }
+    Scattered { luts, ffs }
+}
+
+fn scattered_with_bram(ctx: &mut Context) -> Scattered {
+    let design = scattered(ctx);
+    let bram = add_cell(ctx, "bram", "BRAM_512X16");
+    place(ctx, bram, BRAM_TILE, "RAM");
+    let dout = add_net(ctx, "dout");
+    drive(ctx, dout, bram, "DO[0]");
+    for lut in design.luts.iter().step_by(5) {
+        sink(ctx, dout, *lut, "I[4]");
+    }
+    let q = ctx
+        .design
+        .cell(design.ffs[30])
+        .port_net(ctx.id("Q"))
+        .expect("every register drives a q net");
+    sink(ctx, q, bram, "DI[3]");
+    design
+}
+
+fn model(
+    ctx: &Context,
+    classless_pips: ClasslessPips,
+    placed: PlacedEstimate,
+) -> InterconnectModel {
+    InterconnectModel::new(ctx, classless_pips, placed).expect("example chipdb has pip classes")
+}
+
+#[rstest]
+#[case::notional(NOTIONAL)]
+#[case::reject(ClasslessPips::Reject)]
+fn table_entries_equal_exact_search_at_their_sample(#[case] classless_pips: ClasslessPips) {
+    let ctx = common::make_example_context();
+    let table_model = model(&ctx, classless_pips, PlacedEstimate::DelayTable);
+    let table = table_model
+        .delay_table()
+        .expect("the model holds a delay table");
+    let chipdb = ctx.chipdb();
+    let mut by_source: FxHashMap<WireId, Vec<(WireId, Reach)>> = FxHashMap::default();
+    for (key, entry) in table.entries() {
+        let TableEntry::Sampled { sample, reach } = *entry else {
+            continue;
+        };
+        let (x, y) = chipdb.tile_xy(sample);
+        let sink_tile = chipdb.tile_by_xy(x + key.offset.dx, y + key.offset.dy);
+        by_source
+            .entry(WireId::new(sample, key.source.wire))
+            .or_default()
+            .push((WireId::new(sink_tile, key.sink.wire), reach));
+    }
+    let mismatches: Vec<(WireId, WireId, Reach, Option<DelayBounds>)> = by_source
+        .par_iter()
+        .flat_map_iter(|(&source, sinks)| {
+            let exact = table_model.exact_delays_from(chipdb, source);
+            sinks.iter().filter_map(move |&(sink, reach)| {
+                let searched = exact.get(&sink).copied();
+                let agrees = match reach {
+                    Reach::Delay(delay) => searched == Some(delay),
+                    Reach::Unreachable => searched.is_none(),
+                };
+                (!agrees).then_some((source, sink, reach, searched))
+            })
+        })
+        .collect();
+    assert!(!by_source.is_empty(), "the table holds sampled entries");
+    assert_eq!(mismatches, Vec::new());
+}
+
+#[rstest]
+#[case::luts_ffs_pads(scattered)]
+#[case::luts_ffs_pads_bram(scattered_with_bram)]
+fn table_estimate_equals_exact_search_on_placed_design(
+    #[case] design: fn(&mut Context) -> Scattered,
+) {
+    let mut ctx = common::make_example_context();
+    design(&mut ctx);
+    let table = model(&ctx, NOTIONAL, PlacedEstimate::DelayTable);
+    let exact = model(&ctx, NOTIONAL, PlacedEstimate::ExactSearch);
+    let mut connections = 0;
+    for (net, info) in ctx.design.iter_alive_nets() {
+        if info.clock_constraint > 0 {
+            continue;
+        }
+        let searched = exact
+            .net_delays(&ctx, InterconnectStage::Placed, net)
+            .expect("every data connection has a timed path");
+        let looked_up = table
+            .net_delays(&ctx, InterconnectStage::Placed, net)
+            .expect("the table holds every data connection");
+        connections += searched.len();
+        assert_eq!(looked_up, searched, "net {}", ctx.name_of(info.name));
+    }
+    assert!(
+        connections > 150,
+        "the design has {connections} connections"
+    );
+}
+
+#[rstest]
+#[case::chain(|ctx: &mut Context| { placed(ctx); })]
+#[case::scattered(|ctx: &mut Context| { scattered(ctx); })]
+fn table_session_equals_exact_session(#[case] design: fn(&mut Context)) {
+    let mut ctx = common::make_example_context();
+    design(&mut ctx);
+    let build = |placed_estimate| {
+        StaSession::build(
+            &ctx,
+            model(&ctx, NOTIONAL, placed_estimate),
+            InterconnectStage::Placed,
+        )
+        .expect("session builds the design")
+    };
+    let table = build(PlacedEstimate::DelayTable);
+    let exact = build(PlacedEstimate::ExactSearch);
+    assert_eq!(snapshot(&ctx, &table), snapshot(&ctx, &exact));
+}
+
+#[rstest]
+#[case::placed(placed, InterconnectStage::Placed)]
+#[case::routed(routed_direct, InterconnectStage::Routed)]
+fn clock_sinks_are_ideal(
+    #[case] design: fn(&mut Context) -> Chain,
+    #[case] stage: InterconnectStage,
+) {
+    let mut ctx = common::make_example_context();
+    let chain = design(&mut ctx);
+    let mut session = session(&ctx, stage);
+    for user in 0..2 {
+        let clock_sink = NetSink {
+            net: chain.clk,
+            user,
+        };
+        assert!(matches!(
+            session.connection_delay(clock_sink),
+            Err(StaSessionError::IdealClockSink(sink)) if sink == clock_sink
+        ));
+        assert_eq!(
+            session.sink_timing(clock_sink).unwrap(),
+            SinkTiming::Arc(ArcTiming::Propagated {
+                setup: None,
+                hold_slack_ns: None
+            })
+        );
+        assert!(matches!(
+            session.set_connection_delays(&[(clock_sink, uniform(1))]),
+            Err(StaSessionError::IdealClockSink(sink)) if sink == clock_sink
+        ));
+    }
+    assert!(matches!(
+        model(&ctx, NOTIONAL, PlacedEstimate::DelayTable).net_delays(&ctx, InterconnectStage::Placed, chain.clk),
+        Err(InterconnectError::ClockNotTabulated { net }) if net == "clk"
+    ));
 }

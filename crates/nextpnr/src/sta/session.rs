@@ -10,7 +10,7 @@ use ruststa::engine::types::{ClockId, NodeId};
 use thiserror::Error;
 
 use super::interconnect::{DelayBounds, InterconnectError, InterconnectModel, InterconnectStage};
-use super::{NetSink, RustSta, StaBuildError};
+use super::{is_clock_net, NetSink, RustSta, StaBuildError};
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
 
@@ -81,6 +81,8 @@ pub enum StaSessionError {
     UnknownSink(NetSink),
     #[error("{sink:?} has no timing arc: {reason:?}")]
     UntimedSink { sink: NetSink, reason: Untimed },
+    #[error("{0:?} is a sink of a clock net; clocks are ideal and carry no interconnect delay")]
+    IdealClockSink(NetSink),
     #[error("the check records of the corner were released")]
     CheckRecordsReleased,
 }
@@ -96,6 +98,7 @@ struct ArcLink {
 #[derive(Debug, Clone, Copy)]
 enum SinkLink {
     Untimed(Untimed),
+    IdealClock { arc: usize },
     Arc(ArcLink),
 }
 
@@ -191,7 +194,7 @@ impl StaSession {
             .count();
         let mapped = links
             .iter()
-            .filter(|link| matches!(link, SinkLink::Arc(_)))
+            .filter(|link| matches!(link, SinkLink::Arc(_) | SinkLink::IdealClock { .. }))
             .count();
         if graph_net_arcs != mapped {
             return Err(StaSessionError::UnmappedNetArcs {
@@ -199,9 +202,9 @@ impl StaSession {
                 mapped,
             });
         }
-        let annotated_nets = stage.into_iter().flat_map(|stage| {
-            index.nets.iter().flatten().map(move |&net| (net, stage))
-        });
+        let annotated_nets = stage
+            .into_iter()
+            .flat_map(|stage| index.nets.iter().flatten().map(move |&net| (net, stage)));
         for (net, stage) in annotated_nets {
             let range = index.range(net)?;
             if !links[range.clone()]
@@ -286,6 +289,7 @@ impl StaSession {
             let entry = self.index.entry(sink)?;
             let link = match self.links[entry] {
                 SinkLink::Arc(link) => link,
+                SinkLink::IdealClock { .. } => return Err(StaSessionError::IdealClockSink(sink)),
                 SinkLink::Untimed(reason) => {
                     return Err(StaSessionError::UntimedSink { sink, reason })
                 }
@@ -325,6 +329,7 @@ impl StaSession {
     pub fn connection_delay(&self, sink: NetSink) -> Result<DelayBounds, StaSessionError> {
         match self.links[self.index.entry(sink)?] {
             SinkLink::Arc(link) => Ok(link.delay),
+            SinkLink::IdealClock { .. } => Err(StaSessionError::IdealClockSink(sink)),
             SinkLink::Untimed(reason) => Err(StaSessionError::UntimedSink { sink, reason }),
         }
     }
@@ -343,6 +348,7 @@ impl StaSession {
         for (timing, link) in self.timing.iter_mut().zip(&self.links) {
             *timing = match link {
                 SinkLink::Untimed(reason) => SinkTiming::Untimed(*reason),
+                SinkLink::IdealClock { arc } => SinkTiming::Arc(rows[*arc].timing),
                 SinkLink::Arc(link) => SinkTiming::Arc(rows[link.arc].timing),
             };
         }
@@ -360,6 +366,7 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
         for (user, &sink) in info.users().iter().enumerate() {
             let user = u32::try_from(user).expect("net user index fits in u32");
             let link = match (ids.net_arcs.get(&NetSink { net, user }), info.driver()) {
+                (Some(&arc), Some(_)) if is_clock_net(info) => SinkLink::IdealClock { arc },
                 (Some(&arc), Some(driver)) => SinkLink::Arc(ArcLink {
                     from: ids.pins[&driver].key,
                     to: ids.pins[&sink].key,

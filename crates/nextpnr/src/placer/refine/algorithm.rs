@@ -19,7 +19,7 @@ use crate::netlist::CellId;
 use crate::netlist::NetId;
 use crate::placer::PlacerError;
 use crate::sta::{
-    InterconnectModel, InterconnectStage, StaSession, StaSessionError, NOTIONAL_CLASSLESS_PIPS,
+    InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError, NOTIONAL_CLASSLESS_PIPS,
 };
 
 use super::config::{RefineCfg, RefineStats};
@@ -73,7 +73,7 @@ pub fn refine_placement(
     let nets: Vec<NetId> = ctx.design.iter_alive_nets().map(|(net, _)| net).collect();
     let mut sta = match cfg.timing_driven {
         true => {
-            let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS)
+            let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::DelayTable)
                 .map_err(StaSessionError::from)?;
             Some(StaSession::build(ctx, model, InterconnectStage::Placed)?)
         }

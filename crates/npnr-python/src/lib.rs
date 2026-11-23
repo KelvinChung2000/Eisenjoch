@@ -22,7 +22,7 @@ use ::nextpnr::router::router2::{Router2, Router2Cfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::common::DelayT;
 use ::nextpnr::sta::{
-    Criticality, InterconnectModel, InterconnectStage, StaSession, StaSessionError,
+    Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError,
     NOTIONAL_CLASSLESS_PIPS,
 };
 use rustc_hash::FxHashMap;
@@ -451,7 +451,7 @@ impl PyContext {
                 )))
             }
         };
-        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS)
+        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::DelayTable)
             .map_err(|e| sta_error(StaSessionError::from(e)))?;
         let session = StaSession::build(&self.ctx, model, stage).map_err(sta_error)?;
         let report = session.report(&self.ctx, paths_per_domain).map_err(sta_error)?;
@@ -660,7 +660,7 @@ fn sta_error(error: StaSessionError) -> PyErr {
 }
 
 fn ideal_net_criticality(ctx: &Context) -> Result<FxHashMap<NetId, f32>, StaSessionError> {
-    let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS)?;
+    let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::DelayTable)?;
     let session = StaSession::build_ideal(ctx, model)?;
     ctx.design
         .iter_alive_nets()
