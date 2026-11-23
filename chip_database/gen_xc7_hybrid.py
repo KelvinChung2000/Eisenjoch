@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import re
+from pathlib import Path
 from collections import Counter, defaultdict
 from os import path
 
@@ -33,6 +34,17 @@ CPP_NEXTPNR = "/home/kelvin/nextpnr"
 BBASM = path.join(CPP_NEXTPNR, "build", "bba", "bbasm")
 sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
+
+from chip_database.xc7_cell_timing import (  # noqa: E402
+    BEL_ARCS,
+    SPEED_GRADE,
+    CellArc,
+    ClockToQArc,
+    CombArc,
+    Corners,
+    SetupHoldArc,
+    cell_timing,
+)
 
 HERE = path.dirname(path.abspath(__file__))
 ROOT = path.dirname(HERE)
@@ -717,6 +729,46 @@ def create_null_tile(chip):
 # ---------------------------------------------------------------------------
 # Core generation
 # ---------------------------------------------------------------------------
+
+NOTIONAL_BUFFERS = {"BUFHCE", "BUFIO", "BUFR", "BUFMRCE"}
+
+
+def _bel_pins(chip, bel_types: set[str]) -> dict[str, set[str]]:
+    names = {index: name for name, index in chip.strs.strs.items()}
+    pins: dict[str, set[str]] = {}
+    for tile_type in chip.tile_types:
+        for bel in tile_type.bels:
+            bel_type = names[bel.bel_type.index]
+            if bel_type not in bel_types:
+                continue
+            bel_pins = {names[pin.name.index] for pin in bel.pins}
+            if pins.setdefault(bel_type, bel_pins) != bel_pins:
+                raise RuntimeError(f"BEL {bel_type} has pin sets {sorted(pins[bel_type])} and {sorted(bel_pins)}")
+    if pins.keys() != bel_types:
+        raise RuntimeError(f"BEL types {sorted(bel_types - pins.keys())} have no BEL in any tile")
+    return pins
+
+
+def _timing_value(corners: Corners) -> TimingValue:
+    value = TimingValue()
+    value.fast_min = corners.fast_min
+    value.fast_max = corners.fast_max
+    value.slow_min = corners.slow_min
+    value.slow_max = corners.slow_max
+    return value
+
+
+def _add_cell_arc(variant, arc: CellArc) -> None:
+    match arc:
+        case CombArc():
+            variant.add_comb_arc(arc.from_pin, arc.to_pin, _timing_value(arc.delay))
+        case ClockToQArc():
+            variant.add_clock_out(arc.clock, arc.output, ClockEdge.RISING, _timing_value(arc.delay))
+        case SetupHoldArc():
+            variant.add_setup_hold(
+                arc.clock, arc.input, ClockEdge.RISING, _timing_value(arc.setup), _timing_value(arc.hold)
+            )
+
 
 def generate_xc7_hybrid(
     output_bba,
@@ -1427,7 +1479,7 @@ def generate_xc7_hybrid(
     # ------------------------------------------------------------------
     # Timing
     # ------------------------------------------------------------------
-    speed = "DEFAULT"
+    speed = SPEED_GRADE
     tmg = ch.set_speed_grades([speed])
     # Differentiated PIP costs by wire type:
     # - SPAN (inter-tile routing wires): cheap → A* prefers these
@@ -1464,10 +1516,17 @@ def generate_xc7_hybrid(
             out_res=TimingValue(1000),
         )
 
+    sdf_arcs = cell_timing(
+        timings_dir=Path(xray) / "timings",
+        bel_pins=_bel_pins(ch, bel_types=bel_types_created & BEL_ARCS.keys()),
+    )
     for bel_type in sorted(bel_types_created):
-        cell_timing = ch.timing.add_cell_variant(speed, bel_type)
-        if bel_type in {"BUFG", "BUFHCE", "BUFIO", "BUFR", "BUFMRCE"}:
-            cell_timing.add_comb_arc("I", "O", TimingValue(100))
+        variant = ch.timing.add_cell_variant(speed, bel_type)
+        if bel_type in sdf_arcs:
+            for arc in sdf_arcs[bel_type]:
+                _add_cell_arc(variant, arc)
+        elif bel_type in NOTIONAL_BUFFERS:
+            variant.add_comb_arc("I", "O", TimingValue(100))
 
     ch.strs.known_id_count = 0
     ch.write_bba(output_bba)
