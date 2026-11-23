@@ -213,6 +213,7 @@ struct Expected {
     setup_ps: DelayT,
     hold_ps: DelayT,
     criticality: f64,
+    fmax_mhz: f64,
 }
 
 fn expected(period_ps: DelayT, lut_input: usize, q: DelayBounds, d: DelayBounds) -> Expected {
@@ -225,6 +226,7 @@ fn expected(period_ps: DelayT, lut_input: usize, q: DelayBounds, d: DelayBounds)
         setup_ps,
         hold_ps: early_arrival - HOLD_PS,
         criticality: (1.0 - f64::from(setup_ps) / f64::from(required_ps)).clamp(0.0, 1.0),
+        fmax_mhz: 1e6 / f64::from(late_arrival + SETUP_PS),
     }
 }
 
@@ -285,6 +287,47 @@ fn pre_route_slack_is_shortest_pip_path_sum(
     assert_eq!(session.connection_delay(chain.q_sink()).unwrap(), q_delay);
     assert_eq!(session.connection_delay(chain.d_sink()).unwrap(), d_delay);
     let expected = expected(period_ps, chain.lut_input, q_delay, d_delay);
+    assert_chain_timing(&session, &chain, &expected);
+    assert_chain_report(&ctx, &session, &expected);
+}
+
+fn assert_chain_report(ctx: &Context, session: &StaSession, expected: &Expected) {
+    let report = session.report(ctx, 1).expect("the chain reports");
+    let [domain] = &report.domains[..] else {
+        panic!("one clock gives one domain pair: {report}");
+    };
+    let fmax_mhz = domain.fmax_mhz.expect("a same-clock pair has an Fmax");
+    assert!(
+        (fmax_mhz - expected.fmax_mhz).abs() < 1e-6 * expected.fmax_mhz,
+        "Fmax {fmax_mhz} MHz, hand-computed {} MHz",
+        expected.fmax_mhz
+    );
+    let [path] = &domain.worst_paths[..] else {
+        panic!("one endpoint gives one worst path: {report}");
+    };
+    assert_ns(path.slack_ns, expected.setup_ps);
+    let pins: Vec<&str> = path.pins.iter().map(|pin| pin.pin.as_str()).collect();
+    assert_eq!(
+        (pins.first(), pins.last()),
+        (Some(&"launch/Q"), Some(&"capture/D"))
+    );
+}
+
+#[rstest]
+#[case::met(1000)]
+#[case::violating(400)]
+fn ideal_wires_time_an_unplaced_chain_at_zero_interconnect_delay(#[case] period_ps: DelayT) {
+    let mut ctx = common::make_example_context();
+    let chain = placed_chain(&mut ctx, 0, period_ps);
+    let bel = ctx.design.cell(chain.lut).bel.expect("lut is placed");
+    ctx.unbind_bel(bel);
+    let model = InterconnectModel::new(&ctx, NOTIONAL).expect("example chipdb has pip classes");
+    let session = StaSession::build_ideal(&ctx, model).expect("ideal wires need no placement");
+
+    for sink in [chain.q_sink(), chain.d_sink()] {
+        assert_eq!(session.connection_delay(sink).unwrap(), DelayBounds::ZERO);
+    }
+    let expected = expected(period_ps, chain.lut_input, DelayBounds::ZERO, DelayBounds::ZERO);
     assert_chain_timing(&session, &chain, &expected);
 }
 
