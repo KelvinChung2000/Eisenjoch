@@ -272,13 +272,23 @@ fn net_sinks_map_to_their_wire_arcs(#[case] design: fn(&mut Context)) {
 }
 
 fn untimed_cell(ctx: &mut Context) {
-    add_cell(ctx, "buf", "INBUF");
+    add_cell(ctx, "mystery", "UNTIMED");
 }
 
 fn pad_without_port_name(ctx: &mut Context) {
     let net = add_net(ctx, "pad_net");
     let pad = add_cell(ctx, "pad", "IOB");
     drive(ctx, net, pad, "O");
+    let ff = add_cell(ctx, "ff", "DFF");
+    sink(ctx, net, ff, "D");
+}
+
+fn buffer_without_fabric_side(ctx: &mut Context) {
+    let buf = add_cell(ctx, "buf", "INBUF");
+    let pad_net = add_net(ctx, "pad_net");
+    sink(ctx, pad_net, buf, "PAD");
+    let dangling = add_net(ctx, "dangling");
+    drive(ctx, dangling, buf, "O");
 }
 
 fn undriven_clock(ctx: &mut Context) {
@@ -300,11 +310,15 @@ fn constant_clock(ctx: &mut Context) {
 #[rstest]
 #[case::cell_type_without_timing(
     untimed_cell,
-    |err: &StaBuildError| matches!(err, StaBuildError::CellTypeWithoutTiming { cell_type } if cell_type == "INBUF")
+    |err: &StaBuildError| matches!(err, StaBuildError::CellTypeWithoutTiming { cell_type } if cell_type == "UNTIMED")
 )]
 #[case::pad_without_port_name(
     pad_without_port_name,
     |err: &StaBuildError| matches!(err, StaBuildError::PadWithoutPortName { cell } if cell == "pad")
+)]
+#[case::io_buffer_without_fabric_side(
+    buffer_without_fabric_side,
+    |err: &StaBuildError| matches!(err, StaBuildError::IoBufferSides { cell, pad_side: 2, fabric_side: 0 } if cell == "buf")
 )]
 #[case::clock_net_without_driver(
     undriven_clock,

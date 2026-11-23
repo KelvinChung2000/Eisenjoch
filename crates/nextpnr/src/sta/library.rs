@@ -28,7 +28,7 @@ pub(super) fn cell_types(
 ) -> Result<BTreeMap<String, CellType>, StaBuildError> {
     let mut types: BTreeMap<String, CellType> = BTreeMap::new();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
-        let CellRole::Timed { type_idx } = roles[&cell_id] else {
+        let CellRole::Timed { type_idx } = roles.cells[&cell_id] else {
             continue;
         };
         let type_name = ctx.name_of(cell.cell_type).to_owned();

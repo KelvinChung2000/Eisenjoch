@@ -6,7 +6,7 @@ mod session;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use rusteda_core::liberty::{Direction, Library};
 use rusteda_core::netlist::{self as gate, Conn, GateNetlist, NetlistError, PinDir, PortDir};
 use ruststa::engine::analysis::{AnalysisOptions, WireModelOption};
@@ -46,10 +46,18 @@ pub enum StaBuildError {
     PadWithoutPortName { cell: String },
     #[error("IO cell '{cell}' has {ports} ports, a pad has exactly one")]
     PadPortCount { cell: String, ports: usize },
+    #[error("IO buffer '{cell}' has {pad_side} pad-side and {fabric_side} fabric-side connections, a pad has one of each")]
+    IoBufferSides {
+        cell: String,
+        pad_side: usize,
+        fabric_side: usize,
+    },
     #[error("clock net '{net}' has no driver")]
     ClockNetWithoutDriver { net: String },
     #[error("clock net '{net}' is driven by a constant")]
     ClockNetDrivenByConstant { net: String },
+    #[error("clock net '{net}' is off chip, between a top-level port and its IO buffer")]
+    ClockNetOffChip { net: String },
     #[error("RustSTA netlist: {0}")]
     Netlist(#[from] NetlistError),
     #[error("RustSTA session: {0}")]
@@ -74,6 +82,7 @@ pub struct StaIds {
     pub node_pins: Vec<Option<CellPin>>,
     pub nets: FxHashMap<NetId, gate::NetId>,
     pub net_arcs: FxHashMap<NetSink, usize>,
+    pub off_chip_nets: FxHashSet<NetId>,
 }
 
 #[derive(Debug)]
@@ -102,7 +111,7 @@ impl RustSta {
             ..AnalysisOptions::default()
         };
         let session = TimingSession::new(netlist, vec![library], &sdc, options)?;
-        let ids = link_ids(ctx, &session, &roles, pins, nets);
+        let ids = link_ids(ctx, &session, roles, pins, nets);
         Ok(Self { session, ids })
     }
 
@@ -155,11 +164,14 @@ fn gate_design(
     }
     let mut nets = FxHashMap::default();
     for (net, _) in ctx.design.iter_alive_nets() {
+        if roles.off_chip_nets.contains(&net) {
+            continue;
+        }
         nets.insert(net, netlist.add_net(Some(&net_name(net)), None)?);
     }
     let mut pins = FxHashMap::default();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
-        match &roles[&cell_id] {
+        match &roles.cells[&cell_id] {
             CellRole::Timed { .. } => {
                 let inst = netlist.add_instance(
                     &instance_name(cell_id),
@@ -193,6 +205,7 @@ fn gate_design(
                     netlist.add_assign(nets[&net], Conn::Const(level.is_high()))?;
                 }
             }
+            CellRole::OffChip => {}
         }
     }
     Ok(GateDesign {
@@ -213,7 +226,12 @@ fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
             .ok_or_else(|| StaBuildError::ClockNetWithoutDriver {
                 net: ctx.name_of(net.name).to_owned(),
             })?;
-        let source = match &roles[&driver.cell] {
+        if roles.off_chip_nets.contains(&net_id) {
+            return Err(StaBuildError::ClockNetOffChip {
+                net: ctx.name_of(net.name).to_owned(),
+            });
+        }
+        let source = match &roles.cells[&driver.cell] {
             CellRole::Timed { .. } => format!(
                 "get_pins {{{}/{}}}",
                 instance_name(driver.cell),
@@ -225,6 +243,7 @@ fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
                     net: ctx.name_of(net.name).to_owned(),
                 });
             }
+            CellRole::OffChip => unreachable!("an off-chip cell drives only off-chip nets"),
         };
         writeln!(
             sdc,
@@ -240,7 +259,7 @@ fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
 fn link_ids(
     ctx: &Context,
     session: &TimingSession,
-    roles: &Roles,
+    roles: Roles,
     gate_pins: FxHashMap<CellPin, SessionNodeKey>,
     nets: FxHashMap<NetId, gate::NetId>,
 ) -> StaIds {
@@ -266,7 +285,10 @@ fn link_ids(
     let mut net_arcs = FxHashMap::default();
     for (net_id, net) in ctx.design.iter_alive_nets() {
         let Some(driver) = net.driver() else { continue };
-        if let CellRole::Constant(_) = roles[&driver.cell] {
+        if roles.off_chip_nets.contains(&net_id) {
+            continue;
+        }
+        if let CellRole::Constant(_) = roles.cells[&driver.cell] {
             continue;
         }
         let driver_node = pins[&driver].node;
@@ -284,6 +306,7 @@ fn link_ids(
         node_pins,
         nets,
         net_arcs,
+        off_chip_nets: roles.off_chip_nets,
     }
 }
 

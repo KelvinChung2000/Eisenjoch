@@ -2,10 +2,14 @@ mod common;
 
 use common::{add_cell, add_net, drive, sink};
 
-use nextpnr::chipdb::{BelId, PipId, WireId};
+use std::collections::HashMap;
+
+use nextpnr::chipdb::{parse_constids_inc, BelId, ChipDb, PipId, WireId};
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
+use nextpnr::frontend::parse_json;
 use nextpnr::netlist::{CellId, NetId};
+use nextpnr::packer::passes::remove_nextpnr_iobs;
 use nextpnr::router::common::{bind_route, unroute_net};
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
@@ -15,6 +19,7 @@ use nextpnr::sta::{
 };
 use nextpnr::common::DelayT;
 use rstest::rstest;
+use ruststa::engine::incr::SessionNodeKey;
 
 const SLACK_TOLERANCE_NS: f64 = 1e-9;
 const LOGIC_TILE: (i32, i32) = (3, 3);
@@ -490,4 +495,86 @@ fn build_rejects_missing_interconnect_delay(
         InterconnectModel::new(&ctx, classless_pips).expect("example chipdb has pip classes");
     let err = StaSession::build(&ctx, model, stage).expect_err("a connection has no delay");
     assert!(expected(&err), "unexpected error: {err}");
+}
+
+fn npnr_baseline_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/npnr_baseline")
+        .join(name)
+}
+
+fn placed_npnr_baseline(trim_top_ports: bool) -> Context {
+    let constids = std::fs::read_to_string(npnr_baseline_fixture("constids.inc"))
+        .expect("fixture has constids");
+    let chipdb = ChipDb::load_with_known_constids(
+        &npnr_baseline_fixture("shared_chipdb.bin"),
+        &parse_constids_inc(&constids),
+    )
+    .expect("fixture chipdb loads");
+    let mut ctx = Context::new(chipdb);
+    let json = std::fs::read_to_string(npnr_baseline_fixture("placed.json"))
+        .expect("fixture has a placed design");
+    ctx.design = parse_json(&json, &ctx.id_pool).expect("placed design parses");
+    if trim_top_ports {
+        remove_nextpnr_iobs(&mut ctx).expect("pseudo-cells trim");
+    }
+    let bels: HashMap<String, BelId> = ctx
+        .chipdb()
+        .bels()
+        .map(|bel| {
+            let loc = ctx.chipdb().bel_loc(bel);
+            let name = format!("X{}Y{}/{}", loc.x, loc.y, ctx.chipdb().bel_name(bel));
+            (name, bel)
+        })
+        .collect();
+    let bel_attr = ctx.id("NEXTPNR_BEL");
+    let bindings: Vec<(BelId, CellId)> = ctx
+        .design
+        .iter_alive_cells()
+        .filter_map(|(cell, info)| Some((bels[info.attrs.get(&bel_attr)?.as_str().as_str()], cell)))
+        .collect();
+    for (bel, cell) in bindings {
+        assert!(ctx.bind_bel(bel, cell, PlaceStrength::Placer));
+    }
+    let clk_buf = ctx.design.cell_by_name(ctx.id("clk_buf")).expect("fixture has clk_buf");
+    let clk = ctx
+        .design
+        .cell(clk_buf)
+        .port_net(ctx.id("O"))
+        .expect("clk_buf drives the clock");
+    ctx.design.net_edit(clk).set_clock_constraint(4000);
+    ctx
+}
+
+#[rstest]
+#[case::with_top_port_cells(false)]
+#[case::top_port_cells_trimmed(true)]
+fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
+    let ctx = placed_npnr_baseline(trim_top_ports);
+    let session = session(&ctx, InterconnectStage::Placed);
+    let timing = session.sta().session();
+    let top_ports = ["clk_pad", "rst", "din[0]", "din[15]", "dout[0]", "dout[15]"];
+    for name in top_ports {
+        assert!(
+            matches!(timing.key_of_name(name), Some(SessionNodeKey::PortBit(_))),
+            "{name} is a top-level port"
+        );
+    }
+    let [domain] = session.domains() else {
+        panic!("one clock gives one domain pair: {:?}", session.domains());
+    };
+    assert!(domain.wns_ns.is_finite());
+    let din_buf = ctx
+        .design
+        .cell_by_name(ctx.id("$iopadmap$top.din_9"))
+        .expect("fixture has an input buffer");
+    let pad_net = ctx
+        .design
+        .cell(din_buf)
+        .port_net(ctx.id("PAD"))
+        .expect("the buffer has a pad net");
+    let pad_sinks = session.net_sinks(pad_net).expect("the pad net is a design net");
+    assert!(pad_sinks
+        .iter()
+        .all(|sink| *sink == SinkTiming::Untimed(Untimed::OffChip)));
 }

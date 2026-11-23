@@ -17,6 +17,7 @@ use crate::netlist::{CellId, NetId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Untimed {
     VacantUser,
+    OffChip,
     Undriven,
     ConstantDriver,
 }
@@ -343,6 +344,7 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
     let mut links = Vec::with_capacity(index.len());
     for net in index.nets.iter().flatten().copied() {
         let info = ctx.design.net(net);
+        let off_chip = ids.off_chip_nets.contains(&net);
         for (user, &sink) in info.users().iter().enumerate() {
             let user = u32::try_from(user).expect("net user index fits in u32");
             let link = match (ids.net_arcs.get(&NetSink { net, user }), info.driver()) {
@@ -353,6 +355,7 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
                     delay: DelayBounds::ZERO,
                 }),
                 _ if !sink.is_valid() => SinkLink::Untimed(Untimed::VacantUser),
+                _ if off_chip => SinkLink::Untimed(Untimed::OffChip),
                 (_, None) => SinkLink::Untimed(Untimed::Undriven),
                 (None, Some(_)) => SinkLink::Untimed(Untimed::ConstantDriver),
             };
