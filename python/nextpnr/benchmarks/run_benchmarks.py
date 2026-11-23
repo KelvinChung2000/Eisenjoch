@@ -559,11 +559,12 @@ def main():
             wall = time.time() - t0
             if ok:
                 pnr_results["status"] = "ok"
-                fmax = pnr_results.get("fmax_mhz", 0)
+                fmax = pnr_results["fmax_mhz"]
+                fmax_text = "-" if fmax is None else f"{fmax:.1f}"
                 print(
                     f"OK  place={pnr_results['place_time']:.2f}s "
                     f"route={pnr_results['route_time']:.2f}s "
-                    f"fmax={fmax:.1f}MHz "
+                    f"fmax={fmax_text}MHz "
                     f"total={wall:.2f}s"
                 )
             else:
@@ -617,7 +618,7 @@ def print_summary(results):
             place_t = f"{r.get('place_time', 0):.2f}s"
             route_t = f"{r.get('route_time', 0):.2f}s"
             total_t = f"{r.get('total_time', 0):.2f}s"
-            fmax = f"{r.get('fmax_mhz', 0):.1f}"
+            fmax = "-" if r["fmax_mhz"] is None else f"{r['fmax_mhz']:.1f}"
         else:
             pack_t = place_t = route_t = total_t = fmax = "-"
         print(
