@@ -167,6 +167,18 @@ impl StaSession {
         model: InterconnectModel,
         stage: InterconnectStage,
     ) -> Result<Self, StaSessionError> {
+        Self::assemble(ctx, model, Some(stage))
+    }
+
+    pub fn build_ideal(ctx: &Context, model: InterconnectModel) -> Result<Self, StaSessionError> {
+        Self::assemble(ctx, model, None)
+    }
+
+    fn assemble(
+        ctx: &Context,
+        model: InterconnectModel,
+        stage: Option<InterconnectStage>,
+    ) -> Result<Self, StaSessionError> {
         let mut sta = RustSta::build(ctx)?;
         let index = SinkIndex::new(ctx);
         let mut links = sink_links(ctx, &sta, &index);
@@ -187,7 +199,10 @@ impl StaSession {
                 mapped,
             });
         }
-        for net in index.nets.iter().flatten().copied() {
+        let annotated_nets = stage.into_iter().flat_map(|stage| {
+            index.nets.iter().flatten().map(move |&net| (net, stage))
+        });
+        for (net, stage) in annotated_nets {
             let range = index.range(net)?;
             if !links[range.clone()]
                 .iter()
