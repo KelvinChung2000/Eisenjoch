@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::ops::Add;
+use std::sync::OnceLock;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use ruststa::engine::delay::annotate::ArcDelays;
@@ -194,7 +195,7 @@ impl PipDelays {
 
 #[derive(Debug, Clone)]
 enum PlacedEstimator {
-    Table(DelayTable),
+    Table(OnceLock<DelayTable>),
     Search,
 }
 
@@ -243,7 +244,7 @@ impl InterconnectModel {
             classless: classless_pips,
         };
         let placed = match placed {
-            PlacedEstimate::DelayTable => PlacedEstimator::Table(DelayTable::build(chipdb, &pips)),
+            PlacedEstimate::DelayTable => PlacedEstimator::Table(OnceLock::new()),
             PlacedEstimate::ExactSearch => PlacedEstimator::Search,
         };
         Ok(Self { pips, placed })
@@ -253,11 +254,15 @@ impl InterconnectModel {
         self.pips.delay(chipdb, pip)
     }
 
-    pub fn delay_table(&self) -> Option<&DelayTable> {
+    pub fn delay_table(&self, chipdb: &ChipDb) -> Option<&DelayTable> {
         match &self.placed {
-            PlacedEstimator::Table(table) => Some(table),
+            PlacedEstimator::Table(table) => Some(self.built(table, chipdb)),
             PlacedEstimator::Search => None,
         }
+    }
+
+    fn built<'a>(&self, table: &'a OnceLock<DelayTable>, chipdb: &ChipDb) -> &'a DelayTable {
+        table.get_or_init(|| DelayTable::build(chipdb, &self.pips))
     }
 
     pub fn exact_delays_from(
@@ -293,7 +298,7 @@ impl InterconnectModel {
                 self.estimate(ctx, info, source, &sinks)
             }
             (InterconnectStage::Placed, PlacedEstimator::Table(table)) => {
-                look_up(table, ctx, info, source, &sinks)
+                look_up(self.built(table, ctx.chipdb()), ctx, info, source, &sinks)
             }
             (InterconnectStage::Routed, _) => sinks
                 .iter()

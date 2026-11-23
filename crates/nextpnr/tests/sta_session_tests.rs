@@ -810,7 +810,7 @@ fn table_entries_equal_exact_search_at_their_sample(#[case] classless_pips: Clas
     let ctx = common::make_example_context();
     let table_model = model(&ctx, classless_pips, PlacedEstimate::DelayTable);
     let table = table_model
-        .delay_table()
+        .delay_table(ctx.chipdb())
         .expect("the model holds a delay table");
     let chipdb = ctx.chipdb();
     let mut by_source: FxHashMap<WireId, Vec<(WireId, Reach)>> = FxHashMap::default();
