@@ -374,4 +374,50 @@ mod tests {
             assert!((lhs - rhs).abs() < 1e-12);
         }
     }
+
+    #[test]
+    fn apply_inverts_the_exact_grid_operator() {
+        let nx = 9;
+        let ny = 6;
+        let n = nx * ny;
+        let epsilon = 0.125;
+        let precond = SpectralPreconditioner::new(nx, ny, epsilon);
+
+        let x: Vec<f64> = (0..n).map(|i| ((i * 7 + 1) as f64).sin()).collect();
+
+        let mut ax = vec![0.0; n];
+        for row in 0..ny {
+            for col in 0..nx {
+                let i = grid_index(nx, col, row);
+                let mut acc = (4.0 + epsilon) * x[i];
+                if col > 0 {
+                    acc -= x[grid_index(nx, col - 1, row)];
+                }
+                if col + 1 < nx {
+                    acc -= x[grid_index(nx, col + 1, row)];
+                }
+                if row > 0 {
+                    acc -= x[grid_index(nx, col, row - 1)];
+                }
+                if row + 1 < ny {
+                    acc -= x[grid_index(nx, col, row + 1)];
+                }
+                ax[i] = acc;
+            }
+        }
+
+        let ax_mat = faer::MatRef::from_column_major_slice(&ax, n, 1);
+        let mut out = vec![0.0; n];
+        let out_mat = faer::MatMut::from_column_major_slice_mut(&mut out, n, 1);
+        let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
+        let mut stack = MemStack::new(&mut buf);
+        precond.apply(out_mat, ax_mat, faer::Par::Seq, &mut stack);
+
+        for (i, (recovered, expected)) in out.iter().zip(x.iter()).enumerate() {
+            assert!(
+                (recovered - expected).abs() < 1e-10,
+                "node {i}: got {recovered}, want {expected}"
+            );
+        }
+    }
 }
