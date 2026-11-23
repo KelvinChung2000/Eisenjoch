@@ -1,20 +1,8 @@
 /target
 
-.gitconfig
 .idea
 .mcp.json
-.profile
-.ripgreprc
-.zprofile
-.zshrc
 .vscode
-.bashrc
-.bash_profile
-config
-HEAD
-hooks
-objects
-refs
 .claude
 
 .ruff_cache
