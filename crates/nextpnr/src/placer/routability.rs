@@ -617,7 +617,7 @@ fn multi_target_search(
 
     // Mark `src` as reached if it's also a sink (some BEL pin wires can be
     // shared between driver and sink positions on the same node).
-    let mut mark_reached =
+    let mark_reached =
         |wire: WireId, remaining: &mut FxHashSet<WireId>, reached: &mut FxHashSet<WireId>| {
             if remaining.remove(&wire) {
                 reached.insert(wire);

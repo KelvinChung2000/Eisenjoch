@@ -27,7 +27,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::chipdb::{BelId, Loc};
-use crate::common::{IdString, PlaceStrength};
+use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::{CellId, NetId, Property};
 use crate::placer::fast_bels::FastBels;

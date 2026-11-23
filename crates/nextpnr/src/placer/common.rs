@@ -625,7 +625,7 @@ fn snap_and_bind_cells_to_bels(
             let mut found: Option<u32> = None;
             for radius in 0..=max_radius {
                 let mut best: Option<u32> = None;
-                let mut consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
+                let consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
                     if let Some(b) = best_in_tile(tx, ty, &available, &tile_remaining) {
                         if best.is_none_or(|cur| b < cur) {
                             *best = Some(b);

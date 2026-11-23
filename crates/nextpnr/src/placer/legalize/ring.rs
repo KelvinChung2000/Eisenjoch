@@ -103,9 +103,6 @@ pub fn legalize_ring(
     let t_cache_ms = t_phase.elapsed().as_millis();
 
     let mut rejected_for_shared_mux: u64 = 0;
-    let mut probe_islegal_us: u128 = 0;
-    let mut probe_record_us: u128 = 0;
-    let mut probe_ring_search_us: u128 = 0;
     let mut probe_islegal_calls: u64 = 0;
     let mut probe_record_calls: u64 = 0;
 
@@ -370,9 +367,6 @@ pub fn legalize_ring(
             probe_islegal_only_us / probe_islegal_sample_count as u128
         },
     );
-    let _ = probe_ring_search_us;
-    let _ = probe_islegal_us;
-    let _ = probe_record_us;
 
     Ok(total_displacement)
 }

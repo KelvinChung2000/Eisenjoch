@@ -6,7 +6,7 @@
 
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::env;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};

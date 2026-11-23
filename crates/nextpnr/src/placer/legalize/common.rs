@@ -307,7 +307,6 @@ impl DriverNodeRegistry {
     /// per-call cost is only the `bel.pin_wire(name)` lookups + a single
     /// `node_id` resolution per pin, skipping per-call cell-port walks.
     pub fn is_legal_template(&self, ctx: &Context, template: &CellPinTemplate, bel: BelId) -> bool {
-        let bel_view = ctx.bel(bel);
         for &(port_canon, net) in &template.pin_ports {
             let Some(w) = ctx.bel_pin_wire_canon(bel, port_canon) else {
                 continue;

@@ -930,10 +930,9 @@ fn refresh_net_infos(
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
 ) {
     if !cache_netinfo() || buf.is_empty() {
-        *buf = collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+        *buf = collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network);
         return;
     }
     buf.par_iter_mut().for_each(|info| {
@@ -951,7 +950,6 @@ fn collect_net_infos_simple(
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
 ) -> Vec<NetInfo> {
     let mut nets: Vec<_> = net_ids
         .nets
@@ -4642,7 +4640,6 @@ pub fn run_inner_outer(
             cell_x,
             cell_y,
             network,
-            cfg,
         );
         COLLECT_NS.fetch_add(t_collect.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
@@ -5679,7 +5676,6 @@ pub fn run_inner_outer(
             cell_x,
             cell_y,
             network,
-            cfg,
         );
         COLLECT_NS.fetch_add(t_collect2.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
