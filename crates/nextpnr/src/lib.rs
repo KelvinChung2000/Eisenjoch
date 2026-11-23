@@ -10,4 +10,5 @@ pub mod placer;
 pub mod plugin;
 pub mod router;
 pub mod solver;
+pub mod sta;
 pub mod timing;

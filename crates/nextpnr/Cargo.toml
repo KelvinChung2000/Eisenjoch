@@ -23,9 +23,12 @@ ndarray = { workspace = true }
 lapjv = { workspace = true }
 faer = { version = "0.24", features = ["sparse"] }
 dyn-stack = { version = "0.13", features = ["alloc"] }
+ruststa = { path = "../../../RustSTA/crates/engines/ruststa" }
+rusteda-core = { git = "https://github.com/lab-emi/RustEDA-Common.git", rev = "ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56" }
 
 [dev-dependencies]
 petgraph = "0.6"
+rstest = "0.28"
 
 [[test]]
 name = "chipdb"
@@ -98,6 +101,11 @@ name = "incremental_tests"
 path = "tests/incremental_tests.rs"
 required-features = ["test-utils"]
 
+
+[[test]]
+name = "ruststa_adapter_tests"
+path = "tests/ruststa_adapter_tests.rs"
+required-features = ["test-utils"]
 
 [[test]]
 name = "electro_place_tests"
