@@ -1,14 +1,18 @@
 //! Per-net region-minimum pyramid over a net's dist_cache row.
 //!
-//! Given a dist grid of size `width × height` (row-major, node index
-//! `y*width + x`), this builds levels 1..=max_level where each level-k cell at
-//! pyramid coordinate `(cx, cy)` stores the minimum value of the dist grid
-//! over the rectangle `[2^k·cx, 2^k·(cx+1)) × [2^k·cy, 2^k·(cy+1))`, clamped
-//! to `[0, width) × [0, height)`. Level 0 is the raw dist grid (not stored
-//! here — callers access `dist_cache` directly).
+//! On a `width × height` grid (node index `y*width + x`), level `k` cell
+//! `(cx, cy)` holds the minimum label over the rectangle
+//! `[2^k·cx, 2^k·(cx+1)) × [2^k·cy, 2^k·(cy+1))`, clamped to the grid. Level 0
+//! is the row itself and is not stored here — callers read `dist_cache`.
 //!
 //! The pyramid is used by the branch-and-bound search in `bb_2d` to prune
 //! rectangles whose lower bound already exceeds the current best cost.
+//!
+//! Levels are sparse like the row: a cell no row node falls in is absent and
+//! reads as `INFINITY`, which is exactly what a dense level would have held
+//! there. Each level therefore stores at most one entry per row entry, so a
+//! pyramid costs `O(row_len · levels)` however large the chip is. Dense levels
+//! cost `n_nodes / 3` floats per net, ~9 GB per sweep at 100k nets.
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
@@ -17,7 +21,8 @@ use rustc_hash::FxHashMap;
 pub(crate) struct PyrLevel {
     pub w: i32,
     pub h: i32,
-    pub data: Vec<f32>,
+    /// `cy * w + cx` -> minimum label inside that cell.
+    data: FxHashMap<u32, f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -41,118 +46,154 @@ impl RegionMinPyramid {
         debug_assert!(level >= 1);
         let lvl = &self.levels[(level - 1) as usize];
         debug_assert!(cx >= 0 && cx < lvl.w && cy >= 0 && cy < lvl.h);
-        lvl.data[(cy * lvl.w + cx) as usize]
+        lvl.data
+            .get(&((cy * lvl.w + cx) as u32))
+            .copied()
+            .unwrap_or(f32::INFINITY)
     }
 
-    /// Build a pyramid from a dist grid. `dist` has `width*height` entries,
-    /// row-major.
-    pub fn build(dist: &[f32], width: i32, height: i32) -> Self {
-        assert_eq!(dist.len(), (width as usize) * (height as usize));
+    /// Build a pyramid from a sparse row of `node -> label` on a
+    /// `width × height` grid; absent nodes are `INFINITY`.
+    pub fn build(row: &FxHashMap<u32, f32>, width: i32, height: i32) -> Self {
         let mut levels: Vec<PyrLevel> = Vec::new();
-
-        // Level 1 directly from raw dist (already f32 in the cache).
-        let mut cur_w = width;
-        let mut cur_h = height;
-        {
-            let w1 = (cur_w + 1) / 2;
-            let h1 = (cur_h + 1) / 2;
-            let mut data = vec![f32::INFINITY; (w1 * h1) as usize];
-            for cy in 0..h1 {
-                for cx in 0..w1 {
-                    let mut m = f32::INFINITY;
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let gx = 2 * cx + dx;
-                            let gy = 2 * cy + dy;
-                            if gx < cur_w && gy < cur_h {
-                                let v = dist[(gy * cur_w + gx) as usize];
-                                if v < m {
-                                    m = v;
-                                }
-                            }
-                        }
-                    }
-                    data[(cy * w1 + cx) as usize] = m;
+        let (mut cur_w, mut cur_h) = (width, height);
+        // Level 1 always exists, even on a 1×1 grid, so `max_level() >= 1`
+        // whenever the grid is non-empty.
+        loop {
+            let w = (cur_w + 1) / 2;
+            let h = (cur_h + 1) / 2;
+            let (src, src_w) = match levels.last() {
+                Some(prev) => (&prev.data, prev.w),
+                None => (row, width),
+            };
+            let mut data = FxHashMap::with_capacity_and_hasher(src.len(), Default::default());
+            for (&idx, &v) in src {
+                let (x, y) = (idx as i32 % src_w, idx as i32 / src_w);
+                let m = data
+                    .entry(((y / 2) * w + x / 2) as u32)
+                    .or_insert(f32::INFINITY);
+                if v < *m {
+                    *m = v;
                 }
             }
-            levels.push(PyrLevel { w: w1, h: h1, data });
-            cur_w = w1;
-            cur_h = h1;
-        }
-
-        // Levels 2.. from previous pyramid level.
-        while cur_w > 1 || cur_h > 1 {
-            let w_next = (cur_w + 1) / 2;
-            let h_next = (cur_h + 1) / 2;
-            let prev = levels.last().unwrap();
-            let prev_w = prev.w;
-            let prev_h = prev.h;
-            let prev_data = &prev.data;
-            let mut data = vec![f32::INFINITY; (w_next * h_next) as usize];
-            for cy in 0..h_next {
-                for cx in 0..w_next {
-                    let mut m = f32::INFINITY;
-                    for dy in 0..2 {
-                        for dx in 0..2 {
-                            let px = 2 * cx + dx;
-                            let py = 2 * cy + dy;
-                            if px < prev_w && py < prev_h {
-                                let v = prev_data[(py * prev_w + px) as usize];
-                                if v < m {
-                                    m = v;
-                                }
-                            }
-                        }
-                    }
-                    data[(cy * w_next + cx) as usize] = m;
-                }
+            data.shrink_to_fit();
+            levels.push(PyrLevel { w, h, data });
+            (cur_w, cur_h) = (w, h);
+            if cur_w <= 1 && cur_h <= 1 {
+                break;
             }
-            levels.push(PyrLevel {
-                w: w_next,
-                h: h_next,
-                data,
-            });
-            cur_w = w_next;
-            cur_h = h_next;
         }
-
         Self { levels }
     }
 
-    /// Total stored bytes (for diagnostics).
-    pub fn bytes(&self) -> usize {
-        self.levels
-            .iter()
-            .map(|l| l.data.len() * std::mem::size_of::<f32>())
-            .sum()
+    /// Bytes held on the heap.
+    pub fn heap_bytes(&self) -> usize {
+        // hashbrown: one (key, value) slot plus one control byte per bucket.
+        let slot = std::mem::size_of::<(u32, f32)>() + 1;
+        self.levels.capacity() * std::mem::size_of::<PyrLevel>()
+            + self
+                .levels
+                .iter()
+                .map(|l| l.data.capacity() * slot)
+                .sum::<usize>()
     }
 }
 
 /// Build pyramids for every net in parallel from sparse per-net rows.
-/// `rows[ni]` is the settled-node set for net `ni`; absent nodes are
-/// treated as `INFINITY`. `n_nodes` must equal `width * height`.
-///
-/// Each worker thread reuses a single dense `Vec<f32>` scratch (size
-/// `n_nodes`) across all nets it processes — `map_init` ensures the
-/// allocation is paid once per thread, not once per net.
 pub(crate) fn build_all(
     rows: &[FxHashMap<u32, f32>],
-    n_nodes: usize,
     width: i32,
     height: i32,
 ) -> Vec<RegionMinPyramid> {
-    let stride = (width as usize) * (height as usize);
-    assert_eq!(stride, n_nodes);
     rows.par_iter()
-        .map_init(
-            || vec![f32::INFINITY; stride],
-            |scratch, row| {
-                scratch.fill(f32::INFINITY);
-                for (&node, &v) in row {
-                    scratch[node as usize] = v;
-                }
-                RegionMinPyramid::build(scratch, width, height)
-            },
-        )
+        .map(|row| RegionMinPyramid::build(row, width, height))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dense reference: the minimum over each level cell's clamped rectangle.
+    fn dense_min(
+        row: &FxHashMap<u32, f32>,
+        width: i32,
+        height: i32,
+        level: i32,
+        cx: i32,
+        cy: i32,
+    ) -> f32 {
+        let s = 1 << level;
+        let mut m = f32::INFINITY;
+        for y in (cy * s)..((cy + 1) * s).min(height) {
+            for x in (cx * s)..((cx + 1) * s).min(width) {
+                if let Some(&v) = row.get(&((y * width + x) as u32)) {
+                    if v < m {
+                        m = v;
+                    }
+                }
+            }
+        }
+        m
+    }
+
+    fn disc_row(width: i32, cx: i32, cy: i32, r: i32) -> FxHashMap<u32, f32> {
+        let mut row = FxHashMap::default();
+        for y in (cy - r)..=(cy + r) {
+            for x in (cx - r)..=(cx + r) {
+                let d = (x - cx).abs() + (y - cy).abs();
+                if d <= r && x >= 0 && y >= 0 {
+                    row.insert((y * width + x) as u32, d as f32 + 0.5);
+                }
+            }
+        }
+        row
+    }
+
+    #[test]
+    fn sparse_levels_match_dense_region_minimum() {
+        let (w, h) = (37, 23);
+        let mut row = disc_row(w, 5, 7, 4);
+        row.extend(disc_row(w, 30, 18, 3));
+        let pyr = RegionMinPyramid::build(&row, w, h);
+        assert_eq!(pyr.levels.last().map(|l| (l.w, l.h)), Some((1, 1)));
+        for level in 1..=pyr.max_level() {
+            let lvl = &pyr.levels[(level - 1) as usize];
+            for cy in 0..lvl.h {
+                for cx in 0..lvl.w {
+                    assert_eq!(
+                        pyr.at(level, cx, cy),
+                        dense_min(&row, w, h, level, cx, cy),
+                        "level {level} cell ({cx},{cy})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn single_tile_grid_still_has_one_level() {
+        let row: FxHashMap<u32, f32> = [(0, 3.0)].into_iter().collect();
+        let pyr = RegionMinPyramid::build(&row, 1, 1);
+        assert_eq!(pyr.max_level(), 1);
+        assert_eq!(pyr.at(1, 0, 0), 3.0);
+    }
+
+    /// A row holds only nodes near the net's pins, so its pyramid must cost
+    /// the same on a 12x12 grid as on a 311x223 one.
+    #[test]
+    fn storage_does_not_scale_with_grid_size() {
+        let small = RegionMinPyramid::build(&disc_row(12, 6, 6, 5), 12, 12);
+        let large = RegionMinPyramid::build(&disc_row(311, 6, 6, 5), 311, 223);
+        // The larger grid only adds levels, each holding the disc in one cell.
+        let extra = large.levels.len() - small.levels.len();
+        assert!(
+            large.heap_bytes() <= small.heap_bytes() + extra * 256,
+            "{} B on 311x223 vs {} B on 12x12",
+            large.heap_bytes(),
+            small.heap_bytes()
+        );
+        // The dense pyramid this replaced: a third of the grid in f32.
+        assert!(large.heap_bytes() * 20 < 311 * 223 * 4 / 3);
+    }
 }

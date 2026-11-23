@@ -46,23 +46,15 @@ pub struct SpanCostTable {
 }
 
 impl SpanCostTable {
-    pub fn disabled(n_pipes: usize) -> Self {
-        Self {
-            enabled: false,
-            epoch: 0,
-            pipe_entry: vec![u32::MAX; n_pipes],
-            costs: Vec::new(),
-            costs_int: Vec::new(),
-            stats: SpanCostStats::default(),
-        }
+    /// Nothing reads `pipe_entry` while the table is disabled, so it holds
+    /// no per-pipe storage until a rebuild sizes it.
+    pub fn disabled() -> Self {
+        Self::default()
     }
 
-    pub fn reset_disabled(&mut self, n_pipes: usize) {
-        self.enabled = false;
-        self.pipe_entry.resize(n_pipes, u32::MAX);
-        self.costs.clear();
-        self.costs_int.clear();
-        self.stats = SpanCostStats::default();
+    pub fn reset_disabled(&mut self) {
+        let epoch = self.epoch;
+        *self = Self { epoch, ..Self::disabled() };
     }
 }
 
@@ -108,8 +100,8 @@ fn compute_tile_usage(network: &PipeNetwork) -> Vec<u16> {
     let mut accum = vec![0.0f64; n_nodes];
     for pipe in &network.pipes {
         let nc = pipe.net_count.max(0.0);
-        accum[pipe.from] += nc;
-        accum[pipe.to] += nc;
+        accum[pipe.from as usize] += nc;
+        accum[pipe.to as usize] += nc;
     }
     let mut out = Vec::with_capacity(n_nodes);
     for v in accum {
@@ -151,7 +143,7 @@ pub fn rebuild_span_cost_table_pip(
 
     for (pipe_idx, pipe) in network.pipes.iter().enumerate() {
         let (dx, dy) = network.pipe_delta(pipe_idx);
-        let tile_type = network.tile_type_by_node[pipe.from];
+        let tile_type = network.tile_type_by_node[pipe.from as usize];
         let key = TileSpanCostKey {
             tile_type,
             dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
@@ -166,7 +158,7 @@ pub fn rebuild_span_cost_table_pip(
             let wire_cost = resistance_model.effective_resistance(pipe).max(1e-12);
 
             // Switch-matrix lookup via per-(tile_type, tile_usage_q) cache.
-            let tile_usage_q = tile_usage.get(pipe.from).copied().unwrap_or(0);
+            let tile_usage_q = tile_usage.get(pipe.from as usize).copied().unwrap_or(0);
             let cache_key = (tile_type, tile_usage_q);
             stats.switch_lookups += 1;
             let port_map = if let Some(existing) = sm_cache.get(&cache_key) {
@@ -238,7 +230,7 @@ pub fn rebuild_span_cost_table(network: &mut PipeNetwork, resistance_model: &Res
     for (pipe_idx, pipe) in network.pipes.iter().enumerate() {
         let (dx, dy) = network.pipe_delta(pipe_idx);
         let key = TileSpanCostKey {
-            tile_type: network.tile_type_by_node[pipe.from],
+            tile_type: network.tile_type_by_node[pipe.from as usize],
             dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             usage: quantize_usage(pipe.net_count),

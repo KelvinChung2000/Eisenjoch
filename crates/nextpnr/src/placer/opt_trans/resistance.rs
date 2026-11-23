@@ -154,10 +154,7 @@ mod tests {
             to: 1,
             base_resistance: 1.0,
             capacity,
-            flow: 0.0,
             net_count,
-            raw_cell_density: 0.0,
-            cell_density: 0.0,
             eff_conductance: 1.0,
             pipe_type,
         }
