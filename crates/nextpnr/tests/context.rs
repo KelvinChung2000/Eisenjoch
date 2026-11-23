@@ -9,7 +9,8 @@ use nextpnr::chipdb::{BelId, PipId, WireId};
 use nextpnr::common::{IdString, PlaceStrength};
 use nextpnr::context::BelPin;
 use nextpnr::netlist::{PortType, Property};
-use nextpnr::timing::DelayQuad;
+use nextpnr::timing::{DelayQuad, DelayT};
+use rstest::rstest;
 
 // =========================================================================
 // Construction and basic queries
@@ -329,28 +330,13 @@ fn pip_src_dst_wires() {
 // Delay estimation
 // =========================================================================
 
-#[test]
-fn estimate_delay_same_tile() {
+#[rstest]
+#[case::same_tile(WireId::new(0, 1), 0)]
+#[case::adjacent(WireId::new(1, 0), 10)]
+#[case::diagonal(WireId::new(3, 0), 20)]
+fn estimate_delay_is_ten_per_manhattan_tile(#[case] dst: WireId, #[case] expected: DelayT) {
     let ctx = common::make_context();
-    let w1 = WireId::new(0, 0);
-    let w2 = WireId::new(0, 1);
-    assert_eq!(ctx.estimate_delay(w1, w2), 0);
-}
-
-#[test]
-fn estimate_delay_adjacent() {
-    let ctx = common::make_context();
-    let w1 = WireId::new(0, 0);
-    let w2 = WireId::new(1, 0);
-    assert_eq!(ctx.estimate_delay(w1, w2), 100);
-}
-
-#[test]
-fn estimate_delay_diagonal() {
-    let ctx = common::make_context();
-    let w1 = WireId::new(0, 0);
-    let w2 = WireId::new(3, 0);
-    assert_eq!(ctx.estimate_delay(w1, w2), 200);
+    assert_eq!(ctx.estimate_delay(WireId::new(0, 0), dst), expected);
 }
 
 #[test]
