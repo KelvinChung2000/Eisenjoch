@@ -71,10 +71,6 @@ path = "tests/plugin_tests.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "timing_tests"
-path = "tests/timing_tests.rs"
-
-[[test]]
 name = "netlist_tests"
 path = "tests/netlist_tests.rs"
 
