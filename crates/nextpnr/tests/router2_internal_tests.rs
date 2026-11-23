@@ -6,7 +6,7 @@ use nextpnr::metrics::{compute_bbox, BoundingBox};
 use nextpnr::netlist::NetId;
 use nextpnr::netlist::PortType;
 use nextpnr::router::common::NegotiationCfg;
-use nextpnr::router::router2::{astar_route_r2, Router2Cfg, Router2State};
+use nextpnr::router::router2::{astar_route_r2, DelayWeight, Router2Cfg, Router2State};
 use rustc_hash::FxHashSet;
 
 /// Helper: create an FxHashSet from a slice of WireIds.
@@ -306,7 +306,8 @@ fn astar_r2_same_wire_returns_empty_path() {
         wire,
         NetId::from_raw(0),
         &state,
-        &bbox
+        &bbox,
+        DelayWeight::UNIT
     )
     .unwrap()
     .is_empty());
@@ -329,7 +330,8 @@ fn astar_r2_single_pip_path() {
             WireId::new(0, 1),
             NetId::from_raw(0),
             &state,
-            &bbox
+            &bbox,
+            DelayWeight::UNIT
         )
         .unwrap(),
         vec![PipId::new(0, 0)]
@@ -352,7 +354,8 @@ fn astar_r2_no_path_returns_none() {
         WireId::new(0, 0),
         NetId::from_raw(0),
         &state,
-        &bbox
+        &bbox,
+        DelayWeight::UNIT
     )
     .is_none());
 }
@@ -373,7 +376,8 @@ fn astar_r2_bbox_prunes_out_of_range() {
         WireId::new(1, 0),
         NetId::from_raw(0),
         &state,
-        &bbox
+        &bbox,
+        DelayWeight::UNIT
     )
     .is_none());
 }
@@ -394,7 +398,8 @@ fn astar_r2_empty_sources_returns_none() {
         WireId::new(0, 1),
         NetId::from_raw(0),
         &state,
-        &bbox
+        &bbox,
+        DelayWeight::UNIT
     )
     .is_none());
 }

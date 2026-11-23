@@ -42,6 +42,15 @@ pub enum RouterError {
     /// A negotiated wire cost left the integer range the A* kernel sums in.
     #[error("negotiation at iteration {iteration} prices a wire at {wire_cost}, beyond the A* cost range")]
     CostRange { iteration: usize, wire_cost: f64 },
+    /// The timing-driven cost needs a criticality cap in [0, 1).
+    #[error("max_criticality must lie in [0, 1), got {0}")]
+    CriticalityCap(f64),
+    /// The timing-driven cost needs a positive, finite criticality exponent.
+    #[error("criticality_exponent must be positive and finite, got {0}")]
+    CriticalityExponent(f64),
+    /// The STA behind the timing-driven cost failed.
+    #[error(transparent)]
+    Timing(#[from] crate::sta::StaSessionError),
     /// Generic router error.
     #[error("Router error: {0}")]
     Generic(String),
