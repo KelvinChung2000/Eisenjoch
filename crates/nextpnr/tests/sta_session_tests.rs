@@ -32,7 +32,10 @@ const CLOCK_PAD_TILE: (i32, i32) = (1, 0);
 const OUTPUT_PAD_TILE: (i32, i32) = (9, 3);
 const CAPTURE_SLICE: usize = 3;
 
-const CLK_TO_Q_PS: DelayT = 200;
+const CLK_TO_Q: DelayBounds = DelayBounds {
+    early_ps: 120,
+    late_ps: 200,
+};
 const SETUP_PS: DelayT = 150;
 const HOLD_PS: DelayT = 25;
 const SWINPUT_PIP_PS: DelayT = 80;
@@ -44,8 +47,12 @@ const NOTIONAL: ClasslessPips = ClasslessPips::Notional(DelayBounds {
     late_ps: NOTIONAL_PIP_PS,
 });
 
-fn lut_input_to_f_ps(input: usize) -> DelayT {
-    150 + 15 * DelayT::try_from(input).expect("LUT input index is small")
+fn lut_input_to_f(input: usize) -> DelayBounds {
+    let input = DelayT::try_from(input).expect("LUT input index is small");
+    DelayBounds {
+        early_ps: 100 + 10 * input,
+        late_ps: 150 + 15 * input,
+    }
 }
 
 fn bel_at(ctx: &Context, (x, y): (i32, i32), name: &str) -> BelId {
@@ -226,9 +233,8 @@ struct Expected {
 }
 
 fn expected(period_ps: DelayT, lut_input: usize, q: DelayBounds, d: DelayBounds) -> Expected {
-    let lut_ps = lut_input_to_f_ps(lut_input);
-    let late_arrival = CLK_TO_Q_PS + q.late_ps + lut_ps + d.late_ps;
-    let early_arrival = CLK_TO_Q_PS + q.early_ps + lut_ps + d.early_ps;
+    let arrival = CLK_TO_Q + q + lut_input_to_f(lut_input) + d;
+    let (late_arrival, early_arrival) = (arrival.late_ps, arrival.early_ps);
     let setup_ps = period_ps - (late_arrival + SETUP_PS);
     let required_ps = period_ps - SETUP_PS;
     Expected {

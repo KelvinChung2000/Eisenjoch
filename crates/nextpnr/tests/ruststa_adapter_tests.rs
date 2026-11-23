@@ -2,11 +2,11 @@ mod common;
 
 use common::{add_cell, add_net, drive, sink, sink_as};
 
-use nextpnr::chipdb::ChipDb;
+use nextpnr::chipdb::{ChipDb, TimingValue};
+use nextpnr::common::DelayT;
 use nextpnr::context::Context;
 use nextpnr::netlist::{CellId, CellPin, NetId, PortType};
-use nextpnr::sta::{RustSta, StaBuildError};
-use nextpnr::common::DelayT;
+use nextpnr::sta::{DelayBounds, RustSta, StaBuildError};
 use rstest::rstest;
 use rusteda_core::netlist::PortDir;
 
@@ -63,8 +63,8 @@ fn register_chain(ctx: &mut Context, lut_inputs: &[usize], period_ps: DelayT) ->
 }
 
 struct ChipTiming {
-    lut_input_to_f_ps: Vec<DelayT>,
-    clk_to_q_ps: DelayT,
+    lut_input_to_f: Vec<DelayBounds>,
+    clk_to_q: DelayBounds,
     setup_ps: DelayT,
     hold_ps: DelayT,
 }
@@ -85,25 +85,36 @@ impl ChipTiming {
                 .expect("DFF port has register arcs");
             ChipDb::reg_arc_info(&arcs[0])
         };
-        let lut_input_to_f_ps = (0..6)
+        let lut_input_to_f = (0..6)
             .map(|input| {
-                chipdb
-                    .cell_delay(
-                        sg,
-                        lut,
-                        ctx.id(format!("I[{input}]").as_str()).index(),
-                        ctx.id("F").index(),
-                    )
-                    .expect("LUT6 input reaches F")
-                    .max_delay()
+                bounds(
+                    chipdb
+                        .cell_comb_timing(
+                            sg,
+                            lut,
+                            ctx.id(format!("I[{input}]").as_str()).index(),
+                            ctx.id("F").index(),
+                        )
+                        .expect("LUT6 input reaches F"),
+                )
             })
             .collect();
+        let q_arcs = chipdb
+            .cell_reg_arcs(sg, dff, ctx.id("Q").index())
+            .expect("DFF Q has a launch arc");
         Self {
-            lut_input_to_f_ps,
-            clk_to_q_ps: reg_arc("Q").clock_to_q.max_delay(),
+            lut_input_to_f,
+            clk_to_q: bounds(ChipDb::reg_arc_clock_to_q(&q_arcs[0])),
             setup_ps: reg_arc("D").setup.max_delay,
             hold_ps: reg_arc("D").hold.max_delay,
         }
+    }
+}
+
+fn bounds(value: TimingValue) -> DelayBounds {
+    DelayBounds {
+        early_ps: value.fast_min,
+        late_ps: value.slow_max,
     }
 }
 
@@ -150,13 +161,12 @@ fn padded_register_chain(
 
 fn assert_chain_slack(ctx: &Context, capture: CellId, lut_inputs: &[usize], period_ps: DelayT) {
     let timing = ChipTiming::read(ctx);
-    let lut_sum_ps: DelayT = lut_inputs
+    let arrival = lut_inputs
         .iter()
-        .map(|&input| timing.lut_input_to_f_ps[input])
-        .sum();
-    let data_arrival_ps = timing.clk_to_q_ps + lut_sum_ps;
-    let expected_setup_ps = period_ps - (data_arrival_ps + timing.setup_ps);
-    let expected_hold_ps = data_arrival_ps - timing.hold_ps;
+        .map(|&input| timing.lut_input_to_f[input])
+        .fold(timing.clk_to_q, |sum, arc| sum + arc);
+    let expected_setup_ps = period_ps - (arrival.late_ps + timing.setup_ps);
+    let expected_hold_ps = arrival.early_ps - timing.hold_ps;
 
     let sta = RustSta::build(ctx).expect("adapter builds the chain");
     let slack = sta
