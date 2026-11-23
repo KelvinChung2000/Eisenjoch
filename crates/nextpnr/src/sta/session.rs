@@ -4,11 +4,13 @@ use std::ops::Range;
 use rustc_hash::FxHashSet;
 use ruststa::engine::delay::annotate::DelayAnnotations;
 use ruststa::engine::incr::{
-    ArcTiming, Criticality, IncrementalStats, SessionError, SessionNodeKey, TimingSession,
+    ArcTiming, ArcTimingTable, Criticality, IncrementalStats, SessionError, SessionNodeKey,
+    TimingSession,
 };
 use ruststa::engine::types::{ClockId, NodeId};
 use thiserror::Error;
 
+use super::criticality::{CritNorm, PairBudget};
 use super::interconnect::{DelayBounds, InterconnectError, InterconnectModel, InterconnectStage};
 use super::{NetSink, RustSta, StaBuildError};
 use crate::context::Context;
@@ -164,6 +166,8 @@ pub struct StaSession {
     links: Vec<SinkLink>,
     timing: Vec<SinkTiming>,
     domains: Vec<DomainSummary>,
+    table: ArcTimingTable,
+    budgets: Vec<PairBudget>,
 }
 
 impl StaSession {
@@ -228,6 +232,7 @@ impl StaSession {
         }
         let corner = sta.session.default_corner().corner_name.clone();
         sta.session.set_delay_annotations(&corner, annotations)?;
+        let table = sta.session.arc_timing(&corner)?;
         let mut session = Self {
             sta,
             model,
@@ -236,8 +241,10 @@ impl StaSession {
             timing: vec![SinkTiming::Untimed(Untimed::VacantUser); links.len()],
             links,
             domains: Vec::new(),
+            table,
+            budgets: Vec::new(),
         };
-        session.refresh()?;
+        session.sync_table()?;
         Ok(session)
     }
 
@@ -319,6 +326,31 @@ impl StaSession {
         Ok(self.sink_timing(sink)?.criticality())
     }
 
+    pub fn normalised_criticality(
+        &self,
+        sink: NetSink,
+        norm: CritNorm,
+    ) -> Result<Option<f64>, StaSessionError> {
+        let arc = match self.links[self.index.entry(sink)?] {
+            SinkLink::Untimed(_) => return Ok(None),
+            SinkLink::IdealClock { arc } | SinkLink::Arc(ArcLink { arc, .. }) => arc,
+        };
+        Ok(self
+            .budgets
+            .iter()
+            .enumerate()
+            .filter_map(|(pair, &budget)| {
+                self.table
+                    .pair_slack(arc, pair)
+                    .map(|slack_ns| norm.pair_criticality(slack_ns, budget))
+            })
+            .reduce(f64::max))
+    }
+
+    pub fn pair_budgets(&self) -> &[PairBudget] {
+        &self.budgets
+    }
+
     pub fn net_sinks(&self, net: NetId) -> Result<&[SinkTiming], StaSessionError> {
         Ok(&self.timing[self.index.range(net)?])
     }
@@ -340,8 +372,12 @@ impl StaSession {
     }
 
     fn refresh(&mut self) -> Result<(), StaSessionError> {
-        let table = self.sta.session.arc_timing(&self.corner)?;
-        let rows = table.rows();
+        self.table = self.sta.session.arc_timing(&self.corner)?;
+        self.sync_table()
+    }
+
+    fn sync_table(&mut self) -> Result<(), StaSessionError> {
+        let rows = self.table.rows();
         for (timing, link) in self.timing.iter_mut().zip(&self.links) {
             *timing = match link {
                 SinkLink::Untimed(reason) => SinkTiming::Untimed(*reason),
@@ -350,8 +386,25 @@ impl StaSession {
             };
         }
         self.domains = domain_summaries(&self.sta.session)?;
+        self.budgets = pair_budgets(&self.table);
         Ok(())
     }
+}
+
+fn pair_budgets(table: &ArcTimingTable) -> Vec<PairBudget> {
+    table
+        .pairs()
+        .iter()
+        .enumerate()
+        .map(|(pair, domain)| PairBudget {
+            launch: domain.launch,
+            capture: domain.capture,
+            d_req_ns: domain.d_req_ns,
+            wns_ns: (0..table.rows().len())
+                .filter_map(|arc| table.pair_slack(arc, pair))
+                .fold(f64::INFINITY, f64::min),
+        })
+        .collect()
 }
 
 fn timed_users(links: &[SinkLink]) -> Vec<u32> {

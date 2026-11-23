@@ -1,5 +1,7 @@
 //! Configuration for the placer1 refinement pass.
 
+use crate::sta::CritNorm;
+
 /// `Placer1Cfg`, restricted to the settings the refinement path reads.
 ///
 /// Defaults are upstream's (`placer1.cc:1233`). `net_share_weight` is absent
@@ -12,6 +14,7 @@ pub struct RefineCfg {
     pub constraint_weight: f64,
     /// Exponent applied to criticality, so near-critical arcs dominate.
     pub crit_exp: f64,
+    pub crit_norm: CritNorm,
     /// Blend between timing (`lambda`) and wirelength (`1 - lambda`).
     pub lambda: f64,
     pub hpwl_scale_x: i32,
@@ -37,6 +40,7 @@ impl Default for RefineCfg {
         Self {
             constraint_weight: 10.0,
             crit_exp: 8.0,
+            crit_norm: CritNorm::RequiredTime,
             lambda: 0.5,
             hpwl_scale_x: 1,
             hpwl_scale_y: 1,

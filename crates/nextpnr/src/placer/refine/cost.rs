@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
-use crate::sta::{Criticality, NetSink, StaSession};
+use crate::sta::{NetSink, StaSession};
 
 use super::config::RefineCfg;
 
@@ -135,8 +135,8 @@ impl CostModel {
         bb
     }
 
-    /// `get_timing_cost` -- arc delay weighted by criticality raised to
-    /// `crit_exp`, so the critical few dominate.
+    /// `get_timing_cost` -- arc delay weighted by criticality, normalised per
+    /// `crit_norm` and raised to `crit_exp`, so the critical few dominate.
     fn arc_costs(
         ctx: &Context,
         sta: Option<&StaSession>,
@@ -162,9 +162,9 @@ impl CostModel {
                     user: u32::try_from(user).expect("net user index fits in u32"),
                 };
                 let crit = sta
-                    .criticality(sink)
+                    .normalised_criticality(sink, cfg.crit_norm)
                     .expect("every user of a live net is a sink of the session")
-                    .map_or(0.0, Criticality::value);
+                    .unwrap_or(0.0);
                 let delay = ctx.delay_ns(ctx.predict_arc_delay(net, pin));
                 delay * crit.powf(cfg.crit_exp)
             })

@@ -1,3 +1,4 @@
+mod criticality;
 mod delay_table;
 mod interconnect;
 mod library;
@@ -34,6 +35,7 @@ pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(Delay
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
 pub use ruststa::engine::types::ClockId;
+pub use criticality::{CritNorm, PairBudget};
 pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};
 
 const PS_IN_NS: f64 = 0.001;

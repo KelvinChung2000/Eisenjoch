@@ -15,8 +15,9 @@ use nextpnr::router::common::{bind_route, unroute_net};
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
-    ArcTiming, ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
-    NetSink, PlacedEstimate, Reach, SinkTiming, StaSession, StaSessionError, TableEntry, Untimed,
+    ArcTiming, ClasslessPips, ClockId, CritNorm, DelayBounds, InterconnectError, InterconnectModel,
+    InterconnectStage, NetSink, PairBudget, PlacedEstimate, Reach, SinkTiming, StaSession,
+    StaSessionError, TableEntry, Untimed,
 };
 use rayon::prelude::*;
 use rstest::rstest;
@@ -613,7 +614,7 @@ fn placed_npnr_baseline(trim_top_ports: bool) -> Context {
     ctx
 }
 
-fn constrain_baseline_clock_net(ctx: &mut Context) {
+fn constrain_baseline_clock_net(ctx: &mut Context, period_ps: DelayT) {
     let clk_buf = ctx
         .design
         .cell_by_name(ctx.id("clk_buf"))
@@ -623,21 +624,21 @@ fn constrain_baseline_clock_net(ctx: &mut Context) {
         .cell(clk_buf)
         .port_net(ctx.id("O"))
         .expect("clk_buf drives the clock");
-    ctx.design
-        .net_edit(clk)
-        .set_clock_constraint(BASELINE_PERIOD_PS);
+    ctx.design.net_edit(clk).set_clock_constraint(period_ps);
 }
 
 const BASELINE_SDC_CLOCK: &str = "create_clock -name sys -period 4 [get_ports {clk_pad}]\n";
 
 const BASELINE_PERIOD_PS: DelayT = 4000;
+const BASELINE_MET_PERIOD_PS: DelayT = 20000;
+const BASELINE_VIOLATING_PERIOD_PS: DelayT = 3000;
 
 #[rstest]
 #[case::with_top_port_cells(false)]
 #[case::top_port_cells_trimmed(true)]
 fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
     let mut ctx = placed_npnr_baseline(trim_top_ports);
-    constrain_baseline_clock_net(&mut ctx);
+    constrain_baseline_clock_net(&mut ctx, BASELINE_PERIOD_PS);
     let session = session(&ctx, InterconnectStage::Placed);
     let timing = session.sta().session();
     let top_ports = ["clk_pad", "rst", "din[0]", "din[15]", "dout[0]", "dout[15]"];
@@ -671,7 +672,7 @@ fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
 #[test]
 fn user_sdc_reads_ns_like_the_net_clock_constraint() {
     let mut by_net = placed_npnr_baseline(false);
-    constrain_baseline_clock_net(&mut by_net);
+    constrain_baseline_clock_net(&mut by_net, BASELINE_PERIOD_PS);
     let mut by_sdc = placed_npnr_baseline(false);
     by_sdc.design.sdc = BASELINE_SDC_CLOCK.to_owned();
     let wns = |ctx: &Context| {
@@ -1042,4 +1043,117 @@ fn propagated_clock_is_rejected(#[case] clock: ClockDefinition, #[case] name: &s
         built,
         Err(StaSessionError::PropagatedClock { clock }) if clock == name
     ));
+}
+
+#[rstest]
+#[case::met_required_time(CritNorm::RequiredTime, 1.0, 4.0, 0.5, 0.75)]
+#[case::met_wns_relaxed(CritNorm::WnsRelaxed, 1.0, 4.0, 0.5, 0.75)]
+#[case::failing_required_time_saturates(CritNorm::RequiredTime, -0.5, 4.0, -1.0, 1.0)]
+#[case::failing_wns_relaxed_is_marquardt_eq6(CritNorm::WnsRelaxed, -0.5, 4.0, -1.0, 0.9)]
+#[case::worst_wns_relaxed(CritNorm::WnsRelaxed, -1.0, 4.0, -1.0, 1.0)]
+#[case::slack_above_budget(CritNorm::WnsRelaxed, 6.0, 4.0, -1.0, 0.0)]
+#[case::no_budget(CritNorm::RequiredTime, 0.0, 0.0, 0.0, 1.0)]
+fn pair_criticality_normalises_slack(
+    #[case] norm: CritNorm,
+    #[case] slack_ns: f64,
+    #[case] d_req_ns: f64,
+    #[case] wns_ns: f64,
+    #[case] expected: f64,
+) {
+    let budget = PairBudget {
+        launch: ClockId(0),
+        capture: ClockId(0),
+        d_req_ns,
+        wns_ns,
+    };
+    let actual = norm.pair_criticality(slack_ns, budget);
+    assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+}
+
+fn baseline_timed_sinks(ctx: &Context) -> Vec<NetSink> {
+    ctx.design
+        .iter_alive_nets()
+        .flat_map(|(net, info)| {
+            (0..info.users().len()).map(move |user| NetSink {
+                net,
+                user: u32::try_from(user).expect("net user index fits in u32"),
+            })
+        })
+        .collect()
+}
+
+fn baseline_session_at(period_ps: DelayT) -> (Context, StaSession) {
+    let mut ctx = placed_npnr_baseline(true);
+    constrain_baseline_clock_net(&mut ctx, period_ps);
+    let session = session(&ctx, InterconnectStage::Placed);
+    (ctx, session)
+}
+
+#[rstest]
+#[case::met("create_clock -name sys -period 20 [get_ports {clk_pad}]\n", 1)]
+#[case::violating("create_clock -name sys -period 3 [get_ports {clk_pad}]\n", 1)]
+#[case::two_pairs(
+    "create_clock -name sys -period 3 [get_ports {clk_pad}]\n\
+     create_clock -name vclk -period 3\n\
+     set_input_delay -clock vclk 1 [get_ports {din\\[*\\]}]\n",
+    2
+)]
+fn required_time_norm_is_the_ruststa_criticality(#[case] sdc: &str, #[case] pairs: usize) {
+    let mut ctx = placed_npnr_baseline(false);
+    ctx.design.sdc = sdc.to_owned();
+    let session = session(&ctx, InterconnectStage::Placed);
+    assert_eq!(session.pair_budgets().len(), pairs);
+    for sink in baseline_timed_sinks(&ctx) {
+        let ruststa = session
+            .sink_timing(sink)
+            .expect("a live user is a sink")
+            .criticality()
+            .map(|crit| crit.value());
+        let normalised = session
+            .normalised_criticality(sink, CritNorm::RequiredTime)
+            .expect("a live user is a sink");
+        assert_eq!(normalised, ruststa, "{sink:?}");
+    }
+}
+
+#[rstest]
+#[case::met(BASELINE_MET_PERIOD_PS, true)]
+#[case::violating(BASELINE_VIOLATING_PERIOD_PS, false)]
+fn wns_relaxed_norm_desaturates_only_a_failing_pair(#[case] period_ps: DelayT, #[case] met: bool) {
+    const SATURATED: f64 = 1.0 - 1e-9;
+    let (ctx, session) = baseline_session_at(period_ps);
+    let [budget] = session.pair_budgets() else {
+        panic!(
+            "one clock gives one domain pair: {:?}",
+            session.pair_budgets()
+        );
+    };
+    let crits = |norm| -> Vec<f64> {
+        baseline_timed_sinks(&ctx)
+            .into_iter()
+            .filter_map(|sink| {
+                session
+                    .normalised_criticality(sink, norm)
+                    .expect("a live user is a sink")
+            })
+            .collect()
+    };
+    let (required, relaxed) = (crits(CritNorm::RequiredTime), crits(CritNorm::WnsRelaxed));
+    let saturated = |crits: &[f64]| crits.iter().filter(|&&crit| crit >= SATURATED).count();
+    assert_eq!(budget.wns_ns >= 0.0, met, "pair WNS {}", budget.wns_ns);
+    if met {
+        assert_eq!(relaxed, required);
+        return;
+    }
+    let worst = relaxed.iter().copied().fold(0.0, f64::max);
+    assert!(
+        worst >= SATURATED,
+        "the worst connection is critical: {worst}"
+    );
+    assert!(
+        saturated(&relaxed) < saturated(&required),
+        "{} relaxed against {} saturated",
+        saturated(&relaxed),
+        saturated(&required)
+    );
 }
