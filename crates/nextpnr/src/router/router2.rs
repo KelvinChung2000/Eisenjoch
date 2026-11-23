@@ -1,8 +1,8 @@
 //! Router2: PathFinder negotiated-congestion router.
 //!
 //! Nets are planned against shared present and history congestion costs,
-//! congested nets are replanned until no routing node is overused, and the
-//! converged plans are then bound into the context.
+//! every net is replanned each pass until no routing node is overused, and
+//! the converged plans are then bound into the context.
 
 use crate::chipdb::{PipId, WireId};
 use crate::common::{DelayT, PlaceStrength};
@@ -21,7 +21,7 @@ use super::common::{
 use super::RouterError;
 
 const R2_COST_SCALE: f64 = 100.0;
-const WIRE_COST_LIMIT: DelayT = DelayT::MAX >> 12;
+const EDGE_COST_LIMIT: DelayT = DelayT::MAX >> 12;
 
 /// Configuration parameters for the Router2 (negotiation-based) algorithm.
 #[derive(Clone)]
@@ -179,6 +179,7 @@ struct NetPlan {
 struct Negotiation {
     state: Router2State,
     plans: FxHashMap<NetId, NetPlan>,
+    max_pip_cost: DelayT,
 }
 
 impl Negotiation {
@@ -208,14 +209,8 @@ impl Negotiation {
         self.state.count_congested_wires()
     }
 
-    fn congested_nets(&self) -> Vec<NetId> {
-        let usage = &self.state.wire_usage;
-        let mut nets: Vec<NetId> = self
-            .plans
-            .iter()
-            .filter(|(_, planned)| planned.wires.iter().any(|wire| usage[wire] > 1))
-            .map(|(&net, _)| net)
-            .collect();
+    fn planned_nets(&self) -> Vec<NetId> {
+        let mut nets: Vec<NetId> = self.plans.keys().copied().collect();
         nets.sort_unstable();
         nets
     }
@@ -235,7 +230,8 @@ impl Negotiation {
         self.state.update_history();
         self.state.present_cost *= self.state.cfg.present_cost_growth;
         let wire_cost = self.max_wire_cost();
-        match wire_cost * R2_COST_SCALE <= f64::from(WIRE_COST_LIMIT) {
+        let edge_cost = f64::from(self.max_pip_cost) + wire_cost * R2_COST_SCALE;
+        match edge_cost <= f64::from(EDGE_COST_LIMIT) {
             true => Ok(()),
             false => Err(RouterError::CostRange {
                 iteration,
@@ -314,6 +310,12 @@ impl Router2 {
         let mut negotiation = Negotiation {
             state: NegotiationState::new(cfg.negotiation.clone()),
             plans: FxHashMap::default(),
+            max_pip_cost: ctx
+                .chipdb()
+                .pips()
+                .map(|pip| default_pip_cost(ctx, pip))
+                .max()
+                .unwrap_or(0),
         };
 
         let initial: Vec<RoutePlan> = sources
@@ -335,15 +337,15 @@ impl Router2 {
                 break;
             }
             negotiation.advance_costs(iteration)?;
-            let congested = negotiation.congested_nets();
-            for &net in &congested {
+            let replanned = negotiation.planned_nets();
+            for &net in &replanned {
                 negotiation.withdraw(net);
                 let plan =
                     compute_route_r2(ctx, net, source_of[&net], &negotiation.state, cfg.bb_margin)?;
                 negotiation.insert(ctx, plan);
             }
             let record = IterationRecord {
-                replanned_nets: congested.len(),
+                replanned_nets: replanned.len(),
                 overused_wires: negotiation.overused_wires(),
             };
             if cfg.verbose {
