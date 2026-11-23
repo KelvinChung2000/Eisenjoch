@@ -25,6 +25,9 @@ pub struct Design {
 
     /// Region constraints for floorplanning.
     pub regions: Vec<RegionConstraint>,
+
+    /// User SDC text that static timing analysis reads after the clocks of constrained nets.
+    pub sdc: String,
 }
 
 impl Design {
@@ -42,6 +45,7 @@ impl Design {
             clusters: FxHashMap::default(),
             top_module: IdString::EMPTY,
             regions: Vec::new(),
+            sdc: String::new(),
         }
     }
 

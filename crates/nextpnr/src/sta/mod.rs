@@ -1,5 +1,6 @@
 mod interconnect;
 mod library;
+mod report;
 mod role;
 mod session;
 
@@ -23,9 +24,12 @@ pub use interconnect::{
     ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
 };
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
+pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
+pub use ruststa::engine::types::ClockId;
 pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};
 
 const PS_IN_NS: f64 = 0.001;
+const PS_PER_NS: f64 = 1000.0;
 
 #[derive(Debug, Error)]
 pub enum StaBuildError {
@@ -105,7 +109,7 @@ impl RustSta {
             pins,
             nets,
         } = gate_design(ctx, &library, &roles)?;
-        let sdc = clock_sdc(ctx, &roles)?;
+        let sdc = format!("{}{}", clock_sdc(ctx, &roles)?, ctx.design.sdc);
         let options = AnalysisOptions {
             wire_model: WireModelOption::Ideal,
             ..AnalysisOptions::default()
@@ -216,7 +220,7 @@ fn gate_design(
 }
 
 fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
-    let mut sdc = String::new();
+    let mut sdc = String::from("set_units -time ns\n");
     for (net_id, net) in ctx.design.iter_alive_nets() {
         if net.clock_constraint <= 0 {
             continue;
@@ -247,9 +251,9 @@ fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
         };
         writeln!(
             sdc,
-            "create_clock -name {} -period {} [{source}]",
-            net_name(net_id),
-            net.clock_constraint,
+            "create_clock -name {{{}}} -period {} [{source}]",
+            ctx.name_of(net.name),
+            f64::from(net.clock_constraint) / PS_PER_NS,
         )
         .expect("writing to a String cannot fail");
     }

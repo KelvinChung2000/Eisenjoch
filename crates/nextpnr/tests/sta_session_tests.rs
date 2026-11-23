@@ -253,9 +253,13 @@ fn assert_chain_timing(session: &StaSession, chain: &Chain, expected: &Expected)
     let [domain] = session.domains() else {
         panic!("one clock gives one domain pair: {:?}", session.domains());
     };
-    assert_eq!((domain.launch, domain.capture), (chain.clk, chain.clk));
+    assert_eq!(domain.launch, domain.capture);
     assert_ns(domain.wns_ns, expected.setup_ps);
     assert_ns(domain.tns_ns, expected.setup_ps.min(0));
+    assert_eq!(
+        (domain.endpoints, domain.failing_endpoints),
+        (1, usize::from(expected.setup_ps < 0))
+    );
 }
 
 fn uniform(delay_ps: DelayT) -> DelayBounds {
@@ -536,21 +540,29 @@ fn placed_npnr_baseline(trim_top_ports: bool) -> Context {
     for (bel, cell) in bindings {
         assert!(ctx.bind_bel(bel, cell, PlaceStrength::Placer));
     }
+    ctx
+}
+
+fn constrain_baseline_clock_net(ctx: &mut Context) {
     let clk_buf = ctx.design.cell_by_name(ctx.id("clk_buf")).expect("fixture has clk_buf");
     let clk = ctx
         .design
         .cell(clk_buf)
         .port_net(ctx.id("O"))
         .expect("clk_buf drives the clock");
-    ctx.design.net_edit(clk).set_clock_constraint(4000);
-    ctx
+    ctx.design.net_edit(clk).set_clock_constraint(BASELINE_PERIOD_PS);
 }
+
+const BASELINE_SDC_CLOCK: &str = "create_clock -name sys -period 4 [get_ports {clk_pad}]\n";
+
+const BASELINE_PERIOD_PS: DelayT = 4000;
 
 #[rstest]
 #[case::with_top_port_cells(false)]
 #[case::top_port_cells_trimmed(true)]
 fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
-    let ctx = placed_npnr_baseline(trim_top_ports);
+    let mut ctx = placed_npnr_baseline(trim_top_ports);
+    constrain_baseline_clock_net(&mut ctx);
     let session = session(&ctx, InterconnectStage::Placed);
     let timing = session.sta().session();
     let top_ports = ["clk_pad", "rst", "din[0]", "din[15]", "dout[0]", "dout[15]"];
@@ -577,4 +589,48 @@ fn io_buffers_time_as_top_level_ports(#[case] trim_top_ports: bool) {
     assert!(pad_sinks
         .iter()
         .all(|sink| *sink == SinkTiming::Untimed(Untimed::OffChip)));
+}
+
+#[test]
+fn user_sdc_reads_ns_like_the_net_clock_constraint() {
+    let mut by_net = placed_npnr_baseline(false);
+    constrain_baseline_clock_net(&mut by_net);
+    let mut by_sdc = placed_npnr_baseline(false);
+    by_sdc.design.sdc = BASELINE_SDC_CLOCK.to_owned();
+    let wns = |ctx: &Context| {
+        let session = session(ctx, InterconnectStage::Placed);
+        let [domain] = session.domains() else {
+            panic!("one clock gives one domain pair: {:?}", session.domains());
+        };
+        domain.wns_ns
+    };
+    assert_eq!(wns(&by_net), wns(&by_sdc));
+}
+
+#[rstest]
+#[case::launched_by_the_capture_clock("", "sys")]
+#[case::launched_by_a_virtual_clock("create_clock -name vclk -period 4\n", "vclk")]
+fn input_delay_from_user_sdc_seeds_the_pad_arrival(
+    #[case] launch_clock: &str,
+    #[case] launch: &str,
+) {
+    const INPUT_DELAY_NS: f64 = 10.0;
+    let mut ctx = placed_npnr_baseline(false);
+    ctx.design.sdc = format!(
+        "{BASELINE_SDC_CLOCK}{launch_clock}set_input_delay -clock {launch} {INPUT_DELAY_NS} [get_ports {{din\\[*\\]}}]\n"
+    );
+    let report = session(&ctx, InterconnectStage::Placed)
+        .report(&ctx, usize::MAX)
+        .expect("the fixture reports");
+    let from_inputs = report
+        .domains
+        .iter()
+        .filter(|domain| domain.launch == launch)
+        .flat_map(|domain| &domain.worst_paths)
+        .find(|path| path.pins[0].pin.starts_with("$iopadmap$top.din_"))
+        .unwrap_or_else(|| panic!("{launch} launches a path from din: {report}"));
+    assert!(
+        (from_inputs.pins[0].arrival_ns - INPUT_DELAY_NS).abs() < SLACK_TOLERANCE_NS,
+        "the input delay is the pad arrival: {report}"
+    );
 }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use ruststa::engine::delay::annotate::DelayAnnotations;
 use ruststa::engine::incr::{
     ArcTiming, Criticality, IncrementalStats, SessionError, SessionNodeKey, TimingSession,
@@ -10,7 +10,7 @@ use ruststa::engine::types::{ClockId, NodeId};
 use thiserror::Error;
 
 use super::interconnect::{DelayBounds, InterconnectError, InterconnectModel, InterconnectStage};
-use super::{net_name, NetSink, RustSta, StaBuildError};
+use super::{NetSink, RustSta, StaBuildError};
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
 
@@ -57,10 +57,12 @@ impl SinkTiming {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DomainSummary {
-    pub launch: NetId,
-    pub capture: NetId,
+    pub launch: ClockId,
+    pub capture: ClockId,
     pub wns_ns: f64,
     pub tns_ns: f64,
+    pub endpoints: usize,
+    pub failing_endpoints: usize,
 }
 
 #[derive(Debug, Error)]
@@ -79,8 +81,6 @@ pub enum StaSessionError {
     UnknownSink(NetSink),
     #[error("{sink:?} has no timing arc: {reason:?}")]
     UntimedSink { sink: NetSink, reason: Untimed },
-    #[error("clock '{name}' is not a constrained design net")]
-    UnknownClock { name: String },
     #[error("the check records of the corner were released")]
     CheckRecordsReleased,
 }
@@ -158,7 +158,6 @@ pub struct StaSession {
     index: SinkIndex,
     links: Vec<SinkLink>,
     timing: Vec<SinkTiming>,
-    clock_nets: Vec<NetId>,
     domains: Vec<DomainSummary>,
 }
 
@@ -211,7 +210,6 @@ impl StaSession {
         }
         let corner = sta.session.default_corner().corner_name.clone();
         sta.session.set_delay_annotations(&corner, annotations)?;
-        let clock_nets = clock_nets(ctx, &sta.session)?;
         let mut session = Self {
             sta,
             model,
@@ -219,7 +217,6 @@ impl StaSession {
             index,
             timing: vec![SinkTiming::Untimed(Untimed::VacantUser); links.len()],
             links,
-            clock_nets,
             domains: Vec::new(),
         };
         session.refresh()?;
@@ -334,7 +331,7 @@ impl StaSession {
                 SinkLink::Arc(link) => SinkTiming::Arc(rows[link.arc].timing),
             };
         }
-        self.domains = domain_summaries(&self.sta.session, &self.clock_nets)?;
+        self.domains = domain_summaries(&self.sta.session)?;
         Ok(())
     }
 }
@@ -365,33 +362,7 @@ fn sink_links(ctx: &Context, sta: &RustSta, index: &SinkIndex) -> Vec<SinkLink> 
     links
 }
 
-fn clock_nets(ctx: &Context, session: &TimingSession) -> Result<Vec<NetId>, StaSessionError> {
-    let by_name: FxHashMap<String, NetId> = ctx
-        .design
-        .iter_alive_nets()
-        .filter(|(_, info)| info.clock_constraint > 0)
-        .map(|(net, _)| (net_name(net), net))
-        .collect();
-    session
-        .state()
-        .constraints
-        .clocks
-        .iter()
-        .map(|clock| {
-            by_name
-                .get(&clock.name)
-                .copied()
-                .ok_or_else(|| StaSessionError::UnknownClock {
-                    name: clock.name.clone(),
-                })
-        })
-        .collect()
-}
-
-fn domain_summaries(
-    session: &TimingSession,
-    clock_nets: &[NetId],
-) -> Result<Vec<DomainSummary>, StaSessionError> {
+fn domain_summaries(session: &TimingSession) -> Result<Vec<DomainSummary>, StaSessionError> {
     let endpoints = &session.default_corner().endpoints;
     if endpoints.records_released() {
         return Err(StaSessionError::CheckRecordsReleased);
@@ -412,10 +383,12 @@ fn domain_summaries(
     Ok(worst
         .into_iter()
         .map(|((launch, capture), slacks)| DomainSummary {
-            launch: clock_nets[launch.index()],
-            capture: clock_nets[capture.index()],
+            launch,
+            capture,
             wns_ns: slacks.values().copied().fold(f64::INFINITY, f64::min),
             tns_ns: slacks.values().map(|&slack| slack.min(0.0)).sum(),
+            endpoints: slacks.len(),
+            failing_endpoints: slacks.values().filter(|&&slack| slack < 0.0).count(),
         })
         .collect())
 }
