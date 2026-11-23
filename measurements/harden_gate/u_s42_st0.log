@@ -1,0 +1,285 @@
+chipdb: /home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin
+design: /home/kelvin/side-project/eisenjoch/benchmark/output/stereovision3.json
+cfg: max_outer_iters=20 blend_alpha=0.5 hardening_step=0 graph_model=TwoLevelPip
+  topological compress: density=0.60 target_tiles=46 final_tiles=46 scale=0.026 center=(117.5,111.0)
+  topological init: n_movable=222, n_edges=514, max_layer=42, back_edges=1, n_anchored=2
+Locked 53 boundary/IO cells as fixed anchors
+  Skipped truly-null coarse cells: 0 (of 69353 total); pruned pipes: src_null=0 dst_null=0
+  Pipe capacity by span:
+    span=  1: 138172 pipes, cap min=1 avg=134.5 max=432
+    span=  2: 136455 pipes, cap min=2 avg=50.7 max=118
+    span=  3: 135619 pipes, cap min=2 avg=26.1 max=52
+    span=  4: 136319 pipes, cap min=2 avg=22.7 max=140
+    span=  5: 135918 pipes, cap min=2 avg=66.1 max=124
+    span=  6: 201217 pipes, cap min=2 avg=15.2 max=28
+    span=  7: 200933 pipes, cap min=1 avg=7.3 max=20
+    span=  8: 132748 pipes, cap min=2 avg=6.0 max=10
+    span=  9: 130848 pipes, cap min=2 avg=6.0 max=10
+    span= 10: 131090 pipes, cap min=2 avg=2.2 max=31
+    span= 11: 129628 pipes, cap min=2 avg=2.0 max=4
+    span= 12: 129018 pipes, cap min=2 avg=2.0 max=4
+    span= 13: 128408 pipes, cap min=1 avg=1.5 max=4
+    span= 14: 127798 pipes, cap min=1 avg=1.0 max=2
+    span= 15: 127188 pipes, cap min=1 avg=1.0 max=2
+    span= 16: 126578 pipes, cap min=1 avg=1.0 max=2
+    span= 17: 125968 pipes, cap min=1 avg=1.0 max=2
+    span= 18: 125358 pipes, cap min=1 avg=1.0 max=2
+    span= 19: 63140 pipes, cap min=1 avg=1.0 max=2
+  Thin span-1 pipes (cap<=2): 222 total, by tile-type pair (top 20):
+    NULL <-> NULL: 220
+    CLK_BUFG <-> NULL: 2
+  Pipe cost: span^0.50 model (r1=1), span-1=1.000, span-12=3.464, 2×span-6=4.899, 12×span-1=12.000
+  topological compress: density=0.60 target_tiles=35 final_tiles=35 scale=0.020 center=(125.9,111.0)
+  topological init: n_movable=169, n_edges=456, max_layer=40, back_edges=1, n_anchored=58
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+Coordinate descent mode: 169 cells, scale 1.00
+CellValidityMask: 169 cells, 311x223 grid, per-cell valid positions: min=67346 avg=67346.0 max=67346, unmapped cells=0
+MuxSlotTracker: 169 cells (169 with external fanout), 67346 tiles, total_cap=1077536, active_buckets=[DFF,LUT6], built in 80.6ms
+MuxSlotTracker[post-seed]: populated_cells=169, overflow_tiles=0, at_cap_tiles=0, peak_excess=0, capacity_hist={16:67346}
+DCD placer: 169 cells, 69353 nodes, outer_iters=20, dcd_iters_per_cell=8, graph_model=TwoLevelPip
+Softmin position update: enabled, theta 0.250 -> 5.000 (anneal over 20 iters)
+    SwitchMatrix: type_usage_pairs=7 lookups=110 hits=103 dijkstra_calls=7 avg_us=11.0 total_ms=0.1
+    rss_probe[outer=0]: pre_refresh_rss=666MB post_pre_solve_rss=677MB cache_entries=46359 cache_cap=104160 cache_est_mb=1
+    pre_solve_diag[outer=0]: solves=295 fallback=0 (0.0%) cap_armed=295 (100.0%) settle_avg=684 settle_max=5800 init_count=70
+  Cell placement by tile type (iter 0, 169 cells):
+    CLB: 169
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=0 congested(>50%)=0 saturated(>90%)=0 max_util=0.00 avg_util=0.0000
+    rss_probe[outer=0]: pre_post_solve=677MB post_post_solve=743MB after_apply=743MB
+    E_decomp: base=8334.6 eff=8728.5 cong=394.0 cong_share=4.5% sat_pipes=0 max_util=0.35  R_buckets: 1-2x=260329 2-10x=0 10-100x=0 >=100x=0
+    E_potential: beckmann=8334.6 history_total=0.0
+    SpanCache: epoch=1 entries=110 lookups=2562403 hits=2562293 misses=110 hit_rate=100.0%
+  DCD   0: nets=295 line=7072 energy=2234.981 dE=+0.000 friction=34.9 bins=1.8x(7) excess=2.4 moved=169 disp=inf solves=590 skip=0 pops=403470 theta=0.250 refresh=81ms dcd=16ms total=136ms
+    cache_stats: entries=45439 capacity=107968 est_mb=1 rss_mb=740
+    SwitchMatrix: type_usage_pairs=16 lookups=129 hits=113 dijkstra_calls=16 avg_us=13.6 total_ms=0.2
+    rss_probe[outer=1]: pre_refresh_rss=740MB post_pre_solve_rss=740MB cache_entries=45439 cache_cap=107968 cache_est_mb=1
+    pre_solve_diag[outer=1]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=59
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=260329 congested(>50%)=0 saturated(>90%)=0 max_util=0.35 avg_util=0.0003
+    rss_probe[outer=1]: pre_post_solve=740MB post_post_solve=752MB after_apply=752MB
+    E_decomp: base=12431.3 eff=14796.4 cong=2365.1 cong_share=16.0% sat_pipes=1 max_util=1.37  R_buckets: 1-2x=262206 2-10x=168 10-100x=13 >=100x=1
+    E_potential: beckmann=12431.5 history_total=0.0
+    SpanCache: epoch=2 entries=129 lookups=2562403 hits=2562274 misses=129 hit_rate=100.0%
+  DCD   1: nets=295 line=7229 energy=2324.303 dE=+89.322 friction=78.9 bins=2.0x(7) excess=4.5 moved=169 disp=1.367 solves=295 skip=295 pops=205027 theta=0.293 refresh=64ms dcd=16ms total=118ms
+    cache_stats: entries=47313 capacity=110656 est_mb=1 rss_mb=752
+    SwitchMatrix: type_usage_pairs=24 lookups=148 hits=124 dijkstra_calls=24 avg_us=12.0 total_ms=0.3
+    rss_probe[outer=2]: pre_refresh_rss=752MB post_pre_solve_rss=752MB cache_entries=47313 cache_cap=110656 cache_est_mb=1
+    pre_solve_diag[outer=2]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=60
+    Overflow: over=1 (0.0% of used) avg_excess=0.37 max_excess=0.37 (nc=1.37 cap=1 span=18)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=1 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=1  le1_cross: cap1=1 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=262388 congested(>50%)=2 saturated(>90%)=1 max_util=1.37 avg_util=0.0004
+    rss_probe[outer=2]: pre_post_solve=752MB post_post_solve=776MB after_apply=776MB
+    E_decomp: base=14472.7 eff=21492.6 cong=7019.9 cong_share=32.7% sat_pipes=0 max_util=0.76  R_buckets: 1-2x=264982 2-10x=520 10-100x=76 >=100x=15
+    E_potential: beckmann=14472.8 history_total=0.0
+    SpanCache: epoch=3 entries=148 lookups=2562403 hits=2562255 misses=148 hit_rate=100.0%
+  DCD   2: nets=295 line=7319 energy=2360.280 dE=+35.978 friction=100.2 bins=2.0x(9) excess=3.4 moved=169 disp=1.503 solves=295 skip=295 pops=204092 theta=0.343 refresh=72ms dcd=15ms total=126ms
+    cache_stats: entries=47489 capacity=112000 est_mb=1 rss_mb=776
+    SwitchMatrix: type_usage_pairs=30 lookups=155 hits=125 dijkstra_calls=30 avg_us=13.7 total_ms=0.4
+    rss_probe[outer=3]: pre_refresh_rss=776MB post_pre_solve_rss=776MB cache_entries=47489 cache_cap=112000 cache_est_mb=1
+    pre_solve_diag[outer=3]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=51
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=265593 congested(>50%)=17 saturated(>90%)=0 max_util=0.76 avg_util=0.0005
+    rss_probe[outer=3]: pre_post_solve=776MB post_post_solve=781MB after_apply=781MB
+    E_decomp: base=14984.1 eff=30985.0 cong=16001.0 cong_share=51.6% sat_pipes=1 max_util=1.46  R_buckets: 1-2x=265178 2-10x=487 10-100x=232 >=100x=28
+    E_potential: beckmann=14984.4 history_total=0.0
+    SpanCache: epoch=4 entries=155 lookups=2562403 hits=2562248 misses=155 hit_rate=100.0%
+  DCD   3: nets=295 line=7454 energy=2305.554 dE=-54.726 friction=99.6 bins=1.9x(9) excess=3.6 moved=169 disp=1.556 solves=295 skip=295 pops=205403 theta=0.401 refresh=68ms dcd=15ms total=120ms
+    cache_stats: entries=49032 capacity=114688 est_mb=1 rss_mb=781
+    SwitchMatrix: type_usage_pairs=31 lookups=151 hits=120 dijkstra_calls=31 avg_us=13.2 total_ms=0.4
+    rss_probe[outer=4]: pre_refresh_rss=781MB post_pre_solve_rss=781MB cache_entries=49032 cache_cap=114688 cache_est_mb=1
+    pre_solve_diag[outer=4]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=59
+    Overflow: over=1 (0.0% of used) avg_excess=0.46 max_excess=0.46 (nc=1.46 cap=1 span=18)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=1 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=1  le1_cross: cap1=1 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=265925 congested(>50%)=2 saturated(>90%)=1 max_util=1.46 avg_util=0.0005
+    rss_probe[outer=4]: pre_post_solve=781MB post_post_solve=788MB after_apply=788MB
+    E_decomp: base=15356.3 eff=34771.6 cong=19415.2 cong_share=55.8% sat_pipes=14 max_util=1.10  R_buckets: 1-2x=265962 2-10x=455 10-100x=125 >=100x=37
+    E_potential: beckmann=15357.1 history_total=0.0
+    SpanCache: epoch=5 entries=151 lookups=2562403 hits=2562252 misses=151 hit_rate=100.0%
+  DCD   4: nets=295 line=7635 energy=2318.241 dE=+12.687 friction=121.4 bins=2.0x(8) excess=4.1 moved=169 disp=1.550 solves=295 skip=295 pops=206111 theta=0.470 refresh=66ms dcd=16ms total=119ms
+    cache_stats: entries=48937 capacity=116368 est_mb=1 rss_mb=788
+    SwitchMatrix: type_usage_pairs=36 lookups=159 hits=123 dijkstra_calls=36 avg_us=12.8 total_ms=0.5
+    rss_probe[outer=5]: pre_refresh_rss=788MB post_pre_solve_rss=788MB cache_entries=48937 cache_cap=116368 cache_est_mb=1
+    pre_solve_diag[outer=5]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=58
+    Overflow: over=2 (0.0% of used) avg_excess=0.06 max_excess=0.10 (nc=1.10 cap=1 span=18)  excess_buckets: <=1=2 1-5=0 5-20=0 >20=0  by_cap: cap1=2 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=2  le1_cross: cap1=2 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=266579 congested(>50%)=36 saturated(>90%)=14 max_util=1.10 avg_util=0.0005
+    rss_probe[outer=5]: pre_post_solve=788MB post_post_solve=791MB after_apply=791MB
+    E_decomp: base=15890.5 eff=59094.3 cong=43203.7 cong_share=73.1% sat_pipes=0 max_util=0.58  R_buckets: 1-2x=273677 2-10x=636 10-100x=45 >=100x=25
+    E_potential: beckmann=15890.6 history_total=0.0
+    SpanCache: epoch=6 entries=159 lookups=2562403 hits=2562244 misses=159 hit_rate=100.0%
+  DCD   5: nets=295 line=7902 energy=2362.406 dE=+44.165 friction=105.4 bins=2.0x(5) excess=4.2 moved=169 disp=1.680 solves=295 skip=295 pops=209063 theta=0.550 refresh=67ms dcd=15ms total=121ms
+    cache_stats: entries=50676 capacity=120064 est_mb=1 rss_mb=791
+    SwitchMatrix: type_usage_pairs=34 lookups=156 hits=122 dijkstra_calls=34 avg_us=12.7 total_ms=0.4
+    rss_probe[outer=6]: pre_refresh_rss=791MB post_pre_solve_rss=791MB cache_entries=50676 cache_cap=120064 cache_est_mb=1
+    pre_solve_diag[outer=6]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=52
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=274383 congested(>50%)=3 saturated(>90%)=0 max_util=0.58 avg_util=0.0005
+    rss_probe[outer=6]: pre_post_solve=791MB post_post_solve=799MB after_apply=799MB
+    E_decomp: base=16282.0 eff=114861.3 cong=98579.2 cong_share=85.8% sat_pipes=0 max_util=0.81  R_buckets: 1-2x=274821 2-10x=471 10-100x=20 >=100x=65
+    E_potential: beckmann=16282.1 history_total=0.0
+    SpanCache: epoch=7 entries=156 lookups=2562403 hits=2562247 misses=156 hit_rate=100.0%
+  DCD   6: nets=295 line=8204 energy=2343.769 dE=-18.637 friction=114.2 bins=2.0x(6) excess=4.1 moved=169 disp=1.680 solves=295 skip=295 pops=211943 theta=0.644 refresh=70ms dcd=16ms total=123ms
+    cache_stats: entries=52325 capacity=122192 est_mb=1 rss_mb=799
+    SwitchMatrix: type_usage_pairs=34 lookups=155 hits=121 dijkstra_calls=34 avg_us=12.5 total_ms=0.4
+    rss_probe[outer=7]: pre_refresh_rss=799MB post_pre_solve_rss=799MB cache_entries=52325 cache_cap=122192 cache_est_mb=1
+    pre_solve_diag[outer=7]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=58
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=275377 congested(>50%)=4 saturated(>90%)=0 max_util=0.81 avg_util=0.0005
+    rss_probe[outer=7]: pre_post_solve=799MB post_post_solve=800MB after_apply=800MB
+    E_decomp: base=16072.8 eff=49423.3 cong=33350.5 cong_share=67.5% sat_pipes=0 max_util=0.66  R_buckets: 1-2x=275758 2-10x=701 10-100x=196 >=100x=32
+    E_potential: beckmann=16072.9 history_total=0.0
+    SpanCache: epoch=8 entries=155 lookups=2562403 hits=2562248 misses=155 hit_rate=100.0%
+  DCD   7: nets=295 line=8094 energy=2352.751 dE=+8.982 friction=122.5 bins=1.8x(7) excess=2.9 moved=169 disp=1.663 solves=295 skip=295 pops=211943 theta=0.754 refresh=68ms dcd=18ms total=125ms
+    cache_stats: entries=52950 capacity=124880 est_mb=1 rss_mb=800
+    SwitchMatrix: type_usage_pairs=34 lookups=159 hits=125 dijkstra_calls=34 avg_us=12.6 total_ms=0.4
+    rss_probe[outer=8]: pre_refresh_rss=800MB post_pre_solve_rss=800MB cache_entries=52950 cache_cap=124880 cache_est_mb=1
+    pre_solve_diag[outer=8]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=41
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=276687 congested(>50%)=6 saturated(>90%)=0 max_util=0.66 avg_util=0.0005
+    rss_probe[outer=8]: pre_post_solve=800MB post_post_solve=802MB after_apply=802MB
+    E_decomp: base=16204.5 eff=51762.8 cong=35558.3 cong_share=68.7% sat_pipes=0 max_util=0.76  R_buckets: 1-2x=277008 2-10x=819 10-100x=41 >=100x=10
+    E_potential: beckmann=16204.6 history_total=0.0
+    SpanCache: epoch=9 entries=159 lookups=2562403 hits=2562244 misses=159 hit_rate=100.0%
+  DCD   8: nets=295 line=8359 energy=2365.651 dE=+12.900 friction=122.1 bins=2.0x(3) excess=2.9 moved=169 disp=1.669 solves=295 skip=295 pops=213981 theta=0.883 refresh=71ms dcd=16ms total=126ms
+    cache_stats: entries=53748 capacity=126896 est_mb=1 rss_mb=802
+    SwitchMatrix: type_usage_pairs=31 lookups=155 hits=124 dijkstra_calls=31 avg_us=12.0 total_ms=0.4
+    rss_probe[outer=9]: pre_refresh_rss=802MB post_pre_solve_rss=802MB cache_entries=53748 cache_cap=126896 cache_est_mb=1
+    pre_solve_diag[outer=9]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=52
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=277878 congested(>50%)=8 saturated(>90%)=0 max_util=0.76 avg_util=0.0005
+    rss_probe[outer=9]: pre_post_solve=802MB post_post_solve=805MB after_apply=805MB
+    E_decomp: base=16102.6 eff=34849.0 cong=18746.4 cong_share=53.8% sat_pipes=1 max_util=1.05  R_buckets: 1-2x=278593 2-10x=574 10-100x=154 >=100x=14
+    E_potential: beckmann=16102.8 history_total=0.0
+    SpanCache: epoch=10 entries=155 lookups=2562403 hits=2562248 misses=155 hit_rate=100.0%
+  DCD   9: nets=295 line=7947 energy=2403.018 dE=+37.367 friction=138.3 bins=2.0x(5) excess=3.1 moved=169 disp=1.734 solves=295 skip=295 pops=214795 theta=1.033 refresh=68ms dcd=17ms total=123ms
+    cache_stats: entries=54236 capacity=127008 est_mb=1 rss_mb=805
+    SwitchMatrix: type_usage_pairs=35 lookups=165 hits=130 dijkstra_calls=35 avg_us=12.8 total_ms=0.4
+    rss_probe[outer=10]: pre_refresh_rss=805MB post_pre_solve_rss=805MB cache_entries=54236 cache_cap=127008 cache_est_mb=1
+    pre_solve_diag[outer=10]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=64
+    Overflow: over=1 (0.0% of used) avg_excess=0.05 max_excess=0.05 (nc=1.05 cap=1 span=15)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=1 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=1  le1_cross: cap1=1 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=279335 congested(>50%)=30 saturated(>90%)=1 max_util=1.05 avg_util=0.0005
+    rss_probe[outer=10]: pre_post_solve=805MB post_post_solve=811MB after_apply=811MB
+    E_decomp: base=16130.9 eff=42120.6 cong=25989.7 cong_share=61.7% sat_pipes=18 max_util=1.78  R_buckets: 1-2x=282133 2-10x=497 10-100x=337 >=100x=16
+    E_potential: beckmann=16135.6 history_total=0.0
+    SpanCache: epoch=11 entries=165 lookups=2562403 hits=2562238 misses=165 hit_rate=100.0%
+  DCD  10: nets=295 line=8146 energy=2399.686 dE=-3.332 friction=160.6 bins=2.0x(6) excess=4.6 moved=169 disp=1.734 solves=295 skip=295 pops=218419 theta=1.210 refresh=67ms dcd=15ms total=120ms
+    cache_stats: entries=56332 capacity=129360 est_mb=1 rss_mb=811
+    SwitchMatrix: type_usage_pairs=34 lookups=168 hits=134 dijkstra_calls=34 avg_us=12.3 total_ms=0.4
+    rss_probe[outer=11]: pre_refresh_rss=811MB post_pre_solve_rss=811MB cache_entries=56332 cache_cap=129360 cache_est_mb=1
+    pre_solve_diag[outer=11]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=60
+    Overflow: over=18 (0.0% of used) avg_excess=0.39 max_excess=0.78 (nc=1.78 cap=1 span=18)  excess_buckets: <=1=18 1-5=0 5-20=0 >20=0  by_cap: cap1=18 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=18  le1_cross: cap1=18 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=282983 congested(>50%)=41 saturated(>90%)=18 max_util=1.78 avg_util=0.0005
+    rss_probe[outer=11]: pre_post_solve=811MB post_post_solve=811MB after_apply=811MB
+    E_decomp: base=16037.5 eff=39850.8 cong=23813.2 cong_share=59.8% sat_pipes=1 max_util=1.17  R_buckets: 1-2x=283557 2-10x=987 10-100x=45 >=100x=41
+    E_potential: beckmann=16038.0 history_total=0.0
+    SpanCache: epoch=12 entries=168 lookups=2562403 hits=2562235 misses=168 hit_rate=100.0%
+  DCD  11: nets=295 line=7973 energy=2391.124 dE=-8.562 friction=148.2 bins=2.0x(7) excess=4.2 moved=169 disp=1.728 solves=295 skip=295 pops=218375 theta=1.416 refresh=66ms dcd=16ms total=121ms
+    cache_stats: entries=56498 capacity=130480 est_mb=1 rss_mb=811
+    SwitchMatrix: type_usage_pairs=30 lookups=164 hits=134 dijkstra_calls=30 avg_us=12.2 total_ms=0.4
+    rss_probe[outer=12]: pre_refresh_rss=811MB post_pre_solve_rss=811MB cache_entries=56498 cache_cap=130480 cache_est_mb=1
+    pre_solve_diag[outer=12]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=53
+    Overflow: over=1 (0.0% of used) avg_excess=0.17 max_excess=0.17 (nc=1.17 cap=1 span=17)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=1 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=1  le1_cross: cap1=1 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=284630 congested(>50%)=73 saturated(>90%)=1 max_util=1.17 avg_util=0.0005
+    rss_probe[outer=12]: pre_post_solve=811MB post_post_solve=811MB after_apply=811MB
+    E_decomp: base=16040.8 eff=55986.2 cong=39945.4 cong_share=71.3% sat_pipes=0 max_util=0.79  R_buckets: 1-2x=285409 2-10x=473 10-100x=331 >=100x=19
+    E_potential: beckmann=16041.1 history_total=0.0
+    SpanCache: epoch=13 entries=164 lookups=2562403 hits=2562239 misses=164 hit_rate=100.0%
+  DCD  12: nets=295 line=8030 energy=2437.405 dE=+46.281 friction=139.3 bins=2.0x(6) excess=5.8 moved=169 disp=1.680 solves=295 skip=295 pops=220356 theta=1.658 refresh=71ms dcd=17ms total=128ms
+    cache_stats: entries=57311 capacity=131712 est_mb=1 rss_mb=812
+    SwitchMatrix: type_usage_pairs=30 lookups=162 hits=132 dijkstra_calls=30 avg_us=13.5 total_ms=0.4
+    rss_probe[outer=13]: pre_refresh_rss=812MB post_pre_solve_rss=812MB cache_entries=57311 cache_cap=131712 cache_est_mb=1
+    pre_solve_diag[outer=13]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=44
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=286232 congested(>50%)=40 saturated(>90%)=0 max_util=0.79 avg_util=0.0005
+    rss_probe[outer=13]: pre_post_solve=812MB post_post_solve=816MB after_apply=816MB
+    E_decomp: base=16011.2 eff=50720.3 cong=34709.1 cong_share=68.4% sat_pipes=0 max_util=0.76  R_buckets: 1-2x=287331 2-10x=545 10-100x=46 >=100x=53
+    E_potential: beckmann=16011.4 history_total=0.0
+    SpanCache: epoch=14 entries=162 lookups=2562403 hits=2562241 misses=162 hit_rate=100.0%
+  DCD  13: nets=295 line=8451 energy=2418.512 dE=-18.893 friction=134.1 bins=2.0x(8) excess=3.5 moved=169 disp=1.716 solves=295 skip=295 pops=226164 theta=1.941 refresh=72ms dcd=17ms total=129ms
+    cache_stats: entries=59693 capacity=133840 est_mb=1 rss_mb=816
+    SwitchMatrix: type_usage_pairs=31 lookups=161 hits=130 dijkstra_calls=31 avg_us=12.3 total_ms=0.4
+    rss_probe[outer=14]: pre_refresh_rss=816MB post_pre_solve_rss=816MB cache_entries=59693 cache_cap=133840 cache_est_mb=1
+    pre_solve_diag[outer=14]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=67
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=287975 congested(>50%)=25 saturated(>90%)=0 max_util=0.76 avg_util=0.0005
+    rss_probe[outer=14]: pre_post_solve=816MB post_post_solve=818MB after_apply=818MB
+    E_decomp: base=15981.2 eff=42539.7 cong=26558.5 cong_share=62.4% sat_pipes=2 max_util=0.94  R_buckets: 1-2x=290876 2-10x=868 10-100x=55 >=100x=12
+    E_potential: beckmann=15981.4 history_total=0.0
+    SpanCache: epoch=15 entries=161 lookups=2562403 hits=2562242 misses=161 hit_rate=100.0%
+  DCD  14: nets=295 line=8437 energy=2421.395 dE=+2.883 friction=115.3 bins=2.0x(5) excess=3.6 moved=169 disp=1.710 solves=295 skip=295 pops=227020 theta=2.273 refresh=69ms dcd=15ms total=123ms
+    cache_stats: entries=58990 capacity=134736 est_mb=1 rss_mb=818
+    SwitchMatrix: type_usage_pairs=30 lookups=153 hits=123 dijkstra_calls=30 avg_us=12.3 total_ms=0.4
+    rss_probe[outer=15]: pre_refresh_rss=818MB post_pre_solve_rss=818MB cache_entries=58990 cache_cap=134736 cache_est_mb=1
+    pre_solve_diag[outer=15]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=44
+    Overflow: over=0 (0.0% of used) avg_excess=0.00 max_excess=0.00 (nc=0.00 cap=0 span=0)  excess_buckets: <=1=0 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=0  le1_cross: cap1=0 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=291811 congested(>50%)=8 saturated(>90%)=2 max_util=0.94 avg_util=0.0005
+    rss_probe[outer=15]: pre_post_solve=818MB post_post_solve=818MB after_apply=818MB
+    E_decomp: base=15898.9 eff=28666.9 cong=12768.0 cong_share=44.5% sat_pipes=4 max_util=1.16  R_buckets: 1-2x=296290 2-10x=429 10-100x=154 >=100x=11
+    E_potential: beckmann=15899.5 history_total=0.0
+    SpanCache: epoch=16 entries=153 lookups=2562403 hits=2562250 misses=153 hit_rate=100.0%
+  DCD  15: nets=295 line=8489 energy=2444.262 dE=+22.867 friction=127.0 bins=2.0x(7) excess=4.2 moved=169 disp=1.882 solves=295 skip=295 pops=228692 theta=2.661 refresh=69ms dcd=16ms total=124ms
+    cache_stats: entries=59518 capacity=135856 est_mb=1 rss_mb=818
+    SwitchMatrix: type_usage_pairs=34 lookups=156 hits=122 dijkstra_calls=34 avg_us=12.8 total_ms=0.4
+    rss_probe[outer=16]: pre_refresh_rss=818MB post_pre_solve_rss=818MB cache_entries=59518 cache_cap=135856 cache_est_mb=1
+    pre_solve_diag[outer=16]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=44
+    Overflow: over=1 (0.0% of used) avg_excess=0.16 max_excess=0.16 (nc=1.16 cap=1 span=17)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=1 cap2=0 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=0 s>12=1  le1_cross: cap1=1 cap2-5=0 cap>5=0
+    Congestion: pipes=2562403 used=296884 congested(>50%)=44 saturated(>90%)=4 max_util=1.16 avg_util=0.0005
+    rss_probe[outer=16]: pre_post_solve=818MB post_post_solve=819MB after_apply=819MB
+    E_decomp: base=16576.3 eff=69098.5 cong=52522.2 cong_share=76.0% sat_pipes=1 max_util=1.03  R_buckets: 1-2x=300057 2-10x=374 10-100x=257 >=100x=44
+    E_potential: beckmann=16576.6 history_total=0.0
+    SpanCache: epoch=17 entries=156 lookups=2562403 hits=2562247 misses=156 hit_rate=100.0%
+  DCD  16: nets=295 line=8654 energy=2519.227 dE=+74.965 friction=137.4 bins=2.0x(8) excess=4.6 moved=169 disp=1.669 solves=295 skip=295 pops=232659 theta=3.116 refresh=69ms dcd=16ms total=123ms
+    cache_stats: entries=60760 capacity=135856 est_mb=1 rss_mb=819
+    SwitchMatrix: type_usage_pairs=32 lookups=162 hits=130 dijkstra_calls=32 avg_us=13.1 total_ms=0.4
+    rss_probe[outer=17]: pre_refresh_rss=819MB post_pre_solve_rss=819MB cache_entries=60760 cache_cap=135856 cache_est_mb=1
+    pre_solve_diag[outer=17]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=43
+    Overflow: over=1 (0.0% of used) avg_excess=0.06 max_excess=0.06 (nc=2.06 cap=2 span=7)  excess_buckets: <=1=1 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=1 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=1 s>12=0  le1_cross: cap1=0 cap2-5=1 cap>5=0
+    Congestion: pipes=2562403 used=300732 congested(>50%)=26 saturated(>90%)=1 max_util=1.03 avg_util=0.0005
+    rss_probe[outer=17]: pre_post_solve=819MB post_post_solve=820MB after_apply=820MB
+    E_decomp: base=16396.0 eff=56226.2 cong=39830.2 cong_share=70.8% sat_pipes=16 max_util=1.39  R_buckets: 1-2x=301445 2-10x=981 10-100x=145 >=100x=40
+    E_potential: beckmann=16398.2 history_total=0.0
+    SpanCache: epoch=18 entries=162 lookups=2562403 hits=2562241 misses=162 hit_rate=100.0%
+  DCD  17: nets=295 line=8782 energy=2478.988 dE=-40.239 friction=160.8 bins=1.9x(8) excess=3.8 moved=169 disp=1.941 solves=295 skip=295 pops=234578 theta=3.648 refresh=68ms dcd=17ms total=123ms
+    cache_stats: entries=61192 capacity=136528 est_mb=1 rss_mb=820
+    SwitchMatrix: type_usage_pairs=36 lookups=162 hits=126 dijkstra_calls=36 avg_us=12.7 total_ms=0.5
+    rss_probe[outer=18]: pre_refresh_rss=820MB post_pre_solve_rss=820MB cache_entries=61192 cache_cap=136528 cache_est_mb=1
+    pre_solve_diag[outer=18]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=44
+    Overflow: over=10 (0.0% of used) avg_excess=0.32 max_excess=0.39 (nc=1.39 cap=1 span=18)  excess_buckets: <=1=10 1-5=0 5-20=0 >20=0  by_cap: cap1=9 cap2=1 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=1 s>12=9  le1_cross: cap1=9 cap2-5=1 cap>5=0
+    Congestion: pipes=2562403 used=302611 congested(>50%)=58 saturated(>90%)=16 max_util=1.39 avg_util=0.0005
+    rss_probe[outer=18]: pre_post_solve=820MB post_post_solve=820MB after_apply=820MB
+    E_decomp: base=16349.8 eff=33865.6 cong=17515.8 cong_share=51.7% sat_pipes=4 max_util=1.18  R_buckets: 1-2x=302831 2-10x=788 10-100x=174 >=100x=22
+    E_potential: beckmann=16350.5 history_total=0.0
+    SpanCache: epoch=19 entries=162 lookups=2562403 hits=2562241 misses=162 hit_rate=100.0%
+  DCD  18: nets=295 line=8843 energy=2527.677 dE=+48.689 friction=160.4 bins=2.0x(6) excess=4.8 moved=169 disp=1.834 solves=295 skip=295 pops=235848 theta=4.271 refresh=69ms dcd=16ms total=127ms
+    cache_stats: entries=60590 capacity=136416 est_mb=1 rss_mb=820
+    SwitchMatrix: type_usage_pairs=30 lookups=166 hits=136 dijkstra_calls=30 avg_us=12.4 total_ms=0.4
+    rss_probe[outer=19]: pre_refresh_rss=820MB post_pre_solve_rss=820MB cache_entries=60590 cache_cap=136416 cache_est_mb=1
+    pre_solve_diag[outer=19]: solves=0 fallback=0 (0.0%) cap_armed=0 (0.0%) settle_avg=0 settle_max=0 init_count=53
+    Overflow: over=3 (0.0% of used) avg_excess=0.19 max_excess=0.36 (nc=2.36 cap=2 span=7)  excess_buckets: <=1=3 1-5=0 5-20=0 >20=0  by_cap: cap1=0 cap2=3 cap3-5=0 cap>5=0  by_span: s1=0 s2-3=0 s4-6=0 s7-12=3 s>12=0  le1_cross: cap1=0 cap2-5=3 cap>5=0
+    Congestion: pipes=2562403 used=303815 congested(>50%)=64 saturated(>90%)=4 max_util=1.18 avg_util=0.0005
+    rss_probe[outer=19]: pre_post_solve=820MB post_post_solve=822MB after_apply=822MB
+    E_decomp: base=16187.2 eff=29282.5 cong=13095.3 cong_share=44.7% sat_pipes=7 max_util=1.19  R_buckets: 1-2x=306819 2-10x=1044 10-100x=73 >=100x=58
+    E_potential: beckmann=16188.2 history_total=0.0
+    SpanCache: epoch=20 entries=166 lookups=2562403 hits=2562237 misses=166 hit_rate=100.0%
+  DCD  19: nets=295 line=9171 energy=2527.339 dE=-0.337 friction=169.8 bins=1.9x(6) excess=3.0 moved=169 disp=1.787 solves=295 skip=295 pops=238244 theta=5.000 refresh=68ms dcd=16ms total=121ms
+    cache_stats: entries=61445 capacity=137312 est_mb=1 rss_mb=822
+DCD done: energy=2527.339 line=9171 friction=169.8 bins=1.9x(6) excess=3.0
+MuxSlotTracker: 250 commit rejections over entire DCD
+MuxSlotTracker[post-DCD]: populated_cells=169, overflow_tiles=0, at_cap_tiles=0, peak_excess=0, capacity_hist={16:67346}
+Pre-legalization: HPWL=7848
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=0 shared_mux_rejects=58 arch_validity_rejects=0
+Post-legalization: HPWL=7881, line=13355
+Per-net HPWL: 298 nets, total=7881
+  #0: hpwl=424 fanout=320 (5.4%)
+  #1: hpwl=322 fanout=1 (4.1%)
+  #2: hpwl=321 fanout=1 (4.1%)
+  #3: hpwl=213 fanout=38 (2.7%)
+  #4: hpwl=206 fanout=82 (2.6%)
+  #5: hpwl=203 fanout=1 (2.6%)
+  #6: hpwl=144 fanout=2 (1.8%)
+  #7: hpwl=143 fanout=2 (1.8%)
+  #8: hpwl=143 fanout=1 (1.8%)
+  #9: hpwl=142 fanout=2 (1.8%)
+  50% of HPWL from top 23 nets (of 298)

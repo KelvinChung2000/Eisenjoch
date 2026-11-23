@@ -1,0 +1,5 @@
+launched at : 2026-08-21T15:14:58+01:00
+arm         : searchvalue_cap1.2_8iter (steiner=1, threads=32, DET_SWEEP=1, chunk=4096, cap=1.2, 8 iters)
+git HEAD    : 5782f15c33b15714b14b825f7984be246f3863c4
+exit code: 0
+wall_secs: 729

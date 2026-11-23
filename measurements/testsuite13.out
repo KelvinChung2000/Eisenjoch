@@ -1,0 +1,333 @@
+warning: unused import: `IdString`
+  --> crates/nextpnr/src/placer/place_common.rs:30:21
+   |
+30 | use crate::common::{IdString, PlaceStrength};
+   |                     ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `FxHashSet`
+ --> crates/nextpnr/src/placer/opt_trans/demand.rs:9:29
+  |
+9 | use rustc_hash::{FxHashMap, FxHashSet};
+  |                             ^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/common.rs:628:21
+    |
+628 |                 let mut consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
+    |                     ----^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bel_view`
+   --> crates/nextpnr/src/placer/legalize/common.rs:310:13
+    |
+310 |         let bel_view = ctx.bel(bel);
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bel_view`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `probe_assign_phase_ms` is never read
+   --> crates/nextpnr/src/placer/legalize/ring.rs:121:13
+    |
+121 |     let mut probe_assign_phase_ms: u128 = 0;
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:106:9
+    |
+106 |     let mut probe_islegal_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:107:9
+    |
+107 |     let mut probe_record_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:108:9
+    |
+108 |     let mut probe_ring_search_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `cfg`
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:954:5
+    |
+954 |     cfg: &OptTransPlacerCfg,
+    |     ^^^ help: if this is intentional, prefix it with an underscore: `_cfg`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/routability.rs:620:9
+    |
+620 |     let mut mark_reached =
+    |         ----^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/solver/cg.rs:526:5
+    |
+526 |     mut x_mat: faer::MatMut<'_, f64>,
+    |     ----^^^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: associated function `new` is never used
+   --> crates/nextpnr/src/placer/legalize/common.rs:235:12
+    |
+234 | impl DriverNodeRegistry {
+    | ----------------------- associated function in this implementation
+235 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `reset` and `materialize_row` are never used
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:258:8
+    |
+231 | impl DistCache {
+    | -------------- methods in this implementation
+...
+258 |     fn reset(&mut self) {
+    |        ^^^^^
+...
+387 |     fn materialize_row(&self, net_idx: usize, scratch: &mut [f32]) {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `pin_pos` is never used
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:802:4
+    |
+802 | fn pin_pos(
+    |    ^^^^^^^
+
+warning: function `collect_nets_for_solve` is never used
+   --> crates/nextpnr/src/placer/opt_trans/demand.rs:194:8
+    |
+194 | pub fn collect_nets_for_solve(
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `cell_idx` is never read
+  --> crates/nextpnr/src/placer/opt_trans/diag.rs:48:9
+   |
+47 | pub struct MoveRecord {
+   |            ---------- field in this struct
+48 |     pub cell_idx: usize,
+   |         ^^^^^^^^
+   |
+   = note: `MoveRecord` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `center_node`, `center_tile_x`, and `center_tile_y` are never read
+  --> crates/nextpnr/src/placer/opt_trans/displacement.rs:28:9
+   |
+21 | pub struct DisplacementTable {
+   |            ----------------- fields in this struct
+...
+28 |     pub center_node: usize,
+   |         ^^^^^^^^^^^
+29 |     pub center_tile_x: i32,
+   |         ^^^^^^^^^^^^^
+30 |     pub center_tile_y: i32,
+   |         ^^^^^^^^^^^^^
+
+warning: constant `REASONABLE_EPS` is never used
+  --> crates/nextpnr/src/placer/opt_trans/path_solver.rs:72:7
+   |
+72 | const REASONABLE_EPS: f64 = 1e-10;
+   |       ^^^^^^^^^^^^^^
+
+warning: method `drain_edge_usage` is never used
+   --> crates/nextpnr/src/placer/opt_trans/path_solver.rs:511:19
+    |
+370 | impl PathSolverWorkspace {
+    | ------------------------ method in this implementation
+...
+511 |     pub(crate) fn drain_edge_usage(&self, out: &mut Vec<(u32, f64)>) {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: fields `width` and `height` are never read
+  --> crates/nextpnr/src/placer/opt_trans/region_min.rs:25:9
+   |
+24 | pub(crate) struct RegionMinPyramid {
+   |                   ---------------- fields in this struct
+25 |     pub width: i32,
+   |         ^^^^^
+26 |     pub height: i32,
+   |         ^^^^^^
+   |
+   = note: `RegionMinPyramid` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `index` is never read
+  --> crates/nextpnr/src/placer/refine/cost.rs:41:5
+   |
+37 | pub(super) struct CostModel {
+   |                   --------- field in this struct
+...
+41 |     index: FxHashMap<NetId, usize>,
+   |     ^^^^^
+
+warning: function `smooth_prolongation` is never used
+   --> crates/nextpnr/src/solver/preconditioner/amg.rs:575:4
+    |
+575 | fn smooth_prolongation(
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `row_dst`, `col_dst`, `row_scratch_len`, and `col_scratch_len` are never read
+  --> crates/nextpnr/src/solver/preconditioner/spectral.rs:16:5
+   |
+12 | pub struct SpectralPreconditioner {
+   |            ---------------------- fields in this struct
+...
+16 |     row_dst: Arc<dyn Dst1<f64>>,
+   |     ^^^^^^^
+17 |     col_dst: Arc<dyn Dst1<f64>>,
+   |     ^^^^^^^
+18 |     round_trip_scale: f64,
+19 |     row_scratch_len: usize,
+   |     ^^^^^^^^^^^^^^^
+20 |     col_scratch_len: usize,
+   |     ^^^^^^^^^^^^^^^
+
+warning: methods `apply_dst_rows`, `apply_dst_cols`, and `dst_round_trip_slice` are never used
+   --> crates/nextpnr/src/solver/preconditioner/spectral.rs:60:8
+    |
+ 23 | impl SpectralPreconditioner {
+    | --------------------------- methods in this implementation
+...
+ 60 |     fn apply_dst_rows(&self, field: &mut [f64], row_buf: &mut [f64], row_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+ 68 |     fn apply_dst_cols(&self, field: &mut [f64], col_buf: &mut [f64], col_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+176 |     fn dst_round_trip_slice(&self, values: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+   Compiling nextpnr v0.1.0 (/home/kelvin/side-project/eisenjoch/crates/nextpnr)
+warning: `nextpnr` (lib) generated 24 warnings (run `cargo fix --lib -p nextpnr` to apply 8 suggestions)
+   Compiling npnr-python v0.1.0 (/home/kelvin/side-project/eisenjoch/crates/npnr-python)
+warning: unused variable: `heap_by_idx`
+   --> crates/nextpnr/examples/probe_driver_skip_diag.rs:196:9
+    |
+196 |     let heap_by_idx: std::collections::HashMap<NetId, NetDiag> =
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_heap_by_idx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `steiner` is never read
+  --> crates/nextpnr/examples/probe_steiner_sweep.rs:19:5
+   |
+17 | struct Report {
+   |        ------ field in this struct
+18 |     label: String,
+19 |     steiner: f64,
+   |     ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `drv_x`, `drv_y`, `centroid_x`, and `centroid_y` are never read
+  --> crates/nextpnr/examples/probe_driver_skip_diag.rs:36:5
+   |
+31 | struct NetDiag {
+   |        ------- fields in this struct
+...
+36 |     drv_x: i32,
+   |     ^^^^^
+37 |     drv_y: i32,
+   |     ^^^^^
+38 |     centroid_x: f64,
+   |     ^^^^^^^^^^
+39 |     centroid_y: f64,
+   |     ^^^^^^^^^^
+   |
+   = note: `NetDiag` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `w`
+   --> crates/nextpnr/tests/xc7_large_connectivity.rs:152:9
+    |
+152 |     let w = db.width();
+    |         ^ help: if this is intentional, prefix it with an underscore: `_w`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `nextpnr` (example "probe_steiner_sweep") generated 1 warning
+warning: unused `Result` that must be used
+   --> crates/nextpnr/tests/router1_internal_tests.rs:472:5
+    |
+472 |     apply_route_plan(&mut ctx, &plan);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+472 |     let _ = apply_route_plan(&mut ctx, &plan);
+    |     +++++++
+
+warning: unused `Result` that must be used
+   --> crates/nextpnr/tests/router1_internal_tests.rs:509:9
+    |
+509 |         apply_route_plan(&mut ctx1, &plan);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+509 |         let _ = apply_route_plan(&mut ctx1, &plan);
+    |         +++++++
+
+warning: `nextpnr` (test "xc7_large_connectivity") generated 1 warning
+warning: `nextpnr` (example "probe_driver_skip_diag") generated 2 warnings
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+   --> crates/nextpnr/src/placer/legalize/sorted.rs:700:39
+    |
+700 |                 let got: Vec<BelId> = RingCandidates::new(&grid, bels, tx, ty).collect();
+    |                                       ^^^^^^^^^^^^^^^^^^^              -- argument #3 of type `&[bool]` is missing
+    |
+note: associated function defined here
+   --> crates/nextpnr/src/placer/legalize/bel_grid.rs:130:19
+    |
+130 |     pub(crate) fn new(
+    |                   ^^^
+...
+133 |         taken: &'a [bool],
+    |         -----------------
+help: provide the argument
+    |
+700 -                 let got: Vec<BelId> = RingCandidates::new(&grid, bels, tx, ty).collect();
+700 +                 let got: Vec<BelId> = RingCandidates::new(&grid, bels, /* &[bool] */, ty, tx).collect();
+    |
+
+error[E0277]: a value of type `Vec<ids::BelId>` cannot be built from an iterator over elements of type `(ids::BelId, u32)`
+    --> crates/nextpnr/src/placer/legalize/sorted.rs:700:80
+     |
+ 700 |                 let got: Vec<BelId> = RingCandidates::new(&grid, bels, tx, ty).collect();
+     |                                                                                ^^^^^^^ value of type `Vec<ids::BelId>` cannot be built from `std::iter::Iterator<Item=(ids::BelId, u32)>`
+     |
+     = help: the trait `FromIterator<(ids::BelId, u32)>` is not implemented for `Vec<ids::BelId>`
+             but trait `FromIterator<ids::BelId>` is implemented for it
+     = help: for that trait implementation, expected `ids::BelId`, found `(ids::BelId, u32)`
+note: required by a bound in `std::iter::Iterator::collect`
+    --> /home/kelvin/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:2014:19
+     |
+2014 |     fn collect<B: FromIterator<Self::Item>>(self) -> B
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Iterator::collect`
+
+warning: `nextpnr` (test "router1_internal_tests") generated 2 warnings
+Some errors have detailed explanations: E0061, E0277.
+For more information about an error, try `rustc --explain E0061`.
+warning: `nextpnr` (lib test) generated 11 warnings (11 duplicates)
+error: could not compile `nextpnr` (lib test) due to 2 previous errors; 11 warnings emitted

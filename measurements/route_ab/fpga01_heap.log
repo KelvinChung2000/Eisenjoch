@@ -1,0 +1,135 @@
+chipdb: chip_database/xc7_large.bin
+design: benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+placer: heap, route_iters: 50
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T heap prepare_discrete: 0.2s
+  ALG_T init_hpwl: 14051632
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=6247 shared_mux_rejects=16338 arch_validity_rejects=0
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+  SortedLegalizer: cluster_rejects=7688 shared_mux_rejects=21129 arch_validity_rejects=0
+PLACE_RESULT placer=heap place_secs=1.34 total_hpwl=4533609
+routable nets: 105118
+RasterRouter: 105118 nets on 311x223, beam_width=128, max_steps=1000
+RasterRouter: pre-reserved 459727 BEL-pin wires (0 conflicts)
+Lookahead pip-cost model: cost = 11*sqrt(span) + orig_delay/span
+Lookahead class 0 (LUT6): 8085 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 1 (DFF): 8365 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 2 (IOB): 8877 reachable pips, rate = 52/18 ≈ 2.889/tile
+Lookahead class 3 (GND_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 4 (VCC_DRV): 0 reachable pips, rate = 1/1 ≈ 1.000/tile
+Lookahead class 5 (RAMB18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 6 (FIFO18E1): 16808 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 7 (RAMBFIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 8 (RAMB36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 9 (FIFO36E1): 17042 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead class 10 (BUFG): 8661 reachable pips, rate = 159/209 ≈ 0.761/tile
+Lookahead class 11 (DSP48E1): 16919 reachable pips, rate = 53/19 ≈ 2.789/tile
+Lookahead: 12 driver classes, default=10 (BUFG)
+  priority top-5 (score, fanout): [(9300000.0, 93000), (2900.0, 29), (2800.0, 28), (2800.0, 28), (2600.0, 26)]
+  high-fanout: 63/64 routed sequentially
+  raster_fail #0: net='net_80667' src=(271,192) sink=(260,192) dist=11 tree=123
+  raster_fail #1: net='net_68108' src=(278,29) sink=(267,67) dist=49 tree=280
+  raster_fail #2: net='net_31556' src=(102,118) sink=(164,120) dist=64 tree=369
+  raster_fail #3: net='net_1525' src=(265,169) sink=(223,118) dist=93 tree=374
+  raster_fail #4: net='net_75784' src=(273,39) sink=(277,85) dist=50 tree=345
+  raster_fail #5: net='net_31479' src=(203,133) sink=(216,107) dist=39 tree=67
+  raster_fail #6: net='net_73117' src=(234,88) sink=(214,104) dist=36 tree=143
+  raster_fail #7: net='net_5349' src=(203,47) sink=(185,112) dist=83 tree=683
+  raster_fail #8: net='net_96068' src=(198,91) sink=(169,116) dist=54 tree=458
+  raster_fail #9: net='net_77665' src=(228,156) sink=(177,116) dist=91 tree=557
+  raster_fail #10: net='net_77665' src=(228,156) sink=(165,114) dist=105 tree=557
+  raster_fail #11: net='net_52724' src=(214,114) sink=(193,104) dist=31 tree=135
+  raster_fail #12: net='net_81670' src=(206,85) sink=(183,111) dist=49 tree=347
+  raster_fail #13: net='net_80476' src=(169,97) sink=(218,117) dist=69 tree=382
+  raster_fail #14: net='net_80476' src=(169,97) sink=(223,115) dist=72 tree=382
+  raster_fail #15: net='net_85954' src=(197,96) sink=(221,104) dist=32 tree=128
+  raster_fail #16: net='net_75417' src=(246,115) sink=(205,101) dist=55 tree=520
+  raster_fail #17: net='net_98931' src=(242,104) sink=(161,113) dist=90 tree=698
+  raster_fail #18: net='net_39603' src=(188,89) sink=(175,113) dist=37 tree=216
+  raster_fail #19: net='net_39603' src=(188,89) sink=(205,120) dist=48 tree=216
+  raster_fail #20: net='net_23658' src=(263,111) sink=(194,118) dist=76 tree=700
+  raster_fail #21: net='net_23658' src=(263,111) sink=(188,102) dist=84 tree=700
+  raster_fail #22: net='net_6686' src=(101,108) sink=(206,97) dist=116 tree=1009
+  raster_fail #23: net='net_47232' src=(171,84) sink=(203,102) dist=50 tree=369
+  raster_fail #24: net='net_1609' src=(241,82) sink=(231,97) dist=25 tree=368
+  raster_fail #25: net='net_1609' src=(241,82) sink=(226,97) dist=30 tree=368
+  raster_fail #26: net='net_59800' src=(203,122) sink=(193,100) dist=32 tree=245
+  raster_fail #27: net='net_102704' src=(232,91) sink=(226,96) dist=11 tree=33
+  raster_fail #28: net='net_42629' src=(253,83) sink=(206,111) dist=75 tree=576
+  raster_fail #29: net='net_1626' src=(187,116) sink=(180,120) dist=11 tree=106
+  raster_fail #30: net='net_1626' src=(187,116) sink=(205,118) dist=20 tree=106
+  raster_fail #31: net='net_1626' src=(187,116) sink=(211,122) dist=30 tree=131
+  raster_fail #32: net='net_99612' src=(228,147) sink=(181,108) dist=86 tree=720
+  raster_fail #33: net='net_52735' src=(170,103) sink=(185,116) dist=28 tree=73
+  raster_fail #34: net='net_10710' src=(175,84) sink=(151,109) dist=49 tree=505
+  raster_fail #35: net='net_45659' src=(198,121) sink=(192,106) dist=21 tree=50
+  raster_fail #36: net='net_62173' src=(223,123) sink=(197,110) dist=39 tree=384
+  raster_fail #37: net='net_912' src=(138,103) sink=(215,122) dist=96 tree=718
+  raster_fail #38: net='net_100786' src=(130,107) sink=(194,113) dist=70 tree=348
+  raster_fail #39: net='net_100786' src=(130,107) sink=(209,121) dist=93 tree=348
+  raster_fail #40: net='net_30621' src=(200,103) sink=(207,111) dist=15 tree=38
+  raster_fail #41: net='net_52924' src=(250,121) sink=(171,99) dist=101 tree=534
+  raster_fail #42: net='net_45651' src=(207,94) sink=(169,101) dist=45 tree=168
+  raster_fail #43: net='net_5908' src=(147,112) sink=(194,103) dist=56 tree=517
+  raster_fail #44: net='net_5908' src=(147,112) sink=(209,105) dist=69 tree=688
+  raster_fail #45: net='net_5908' src=(147,112) sink=(208,99) dist=74 tree=823
+  raster_fail #46: net='net_99237' src=(260,152) sink=(198,120) dist=94 tree=680
+  raster_fail #47: net='net_99237' src=(260,152) sink=(194,113) dist=105 tree=680
+  raster_fail #48: net='net_99237' src=(260,152) sink=(188,112) dist=112 tree=680
+  raster_fail #49: net='net_7928' src=(168,133) sink=(209,117) dist=57 tree=183
+  raster_fail #50: net='net_7928' src=(168,133) sink=(204,108) dist=61 tree=183
+  raster_fail #51: net='net_7928' src=(168,133) sink=(207,107) dist=65 tree=231
+  raster_fail #52: net='net_7928' src=(168,133) sink=(232,101) dist=96 tree=231
+  raster_fail #53: net='net_7928' src=(168,133) sink=(232,99) dist=98 tree=231
+  raster_fail #54: net='net_7928' src=(168,133) sink=(247,101) dist=111 tree=231
+  raster_fail #55: net='net_52768' src=(222,131) sink=(258,162) dist=67 tree=682
+  raster_fail #56: net='net_46971' src=(124,182) sink=(208,118) dist=148 tree=988
+  raster_fail #57: net='net_49518' src=(229,99) sink=(203,97) dist=28 tree=34
+  raster_fail #58: net='net_49518' src=(229,99) sink=(186,100) dist=44 tree=34
+  raster_fail #59: net='net_77745' src=(262,103) sink=(206,107) dist=60 tree=760
+  raster_fail #60: net='net_77745' src=(262,103) sink=(180,111) dist=90 tree=848
+  raster_fail #61: net='net_77745' src=(262,103) sink=(171,108) dist=96 tree=848
+  raster_fail #62: net='net_31564' src=(252,124) sink=(199,121) dist=56 tree=450
+  raster_fail #63: net='net_10176' src=(196,101) sink=(180,99) dist=18 tree=97
+  raster_fail #64: net='net_10176' src=(196,101) sink=(187,116) dist=24 tree=97
+  raster_fail #65: net='net_10176' src=(196,101) sink=(175,110) dist=30 tree=97
+  raster_fail #66: net='net_10176' src=(196,101) sink=(158,111) dist=48 tree=97
+  raster_fail #67: net='net_52977' src=(237,105) sink=(167,107) dist=72 tree=467
+  raster_fail #68: net='net_23613' src=(276,175) sink=(211,97) dist=143 tree=611
+  raster_fail #69: net='net_47309' src=(113,91) sink=(219,113) dist=128 tree=369
+  raster_fail #70: net='net_98930' src=(245,57) sink=(198,96) dist=86 tree=427
+  raster_fail #71: net='net_98930' src=(245,57) sink=(197,96) dist=87 tree=427
+  raster_fail #72: net='net_98930' src=(245,57) sink=(193,96) dist=91 tree=427
+  raster_fail #73: net='net_98930' src=(245,57) sink=(193,98) dist=93 tree=556
+  raster_fail #74: net='net_98930' src=(245,57) sink=(189,97) dist=96 tree=556
+  raster_fail #75: net='net_75690' src=(260,88) sink=(196,100) dist=76 tree=508
+  raster_fail #76: net='net_77793' src=(265,141) sink=(177,110) dist=119 tree=659
+  raster_fail #77: net='net_31538' src=(255,108) sink=(181,107) dist=75 tree=672
+  raster_fail #78: net='net_45297' src=(199,117) sink=(215,115) dist=18 tree=1
+  raster_fail #79: net='net_25584' src=(242,113) sink=(160,119) dist=88 tree=531
+  raster_fail #80: net='net_25584' src=(242,113) sink=(123,115) dist=121 tree=531
+  raster_fail #81: net='net_25584' src=(242,113) sink=(113,112) dist=130 tree=531
+  raster_fail #82: net='net_2315' src=(218,107) sink=(230,112) dist=17 tree=59
+  raster_fail #83: net='net_2315' src=(218,107) sink=(226,95) dist=20 tree=59
+  raster_fail #84: net='net_2315' src=(218,107) sink=(235,111) dist=21 tree=59
+  raster_fail #85: net='net_2315' src=(218,107) sink=(198,113) dist=26 tree=200
+  raster_fail #86: net='net_62136' src=(217,111) sink=(197,110) dist=21 tree=98
+  raster_fail #87: net='net_62136' src=(217,111) sink=(194,114) dist=26 tree=98
+  raster_fail #88: net='net_11424' src=(258,64) sink=(214,105) dist=85 tree=280
+  raster_fail #89: net='net_11424' src=(258,64) sink=(207,103) dist=90 tree=280
+  raster_fail #90: net='net_11424' src=(258,64) sink=(187,102) dist=109 tree=418
+  raster_fail #91: net='net_11424' src=(258,64) sink=(183,105) dist=116 tree=418
+  raster_fail #92: net='net_11424' src=(258,64) sink=(173,101) dist=122 tree=418
+  raster_fail #93: net='net_11424' src=(258,64) sink=(170,107) dist=131 tree=418
+  raster_fail #94: net='net_11424' src=(258,64) sink=(166,117) dist=145 tree=418
+  raster_fail #95: net='net_31500' src=(189,64) sink=(217,104) dist=68 tree=1
+  raster_fail #96: net='net_87241' src=(164,133) sink=(200,119) dist=50 tree=359
+  raster_fail #97: net='net_89876' src=(187,137) sink=(202,101) dist=51 tree=376
+  raster_fail #98: net='net_104738' src=(133,99) sink=(206,99) dist=73 tree=623
+  raster_fail #99: net='net_104738' src=(133,99) sink=(212,105) dist=85 tree=705

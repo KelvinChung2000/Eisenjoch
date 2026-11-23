@@ -1,0 +1,6 @@
+176 |     fn dst_round_trip_slice(&self, values: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `nextpnr` (lib) generated 18 warnings (run `cargo fix --lib -p nextpnr` to apply 6 suggestions)
+    Finished `release` profile [optimized + debuginfo] target(s) in 9.95s
+best cap by HPWL: 1.2

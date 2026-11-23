@@ -1,0 +1,1120 @@
+   Compiling nextpnr v0.1.0 (/home/kelvin/side-project/eisenjoch/crates/nextpnr)
+warning: unused import: `IdString`
+  --> crates/nextpnr/src/placer/place_common.rs:30:21
+   |
+30 | use crate::common::{IdString, PlaceStrength};
+   |                     ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `FxHashSet`
+ --> crates/nextpnr/src/placer/opt_trans/demand.rs:9:29
+  |
+9 | use rustc_hash::{FxHashMap, FxHashSet};
+  |                             ^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/common.rs:628:21
+    |
+628 |                 let mut consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
+    |                     ----^^^^^^^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bel_view`
+   --> crates/nextpnr/src/placer/legalize/common.rs:310:13
+    |
+310 |         let bel_view = ctx.bel(bel);
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bel_view`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `probe_assign_phase_ms` is never read
+   --> crates/nextpnr/src/placer/legalize/ring.rs:121:13
+    |
+121 |     let mut probe_assign_phase_ms: u128 = 0;
+    |             ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:106:9
+    |
+106 |     let mut probe_islegal_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:107:9
+    |
+107 |     let mut probe_record_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/legalize/ring.rs:108:9
+    |
+108 |     let mut probe_ring_search_us: u128 = 0;
+    |         ----^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: unused variable: `cfg`
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:954:5
+    |
+954 |     cfg: &OptTransPlacerCfg,
+    |     ^^^ help: if this is intentional, prefix it with an underscore: `_cfg`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/placer/routability.rs:620:9
+    |
+620 |     let mut mark_reached =
+    |         ----^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/nextpnr/src/solver/cg.rs:526:5
+    |
+526 |     mut x_mat: faer::MatMut<'_, f64>,
+    |     ----^^^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: associated function `new` is never used
+   --> crates/nextpnr/src/placer/legalize/common.rs:235:12
+    |
+234 | impl DriverNodeRegistry {
+    | ----------------------- associated function in this implementation
+235 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `reset` and `materialize_row` are never used
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:258:8
+    |
+231 | impl DistCache {
+    | -------------- methods in this implementation
+...
+258 |     fn reset(&mut self) {
+    |        ^^^^^
+...
+387 |     fn materialize_row(&self, net_idx: usize, scratch: &mut [f32]) {
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `pin_pos` is never used
+   --> crates/nextpnr/src/placer/opt_trans/coord_descent.rs:802:4
+    |
+802 | fn pin_pos(
+    |    ^^^^^^^
+
+warning: function `collect_nets_for_solve` is never used
+   --> crates/nextpnr/src/placer/opt_trans/demand.rs:194:8
+    |
+194 | pub fn collect_nets_for_solve(
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `cell_idx` is never read
+  --> crates/nextpnr/src/placer/opt_trans/diag.rs:48:9
+   |
+47 | pub struct MoveRecord {
+   |            ---------- field in this struct
+48 |     pub cell_idx: usize,
+   |         ^^^^^^^^
+   |
+   = note: `MoveRecord` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `center_node`, `center_tile_x`, and `center_tile_y` are never read
+  --> crates/nextpnr/src/placer/opt_trans/displacement.rs:28:9
+   |
+21 | pub struct DisplacementTable {
+   |            ----------------- fields in this struct
+...
+28 |     pub center_node: usize,
+   |         ^^^^^^^^^^^
+29 |     pub center_tile_x: i32,
+   |         ^^^^^^^^^^^^^
+30 |     pub center_tile_y: i32,
+   |         ^^^^^^^^^^^^^
+
+warning: constant `REASONABLE_EPS` is never used
+  --> crates/nextpnr/src/placer/opt_trans/path_solver.rs:72:7
+   |
+72 | const REASONABLE_EPS: f64 = 1e-10;
+   |       ^^^^^^^^^^^^^^
+
+warning: method `drain_edge_usage` is never used
+   --> crates/nextpnr/src/placer/opt_trans/path_solver.rs:511:19
+    |
+370 | impl PathSolverWorkspace {
+    | ------------------------ method in this implementation
+...
+511 |     pub(crate) fn drain_edge_usage(&self, out: &mut Vec<(u32, f64)>) {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: fields `width` and `height` are never read
+  --> crates/nextpnr/src/placer/opt_trans/region_min.rs:25:9
+   |
+24 | pub(crate) struct RegionMinPyramid {
+   |                   ---------------- fields in this struct
+25 |     pub width: i32,
+   |         ^^^^^
+26 |     pub height: i32,
+   |         ^^^^^^
+   |
+   = note: `RegionMinPyramid` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `index` is never read
+  --> crates/nextpnr/src/placer/refine/cost.rs:41:5
+   |
+37 | pub(super) struct CostModel {
+   |                   --------- field in this struct
+...
+41 |     index: FxHashMap<NetId, usize>,
+   |     ^^^^^
+
+warning: function `smooth_prolongation` is never used
+   --> crates/nextpnr/src/solver/preconditioner/amg.rs:575:4
+    |
+575 | fn smooth_prolongation(
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `row_dst`, `col_dst`, `row_scratch_len`, and `col_scratch_len` are never read
+  --> crates/nextpnr/src/solver/preconditioner/spectral.rs:16:5
+   |
+12 | pub struct SpectralPreconditioner {
+   |            ---------------------- fields in this struct
+...
+16 |     row_dst: Arc<dyn Dst1<f64>>,
+   |     ^^^^^^^
+17 |     col_dst: Arc<dyn Dst1<f64>>,
+   |     ^^^^^^^
+18 |     round_trip_scale: f64,
+19 |     row_scratch_len: usize,
+   |     ^^^^^^^^^^^^^^^
+20 |     col_scratch_len: usize,
+   |     ^^^^^^^^^^^^^^^
+
+warning: methods `apply_dst_rows`, `apply_dst_cols`, and `dst_round_trip_slice` are never used
+   --> crates/nextpnr/src/solver/preconditioner/spectral.rs:60:8
+    |
+ 23 | impl SpectralPreconditioner {
+    | --------------------------- methods in this implementation
+...
+ 60 |     fn apply_dst_rows(&self, field: &mut [f64], row_buf: &mut [f64], row_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+ 68 |     fn apply_dst_cols(&self, field: &mut [f64], col_buf: &mut [f64], col_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+176 |     fn dst_round_trip_slice(&self, values: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `test_network_with_coords` is never used
+    --> crates/nextpnr/src/placer/opt_trans/path_solver.rs:2030:8
+     |
+2030 |     fn test_network_with_coords(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `nextpnr` (lib test) generated 22 warnings (21 duplicates)
+warning: `nextpnr` (lib) generated 24 warnings (run `cargo fix --lib -p nextpnr` to apply 8 suggestions)
+warning: unused variable: `w`
+   --> crates/nextpnr/tests/xc7_large_connectivity.rs:152:9
+    |
+152 |     let w = db.width();
+    |         ^ help: if this is intentional, prefix it with an underscore: `_w`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused `Result` that must be used
+   --> crates/nextpnr/tests/router1_internal_tests.rs:472:5
+    |
+472 |     apply_route_plan(&mut ctx, &plan);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+472 |     let _ = apply_route_plan(&mut ctx, &plan);
+    |     +++++++
+
+warning: unused `Result` that must be used
+   --> crates/nextpnr/tests/router1_internal_tests.rs:509:9
+    |
+509 |         apply_route_plan(&mut ctx1, &plan);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+509 |         let _ = apply_route_plan(&mut ctx1, &plan);
+    |         +++++++
+
+warning: unused variable: `heap_by_idx`
+   --> crates/nextpnr/examples/probe_driver_skip_diag.rs:196:9
+    |
+196 |     let heap_by_idx: std::collections::HashMap<NetId, NetDiag> =
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_heap_by_idx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `drv_x`, `drv_y`, `centroid_x`, and `centroid_y` are never read
+  --> crates/nextpnr/examples/probe_driver_skip_diag.rs:36:5
+   |
+31 | struct NetDiag {
+   |        ------- fields in this struct
+...
+36 |     drv_x: i32,
+   |     ^^^^^
+37 |     drv_y: i32,
+   |     ^^^^^
+38 |     centroid_x: f64,
+   |     ^^^^^^^^^^
+39 |     centroid_y: f64,
+   |     ^^^^^^^^^^
+   |
+   = note: `NetDiag` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling npnr-python v0.1.0 (/home/kelvin/side-project/eisenjoch/crates/npnr-python)
+warning: `nextpnr` (test "xc7_large_connectivity") generated 1 warning
+warning: field `steiner` is never read
+  --> crates/nextpnr/examples/probe_steiner_sweep.rs:19:5
+   |
+17 | struct Report {
+   |        ------ field in this struct
+18 |     label: String,
+19 |     steiner: f64,
+   |     ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `nextpnr` (example "probe_driver_skip_diag") generated 2 warnings
+warning: `nextpnr` (test "router1_internal_tests") generated 2 warnings
+warning: `nextpnr` (example "probe_steiner_sweep") generated 1 warning
+    Finished `release` profile [optimized + debuginfo] target(s) in 12.96s
+     Running unittests src/lib.rs (target/release/deps/nextpnr-3a49a38ff6379c67)
+
+running 149 tests
+test placer::common::cell_validity_mask_tests::all_valid_accepts_in_bounds_and_rejects_outside ... ok
+test placer::common::cell_validity_mask_tests::storage_does_not_scale_with_cell_count ... ok
+test placer::electro_place::density::tests::density_map_single_cell ... ok
+test placer::electro_place::density::tests::density_field_finite_values ... ok
+test placer::electro_place::density::tests::density_gradient_finite ... ok
+test placer::electro_place::density::tests::overlap_positive_for_clustered ... ok
+test placer::electro_place::density::tests::overlap_zero_for_spread ... ok
+test placer::legalize::bel_grid::tests::an_exact_tie_is_won_by_the_lower_index_in_the_outer_ring ... ok
+test placer::legalize::bel_grid::tests::build_places_every_bel_in_its_own_tile ... ok
+test placer::legalize::bel_grid::tests::a_bel_outside_the_grid_panics - should panic ... ok
+test placer::legalize::bel_grid::tests::degenerate_walks_terminate ... ok
+test placer::legalize::bel_grid::tests::dimensions_are_reported ... ok
+test placer::legalize::bel_grid::tests::empty_tiles_return_an_empty_slice ... ok
+test placer::legalize::bel_grid::tests::out_of_bounds_lookups_are_empty_not_a_panic ... ok
+test placer::legalize::bel_grid::tests::sparse_grids_match_the_reference_order ... ok
+test placer::legalize::bel_grid::tests::taken_bels_are_skipped_without_disturbing_the_order ... ok
+test placer::legalize::bel_grid::tests::ring_order_is_not_distance_order ... ok
+test placer::legalize::bel_grid::tests::fractional_targets_match_the_reference_order ... ok
+test placer::legalize::bel_grid::tests::tile_entries_are_in_enumeration_order ... ok
+test placer::legalize::bel_grid::tests::targets_outside_the_grid_still_emit_everything ... ok
+test placer::legalize::sorted::candidate_list_tests::a_region_constrained_cell_sees_only_its_regions_bels ... ok
+test placer::opt_trans::congestion::tests::half_saturated_pipe_gives_expected_bpr_pressure ... ok
+test placer::opt_trans::congestion::tests::node_with_multiple_pipes_averages_bpr ... ok
+test placer::legalize::bel_grid::tests::taking_one_candidate_does_not_walk_the_grid ... ok
+test placer::opt_trans::coord_descent::driver_hole_tests::driver_cost_is_flat_without_a_tension_term ... ok
+test placer::opt_trans::coord_descent::driver_hole_tests::tension_gradient_scales_with_weight ... ok
+test placer::opt_trans::congestion::tests::zero_usage_gives_zero_pressure ... ok
+test placer::opt_trans::coord_descent::driver_hole_tests::tension_term_pulls_the_driver_onto_its_mst_neighbour ... ok
+test placer::opt_trans::coord_descent::hardening_tests::history_grows_only_above_effective_capacity ... ok
+test placer::opt_trans::coord_descent::hardening_tests::history_is_monotone_and_never_decays ... ok
+test placer::opt_trans::coord_descent::hardening_tests::history_survives_span_cost_table_bucketing ... ok
+test placer::opt_trans::coord_descent::hardening_tests::zero_history_adds_exactly_zero_cost ... ok
+test placer::opt_trans::coord_descent::hardening_tests::zero_step_disables_the_term_entirely ... ok
+test placer::opt_trans::coord_descent::proximal_tests::large_mu_pins_the_cell_where_it_is ... ok
+test placer::opt_trans::coord_descent::proximal_tests::proximal_charges_exactly_mu_times_displacement ... ok
+test placer::opt_trans::coord_descent::proximal_tests::proximal_is_zero_at_the_current_position ... ok
+test placer::opt_trans::coord_descent::softmin_tests::averages_symmetric_bimodal_at_small_theta ... ok
+test placer::opt_trans::coord_descent::softmin_tests::collapses_to_argmin_at_large_theta ... ok
+test placer::opt_trans::coord_descent::softmin_tests::empty_observation_returns_argmin_seed ... ok
+test placer::opt_trans::coord_descent::softmin_tests::running_anchor_stays_stable_under_descending_costs ... ok
+test placer::opt_trans::coord_descent::softmin_tests::ignores_infinite_cost_probes ... ok
+test placer::opt_trans::demand::tests::bilinear_jacobian_stencil_matches_expected_corner_weights ... ok
+test placer::opt_trans::fsm::tests::fsm_matches_dijkstra_with_long_pipe ... ok
+test placer::opt_trans::fsm::tests::fsm_matches_dijkstra_on_uniform_grid ... ok
+test placer::opt_trans::fsm::tests::fsm_matches_dijkstra_with_nonuniform_costs ... ok
+test placer::opt_trans::network::flat_adjacency_tests::flat_adjacency_empty_has_correct_shape ... ok
+test placer::opt_trans::network::flat_adjacency_tests::flat_adjacency_matches_node_pipes_enumeration ... ok
+test placer::opt_trans::path_solver::tests::dial_equal_cost_diamond_splits_evenly ... ok
+test placer::opt_trans::path_solver::tests::dial_reports_unreachable_sink_demand ... ok
+test placer::opt_trans::path_solver::tests::dial_single_path_loads_all_demand ... ok
+test placer::opt_trans::path_solver::tests::dial_unequal_cost_diamond_prefers_cheaper_branch ... ok
+test placer::opt_trans::resistance::tests::long_span_gets_no_slack ... ok
+test placer::opt_trans::resistance::tests::overload_grows_unbounded ... ok
+test placer::opt_trans::resistance::tests::bpr_multiplier_saturates_at_cap ... ok
+test placer::opt_trans::resistance::tests::borrow_slack_follows_span_schedule ... ok
+test placer::opt_trans::path_solver::tests::union_counts_every_tree_edge_once ... ok
+test placer::opt_trans::resistance::tests::half_capacity_is_mild ... ok
+test placer::opt_trans::path_solver::tests::union_usage_is_independent_of_injection_value ... ok
+test placer::opt_trans::tile_cache::tests::cost_quantization_is_positive ... ok
+test placer::opt_trans::tile_cache::tests::empty_template_has_no_pips ... ok
+test placer::opt_trans::tile_cache::tests::side_from_delta_classifies_cardinals ... ok
+test placer::opt_trans::tile_cache::tests::span_bucket_of_is_monotone ... ok
+test placer::opt_trans::tile_cache::tests::switch_matrix_cost_handles_missing_boundary_wires ... ok
+test placer::opt_trans::tile_cache::tests::switch_matrix_cost_monotone_in_tile_usage ... ok
+test placer::opt_trans::tile_cache::tests::switch_matrix_zero_usage_walks_pips_to_reach_opposite_side ... ok
+test placer::opt_trans::tile_cache::tests::usage_quantization_is_non_negative ... ok
+test router::astar::tests::astar_options_default_retains_trace ... ok
+test router::astar::tests::default_visit_limit_respects_pruned_region ... ok
+test router::astar::tests::default_visit_limit_scales_with_distance ... ok
+test placer::opt_trans::resistance::tests::bpr_cap_only_ever_lowers_the_multiplier ... ok
+test solver::cg::tests::cg_deflated_singular_graph_laplacian ... ok
+test placer::opt_trans::resistance::tests::full_capacity_is_alpha_over_base ... ok
+test placer::opt_trans::path_solver::tests::shared_trunk_is_not_double_booked ... ok
+test placer::opt_trans::path_solver::tests::union_and_flow_agree_at_fanout_one ... ok
+test solver::cg::tests::diagnose_kirchhoff_system_properties ... ignored
+test placer::opt_trans::resistance::tests::short_span_at_nominal_capacity_has_no_penalty_with_slack ... ok
+test placer::opt_trans::resistance::tests::zero_usage_returns_base_resistance ... ok
+test placer::opt_trans::resistance::tests::zero_capacity_returns_base ... ok
+test placer::opt_trans::tile_cache::tests::switch_matrix_cost_returns_empty_for_empty_template ... ok
+test placer::legalize::sorted::candidate_list_tests::the_walk_emits_candidate_lists_exact_sequence ... ok
+test solver::compressed::tests::test_random_gaussian_deterministic ... ok
+test solver::compressed::tests::test_random_gaussian_distribution ... ok
+test solver::lse::tests::axis_value_and_grad ... ok
+test solver::lse::tests::gamma_to_zero_approaches_hpwl ... ok
+test solver::lse::tests::gradient_finite_differences ... ok
+test router::astar::tests::queue_entry_orders_by_estimate_then_cost ... ok
+test placer::opt_trans::resistance::tests::mild_short_span_overflow_scales_gently ... ok
+test placer::opt_trans::resistance::tests::overload_grows_polynomially ... ok
+test solver::lse::tests::empty_is_zero ... ok
+test solver::lse::tests::single_point_is_zero ... ok
+test solver::lse::tests::two_points_lse_approximates_hpwl ... ok
+test solver::optimizer::adam::tests::step_moves_opposite_gradient ... ok
+test solver::optimizer::anderson::tests::simple_fixed_point ... ok
+test solver::optimizer::lbfgs::tests::converges_on_quadratic ... ok
+test solver::optimizer::adam::tests::zero_gradient_produces_zero_step ... ok
+test solver::optimizer::lbfgs::tests::reset_clears_state ... ok
+test solver::optimizer::anderson::tests::residual_norm_decreases ... ok
+test solver::optimizer::anderson::tests::two_dimensional ... ok
+test solver::optimizer::nesterov::tests::convergence_faster_than_gd ... ok
+test solver::optimizer::lbfgs::tests::history_bounded ... ok
+test solver::optimizer::nesterov::tests::adaptive_restart_resets_momentum ... ok
+test solver::optimizer::lbfgs::tests::steepest_descent_first_step ... ok
+test solver::preconditioner::amg::tests::amg_structure_builds ... ok
+test solver::optimizer::nesterov::tests::zero_variables ... ok
+test solver::optimizer::nesterov::tests::quadratic_minimization ... ok
+test solver::preconditioner::amg::tests::amg_v_cycle_reduces_residual ... ok
+test solver::preconditioner::jacobi::tests::jacobi_handles_near_zero_diagonal ... ok
+test solver::preconditioner::ic0::tests::mic0_near_singular_sparse_rhs ... ok
+test solver::preconditioner::amg::tests::amg_preconditioned_cg_converges ... ok
+test solver::preconditioner::spectral::tests::dst_round_trip_matches_identity ... ok
+test solver::preconditioner::jacobi::tests::jacobi_applies_inverse_diagonal ... ok
+test solver::sparse_matrix::tests::basic_construction_and_spmv ... ok
+test solver::sparse_matrix::tests::clear_resets ... ok
+test solver::sparse_matrix::tests::sparse_matrix_op_linop ... ok
+test solver::sparse_matrix::tests::add_connection_symmetric ... ok
+test solver::system::tests::system_builder_clear ... ok
+test solver::wa::tests::empty_is_zero ... ok
+test solver::wa::tests::single_point_is_zero ... ok
+test solver::wa::tests::gradient_finite_differences ... ok
+test solver::direct::tests::direct_solver_basic ... ok
+test solver::direct::tests::direct_solver_multi_rhs ... ok
+test solver::direct::tests::direct_solver_larger ... ok
+test solver::wa::tests::two_points_approximates_hpwl ... ok
+test solver::compressed::tests::test_rank_analysis_basic ... ok
+test solver::compressed::tests::test_rank_analysis_orthogonal ... ok
+test placer::opt_trans::coord_descent::hardening_tests::network_reset_clears_history ... ok
+test solver::compressed::tests::test_hmt_rank_shrinks_when_short_fat_sketch ... ok
+test solver::compressed::tests::test_hmt_exact_when_rank_equals_nrhs ... ok
+test solver::cg::tests::ic0_batched_cg_works ... ok
+test solver::cg::tests::cg_with_offdiag ... ok
+test solver::cg::tests::cg_simple_diagonal ... ok
+test solver::preconditioner::spectral::tests::spectral_exact_grid_converges_in_one_iteration ... ok
+test solver::compressed::tests::test_hmt_reconstruction_tridiagonal ... ok
+test solver::system::tests::system_builder_basic ... ok
+test solver::system::tests::system_builder_trait ... ok
+test solver::cg::tests::spectral_batched_cg_works ... ok
+test solver::cg::tests::cg_larger_system ... ok
+test solver::cg::tests::cg_with_amg_1d ... ok
+test solver::preconditioner::amg::tests::amg_irregular_graph_laplacian ... ok
+test solver::cg::tests::cg_graph_laplacian ... ok
+test solver::preconditioner::amg::tests::amg_larger_1d_chain ... ok
+test solver::preconditioner::ic0::tests::mic0_high_contrast_grid_is_spd ... ok
+test solver::preconditioner::amg::tests::amg_kirchhoff_like_2d ... ok
+test solver::preconditioner::ic0::tests::ic0_1d_chain_converges_faster_than_jacobi ... ok
+test solver::cg::tests::cg_large_graph_laplacian ... ok
+test solver::preconditioner::spectral::tests::spectral_beats_jacobi_on_variable_grid ... ok
+test solver::preconditioner::ic0::tests::ic0_2d_grid_is_spd_and_converges ... ok
+test solver::cg::tests::cg_2d_grid_laplacian ... ok
+test solver::cg::tests::cg_with_amg_2d_grid ... ok
+
+test result: ok. 148 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/example_arch_tests.rs (target/release/deps/example_arch_tests-41739c378e2ce842)
+
+running 48 tests
+test bind_and_unbind_bel ... ok
+test bind_lut6_to_bel ... ok
+test bel_pin_wire_resolves_dff_pins ... ok
+test clock_wire_exists_in_all_non_null_tiles ... ok
+test bel_pin_wires_have_bel_pin_refs ... ok
+test bel_loc_matches_tile_xy ... ok
+test bel_names_are_meaningful ... ok
+test bel_buckets_contain_expected_types ... ok
+test bels_for_bucket_returns_correct_types ... ok
+test chipdb_magic_and_version ... ok
+test dff_pin_directions ... ok
+test bel_pin_wire_resolves_lut6_pins ... ok
+test bram_tile_has_expected_bel_pins ... ok
+test dff_register_timing ... ok
+test double_bind_fails ... ok
+test enumerate_bels_exact_counts ... ok
+test exact_tile_type_counts ... ok
+test all_bel_pin_wires_resolve ... ok
+test iob_pin_directions ... ok
+test load_example_chipdb ... ok
+test logic_tile_has_ff_data_pip_from_lut ... ok
+test logic_tile_has_constant_pips ... ok
+test logic_tile_has_lut_input_pips ... ok
+test logic_tile_wire_count ... ok
+test logic_tile_has_lut_output_pips ... ok
+test logic_tile_has_neighbor_pips ... ok
+test lut6_combinational_delays ... ok
+test pip_timing_data_exists ... ok
+test pip_timing_values_match_generator ... ok
+test pip_src_dst_wires_are_valid ... ok
+test lut6_pin_directions ... ok
+test tile_names_and_types ... ok
+test route_single_net_on_real_chipdb ... ok
+test wire_pips_uphill_downhill_consistency ... ok
+test tile_xy_roundtrip ... ok
+test speed_grades_present ... ok
+test wire_names_are_valid ... ok
+test utilization_report_format ... ok
+test utilization_report_empty_design ... ok
+test refine_never_lands_a_cell_on_an_arch_rejected_bel ... ok
+test utilization_report_with_cells ... ok
+test sorted_legalize_honours_the_arch_validity_rule ... ok
+test refine_moves_only_cells_at_or_below_strong ... ok
+test route_all_via_trait ... ok
+test route_nets_subset ... ok
+test utilization_report_after_placement ... ok
+test heap_placement_small ... ok
+test heap_placement_medium ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/frontend_tests.rs (target/release/deps/frontend_tests-6c4985517a46e910)
+
+running 45 tests
+test test_aliased_net_prefers_the_cleanest_label ... ok
+test test_blinky_has_cells ... ok
+test test_blinky_constant_connections ... ok
+test test_blinky_has_nets ... ok
+test test_blinky_io_cells ... ok
+test test_blinky_lut_attributes ... ok
+test test_blinky_lut_ports ... ok
+test test_blinky_lut_type ... ok
+test test_blinky_lut_parameters ... ok
+test test_blinky_net_connectivity ... ok
+test test_constant_one_connection ... ok
+test test_blinky_parse_succeeds ... ok
+test test_empty_module ... ok
+test test_constant_x_unconnected ... ok
+test test_empty_modules_error ... ok
+test test_gnd_net_has_driver ... ok
+test test_gnd_net_has_users ... ok
+test test_hidden_netnames_are_still_applied ... ok
+test test_inout_port ... ok
+test test_invalid_json_error ... ok
+test test_multibit_net_connections ... ok
+test test_multibit_io_cells ... ok
+test test_multibit_port_names ... ok
+test test_multiple_parameters ... ok
+test test_netnames_attributes ... ok
+test test_parse_bit_value_invalid_string ... ok
+test test_no_modules_error ... ok
+test test_netnames_rename_nets ... ok
+test test_parse_bit_value_invalid_type ... ok
+test test_parse_bit_value_one ... ok
+test test_parse_bit_value_signal ... ok
+test test_parse_bit_value_x ... ok
+test test_parse_bit_value_z ... ok
+test test_parse_bit_value_zero ... ok
+test test_parse_port_direction ... ok
+test test_parse_property_binary_string ... ok
+test test_parse_property_integer ... ok
+test test_parse_property_plain_string ... ok
+test test_parse_property_unsupported_type ... ok
+test test_port_bit_name_multi ... ok
+test test_port_bit_name_single ... ok
+test test_property_empty_binary_string ... ok
+test test_top_module_selection_by_attribute ... ok
+test test_toplevel_port_label_wins ... ok
+test test_two_cells_shared_net ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/heap_equation_system_tests.rs (target/release/deps/heap_equation_system_tests-2b17449fa21d57ac)
+
+running 8 tests
+test diagonal_system_solves_exactly ... ok
+test add_coeff_accumulates_and_keeps_rows_sorted ... ok
+test empty_system_is_a_noop ... ok
+test reset_clears_matrix_and_rhs ... ok
+test zero_rhs_gives_zero_solution ... ok
+test solve_with_nonzero_guess_matches_eigen ... ok
+test solve_converges_to_the_same_answer_as_eigen ... ok
+test solve_matches_eigen ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/heap_internal_tests.rs (target/release/deps/heap_internal_tests-24963a34428f5aed)
+
+running 24 tests
+test cg_empty_system ... ok
+test sparse_system_add_anchor ... ok
+test sparse_system_add_connection ... ok
+test sparse_system_add_connection_self_is_noop ... ok
+test sparse_system_new ... ok
+test count_bels_single_tile ... ok
+test count_bels_row ... ok
+test count_bels_full_grid ... ok
+test spmv_diagonal ... ok
+test count_bels_empty_region ... ok
+test spmv_identity ... ok
+test spmv_symmetric ... ok
+test spmv_with_off_diagonal ... ok
+test spreading_cells_fit ... ok
+test spreading_clustered_cells ... ok
+test spreading_no_cells ... ok
+test full_heap_run_smoke ... ok
+test cg_identity_system ... ok
+test cg_diagonal_system ... ok
+test cg_with_off_diagonal ... ok
+test cg_jacobi_preconditioned_fewer_iters ... ok
+test cg_single_variable ... ok
+test sparse_system_solve_identity ... ok
+test sparse_system_solve_with_connections ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/metrics_tests.rs (target/release/deps/metrics_tests-b368677cb64c9285)
+
+running 39 tests
+test bbox_contains ... ok
+test bresenham_all_octants_correct_length ... ok
+test bresenham_continuity ... ok
+test bresenham_diagonal ... ok
+test bresenham_horizontal ... ok
+test bresenham_negative ... ok
+test bbox_compute ... ok
+test bresenham_single_point ... ok
+test bresenham_start_end_match ... ok
+test bresenham_steep ... ok
+test bresenham_symmetry ... ok
+test bresenham_vertical ... ok
+test congestion_ratios_boundary_edges_excluded ... ok
+test congestion_ratios_hotspot_detection ... ok
+test congestion_ratios_uniform_demand ... ok
+test congestion_ratios_zero_demand ... ok
+test density_window_empty_grid ... ok
+test density_window_larger_than_grid ... ok
+test density_window_fully_packed ... ok
+test density_empty ... ok
+test density_window_step_coverage ... ok
+test density_window_single_hotspot ... ok
+test density_zero_capacity_tiles_skipped ... ok
+test edge_crossings_diagonal ... ok
+test edge_crossings_eastward ... ok
+test edge_crossings_multiple_nets_same_direction ... ok
+test density_with_placement ... ok
+test edge_crossings_perpendicular_no_interference ... ok
+test edge_crossings_southward ... ok
+test edge_crossings_same_point ... ok
+test edge_crossings_westward ... ok
+test hpwl_unplaced_is_zero ... ok
+test hpwl_placed_net ... ok
+test line_estimate_counts_unique_edge_crossings_on_path ... ok
+test line_estimate_deduplicates_edges_across_sink_paths ... ok
+test total_hpwl_matches_sum ... ok
+test congestion_no_nets ... ok
+test congestion_perpendicular_nets ... ok
+test congestion_same_direction_nets ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/module_reorg_tests.rs (target/release/deps/module_reorg_tests-ee244e8b4259639b)
+
+running 1 test
+test reorg_public_modules_expose_shared_types ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/netlist_tests.rs (target/release/deps/netlist_tests-a3b26f0356ca9c5a)
+
+running 62 tests
+test cell_idx_copy_semantics ... ok
+test cell_idx_debug ... ok
+test cell_flat_and_timing_index ... ok
+test cell_idx_equality_and_hashing ... ok
+test cell_idx_none_is_max ... ok
+test cell_idx_zero_is_some ... ok
+test cell_info_add_port ... ok
+test cell_info_add_port_idempotent ... ok
+test cell_info_attrs_and_params ... ok
+test cell_info_new_defaults ... ok
+test cell_info_nonexistent_port ... ok
+test cell_info_port_mut ... ok
+test cell_pin_clone ... ok
+test cell_pin_connected ... ok
+test cell_pin_invalid_defaults ... ok
+test cell_placement ... ok
+test cell_region_constraint ... ok
+test design_add_cell ... ok
+test design_add_duplicate_cell_panics - should panic ... ok
+test design_add_duplicate_net_panics - should panic ... ok
+test design_add_multiple_cells ... ok
+test design_add_multiple_nets ... ok
+test design_add_net ... ok
+test design_cell_by_name ... ok
+test design_cell_mut ... ok
+test design_default_is_empty ... ok
+test design_cluster_aggregate ... ok
+test design_hierarchy ... ok
+test design_indices_stable_after_remove ... ok
+test design_net_by_name ... ok
+test design_net_indices_stable_after_remove ... ok
+test design_new_is_empty ... ok
+test design_net_mut ... ok
+test design_remove_cell ... ok
+test design_remove_net ... ok
+test design_remove_nonexistent_cell_is_noop ... ok
+test design_remove_nonexistent_net_is_noop ... ok
+test design_routing_tree_multiple_wires ... ok
+test design_wire_driver_and_user ... ok
+test hierarchical_cell_new ... ok
+test hierarchical_cell_populate ... ok
+test net_attrs ... ok
+test hierarchical_net_basic ... ok
+test net_idx_copy_semantics ... ok
+test net_idx_debug ... ok
+test net_idx_equality_and_hashing ... ok
+test net_idx_none_is_max ... ok
+test net_idx_zero_is_some ... ok
+test net_info_add_users ... ok
+test net_info_clock_constraint ... ok
+test net_info_new_defaults ... ok
+test net_info_routing_tree ... ok
+test net_info_set_driver ... ok
+test net_multiple_wire_routing ... ok
+test net_no_driver ... ok
+test net_region_constraint ... ok
+test pip_map_clone ... ok
+test net_unconnect_driver ... ok
+test none_indices_are_not_confused_with_valid ... ok
+test remove_cell_then_add_with_same_name ... ok
+test remove_net_then_add_with_same_name ... ok
+test design_large_scale_add ... ok
+
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/npnr_baseline_compare.rs (target/release/deps/npnr_baseline_compare-c00583fbc208a649)
+
+running 2 tests
+test every_net_matches_nextpnrs_own_get_net_metric ... ok
+test shared_chipdb_is_the_fabric_nextpnr_placed_on ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/packer_internal_tests.rs (target/release/deps/packer_internal_tests-4284d31d60fbb67f)
+
+running 40 tests
+test chipdb_bel_count_in_tile_type ... ok
+test apply_packing_rule_creates_cluster ... ok
+test chipdb_compatible_tile_types_for_bel_type ... ok
+test chipdb_compatible_tile_types_nonexistent ... ok
+test chipdb_shared_wires_in_tile_type ... ok
+test connect_port_as_driver ... ok
+test connect_port_to_net ... ok
+test constraint_fields_default_to_zero ... ok
+test disconnect_port_nonexistent_is_noop ... ok
+test disconnect_port_removes_connection ... ok
+test full_pack_default_on_empty_design ... ok
+test derive_rules_from_topology_on_example_chipdb ... ok
+test get_net_for_port_nonexistent_port ... ok
+test get_net_for_port_connected ... ok
+test get_net_for_port_unconnected ... ok
+test example_chipdb_lut6_compatible_tiles ... ok
+test get_packing_rules_on_example_chipdb ... ok
+test is_single_fanout_false_multi ... ok
+test example_chipdb_shared_wires_exist ... ok
+test is_single_fanout_false_no_users ... ok
+test full_pack_creates_clusters_on_example_chipdb ... ok
+test pack_constants_creates_gnd_vcc ... ok
+test is_single_fanout_true ... ok
+test full_pack_default_with_cells_on_example_chipdb ... ok
+test pack_constants_idempotent ... ok
+test pack_io_leaves_non_io_cells_alone ... ok
+test packing_rule_local_vs_chain ... ok
+test pack_io_remaps_iobuf ... ok
+test pack_io_remaps_ibuf ... ok
+test pack_io_remaps_obuf ... ok
+test pack_remaining_passes_through ... ok
+test remove_cell_nonexistent_is_noop ... ok
+test remove_cell_marks_dead ... ok
+test rename_port_basic ... ok
+test rename_port_nonexistent_is_noop ... ok
+test set_constraints_updates_fields ... ok
+test shared_wire_validator_allows_same_net ... ok
+test site_capacity_validator_allows_within_limit ... ok
+test tagger_extracts_shared_wire_constraints_on_example_chipdb ... ok
+test tagger_extracts_compatible_tile_types_on_example_chipdb ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/place_common_tests.rs (target/release/deps/place_common_tests-450762130d076ad3)
+
+running 6 tests
+test default_search_is_already_exhausted ... ok
+test ranged_search_matches_nextpnr ... ok
+test reset_restarts_the_traversal ... ok
+test single_value_search_matches_nextpnr ... ok
+test traversal_covers_every_value_in_range ... ok
+test traversal_stays_within_range ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rng_golden_tests.rs (target/release/deps/rng_golden_tests-50758315d9389b98)
+
+running 12 tests
+test aliases_delegate_to_the_faithful_stream ... ok
+test rng_n_rejects_negative - should panic ... ok
+test rng_n_rejects_zero - should panic ... ok
+test seed_zero_is_not_seed_one ... ok
+test sorted_shuffle_ignores_input_order ... ok
+test default_state_matches_nextpnr ... ok
+test rng_30bit_matches_nextpnr ... ok
+test rng_n_matches_nextpnr ... ok
+test seeded_streams_match_nextpnr ... ok
+test shuffle_matches_nextpnr ... ok
+test rngf_matches_nextpnr_bit_for_bit ... ok
+test sorted_shuffle_matches_nextpnr ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/router1_internal_tests.rs (target/release/deps/router1_internal_tests-c0abc7750d856058)
+
+running 30 tests
+test astar_cross_tile_no_path ... ok
+test astar_multi_source_picks_closest ... ok
+test apply_route_plan_binds_wires ... ok
+test astar_empty_sources_returns_none ... ok
+test astar_no_path_returns_none ... ok
+test astar_single_pip_path ... ok
+test astar_same_wire_returns_empty_path ... ok
+test astar_verifies_pip_connectivity ... ok
+test bel_pin_wire_different_tiles ... ok
+test bel_pin_wire_invalid_port ... ok
+test astar_with_penalty_still_finds_path ... ok
+test bel_pin_wire_valid ... ok
+test bind_route_records_wires_and_pips ... ok
+test bind_empty_route ... ok
+test collect_routable_nets_empty_design ... ok
+test collect_routable_nets_finds_valid_net ... ok
+test collect_routable_nets_skips_no_driver ... ok
+test compute_route_produces_valid_plan ... ok
+test congestion_detected_with_shared_wire ... ok
+test congested_nets_identified ... ok
+test no_congestion_with_no_nets ... ok
+test no_congestion_with_single_net ... ok
+test compute_then_apply_matches_route_net ... ok
+test non_shared_wires_not_congested ... ok
+test route_net_cross_tile_fails_in_minimal_chipdb ... ok
+test route_net_same_pin_driver_and_sink ... ok
+test wire_penalty_accumulates ... ok
+test unroute_clears_net_wires ... ok
+test unroute_handles_invalid_pip ... ok
+test unroute_multiple_wires ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/router2_internal_tests.rs (target/release/deps/router2_internal_tests-7ce60273fbaf3569)
+
+running 28 tests
+test bbox_contains_boundary ... ok
+test astar_r2_no_path_returns_none ... ok
+test astar_r2_empty_sources_returns_none ... ok
+test astar_r2_bbox_prunes_out_of_range ... ok
+test astar_r2_single_pip_path ... ok
+test bbox_excludes_outside ... ok
+test astar_r2_same_wire_returns_empty_path ... ok
+test bbox_contains_within ... ok
+test bbox_single_point ... ok
+test count_congested_wires_none ... ok
+test compute_bbox_no_placed_cells ... ok
+test compute_bbox_single_cell ... ok
+test count_congested_wires_some ... ok
+test compute_bbox_with_margin ... ok
+test present_cost_grows ... ok
+test present_cost_initialized_from_config ... ok
+test find_congested_nets_none ... ok
+test find_congested_nets_shared_wire ... ok
+test update_history_accumulates ... ok
+test update_history_no_congestion ... ok
+test update_history_with_congestion ... ok
+test wire_cost_base_only ... ok
+test update_usage_empty_design ... ok
+test update_usage_multiple_nets_same_wire ... ok
+test wire_cost_combined ... ok
+test wire_cost_with_congestion ... ok
+test wire_cost_with_history ... ok
+test update_usage_single_net ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sa_internal_tests.rs (target/release/deps/sa_internal_tests-3bfdb905fbd9e655)
+
+running 16 tests
+test hpwl_adjacent_tiles ... ok
+test congestion_revert_restores_cost ... ok
+test hpwl_diagonal_placement ... ok
+test hpwl_no_driver_is_zero ... ok
+test congestion_cache_initial_cost_is_non_negative ... ok
+test hpwl_no_users_is_zero ... ok
+test initial_placement_places_all_cells ... ok
+test initial_placement_skips_already_placed ... ok
+test initial_placement_too_many_cells_fails ... ok
+test initial_placement_no_duplicate_bels ... ok
+test revert_swap_restores_state ... ok
+test swap_same_bel_is_noop ... ok
+test swap_to_empty_bel ... ok
+test swap_two_cells ... ok
+test swap_with_congestion_returns_delta ... ok
+test total_hpwl_sums_all_nets ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/timing_tests.rs (target/release/deps/timing_tests-09fa137ff2179843)
+
+running 31 tests
+test default_is_unclocked ... ok
+test clocked_domain ... ok
+test domain_clone ... ok
+test domain_equality ... ok
+test domain_hashing ... ok
+test sort_chain_of_three ... ok
+test sort_dead_cells_excluded ... ok
+test sort_fanout ... ok
+test test_analyser_new ... ok
+test sort_single_cell ... ok
+test test_clock_constraint_mhz ... ok
+test sort_empty_design ... ok
+test test_clock_constraint_ps ... ok
+test test_clock_domain_unclocked ... ok
+test test_clock_domain_clocked ... ok
+test test_comb_chain_forward_propagation ... ok
+test test_critical_paths_limit ... ok
+test test_criticality_all_met ... ok
+test test_criticality_failing ... ok
+test test_empty_design ... ok
+test test_fmax_with_constraint ... ok
+test test_invalidate ... ok
+test test_paths_sorted_by_slack ... ok
+test test_port_criticality ... ok
+test test_reg_to_reg_tight_constraint ... ok
+test test_reg_to_reg_timing ... ok
+test test_report_structure ... ok
+test test_topological_sort_basic ... ok
+test test_topological_sort_with_registers ... ok
+test unclocked_domain ... ok
+test test_two_clock_domains ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/types_tests.rs (target/release/deps/types_tests-e689149835d23c57)
+
+running 152 tests
+test bel_id::copy_semantics ... ok
+test bel_id::debug_format_invalid ... ok
+test bel_id::debug_format_valid ... ok
+test bel_id::default_is_zero ... ok
+test bel_id::display_format_invalid ... ok
+test bel_id::display_format_valid ... ok
+test bel_id::equality ... ok
+test bel_id::hashing ... ok
+test bel_id::invalid_constant ... ok
+test bel_id::max_values ... ok
+test bel_id::min_values ... ok
+test bel_id::negative_values ... ok
+test bel_id::new_and_accessors ... ok
+test bel_id::raw_roundtrip ... ok
+test bel_id::tile_negative_one_is_invalid ... ok
+test bel_id::zero_values ... ok
+test bit_vector_all_ones ... ok
+test bit_vector_all_zeros ... ok
+test bit_vector_empty ... ok
+test bit_vector_property ... ok
+test bit_vector_with_unknown ... ok
+test clock_edge_copy ... ok
+test clock_edge_default ... ok
+test clock_edge_display ... ok
+test clock_edge_double_opposite ... ok
+test clock_edge_equality ... ok
+test clock_edge_hashing ... ok
+test clock_edge_opposite ... ok
+test delay_pair_add ... ok
+test delay_pair_average ... ok
+test delay_pair_average_uniform ... ok
+test delay_pair_copy ... ok
+test delay_pair_debug ... ok
+test delay_pair_default ... ok
+test delay_pair_display_uniform ... ok
+test delay_pair_display_range ... ok
+test delay_pair_new ... ok
+test delay_pair_equality ... ok
+test delay_pair_negative ... ok
+test delay_quad_add ... ok
+test delay_quad_copy ... ok
+test delay_quad_debug ... ok
+test delay_pair_sub ... ok
+test delay_quad_max_delay ... ok
+test delay_pair_uniform ... ok
+test delay_quad_as_delay_pair ... ok
+test delay_quad_default ... ok
+test delay_quad_min_delay ... ok
+test delay_quad_new ... ok
+test delay_quad_uniform ... ok
+test delay_quad_uniform_pair ... ok
+test different_types_are_distinct ... ok
+test display_bit_vector ... ok
+test display_int ... ok
+test display_string ... ok
+test empty_string_is_zero ... ok
+test from_bool_true ... ok
+test from_i32 ... ok
+test from_i64 ... ok
+test from_str_ref ... ok
+test from_bool_false ... ok
+test from_string ... ok
+test id_string_copy_semantics ... ok
+test id_string_debug ... ok
+test id_string_default_is_empty ... ok
+test int_as_str ... ok
+test id_string_hashing ... ok
+test int_property ... ok
+test ids_are_sequential ... ok
+test intern_empty_string_returns_empty ... ok
+test concurrent_duplicate_inserts ... ok
+test loc_copy_semantics ... ok
+test intern_returns_different_ids_for_different_strings ... ok
+test loc_default_is_origin ... ok
+test loc_display_format ... ok
+test intern_returns_same_id_for_same_string ... ok
+test loc_equality ... ok
+test loc_hashing ... ok
+test loc_new_and_fields ... ok
+test lookup_empty_id ... ok
+test loc_debug_format ... ok
+test lookup_interned_string ... ok
+test manhattan_distance_diagonal ... ok
+test lookup_invalid_id ... ok
+test manhattan_distance_horizontal ... ok
+test manhattan_distance_ignores_z ... ok
+test manhattan_distance_negative_coords ... ok
+test manhattan_distance_same_point ... ok
+test manhattan_distance_vertical ... ok
+test negative_int ... ok
+test pip_id::copy_semantics ... ok
+test non_empty_id_is_not_empty ... ok
+test pip_id::debug_format_invalid ... ok
+test pip_id::debug_format_valid ... ok
+test pip_id::default_is_zero ... ok
+test pip_id::display_format_invalid ... ok
+test pip_id::display_format_valid ... ok
+test pip_id::equality ... ok
+test pip_id::hashing ... ok
+test pip_id::invalid_constant ... ok
+test pip_id::max_values ... ok
+test pip_id::min_values ... ok
+test pip_id::negative_values ... ok
+test pip_id::new_and_accessors ... ok
+test pip_id::raw_roundtrip ... ok
+test pip_id::tile_negative_one_is_invalid ... ok
+test pip_id::zero_values ... ok
+test place_strength_copy ... ok
+test place_strength_debug ... ok
+test place_strength_default ... ok
+test place_strength_display ... ok
+test place_strength_equality ... ok
+test place_strength_hashing ... ok
+test place_strength_is_locked ... ok
+test pool_is_empty ... ok
+test pool_debug ... ok
+test port_type_copy ... ok
+test port_type_debug ... ok
+test pool_len ... ok
+test port_type_default ... ok
+test port_type_display ... ok
+test port_type_equality ... ok
+test property_clone ... ok
+test property_default_is_empty_string ... ok
+test property_equality ... ok
+test property_hashing ... ok
+test string_as_int ... ok
+test string_not_int ... ok
+test string_property ... ok
+test timing_port_class_default ... ok
+test timing_port_class_display ... ok
+test timing_port_class_equality ... ok
+test timing_port_class_hashing ... ok
+test timing_port_class_is_clock ... ok
+test timing_port_class_is_register ... ok
+test wire_id::copy_semantics ... ok
+test wire_id::debug_format_invalid ... ok
+test wire_id::debug_format_valid ... ok
+test wire_id::default_is_zero ... ok
+test wire_id::display_format_invalid ... ok
+test thread_safety ... ok
+test wire_id::negative_values ... ok
+test wire_id::display_format_valid ... ok
+test wire_id::new_and_accessors ... ok
+test wire_id::raw_roundtrip ... ok
+test wire_id::invalid_constant ... ok
+test wire_id::tile_negative_one_is_invalid ... ok
+test wire_id::zero_values ... ok
+test wire_id::equality ... ok
+test wire_id::hashing ... ok
+test wire_id::min_values ... ok
+test wire_id::max_values ... ok
+
+test result: ok. 152 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/xc7_large_connectivity.rs (target/release/deps/xc7_large_connectivity-948a18c862fdc8fe)
+
+running 4 tests
+test m1_lh_wires_have_node_peers ... ok
+test lv_nodes_span_multiple_rows ... ok
+test lh_nodes_span_multiple_columns ... ok
+test left_io_reaches_right_io ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.14s
+
+     Running unittests src/lib.rs (target/release/deps/nextpnr-da3a9026b1305220)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests nextpnr
+
+running 1 test
+test crates/nextpnr/src/checkpoint/mod.rs - checkpoint (line 5) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

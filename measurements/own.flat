@@ -1,0 +1,20 @@
+    16.44%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::CellNetMap::build
+                       0x12b73
+    15.81%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::evaluate_cell_at
+     7.29%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::DistCache::get
+     4.93%  ot_trace_design  ot_trace_design       [.] hashbrown::map::HashMap<K,V,S,A>::insert
+     4.51%  ot_trace_design  ot_trace_design       [.] hashbrown::raw::RawTable<T,A>::reserve_rehash
+     3.97%  ot_trace_design  libc.so.6             [.] _int_malloc
+     3.48%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     3.37%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{{closure}}
+     2.67%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::common::CellValidityMask::is_valid
+     2.43%  ot_trace_design  libc.so.6             [.] _int_free
+     2.36%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::bisect_2d
+     2.23%  ot_trace_design  libc.so.6             [.] malloc
+     1.86%  ot_trace_design  ot_trace_design       [.] nextpnr::metrics::congestion::bresenham_line
+     1.60%  ot_trace_design  libc.so.6             [.] malloc_consolidate
+     1.53%  ot_trace_design  ot_trace_design       [.] round
+     1.34%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::intern
+     1.25%  ot_trace_design  libc.so.6             [.] __memcmp_evex_movbe
+     1.09%  ot_trace_design  libc.so.6             [.] unlink_chunk.constprop.0
+     1.03%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut

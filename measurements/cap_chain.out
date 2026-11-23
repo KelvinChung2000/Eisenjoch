@@ -1,0 +1,20 @@
+20 |     col_scratch_len: usize,
+   |     ^^^^^^^^^^^^^^^
+
+warning: methods `apply_dst_rows`, `apply_dst_cols`, and `dst_round_trip_slice` are never used
+   --> crates/nextpnr/src/solver/preconditioner/spectral.rs:60:8
+    |
+ 23 | impl SpectralPreconditioner {
+    | --------------------------- methods in this implementation
+...
+ 60 |     fn apply_dst_rows(&self, field: &mut [f64], row_buf: &mut [f64], row_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+ 68 |     fn apply_dst_cols(&self, field: &mut [f64], col_buf: &mut [f64], col_scratch: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^
+...
+176 |     fn dst_round_trip_slice(&self, values: &mut [f64]) {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: `nextpnr` (lib) generated 18 warnings (run `cargo fix --lib -p nextpnr` to apply 6 suggestions)
+    Finished `release` profile [optimized + debuginfo] target(s) in 10.29s

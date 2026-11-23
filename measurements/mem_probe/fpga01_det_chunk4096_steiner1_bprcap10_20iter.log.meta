@@ -1,0 +1,6 @@
+launched at : 2026-08-21T00:27:05+01:00
+arm         : det_chunk4096_steiner1_bprcap10_20iter (steiner=1, threads=32, DET_SWEEP=1, chunk=4096, BPR_CAP=10)
+git HEAD    : 5a9844f406f27bc0781bc3d498b503f70ee67954
+reference   : cap=inf -> HPWL 7387808 in 1465s
+exit code: 0
+wall_secs: 1562

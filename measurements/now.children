@@ -1,0 +1,20 @@
+    20.09%    20.03%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::evaluate_cell_at
+    11.80%     6.15%  ot_trace_design  ot_trace_design       [.] hashbrown::map::HashMap<K,V,S,A>::insert
+     9.52%     9.52%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::DistCache::get
+     6.84%     0.81%  ot_trace_design  ot_trace_design       [.] alloc::raw_vec::finish_grow
+     6.40%     0.04%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     5.82%     4.86%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::collect_net_infos_simple::{{closure}}
+     5.73%     5.54%  ot_trace_design  ot_trace_design       [.] hashbrown::raw::RawTable<T,A>::reserve_rehash
+     5.40%     3.38%  ot_trace_design  libc.so.6             [.] _int_malloc
+     4.45%     0.28%  ot_trace_design  libc.so.6             [.] _int_realloc
+     3.95%     2.91%  ot_trace_design  libc.so.6             [.] _int_free
+     3.73%     1.41%  ot_trace_design  libc.so.6             [.] malloc
+     3.32%     0.41%  ot_trace_design  libc.so.6             [.] cfree@GLIBC_2.2.5
+     3.01%     3.01%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::common::CellValidityMask::is_valid
+     2.79%     2.78%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::bisect_2d
+     2.67%     1.50%  ot_trace_design  ot_trace_design       [.] core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut
+     2.49%     2.37%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     2.48%     0.00%  ot_trace_design  [unknown]             [.] 0x0000000000012b73
+     2.48%     2.48%  ot_trace_design  ot_trace_design       [.] nextpnr::metrics::congestion::bresenham_line
+     2.11%     2.00%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::intern
+     2.05%     1.18%  ot_trace_design  libc.so.6             [.] malloc_consolidate

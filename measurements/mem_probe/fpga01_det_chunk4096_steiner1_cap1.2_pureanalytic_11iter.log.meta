@@ -1,0 +1,6 @@
+launched at : 2026-08-21T18:21:34+01:00
+arm         : det_chunk4096_steiner1_cap1.2_pureanalytic_11iter (cap=1.2, ANALYTIC_UNTIL=11, 11 iters, no exact phase)
+git HEAD    : 1392eedc1c090bf063d3888ec4d0b278e5fe6310
+target      : HeAP 4 533 609 in 52.8s
+exit code: 0
+wall_secs: 289

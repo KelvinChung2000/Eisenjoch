@@ -1,0 +1,5 @@
+launched at : 2026-08-20T00:11:38+01:00
+arm         : STEINER=1 THREADS=32 REPEAT MAX_ITERS=20
+git HEAD    : 81bdbbf9dd2335911a7fee4cb344cc5b69a1b324
+exit code: 0
+wall_secs: 1659

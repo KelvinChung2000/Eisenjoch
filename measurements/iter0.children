@@ -1,0 +1,17 @@
+    17.37%    17.35%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::opt_trans::coord_descent::CellNetMap::build
+    17.34%     0.00%  ot_trace_design  [unknown]             [.] 0x1fffffffffffffff
+    10.30%     8.38%  ot_trace_design  ot_trace_design       [.] <nextpnr::common::id_string::LassoBackend as nextpnr::common::id_string::InternerBackend>::resolve
+     9.00%     9.00%  ot_trace_design  ot_trace_design       [.] alloc::collections::binary_heap::BinaryHeap<T,A>::pop
+     7.65%     6.61%  ot_trace_design  ot_trace_design       [.] <alloc::vec::Vec<T> as alloc::vec::spec_from_iter::SpecFromIter<T,I>>::from_iter
+     7.35%     0.76%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::legalize::common::DriverNodeRegistry::is_legal
+     6.04%     2.05%  ot_trace_design  ot_trace_design       [.] nextpnr::context::core::<impl nextpnr::context::definition::Context>::bel_pin_wire
+     5.85%     0.77%  ot_trace_design  libc.so.6             [.] _int_realloc
+     5.61%     0.25%  ot_trace_design  ot_trace_design       [.] alloc::raw_vec::finish_grow
+     5.39%     4.02%  ot_trace_design  libc.so.6             [.] _int_malloc
+     5.16%     1.13%  ot_trace_design  libc.so.6             [.] cfree@GLIBC_2.2.5
+     4.45%     4.06%  ot_trace_design  libc.so.6             [.] _int_free
+     4.06%     4.05%  ot_trace_design  ot_trace_design       [.] <nextpnr::placer::legalize::bel_grid::RingCandidates as core::iter::traits::iterator::Iterator>::next
+     3.77%     2.28%  ot_trace_design  ot_trace_design       [.] hashbrown::map::HashMap<K,V,S,A>::insert
+     3.23%     0.00%  ot_trace_design  [unknown]             [.] 0x0000000000000001
+     3.04%     1.85%  ot_trace_design  libc.so.6             [.] malloc
+     3.00%     1.66%  ot_trace_design  ot_trace_design       [.] nextpnr::placer::legalize::common::cell_pin_wires

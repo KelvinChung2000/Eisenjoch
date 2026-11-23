@@ -1,0 +1,35 @@
+Running scope as unit: run-r0cbfe7c7ea5c4e5d8c07a83b91c908f8.scope
+chipdb: /home/kelvin/side-project/eisenjoch/chip_database/xc7_large.bin
+design: /home/kelvin/side-project/eisenjoch/benchmark/ispd/generated/2016/FPGA01/FPGA01.json
+RSS_SAMPLE t=0.0s rss=3MB hwm=3MB
+RSS_SAMPLE t=0.3s rss=460MB hwm=460MB
+RSS_SAMPLE t=0.5s rss=725MB hwm=725MB
+RSS_SAMPLE t=0.8s rss=818MB hwm=824MB
+RSS_SAMPLE t=1.0s rss=819MB hwm=824MB
+RSS_SAMPLE t=1.3s rss=819MB hwm=824MB
+load+pack: 1.5s
+cfg: max_iterations=20
+RSS_SAMPLE t=1.5s rss=820MB hwm=824MB
+  topological compress: density=0.60 target_tiles=15971 final_tiles=15777 scale=1.851 center=(205.1,111.0)
+  topological init: n_movable=76660, n_edges=229053, max_layer=26775, back_edges=54022, n_anchored=0
+  ALG_T heap prepare_discrete: 0.2s
+  ALG_T init_hpwl: 14051632
+RSS_SAMPLE t=1.8s rss=933MB hwm=933MB
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+RSS_SAMPLE t=2.0s rss=1036MB hwm=1036MB
+  SortedLegalizer: cluster_rejects=6247 shared_mux_rejects=16338 arch_validity_rejects=0
+RSS_SAMPLE t=2.3s rss=1036MB hwm=1036MB
+  type DFF: 302 valid columns, 1077536 total BELs
+  type LUT6: 302 valid columns, 538768 total BELs
+TypeAwarePlacement: 2 cell types
+RSS_SAMPLE t=2.5s rss=1136MB hwm=1136MB
+  SortedLegalizer: cluster_rejects=7688 shared_mux_rejects=21129 arch_validity_rejects=0
+RSS_SAMPLE t=2.8s rss=1137MB hwm=1137MB
+cells: placed=105119 unplaced=0
+HeAP place: 1.4s
+Post-placement: HPWL=4533609, line=6430025
+HeAP get_net_metric: 4533609 over 105220 nets
+HEAP_RESULT place_secs=1.4 total_hpwl=4533609 line=6430025 get_net_metric=4533609 nets=105220
+RSS_SAMPLE t=3.0s rss=937MB hwm=1153MB
