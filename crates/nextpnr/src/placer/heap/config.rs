@@ -3,8 +3,6 @@
 pub struct PlacerHeapCfg {
     /// RNG seed for reproducibility.
     pub seed: u64,
-    /// Weight for timing cost (currently reserved, unused).
-    pub timing_weight: f64,
     /// Initial spreading force multiplier. Grows by 1.5x each iteration.
     pub alpha: f64,
     /// Weight for net connections in the quadratic system.
@@ -25,7 +23,6 @@ impl Default for PlacerHeapCfg {
     fn default() -> Self {
         Self {
             seed: 1,
-            timing_weight: 0.5,
             alpha: 0.1,
             beta: 1.0,
             max_iterations: 20,

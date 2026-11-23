@@ -39,7 +39,6 @@ fn default_config_values() {
     assert_eq!(cfg.inner_iters_per_cell, 10);
     assert_eq!(cfg.initial_temp_factor, 1.5);
     assert_eq!(cfg.min_temp, 1e-6);
-    assert_eq!(cfg.timing_weight, 0.5);
     assert!(cfg.slack_redistribution);
     assert_eq!(cfg.congestion_weight, 0.0);
 }

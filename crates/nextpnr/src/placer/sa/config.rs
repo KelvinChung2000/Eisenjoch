@@ -11,8 +11,6 @@ pub struct PlacerSaCfg {
     pub initial_temp_factor: f64,
     /// Temperature at which the annealing loop stops.
     pub min_temp: f64,
-    /// Weight for timing cost (0.0 = pure HPWL, 1.0 = pure timing).
-    pub timing_weight: f64,
     /// Enable slack redistribution (currently unused, reserved for future).
     pub slack_redistribution: bool,
     /// Weight for congestion cost relative to HPWL (0.0 = no congestion awareness).
@@ -27,7 +25,6 @@ impl Default for PlacerSaCfg {
             inner_iters_per_cell: 10,
             initial_temp_factor: 1.5,
             min_temp: 1e-6,
-            timing_weight: 0.5,
             slack_redistribution: true,
             congestion_weight: 0.0,
         }

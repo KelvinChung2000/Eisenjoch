@@ -113,9 +113,7 @@ fn default_config_values() {
     assert_eq!(cfg.seed, 1);
     assert_eq!(cfg.wl_coeff, 0.5);
     assert_eq!(cfg.target_util, 0.7);
-    assert!(!cfg.timing_driven);
     assert_eq!(cfg.target_density, 1.0);
-    assert_eq!(cfg.timing_weight, 0.0);
     assert_eq!(cfg.nesterov_step_size, 0.1);
     assert_eq!(cfg.max_iters, 500);
     assert_eq!(cfg.legalize_interval, 5);

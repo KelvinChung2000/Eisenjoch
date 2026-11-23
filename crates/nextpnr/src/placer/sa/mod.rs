@@ -4,8 +4,7 @@
 //! valid BELs, then iteratively improved by proposing random swap moves and
 //! accepting or rejecting them via the Metropolis criterion. The cost function
 //! combines HPWL (Half-Perimeter Wire Length) with optional congestion-awareness
-//! via edge-based demand tracking and optional timing-driven weighting via net
-//! criticality.
+//! via edge-based demand tracking. It is not timing-driven.
 
 pub mod algorithm;
 pub mod config;
