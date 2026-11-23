@@ -4,7 +4,7 @@ use nextpnr::chipdb::testutil::make_test_chipdb;
 use nextpnr::chipdb::ChipDb;
 use nextpnr::common::IdString;
 use nextpnr::context::Context;
-use nextpnr::netlist::PortType;
+use nextpnr::netlist::{CellId, NetId, PortType};
 
 pub fn make_context() -> Context {
     let chipdb = make_test_chipdb();
@@ -95,4 +95,36 @@ pub fn make_context_with_cells(n: usize) -> Context {
     add_cells_with_net(&mut ctx, n, cell_type, out_port, in_port);
 
     ctx
+}
+
+pub fn add_cell(ctx: &mut Context, name: &str, cell_type: &str) -> CellId {
+    let (name, cell_type) = (ctx.id(name), ctx.id(cell_type));
+    ctx.design.add_cell(name, cell_type)
+}
+
+pub fn add_net(ctx: &mut Context, name: &str) -> NetId {
+    let name = ctx.id(name);
+    ctx.design.add_net(name)
+}
+
+pub fn drive(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
+    let port = ctx.id(port);
+    ctx.design
+        .cell_edit(cell)
+        .add_port(port, PortType::Out)
+        .set_port_net(port, Some(net), None);
+    ctx.design.net_edit(net).set_driver(cell, port);
+}
+
+pub fn sink(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
+    sink_as(ctx, net, cell, port, PortType::In);
+}
+
+pub fn sink_as(ctx: &mut Context, net: NetId, cell: CellId, port: &str, port_type: PortType) {
+    let port = ctx.id(port);
+    let user = ctx.design.net_edit(net).add_user(cell, port);
+    ctx.design
+        .cell_edit(cell)
+        .add_port(port, port_type)
+        .set_port_net(port, Some(net), Some(user));
 }

@@ -1,5 +1,7 @@
 mod common;
 
+use common::{add_cell, add_net, drive, sink, sink_as};
+
 use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::netlist::{CellId, CellPin, NetId, PortType};
@@ -9,38 +11,6 @@ use rstest::rstest;
 use rusteda_core::netlist::PortDir;
 
 const SLACK_TOLERANCE_NS: f64 = 1e-9;
-
-fn add_cell(ctx: &mut Context, name: &str, cell_type: &str) -> CellId {
-    let (name, cell_type) = (ctx.id(name), ctx.id(cell_type));
-    ctx.design.add_cell(name, cell_type)
-}
-
-fn add_net(ctx: &mut Context, name: &str) -> NetId {
-    let name = ctx.id(name);
-    ctx.design.add_net(name)
-}
-
-fn drive(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
-    let port = ctx.id(port);
-    ctx.design
-        .cell_edit(cell)
-        .add_port(port, PortType::Out)
-        .set_port_net(port, Some(net), None);
-    ctx.design.net_edit(net).set_driver(cell, port);
-}
-
-fn sink(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
-    sink_as(ctx, net, cell, port, PortType::In);
-}
-
-fn sink_as(ctx: &mut Context, net: NetId, cell: CellId, port: &str, port_type: PortType) {
-    let port = ctx.id(port);
-    let user = ctx.design.net_edit(net).add_user(cell, port);
-    ctx.design
-        .cell_edit(cell)
-        .add_port(port, port_type)
-        .set_port_net(port, Some(net), Some(user));
-}
 
 #[derive(Debug, Clone, Copy)]
 enum PadCells {

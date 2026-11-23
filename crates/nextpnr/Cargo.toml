@@ -108,6 +108,11 @@ path = "tests/ruststa_adapter_tests.rs"
 required-features = ["test-utils"]
 
 [[test]]
+name = "sta_session_tests"
+path = "tests/sta_session_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
 name = "electro_place_tests"
 path = "tests/electro_place_tests.rs"
 required-features = ["test-utils"]
