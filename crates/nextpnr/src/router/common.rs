@@ -1110,6 +1110,31 @@ impl NegotiationState {
         }
     }
 
+    /// Count one unit of demand from `net` on each of `wires`.
+    pub fn add_wire_usage(&mut self, net: NetId, wires: &[WireId]) {
+        for &wire in wires {
+            *self.wire_usage.entry(wire).or_default() += 1;
+            self.wire_owner.insert(wire, net);
+        }
+    }
+
+    /// Withdraw the demand `add_wire_usage` counted, and any ownership `net` held.
+    pub fn remove_wire_usage(&mut self, net: NetId, wires: &[WireId]) {
+        for &wire in wires {
+            let count = self
+                .wire_usage
+                .get_mut(&wire)
+                .expect("only counted wires are withdrawn");
+            *count -= 1;
+            if *count == 0 {
+                self.wire_usage.remove(&wire);
+            }
+            if self.wire_owner.get(&wire) == Some(&net) {
+                self.wire_owner.remove(&wire);
+            }
+        }
+    }
+
     /// Find all nets that touch at least one congested wire (usage > 1).
     pub fn find_congested_nets(&self, design: &crate::netlist::Design) -> Vec<NetId> {
         let congested_wires: rustc_hash::FxHashSet<WireId> = self

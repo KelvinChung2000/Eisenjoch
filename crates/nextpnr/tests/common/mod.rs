@@ -128,3 +128,44 @@ pub fn sink_as(ctx: &mut Context, net: NetId, cell: CellId, port: &str, port_typ
         .add_port(port, port_type)
         .set_port_net(port, Some(net), Some(user));
 }
+
+fn npnr_baseline_fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/npnr_baseline")
+        .join(name)
+}
+
+/// The nextpnr-placed npnr_baseline design on its chipdb, top-port cells trimmed.
+pub fn placed_npnr_baseline() -> Context {
+    let constids = std::fs::read_to_string(npnr_baseline_fixture("constids.inc"))
+        .expect("fixture has constids");
+    let chipdb = ChipDb::load_with_known_constids(
+        &npnr_baseline_fixture("shared_chipdb.bin"),
+        &nextpnr::chipdb::parse_constids_inc(&constids),
+    )
+    .expect("fixture chipdb loads");
+    let mut ctx = Context::new(chipdb);
+    let json = std::fs::read_to_string(npnr_baseline_fixture("placed.json"))
+        .expect("fixture has a placed design");
+    ctx.design = nextpnr::frontend::parse_json(&json, &ctx.id_pool).expect("placed design parses");
+    nextpnr::packer::passes::remove_nextpnr_iobs(&mut ctx).expect("pseudo-cells trim");
+    let bels: std::collections::HashMap<String, nextpnr::chipdb::BelId> = ctx
+        .chipdb()
+        .bels()
+        .map(|bel| {
+            let loc = ctx.chipdb().bel_loc(bel);
+            let name = format!("X{}Y{}/{}", loc.x, loc.y, ctx.chipdb().bel_name(bel));
+            (name, bel)
+        })
+        .collect();
+    let bel_attr = ctx.id("NEXTPNR_BEL");
+    let bindings: Vec<_> = ctx
+        .design
+        .iter_alive_cells()
+        .filter_map(|(cell, info)| Some((bels[info.attrs.get(&bel_attr)?.as_str().as_str()], cell)))
+        .collect();
+    for (bel, cell) in bindings {
+        assert!(ctx.bind_bel(bel, cell, nextpnr::common::PlaceStrength::Placer));
+    }
+    ctx
+}

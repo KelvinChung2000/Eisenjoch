@@ -33,6 +33,15 @@ pub enum RouterError {
     /// [`common::validate_all_routed`].
     #[error("{0}")]
     ValidationFailed(String),
+    /// The net already holds routing, which the router would overwrite.
+    #[error("net {0} is already routed")]
+    AlreadyRouted(String),
+    /// A converged plan could not bind a wire in the context.
+    #[error("committing net {net} was rejected at wire {wire}")]
+    CommitRejected { net: String, wire: String },
+    /// A negotiated wire cost left the integer range the A* kernel sums in.
+    #[error("negotiation at iteration {iteration} prices a wire at {wire_cost}, beyond the A* cost range")]
+    CostRange { iteration: usize, wire_cost: f64 },
     /// Generic router error.
     #[error("Router error: {0}")]
     Generic(String),
