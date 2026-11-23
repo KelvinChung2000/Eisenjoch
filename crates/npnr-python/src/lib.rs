@@ -18,7 +18,7 @@ use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::Placer;
 use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
-use ::nextpnr::router::router2::{Router2, Router2Cfg};
+use ::nextpnr::router::router2::{Router2, Router2Cfg, TimingDrivenCfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::common::DelayT;
 use ::nextpnr::sta::{
@@ -307,14 +307,21 @@ impl PyContext {
     ///     bb_margin: Bounding box margin in tiles for A* pruning. Default 3.
     ///     max_iterations: Max routing iterations. Router1 default 500, Router2 default 50.
     ///     skip_unplaced: If true, skip nets whose driver cell is not placed. Default false.
-    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false))]
+    ///     timing_driven: Weight each connection's delay by its STA criticality (router2 only). Default false.
+    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false, timing_driven=false))]
     fn route(
         &mut self,
         router: &str,
         bb_margin: Option<i32>,
         max_iterations: Option<usize>,
         skip_unplaced: bool,
+        timing_driven: bool,
     ) -> PyResult<()> {
+        if timing_driven && router != "router2" {
+            return Err(PyValueError::new_err(format!(
+                "Router {router} is not timing-driven; only router2 is"
+            )));
+        }
         use ::nextpnr::router::common::collect_routable_nets;
 
         // Collect nets, optionally filtering out those touching unplaced
@@ -367,7 +374,10 @@ impl PyContext {
                     .map_err(|e| PyRuntimeError::new_err(format!("Router1 error: {}", e)))
             }
             "router2" => {
-                let mut cfg = Router2Cfg::default();
+                let mut cfg = Router2Cfg {
+                    timing: timing_driven.then(TimingDrivenCfg::default),
+                    ..Router2Cfg::default()
+                };
                 if let Some(margin) = bb_margin {
                     cfg.bb_margin = margin;
                 }

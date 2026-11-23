@@ -188,7 +188,7 @@ def main(
 
         if verbose:
             typer.echo(f"Running router ({router})...")
-        ctx.route(router=router)
+        ctx.route(router=router, timing_driven=timing_driven and router == "router2")
     except Exception as e:
         typer.echo(f"P&R error: {e}", err=True)
         if not force:
