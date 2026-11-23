@@ -17,8 +17,7 @@ print("nextpnr-rust demo: blinky on example arch")
 print("=" * 60)
 print()
 
-# Load context with example chipdb
-ctx = nextpnr.Context(chipdb=chipdb_path)
+ctx = nextpnr.RustContext(chipdb=chipdb_path)
 print(f"Chip: {ctx.width}x{ctx.height} grid")
 
 # Load synthesized design

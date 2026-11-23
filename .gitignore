@@ -1,7 +1,6 @@
 /target
 
 .gitconfig
-.gitmodules
 .idea
 .mcp.json
 .profile

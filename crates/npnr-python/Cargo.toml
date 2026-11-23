@@ -9,4 +9,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 nextpnr = { workspace = true }
+nextpnr-upstream = { workspace = true }
 pyo3 = { workspace = true }

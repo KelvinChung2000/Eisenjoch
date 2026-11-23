@@ -1,4 +1,4 @@
-"""nextpnr-himbaechel CLI - Python CLI for the nextpnr Rust FPGA place-and-route tool."""
+"""CLI for Eisenjoch's Rust Himbächel flow."""
 
 try:
     import typer
@@ -6,7 +6,7 @@ except ImportError:
     import sys
 
     print(
-        "Error: typer is required for the CLI. Install with: pip install typer",
+        "Error: typer is required for the CLI. Run with `uv run --extra cli`.",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -15,7 +15,7 @@ from typing import Optional
 from pathlib import Path
 
 app = typer.Typer(
-    name="nextpnr-himbaechel",
+    name="nextpnr-himbaechel-rust",
     help="FPGA place-and-route tool (Rust implementation)",
     add_completion=False,
 )
@@ -74,7 +74,7 @@ def main(
         None, "--script", help="Run Python script with pre-loaded ctx"
     ),
 ) -> None:
-    """Run the nextpnr-himbaechel FPGA place-and-route flow."""
+    """Run the Rust FPGA place-and-route flow."""
     try:
         import nextpnr
     except ImportError:
@@ -93,14 +93,13 @@ def main(
         typer.echo("Error: Either --json or --script must be specified", err=True)
         raise typer.Exit(1)
 
-    # Create context
     try:
         ctx_kwargs = {}
         if chipdb is not None:
             ctx_kwargs["chipdb"] = str(chipdb)
         if device is not None:
             ctx_kwargs["device"] = device
-        ctx = nextpnr.Context(**ctx_kwargs)
+        ctx = nextpnr.RustContext(**ctx_kwargs)
     except Exception as e:
         typer.echo(f"Error creating context: {e}", err=True)
         raise typer.Exit(1)

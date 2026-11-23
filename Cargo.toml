@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nextpnr", "crates/npnr-python"]
+members = ["crates/nextpnr", "crates/nextpnr-upstream", "crates/npnr-python"]
 
 [profile.release]
 debug = "line-tables-only"
@@ -18,4 +18,5 @@ lasso = { version = "0.7", features = ["multi-threaded"] }
 rayon = "1"
 ndarray = "0.16"
 lapjv = "0.3"
-nextpnr = { path = "crates/nextpnr" }
+nextpnr = { package = "nextpnr-rust", path = "crates/nextpnr" }
+nextpnr-upstream = { path = "crates/nextpnr-upstream" }

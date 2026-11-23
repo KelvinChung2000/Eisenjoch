@@ -1,8 +1,11 @@
 [package]
-name = "nextpnr"
+name = "nextpnr-rust"
 version = "0.1.0"
 edition = "2021"
 description = "Rust reimplementation of nextpnr FPGA place-and-route"
+
+[lib]
+name = "nextpnr"
 
 [features]
 test-utils = []
