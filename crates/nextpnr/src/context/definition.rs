@@ -36,10 +36,9 @@ pub struct Context {
     pub(super) pip_to_net: FxHashMap<(u32, u32), (NetId, PlaceStrength)>,
 
     // -- Caches (populated on demand) --
-    /// For each bucket (bel type), the list of all BelIds belonging to it.
-    pub(super) bucket_bels: FxHashMap<IdString, Vec<BelId>>,
-    /// Cache of BELs per (region_idx, bucket). Populated on demand.
-    pub(super) region_bel_cache: FxHashMap<(u32, IdString), Vec<BelId>>,
+    /// For each bucket (bel type), all its BelIds in chipdb order. Shared so
+    /// placers index into these lists instead of keeping their own copies.
+    pub(super) bucket_bels: FxHashMap<IdString, std::sync::Arc<[BelId]>>,
     /// Cell type aliases: maps a cell type (e.g. "FDRE") to the BEL bucket
     /// it should be placed on (e.g. "AFF"). Used for architectures where
     /// cell types in the netlist don't match BEL type names in the chipdb.
@@ -124,7 +123,6 @@ impl Context {
             wire_to_net: FxHashMap::default(),
             pip_to_net: FxHashMap::default(),
             bucket_bels: FxHashMap::default(),
-            region_bel_cache: FxHashMap::default(),
             cell_type_aliases: FxHashMap::default(),
             settings: FxHashMap::default(),
             speed_grade_idx: 0,

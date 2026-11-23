@@ -113,7 +113,6 @@ impl PyContext {
         for r in rects {
             region.rects.push(Rect::new(r[0], r[1], r[2], r[3]));
         }
-        self.ctx.invalidate_region_cache();
         Ok(idx)
     }
 

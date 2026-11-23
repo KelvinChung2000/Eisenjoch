@@ -1,6 +1,6 @@
 //! Shared legalization helpers: unbinding movable cells and placing cluster children.
 
-use crate::chipdb::{BelId, WireId};
+use crate::chipdb::{BelId, Loc, WireId};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::{CellId, NetId, PortType};
@@ -44,7 +44,6 @@ pub(crate) fn unbind_movable_cells(ctx: &mut Context, idx_to_cell: &[CellId]) {
 /// stomped on.)
 pub(crate) fn place_cluster_children(
     ctx: &mut Context,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     cell_id: CellId,
     root_bel: BelId,
 ) -> Result<(), PlacerError> {
@@ -74,15 +73,8 @@ pub(crate) fn place_cluster_children(
             root_loc.z + constr_z
         };
 
-        // O(1) lookup against the caller-built (bucket, x, y, z) -> BelId
-        // index. The previous code did `ctx.bels_for_bucket(child_type).collect()`
-        // matching the slot, which on FPGA01 (~1 M LUT BELs) was ~1 M ops per
-        // child × thousands of cluster roots, dominating the post-rejection
-        // bind cost.
-        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
-        let candidate = bel_by_loc
-            .get(&key)
-            .copied()
+        let candidate = ctx
+            .bucket_bel_at(child_type, Loc::new(want_x, want_y, want_z))
             .filter(|&b| ctx.bel(b).is_available());
 
         // STRONG, not PLACER: a cluster child must stay refinable, and
@@ -414,7 +406,6 @@ pub(crate) fn build_cell_legality_cache(ctx: &Context, root_id: CellId) -> CellL
 pub(crate) fn cluster_is_legal_cached(
     ctx: &Context,
     registry: &DriverNodeRegistry,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     cache: &CellLegalityCache,
     root_bel: BelId,
 ) -> bool {
@@ -429,8 +420,8 @@ pub(crate) fn cluster_is_legal_cached(
         let want_x = root_loc.x + cx;
         let want_y = root_loc.y + cy;
         let want_z = if *abs_z { *cz } else { root_loc.z + cz };
-        let key = (ctx.resolve_bucket(*child_type), want_x, want_y, want_z);
-        let Some(&child_bel) = bel_by_loc.get(&key) else {
+        let Some(child_bel) = ctx.bucket_bel_at(*child_type, Loc::new(want_x, want_y, want_z))
+        else {
             return false;
         };
         if !ctx.bel(child_bel).is_available() {
@@ -446,7 +437,6 @@ pub(crate) fn cluster_is_legal_cached(
 pub(crate) fn cluster_is_legal(
     ctx: &Context,
     registry: &DriverNodeRegistry,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     root_id: CellId,
     root_bel: BelId,
 ) -> bool {
@@ -476,12 +466,8 @@ pub(crate) fn cluster_is_legal(
         } else {
             root_loc.z + constr_z
         };
-        // O(1) lookup against the caller-built (cell_type, x, y, z) -> BelId
-        // index. Replaces the per-call full `bels_for_bucket(child_type).find(...)`
-        // scan, which on FPGA01 was O(n_bels_for_bucket) ≈ 1M per cluster_is_legal
-        // call, dominating ring-legalize wall time at ~1 trillion ops total.
-        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
-        let Some(&child_bel) = bel_by_loc.get(&key) else {
+        let Some(child_bel) = ctx.bucket_bel_at(child_type, Loc::new(want_x, want_y, want_z))
+        else {
             return false;
         };
         if !ctx.bel(child_bel).is_available() {
@@ -492,21 +478,6 @@ pub(crate) fn cluster_is_legal(
         }
     }
     true
-}
-
-/// Build a `(bucket, x, y, z) -> BelId` index over every bucket+location.
-/// Lets `cluster_is_legal` resolve a constraint-offset child slot in O(1)
-/// instead of O(n_bels_for_bucket). The caller passes `cell_type`; the lookup
-/// resolves to bucket via `ctx.resolve_bucket` so cell_type aliases work.
-pub(crate) fn build_bel_by_loc(ctx: &Context) -> FxHashMap<(IdString, i32, i32, i32), BelId> {
-    let mut idx: FxHashMap<(IdString, i32, i32, i32), BelId> = FxHashMap::default();
-    for bucket_id in ctx.bel_buckets() {
-        for bel in ctx.bels_for_bucket(bucket_id) {
-            let loc = bel.loc();
-            idx.insert((bucket_id, loc.x, loc.y, loc.z), bel.id());
-        }
-    }
-    idx
 }
 
 /// After legalization, verify no two placed cells claim the same routing

@@ -12,7 +12,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    build_bel_by_loc, cluster_is_legal, place_cluster_children, unbind_movable_cells,
+    cluster_is_legal, place_cluster_children, unbind_movable_cells,
     DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
@@ -76,10 +76,6 @@ impl Legalizer for SnapLegalizer {
 
         // 3. Unbind movable cells.
         unbind_movable_cells(ctx, idx_to_cell);
-
-        // (bucket, x, y, z) -> BelId index for cluster_is_legal child slot
-        // resolution.
-        let bel_by_loc = build_bel_by_loc(ctx);
 
         // Seed shared-mux registry from cells still bound (packer-fixed
         // BUFG/IO/clock buffers). Movable cells were just unbound so they
@@ -173,7 +169,7 @@ impl Legalizer for SnapLegalizer {
                                     continue;
                                 }
                                 if has_cluster_children {
-                                    if !cluster_is_legal(ctx, &registry, &bel_by_loc, cell_id, bid)
+                                    if !cluster_is_legal(ctx, &registry, cell_id, bid)
                                     {
                                         rejected_for_shared_mux += 1;
                                         continue;
@@ -214,7 +210,7 @@ impl Legalizer for SnapLegalizer {
                         )));
                     }
                     registry.record(ctx, cell_id, bel_id);
-                    place_cluster_children(ctx, &bel_by_loc, cell_id, bel_id)?;
+                    place_cluster_children(ctx, cell_id, bel_id)?;
                     // Record cluster children that were just bound so that
                     // later cells see their pin-wire claims.
                     if let Some(cluster) = ctx.design.clusters.get(&cell_id) {

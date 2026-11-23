@@ -378,13 +378,9 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place constrained cells first.
         for (ci, region_idx) in &constrained {
-            let region_bels = ctx
+            let mut available: Vec<BelId> = ctx
                 .bels_for_bucket_in_region(cell_type, *region_idx)
-                .to_vec();
-            let mut available: Vec<BelId> = region_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+                .filter(|&b| ctx.bel(b).is_available())
                 .collect();
 
             if available.is_empty() {
@@ -408,15 +404,14 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place unconstrained cells.
         if !unconstrained.is_empty() {
-            let bucket_bels: Vec<_> = ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect();
-            if bucket_bels.is_empty() {
+            if !ctx.has_bel_type(cell_type) {
                 return Err(PlacerError::NoBelsAvailable(cell_type_name));
             }
 
-            let mut available: Vec<BelId> = bucket_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+            let mut available: Vec<BelId> = ctx
+                .bels_for_bucket(cell_type)
+                .filter(|b| b.is_available())
+                .map(|b| b.id())
                 .collect();
 
             ctx.rng_mut().shuffle(&mut available);
@@ -478,13 +473,9 @@ pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerErro
             let Some(region_idx) = cell.region else {
                 continue;
             };
-            let region_bels = ctx
+            let mut available: Vec<BelId> = ctx
                 .bels_for_bucket_in_region(cell_type, region_idx)
-                .to_vec();
-            let mut available: Vec<BelId> = region_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+                .filter(|&b| ctx.bel(b).is_available())
                 .collect();
             if available.is_empty() {
                 let cell_name = ctx.cell(ci).name_id();

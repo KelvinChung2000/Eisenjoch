@@ -30,7 +30,6 @@ use crate::chipdb::{BelId, Loc};
 use crate::common::PlaceStrength;
 use crate::context::Context;
 use crate::netlist::{CellId, NetId, Property};
-use crate::placer::fast_bels::FastBels;
 use crate::placer::PlacerError;
 use crate::timing::TimingPortClass;
 
@@ -327,7 +326,6 @@ pub struct ConstraintLegaliseWorker {
     ripped_cells: FxHashSet<CellId>,
     old_locations: FxHashMap<CellId, Loc>,
     cluster2cells: FxHashMap<CellId, Vec<CellId>>,
-    fast_bels: FastBels,
 }
 
 /// A candidate placement for a cell and its constrained children.
@@ -346,9 +344,6 @@ impl ConstraintLegaliseWorker {
             ripped_cells: FxHashSet::default(),
             old_locations: FxHashMap::default(),
             cluster2cells,
-            // check_bel_available = false: the legaliser deliberately considers
-            // occupied BELs, because it is allowed to rip up weakly bound cells.
-            fast_bels: FastBels::new(false, 0),
         }
     }
 
@@ -579,6 +574,9 @@ impl ConstraintLegaliseWorker {
             }
 
             let cell_type = ctx.design.cell(cell).cell_type;
+            // Occupied BELs stay candidates: the legaliser may rip up weakly
+            // bound cells.
+            let bels = ctx.bels_valid_for_cell_type(cell_type);
             let region = ctx.design.cell(cell).region;
             let old_loc = *self
                 .old_locations
@@ -612,22 +610,11 @@ impl ConstraintLegaliseWorker {
                 };
 
                 let bel = {
-                    let (bel_data, _) = self.fast_bels.bels_for_cell_type(ctx, cell_type);
-                    if nx < 0 || nx >= bel_data.len() as i32 {
-                        continue;
-                    }
-                    let column = &bel_data[nx as usize];
-                    if ny < 0 || ny >= column.len() as i32 {
-                        continue;
-                    }
-                    let fb = &column[ny as usize];
+                    let fb = ctx.bucket_grid(&bels).at(nx, ny);
                     if fb.is_empty() {
                         continue;
                     }
-                    let pick = fb.len() as i32;
-                    let idx = ctx.rng_mut().rng_n(pick) as usize;
-                    let (bel_data, _) = self.fast_bels.bels_for_cell_type(ctx, cell_type);
-                    bel_data[nx as usize][ny as usize][idx]
+                    fb[ctx.rng_mut().rng_n(fb.len() as i32) as usize]
                 };
 
                 // Region constraint: eisenjoch expresses a region as tile
@@ -807,6 +794,7 @@ impl ConstraintLegaliseWorker {
 
 /// `legalise_relative_constraints` -- true when the pass had to move something.
 pub fn legalise_relative_constraints(ctx: &mut Context) -> Result<bool, PlacerError> {
+    ctx.ensure_bel_buckets();
     let mut worker = ConstraintLegaliseWorker::new(ctx);
     Ok(worker.legalise_constraints(ctx)? > 0)
 }

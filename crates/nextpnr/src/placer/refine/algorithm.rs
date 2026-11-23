@@ -11,6 +11,7 @@
 //! *single* iteration that fails to improve.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::Arc;
 
 use crate::chipdb::{BelId, Loc};
 use crate::common::{IdString, PlaceStrength};
@@ -21,15 +22,6 @@ use crate::timing::TimingAnalyser;
 
 use super::config::{RefineCfg, RefineStats};
 use super::cost::CostModel;
-
-/// Bels of one cell type, bucketed by location, owned so the search does not
-/// hold a borrow of the context across a bind.
-struct BelGrid {
-    /// `[x][y] -> bels`, upstream's `FastBelsData`.
-    by_loc: Vec<Vec<Vec<BelId>>>,
-    /// Total bels of this type, against `min_bels_for_grid_pick`.
-    count: i32,
-}
 
 /// `placer1_refine` -- improve an existing placement in place.
 ///
@@ -64,7 +56,8 @@ pub fn refine_placement(
         return Ok(stats);
     }
 
-    let grids = build_bel_grids(ctx, &autoplaced, &chain_basis);
+    ctx.ensure_bel_buckets();
+    let bels_by_type = candidate_lists(ctx, &autoplaced, &chain_basis);
     let (max_x, max_y) = fabric_extent(ctx);
 
     let mut tmg = TimingAnalyser::new();
@@ -90,7 +83,7 @@ pub fn refine_placement(
         for _ in 0..cfg.inner_iters {
             for &cell in &autoplaced {
                 let Some(target) =
-                    random_bel_for_cell(ctx, &grids, cell, diameter, cfg, None)
+                    random_bel_for_cell(ctx, &bels_by_type, cell, diameter, cfg, None)
                 else {
                     continue;
                 };
@@ -106,7 +99,7 @@ pub fn refine_placement(
                 let root_bel = ctx.design.cell(root).bel.expect("chain root is placed");
                 let base_z = ctx.chipdb().bel_loc(root_bel).z;
                 let Some(target) =
-                    random_bel_for_cell(ctx, &grids, root, diameter, cfg, Some(base_z))
+                    random_bel_for_cell(ctx, &bels_by_type, root, diameter, cfg, Some(base_z))
                 else {
                     continue;
                 };
@@ -180,34 +173,30 @@ pub fn refine_placement(
 /// sub-tile slot so a chain keeps its shape.
 fn random_bel_for_cell(
     ctx: &mut Context,
-    grids: &FxHashMap<IdString, BelGrid>,
+    bels_by_type: &FxHashMap<IdString, Arc<[BelId]>>,
     cell: CellId,
     diameter: i32,
     cfg: &RefineCfg,
     force_z: Option<i32>,
 ) -> Option<BelId> {
     let cell_type = ctx.design.cell(cell).cell_type;
-    let grid = grids.get(&cell_type)?;
+    let bels = bels_by_type.get(&cell_type)?;
     let curr = ctx.chipdb().bel_loc(ctx.design.cell(cell).bel?);
     let region = ctx.design.cell(cell).region;
 
     // Upstream spins until it finds a candidate. Bound it instead: a cell whose
     // window holds nothing placeable would otherwise hang the placer.
     for _ in 0..64 {
-        let (nx, ny) = if cfg.min_bels_for_grid_pick >= 0 && grid.count < cfg.min_bels_for_grid_pick
+        let (nx, ny) = if cfg.min_bels_for_grid_pick >= 0
+            && (bels.len() as i32) < cfg.min_bels_for_grid_pick
         {
-            (0usize, 0usize)
+            (0, 0)
         } else {
             let dx = ctx.rng_mut().rng_n(2 * diameter + 1) + (curr.x - diameter).max(0);
             let dy = ctx.rng_mut().rng_n(2 * diameter + 1) + (curr.y - diameter).max(0);
-            (dx as usize, dy as usize)
+            (dx, dy)
         };
-        let Some(col) = grid.by_loc.get(nx) else {
-            continue;
-        };
-        let Some(bucket) = col.get(ny) else {
-            continue;
-        };
+        let bucket = ctx.bucket_grid(bels).at(nx, ny);
         if bucket.is_empty() {
             continue;
         }
@@ -494,41 +483,48 @@ fn fabric_extent(ctx: &Context) -> (i32, i32) {
     )
 }
 
-/// Bucket every candidate bel by type and location once, up front.
-fn build_bel_grids(
+/// The bels each moving cell type may take: the context's own lists, which
+/// are tile-sorted and so double as the location index.
+fn candidate_lists(
     ctx: &Context,
     autoplaced: &[CellId],
     chain_basis: &[CellId],
-) -> FxHashMap<IdString, BelGrid> {
+) -> FxHashMap<IdString, Arc<[BelId]>> {
     let types: FxHashSet<IdString> = autoplaced
         .iter()
         .chain(chain_basis)
         .map(|&c| ctx.design.cell(c).cell_type)
         .collect();
-
-    let w = ctx.chipdb().width() as usize;
-    let h = ctx.chipdb().height() as usize;
-    let mut grids: FxHashMap<IdString, BelGrid> = types
+    types
         .into_iter()
-        .map(|t| {
-            (
-                t,
-                BelGrid {
-                    by_loc: vec![vec![Vec::new(); h]; w],
-                    count: 0,
-                },
-            )
-        })
-        .collect();
+        .map(|t| (t, ctx.bels_valid_for_cell_type(t)))
+        .collect()
+}
 
-    for bel in ctx.chipdb().bels() {
-        let loc = ctx.chipdb().bel_loc(bel);
-        for (&ty, grid) in grids.iter_mut() {
-            if ctx.bel(bel).is_valid_for_cell_type(ty) {
-                grid.by_loc[loc.x as usize][loc.y as usize].push(bel);
-                grid.count += 1;
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::example_context;
+
+    /// The search's location index is the context's own list, whatever the
+    /// number of cell types: no per-type grid is allocated.
+    #[test]
+    fn candidate_lists_do_not_scale_with_cell_type_count() {
+        let mut ctx = example_context();
+        let lut = ctx.id("LUT6");
+        let mut cells = vec![ctx.design.add_cell(ctx.id("lut"), lut)];
+        for i in 0..50 {
+            let alias = format!("ALIAS{i}");
+            ctx.add_cell_type_alias(&alias, "LUT6");
+            let ty = ctx.id(alias.as_str());
+            cells.push(ctx.design.add_cell(ctx.id(format!("c{i}").as_str()), ty));
+        }
+        let lists = candidate_lists(&ctx, &cells, &[]);
+        let lut_list = ctx.bucket_bel_list(lut);
+        assert!(Arc::ptr_eq(&lists[&lut], &lut_list));
+        // `is_valid_for_cell_type` does not follow aliases, so neither do these.
+        for (&ty, list) in &lists {
+            assert!(ty == lut || list.is_empty(), "{}", ctx.name_of(ty));
         }
     }
-    grids
 }
