@@ -34,6 +34,8 @@ pub enum PlacerError {
     PlacementFailed(String),
     #[error("Initial placement failed: could not place cell {0}")]
     InitialPlacementFailed(String),
+    #[error("timing analysis: {0}")]
+    Timing(#[from] crate::sta::StaSessionError),
 }
 
 /// Trait for placement algorithms.

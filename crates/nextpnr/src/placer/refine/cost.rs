@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 
 use crate::context::Context;
 use crate::netlist::{CellId, NetId};
-use crate::timing::TimingAnalyser;
+use crate::sta::{Criticality, NetSink, StaSession};
 
 use super::config::RefineCfg;
 
@@ -139,28 +139,33 @@ impl CostModel {
     /// `crit_exp`, so the critical few dominate.
     fn arc_costs(
         ctx: &Context,
-        tmg: &TimingAnalyser,
+        sta: Option<&StaSession>,
         net: NetId,
         cfg: &RefineCfg,
     ) -> Vec<f64> {
         let info = ctx.design.net(net);
-        if !cfg.timing_driven || info.users.len() >= cfg.timing_fanout_thresh {
+        let Some(sta) = sta else {
             return Vec::new();
-        }
-        // TMG_IGNORE on the driver port means the net carries no timing.
-        if ctx.port_timing_class(info.driver.cell, info.driver.port)
-            == crate::common::TimingPortClass::Ignore
-        {
-            return vec![0.0; info.users.len()];
+        };
+        if info.users.len() >= cfg.timing_fanout_thresh {
+            return Vec::new();
         }
         info.users
             .iter()
-            .map(|&user| {
-                if !user.is_valid() {
+            .enumerate()
+            .map(|(user, &pin)| {
+                if !pin.is_valid() {
                     return 0.0;
                 }
-                let crit = tmg.port_criticality(user.cell, user.port) as f64;
-                let delay = ctx.delay_ns(ctx.predict_arc_delay(net, user));
+                let sink = NetSink {
+                    net,
+                    user: u32::try_from(user).expect("net user index fits in u32"),
+                };
+                let crit = sta
+                    .criticality(sink)
+                    .expect("every user of a live net is a sink of the session")
+                    .map_or(0.0, Criticality::value);
+                let delay = ctx.delay_ns(ctx.predict_arc_delay(net, pin));
                 delay * crit.powf(cfg.crit_exp)
             })
             .collect()
@@ -171,7 +176,7 @@ impl CostModel {
     ///
     /// Upstream does this once per outer iteration specifically so rounding
     /// error from incremental updates cannot accumulate; keep that property.
-    pub(super) fn refresh(&mut self, ctx: &Context, tmg: &TimingAnalyser, cfg: &RefineCfg) {
+    pub(super) fn refresh(&mut self, ctx: &Context, sta: Option<&StaSession>, cfg: &RefineCfg) {
         self.wirelen = 0;
         self.timing = 0.0;
         for i in 0..self.nets.len() {
@@ -183,7 +188,7 @@ impl CostModel {
                 continue;
             }
             self.bounds[i] = Self::net_bounds(ctx, net);
-            self.arc_cost[i] = Self::arc_costs(ctx, tmg, net, cfg);
+            self.arc_cost[i] = Self::arc_costs(ctx, sta, net, cfg);
             self.wirelen += self.bounds[i].hpwl(cfg);
             self.timing += self.arc_cost[i].iter().sum::<f64>();
         }
@@ -199,7 +204,7 @@ impl CostModel {
     pub(super) fn stage(
         &self,
         ctx: &Context,
-        tmg: &TimingAnalyser,
+        sta: Option<&StaSession>,
         cfg: &RefineCfg,
         cells: &[CellId],
     ) -> Staged {
@@ -223,7 +228,7 @@ impl CostModel {
             }
             let net = self.nets[i];
             let bb = Self::net_bounds(ctx, net);
-            let arcs = Self::arc_costs(ctx, tmg, net, cfg);
+            let arcs = Self::arc_costs(ctx, sta, net, cfg);
             staged.wirelen_delta += bb.hpwl(cfg) - self.bounds[i].hpwl(cfg);
             staged.timing_delta +=
                 arcs.iter().sum::<f64>() - self.arc_cost[i].iter().sum::<f64>();

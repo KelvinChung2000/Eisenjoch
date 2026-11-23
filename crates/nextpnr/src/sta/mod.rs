@@ -23,6 +23,11 @@ use role::{CellRole, Roles};
 pub use interconnect::{
     ClasslessPips, DelayBounds, InterconnectError, InterconnectModel, InterconnectStage,
 };
+
+pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(DelayBounds {
+    early_ps: 100,
+    late_ps: 100,
+});
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
 pub use ruststa::engine::types::ClockId;

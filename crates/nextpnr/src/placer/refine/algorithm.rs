@@ -16,8 +16,11 @@ use crate::chipdb::{BelId, Loc};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::CellId;
+use crate::netlist::NetId;
 use crate::placer::PlacerError;
-use crate::timing::TimingAnalyser;
+use crate::sta::{
+    InterconnectModel, InterconnectStage, StaSession, StaSessionError, NOTIONAL_CLASSLESS_PIPS,
+};
 
 use super::config::{RefineCfg, RefineStats};
 use super::cost::CostModel;
@@ -67,11 +70,18 @@ pub fn refine_placement(
     let grids = build_bel_grids(ctx, &autoplaced, &chain_basis);
     let (max_x, max_y) = fabric_extent(ctx);
 
-    let mut tmg = TimingAnalyser::new();
-    tmg.setup_and_run(ctx);
+    let nets: Vec<NetId> = ctx.design.iter_alive_nets().map(|(net, _)| net).collect();
+    let mut sta = match cfg.timing_driven {
+        true => {
+            let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS)
+                .map_err(StaSessionError::from)?;
+            Some(StaSession::build(ctx, model, InterconnectStage::Placed)?)
+        }
+        false => None,
+    };
 
     let mut cost = CostModel::build(ctx);
-    cost.refresh(ctx, &tmg, cfg);
+    cost.refresh(ctx, sta.as_ref(), cfg);
     stats.wirelen_before = cost.wirelen;
     stats.timing.cost_before = cost.timing;
     stats.timing.critical_arcs = cost.critical_arcs();
@@ -98,7 +108,7 @@ pub fn refine_placement(
                     continue;
                 }
                 n_move += 1;
-                if try_swap_position(ctx, &mut cost, &tmg, cfg, cell, target, temp) {
+                if try_swap_position(ctx, &mut cost, sta.as_ref(), cfg, cell, target, temp) {
                     n_accept += 1;
                 }
             }
@@ -114,7 +124,7 @@ pub fn refine_placement(
                     continue;
                 }
                 n_move += 1;
-                if try_swap_chain(ctx, &mut cost, &tmg, cfg, root, target, temp) {
+                if try_swap_chain(ctx, &mut cost, sta.as_ref(), cfg, root, target, temp) {
                     n_accept += 1;
                 }
             }
@@ -162,13 +172,13 @@ pub fn refine_placement(
             }
         }
 
-        if cfg.timing_driven {
-            tmg.run(ctx);
+        if let Some(sta) = &mut sta {
+            sta.update_nets(ctx, InterconnectStage::Placed, &nets)?;
         }
         // Rebuild from scratch each iteration: criticalities have moved, and
         // upstream recomputes the totals here specifically so incremental
         // rounding cannot accumulate.
-        cost.refresh(ctx, &tmg, cfg);
+        cost.refresh(ctx, sta.as_ref(), cfg);
     }
 
     stats.wirelen_after = cost.wirelen;
@@ -232,7 +242,7 @@ fn random_bel_for_cell(
 fn try_swap_position(
     ctx: &mut Context,
     cost: &mut CostModel,
-    tmg: &TimingAnalyser,
+    sta: Option<&StaSession>,
     cfg: &RefineCfg,
     cell: CellId,
     new_bel: BelId,
@@ -292,7 +302,7 @@ fn try_swap_position(
 
     let mut moved = vec![cell];
     moved.extend(other);
-    let staged = cost.stage(ctx, tmg, cfg, &moved);
+    let staged = cost.stage(ctx, sta, cfg, &moved);
     // The constraint-distance term upstream adds here is identically zero in
     // refinement: both cells are known unclustered by the guards above.
     let delta = weighted_delta(cost, &staged, cfg);
@@ -310,7 +320,7 @@ fn try_swap_position(
 fn try_swap_chain(
     ctx: &mut Context,
     cost: &mut CostModel,
-    tmg: &TimingAnalyser,
+    sta: Option<&StaSession>,
     cfg: &RefineCfg,
     root: CellId,
     new_base: BelId,
@@ -450,7 +460,7 @@ fn try_swap_chain(
         }
     }
 
-    let staged = cost.stage(ctx, tmg, cfg, &disturbed);
+    let staged = cost.stage(ctx, sta, cfg, &disturbed);
     let delta = weighted_delta(cost, &staged, cfg);
     if accept(ctx, delta, temp) {
         cost.commit(staged);
