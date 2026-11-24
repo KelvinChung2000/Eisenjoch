@@ -437,7 +437,7 @@ impl TimingDriven {
         if !(cfg.criticality_exponent > 0.0 && cfg.criticality_exponent.is_finite()) {
             return Err(RouterError::CriticalityExponent(cfg.criticality_exponent));
         }
-        let model = InterconnectModel::new(ctx, cfg.classless_pips, PlacedEstimate::DelayTable)
+        let model = InterconnectModel::new(ctx, cfg.classless_pips, PlacedEstimate::ExactSearch)
             .map_err(StaSessionError::from)?;
         let session = StaSession::build(ctx, model.clone(), InterconnectStage::Placed)?;
         let clocks = &session.sta().session().state().constraints.clocks;

@@ -461,7 +461,7 @@ impl PyContext {
                 )))
             }
         };
-        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::DelayTable)
+        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
             .map_err(|e| sta_error(StaSessionError::from(e)))?;
         let session = StaSession::build(&self.ctx, model, stage).map_err(sta_error)?;
         let report = session.report(&self.ctx, paths_per_domain).map_err(sta_error)?;
@@ -670,7 +670,7 @@ fn sta_error(error: StaSessionError) -> PyErr {
 }
 
 fn ideal_net_criticality(ctx: &Context) -> Result<FxHashMap<NetId, f32>, StaSessionError> {
-    let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::DelayTable)?;
+    let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)?;
     let session = StaSession::build_ideal(ctx, model)?;
     ctx.design
         .iter_alive_nets()
