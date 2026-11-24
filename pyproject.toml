@@ -43,4 +43,4 @@ cache-keys = [
 ]
 
 [tool.uv.sources]
-sdf-toolkit = { path = "../sdf-toolkit", editable = true }
+sdf-toolkit = { git = "https://github.com/FPGA-Research/SDF-toolkit.git", rev = "adecec94d993aed96b880b6eafc1308bfe97e460" }

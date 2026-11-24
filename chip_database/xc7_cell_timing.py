@@ -4,12 +4,22 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 
 from sdf_toolkit import parse_sdf_file
-from sdf_toolkit.core import EdgeType, EntryType
-from sdf_toolkit.core.model import BaseEntry, CellsDict, Values
+from sdf_toolkit.core import (
+    CellsDict,
+    DelayValues,
+    EdgeType,
+    Entry,
+    EntryType,
+    Hold,
+    Iopath,
+    Setup,
+    Values,
+)
 
 SPEED_GRADE = "1"
 PS_PER_NS = 1000
@@ -215,49 +225,69 @@ DROPPED_ENTRIES: dict[str, frozenset[SdfEntry]] = {
 }
 
 
-def _ps(ns: float) -> int:
-    ps = round(ns * PS_PER_NS)
-    if abs(ns * PS_PER_NS - ps) > 1e-6:
+def _ps(ns: Decimal) -> int:
+    ps = ns * PS_PER_NS
+    if ps != ps.to_integral_value():
         raise UnmappedTimingError(f"{ns} ns is not a whole number of ps")
-    return ps
+    return int(ps)
 
 
-def _bounds(values: Values | None, what: str) -> tuple[int, int]:
-    if (
-        values is None
-        or values.min is None
-        or values.max is None
-        or values.avg is not None
-    ):
+def _bounds(values: Values, what: str) -> tuple[int, int]:
+    if values.min is None or values.max is None or values.typ is not None:
         raise UnmappedTimingError(f"{what}: expected a (min::max) triple, got {values}")
     return _ps(values.min), _ps(values.max)
 
 
-def _delay_corners(entry: BaseEntry, what: str) -> Corners:
-    paths = entry.delay_paths
-    if paths is None or paths.nominal is not None:
-        raise UnmappedTimingError(
-            f"{what}: expected (fast_min::fast_max)(slow_min::slow_max)"
-        )
-    fast_min, fast_max = _bounds(paths.fast, what)
-    slow_min, slow_max = _bounds(paths.slow, what)
-    return Corners(
-        fast_min=fast_min, fast_max=fast_max, slow_min=slow_min, slow_max=slow_max
-    )
+def _delay_corners(entry: Entry, what: str) -> Corners:
+    match entry:
+        case Iopath(delay=DelayValues(rvalues=(fast, slow), limits=None)):
+            fast_min, fast_max = _bounds(fast, what)
+            slow_min, slow_max = _bounds(slow, what)
+            return Corners(
+                fast_min=fast_min,
+                fast_max=fast_max,
+                slow_min=slow_min,
+                slow_max=slow_max,
+            )
+        case _:
+            raise UnmappedTimingError(
+                f"{what}: expected (fast_min::fast_max)(slow_min::slow_max)"
+            )
 
 
-def _check_corners(entry: BaseEntry, what: str) -> Corners:
-    paths = entry.delay_paths
-    if paths is None or paths.fast is not None or paths.slow is not None:
-        raise UnmappedTimingError(f"{what}: expected one slow-corner (min::max) triple")
-    if entry.from_pin_edge != EdgeType.POSEDGE:
-        raise UnmappedTimingError(
-            f"{what}: expected a posedge clock, got {entry.from_pin_edge}"
-        )
-    slow_min, slow_max = _bounds(paths.nominal, what)
-    return Corners(
-        fast_min=slow_min, fast_max=slow_max, slow_min=slow_min, slow_max=slow_max
-    )
+def _check_corners(entry: Entry, what: str) -> Corners:
+    match entry:
+        case (
+            Setup(limit=limit, reference=reference)
+            | Hold(limit=limit, reference=reference)
+        ):
+            if reference.edge != EdgeType.POSEDGE:
+                raise UnmappedTimingError(
+                    f"{what}: expected a posedge clock, got {reference.edge}"
+                )
+            slow_min, slow_max = _bounds(limit, what)
+            return Corners(
+                fast_min=slow_min,
+                fast_max=slow_max,
+                slow_min=slow_min,
+                slow_max=slow_max,
+            )
+        case _:
+            raise UnmappedTimingError(
+                f"{what}: expected one slow-corner (min::max) triple"
+            )
+
+
+def _entry_key(entry: Entry, what: str) -> SdfEntry:
+    match entry:
+        case Iopath(input=source, output=sink):
+            return SdfEntry(kind=entry.type, from_pin=source.port, to_pin=sink.port)
+        case (
+            Setup(data=data, reference=reference) | Hold(data=data, reference=reference)
+        ):
+            return SdfEntry(kind=entry.type, from_pin=reference.port, to_pin=data.port)
+        case _:
+            raise UnmappedTimingError(f"{what}: unmapped SDF entry {entry}")
 
 
 class SdfLibrary:
@@ -265,7 +295,7 @@ class SdfLibrary:
         self._timings_dir = timings_dir
         self._files: dict[str, CellsDict] = {}
 
-    def cell(self, cell: SdfCell) -> dict[SdfEntry, BaseEntry]:
+    def cell(self, cell: SdfCell) -> dict[SdfEntry, Entry]:
         if cell.sdf_file not in self._files:
             self._files[cell.sdf_file] = parse_sdf_file(
                 self._timings_dir / f"{cell.sdf_file}.sdf"
@@ -273,15 +303,9 @@ class SdfLibrary:
         instances = self._files[cell.sdf_file].get(cell.cell_type)
         if instances is None or cell.instance not in instances:
             raise UnmappedTimingError(f"{cell} is not in {cell.sdf_file}.sdf")
-        entries: dict[SdfEntry, BaseEntry] = {}
-        for entry in instances[cell.instance].values():
-            if entry.from_pin is None or entry.to_pin is None:
-                raise UnmappedTimingError(
-                    f"{cell}: entry {entry.name} has no from/to pin"
-                )
-            key = SdfEntry(
-                kind=entry.type, from_pin=entry.from_pin, to_pin=entry.to_pin
-            )
+        entries: dict[SdfEntry, Entry] = {}
+        for entry in instances[cell.instance]:
+            key = _entry_key(entry, str(cell))
             if key in entries:
                 raise UnmappedTimingError(f"{cell}: two SDF entries for {key}")
             entries[key] = entry
