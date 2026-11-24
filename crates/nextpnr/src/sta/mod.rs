@@ -6,7 +6,7 @@ mod report;
 mod role;
 mod session;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -19,6 +19,7 @@ use ruststa::engine::session_api::EndpointSlack;
 use ruststa::engine::types::NodeId;
 use thiserror::Error;
 
+use crate::chipdb::SpeedGradePod;
 use crate::context::Context;
 use crate::netlist::{CellId, CellPin, NetId, NetInfo, PortType};
 use role::{CellRole, CellTiming, Roles};
@@ -108,13 +109,22 @@ pub struct RustSta {
     black_boxes: BTreeMap<String, usize>,
 }
 
+fn speed_grade(ctx: &Context) -> Result<&SpeedGradePod, StaBuildError> {
+    ctx.speed_grade()
+        .ok_or_else(|| StaBuildError::MissingSpeedGrade {
+            index: ctx.speed_grade_idx(),
+        })
+}
+
+pub fn register_clock_nets(ctx: &Context) -> Result<BTreeSet<NetId>, StaBuildError> {
+    let speed_grade = speed_grade(ctx)?;
+    let roles = role::roles(ctx, speed_grade)?;
+    Ok(library::register_clock_nets(ctx, speed_grade, &roles))
+}
+
 impl RustSta {
     pub fn build(ctx: &Context) -> Result<Self, StaBuildError> {
-        let speed_grade = ctx
-            .speed_grade()
-            .ok_or_else(|| StaBuildError::MissingSpeedGrade {
-                index: ctx.speed_grade_idx(),
-            })?;
+        let speed_grade = speed_grade(ctx)?;
         let roles = role::roles(ctx, speed_grade)?;
         let black_boxes = black_boxes(ctx, &roles);
         let types = library::cell_types(ctx, speed_grade, &roles)?;

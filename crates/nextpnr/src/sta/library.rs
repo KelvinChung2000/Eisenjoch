@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rustc_hash::FxHashMap;
 use rusteda_core::liberty::{Cell, Direction, Library, Pin, Table, TimingArc, Units};
@@ -12,7 +12,7 @@ use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
 use crate::common::{ClockEdge, DelayT};
 use crate::context::Context;
-use crate::netlist::{CellPin, PortType};
+use crate::netlist::{CellPin, NetId, PortType};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TypePort {
@@ -83,6 +83,30 @@ pub(super) fn cell_types(
         cell_type.delay_arcs = delay_arcs(ctx, speed_grade, cell_type);
     }
     Ok(types)
+}
+
+pub(super) fn register_clock_nets(
+    ctx: &Context,
+    speed_grade: &SpeedGradePod,
+    roles: &Roles,
+) -> BTreeSet<NetId> {
+    let mut nets = BTreeSet::new();
+    for (&cell_id, role) in &roles.cells {
+        let CellRole::Instance(CellTiming::SpeedGrade { type_idx }) = role else {
+            continue;
+        };
+        let cell = ctx.design.cell(cell_id);
+        for (&id, port) in &cell.ports {
+            let port = TypePort {
+                id,
+                dir: port.port_type(),
+            };
+            let clocks = register_arcs(ctx, speed_grade, *type_idx, &port)
+                .map(|(_, _, pod)| IdString(ChipDb::reg_arc_info(pod).clock_port));
+            nets.extend(clocks.filter_map(|clock| cell.port_net(clock)));
+        }
+    }
+    nets
 }
 
 fn declare_clock_pins(ctx: &Context, speed_grade: &SpeedGradePod, cell_type: &mut CellType) {

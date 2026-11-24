@@ -17,7 +17,7 @@ use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
     ArcTiming, ClasslessPips, ClockId, CritNorm, DelayBounds, InterconnectError, InterconnectModel,
     InterconnectStage, NetSink, PairBudget, PlacedEstimate, Reach, SinkTiming, StaSession,
-    StaSessionError, TableEntry, Untimed,
+    StaSessionError, TableEntry, Untimed, register_clock_nets,
 };
 use rayon::prelude::*;
 use rstest::rstest;
@@ -327,6 +327,18 @@ fn aliased_register_times_as_its_bel_bucket(#[case] register: &str) {
 
     let (q_delay, d_delay) = (uniform(2 * SWINPUT_PIP_PS), uniform(NOTIONAL_PIP_PS));
     assert_chain_timing(&session, &chain, &expected(1000, chain.lut_input, q_delay, d_delay));
+}
+
+#[rstest]
+#[case::constrained(1000)]
+#[case::unconstrained(0)]
+fn register_clock_nets_are_the_nets_on_register_clock_pins(#[case] period_ps: DelayT) {
+    let mut ctx = common::make_example_context();
+    let chain = placed_chain(&mut ctx, 0, period_ps);
+
+    let nets = register_clock_nets(&ctx).expect("the example chipdb has a speed grade");
+
+    assert_eq!(nets, std::collections::BTreeSet::from([chain.clk]));
 }
 
 fn assert_chain_report(ctx: &Context, session: &StaSession, expected: &Expected) {
