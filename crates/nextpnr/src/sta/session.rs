@@ -7,6 +7,7 @@ use ruststa::engine::incr::{
     ArcTiming, ArcTimingTable, Criticality, IncrementalStats, SessionError, SessionNodeKey,
     TimingSession,
 };
+use ruststa::engine::prop::EndpointCheckKind;
 use ruststa::engine::types::{ClockId, NodeId};
 use thiserror::Error;
 
@@ -183,6 +184,7 @@ pub struct StaSession {
     links: Vec<SinkLink>,
     timing: Vec<SinkTiming>,
     domains: Vec<DomainSummary>,
+    hold_domains: Vec<DomainSummary>,
     table: ArcTimingTable,
     budgets: Vec<PairBudget>,
 }
@@ -258,6 +260,7 @@ impl StaSession {
             timing: vec![SinkTiming::Untimed(Untimed::VacantUser); links.len()],
             links,
             domains: Vec::new(),
+            hold_domains: Vec::new(),
             table,
             budgets: Vec::new(),
         };
@@ -384,6 +387,10 @@ impl StaSession {
         &self.domains
     }
 
+    pub fn hold_domains(&self) -> &[DomainSummary] {
+        &self.hold_domains
+    }
+
     pub fn sta(&self) -> &RustSta {
         &self.sta
     }
@@ -402,7 +409,8 @@ impl StaSession {
                 SinkLink::Arc(link) => SinkTiming::Arc(rows[link.arc].timing),
             };
         }
-        self.domains = domain_summaries(&self.sta.session)?;
+        self.domains = domain_summaries(&self.sta.session, EndpointCheckKind::is_setup_family)?;
+        self.hold_domains = domain_summaries(&self.sta.session, EndpointCheckKind::is_hold_family)?;
         self.budgets = pair_budgets(&self.table);
         Ok(())
     }
@@ -496,7 +504,10 @@ fn sink_links(
     Ok(links)
 }
 
-fn domain_summaries(session: &TimingSession) -> Result<Vec<DomainSummary>, StaSessionError> {
+fn domain_summaries(
+    session: &TimingSession,
+    in_family: fn(EndpointCheckKind) -> bool,
+) -> Result<Vec<DomainSummary>, StaSessionError> {
     let endpoints = &session.default_corner().endpoints;
     if endpoints.records_released() {
         return Err(StaSessionError::CheckRecordsReleased);
@@ -505,7 +516,7 @@ fn domain_summaries(session: &TimingSession) -> Result<Vec<DomainSummary>, StaSe
     for record in endpoints
         .records
         .iter()
-        .filter(|record| record.kind.is_setup_family())
+        .filter(|record| in_family(record.kind))
     {
         worst
             .entry((record.launch_clock, record.capture_clock))

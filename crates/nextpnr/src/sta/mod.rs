@@ -34,7 +34,7 @@ pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(Delay
     late_ps: 100,
 });
 pub use criticality::{CritNorm, PairBudget};
-pub use report::{DomainReport, PathPinReport, PathReport, TimingReport};
+pub use report::{DomainReport, HoldReport, PathPinReport, PathReport, TimingReport};
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use ruststa::engine::types::ClockId;
 pub use session::{DomainSummary, SinkTiming, StaSession, StaSessionError, Untimed};

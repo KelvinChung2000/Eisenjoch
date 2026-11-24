@@ -31,8 +31,16 @@ pub struct DomainReport {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HoldReport {
+    pub launch: String,
+    pub capture: String,
+    pub summary: DomainSummary,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TimingReport {
     pub domains: Vec<DomainReport>,
+    pub hold: Vec<HoldReport>,
     pub black_boxes: BTreeMap<String, usize>,
 }
 
@@ -65,6 +73,22 @@ impl TimingReport {
             .map(|domain| domain.summary.failing_endpoints)
             .sum()
     }
+
+    pub fn hold_wns_ns(&self) -> Option<f64> {
+        self.hold.iter().map(|pair| pair.summary.wns_ns).reduce(f64::min)
+    }
+
+    pub fn hold_tns_ns(&self) -> f64 {
+        self.hold.iter().map(|pair| pair.summary.tns_ns).sum()
+    }
+
+    pub fn hold_endpoints(&self) -> usize {
+        self.hold.iter().map(|pair| pair.summary.endpoints).sum()
+    }
+
+    pub fn hold_failing_endpoints(&self) -> usize {
+        self.hold.iter().map(|pair| pair.summary.failing_endpoints).sum()
+    }
 }
 
 impl fmt::Display for TimingReport {
@@ -91,6 +115,19 @@ impl fmt::Display for TimingReport {
                     writeln!(f, "    {:>10.3} ns  {}", pin.arrival_ns, pin.pin)?;
                 }
             }
+        }
+        for pair in &self.hold {
+            let summary = &pair.summary;
+            writeln!(
+                f,
+                "{} -> {} hold: WNS {:.3} ns, TNS {:.3} ns, {}/{} endpoints failing",
+                pair.launch,
+                pair.capture,
+                summary.wns_ns,
+                summary.tns_ns,
+                summary.failing_endpoints,
+                summary.endpoints,
+            )?;
         }
         for (cell_type, cells) in &self.black_boxes {
             writeln!(f, "untimed black box: {cells} cells of type {cell_type}")?;
@@ -130,8 +167,18 @@ impl StaSession {
                 }
             })
             .collect();
+        let hold = self
+            .hold_domains()
+            .iter()
+            .map(|summary| HoldReport {
+                launch: clocks[summary.launch.index()].name.clone(),
+                capture: clocks[summary.capture.index()].name.clone(),
+                summary: *summary,
+            })
+            .collect();
         Ok(TimingReport {
             domains,
+            hold,
             black_boxes: self.sta().black_boxes().clone(),
         })
     }

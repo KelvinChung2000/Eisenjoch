@@ -277,6 +277,14 @@ fn assert_chain_timing(session: &StaSession, chain: &Chain, expected: &Expected)
         (domain.endpoints, domain.failing_endpoints),
         (1, usize::from(expected.setup_ps < 0))
     );
+    let [hold] = session.hold_domains() else {
+        panic!("one clock gives one hold pair: {:?}", session.hold_domains());
+    };
+    assert_ns(hold.wns_ns, expected.hold_ps);
+    assert_eq!(
+        (hold.endpoints, hold.failing_endpoints),
+        (1, usize::from(expected.hold_ps < 0))
+    );
 }
 
 fn uniform(delay_ps: DelayT) -> DelayBounds {
