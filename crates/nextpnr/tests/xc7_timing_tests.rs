@@ -2,11 +2,17 @@ use std::path::{Path, PathBuf};
 
 use nextpnr::chipdb::{CellPinRegArcPod, ChipDb, TimingValue};
 use nextpnr::common::DelayT;
-use nextpnr::context::Context;
+use nextpnr::context::{BelPin, Context};
 use nextpnr::frontend::parse_json;
+use nextpnr::netlist::CellPin;
 use nextpnr::packer;
+use nextpnr::placer::heap::PlacerHeapCfg;
+use nextpnr::placer::{Placer, PlacerHeap};
 use nextpnr::read_packed;
-use nextpnr::sta::{InterconnectModel, PlacedEstimate, StaSession, NOTIONAL_CLASSLESS_PIPS};
+use nextpnr::sta::{
+    DelayBounds, InterconnectModel, InterconnectStage, PlacedEstimate, StaSession,
+    NOTIONAL_CLASSLESS_PIPS,
+};
 use rstest::rstest;
 
 fn repo_file(relative: &str) -> PathBuf {
@@ -100,10 +106,7 @@ fn chipdb_cell_arc_is_the_prjxray_sdf_envelope(
     assert_eq!(corners(value), expected_ps);
 }
 
-#[rstest]
-#[case::ideal_wires_10ns(10_000)]
-#[ignore = "needs benchmark/output/stereovision3.json and the xc7_standard.bin"]
-fn stereovision3_session_has_finite_setup_and_hold_slack(#[case] period_ps: DelayT) {
+fn stereovision3(period_ps: DelayT) -> Context {
     let mut ctx = xc7_context();
     let json = std::fs::read_to_string(repo_file("benchmark/output/stereovision3.json"))
         .expect("read stereovision3");
@@ -116,6 +119,14 @@ fn stereovision3_session_has_finite_setup_and_hold_slack(#[case] period_ps: Dela
             .unwrap_or_else(|| panic!("net {clock}"));
         ctx.design.net_edit(net).set_clock_constraint(period_ps);
     }
+    ctx
+}
+
+#[rstest]
+#[case::ideal_wires_10ns(10_000)]
+#[ignore = "needs benchmark/output/stereovision3.json and the xc7_standard.bin"]
+fn stereovision3_session_has_finite_setup_and_hold_slack(#[case] period_ps: DelayT) {
+    let ctx = stereovision3(period_ps);
     let model = InterconnectModel::new(&ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
         .expect("interconnect model");
     let session = StaSession::build_ideal(&ctx, model).expect("session");
@@ -132,4 +143,60 @@ fn stereovision3_session_has_finite_setup_and_hold_slack(#[case] period_ps: Dela
     assert!(!setup.is_empty() && !hold.is_empty());
     assert!(setup.iter().chain(&hold).all(|slack| slack.is_finite()));
     assert!(session.domains().iter().all(|d| d.wns_ns.is_finite()));
+}
+
+fn pin_wire(ctx: &Context, pin: CellPin) -> nextpnr::chipdb::WireId {
+    let bel = ctx.design.cell(pin.cell).bel.expect("placed cell");
+    ctx.bel_pin_wire(BelPin::new(bel, pin.port))
+        .expect("placed pin has a wire")
+        .id()
+}
+
+#[rstest]
+#[case::wide_fanout("iic_stop")]
+#[case::register_fanout("temp_reg1")]
+#[case::single_sink("$abc$5650$new_n276")]
+#[ignore = "needs benchmark/output/stereovision3.json and the xc7_standard.bin"]
+fn stereovision3_placed_session_matches_exhaustive_search(#[case] net_name: &str) {
+    let mut ctx = stereovision3(10_000);
+    PlacerHeap
+        .place(&mut ctx, &PlacerHeapCfg::default())
+        .expect("heap placement");
+    let model = || {
+        InterconnectModel::new(&ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
+            .expect("interconnect model")
+    };
+    let session =
+        StaSession::build(&ctx, model(), InterconnectStage::Placed).expect("placed session");
+    let setup: Vec<f64> = ctx
+        .design
+        .iter_alive_nets()
+        .flat_map(|(net, _)| session.net_sinks(net).expect("net sinks"))
+        .filter_map(|timing| timing.setup_slack_ns())
+        .collect();
+    assert!(!setup.is_empty() && setup.iter().all(|slack| slack.is_finite()));
+
+    let net = ctx
+        .design
+        .net_by_name(ctx.id(net_name))
+        .unwrap_or_else(|| panic!("net {net_name}"));
+    let info = ctx.design.net(net);
+    let users: Vec<u32> = (0..u32::try_from(info.users().len()).expect("few users")).collect();
+    let estimated = model()
+        .net_delays(&ctx, InterconnectStage::Placed, net, &users)
+        .expect("every sink is reachable");
+    let exhaustive = model().exact_delays_from(
+        ctx.chipdb(),
+        pin_wire(&ctx, info.driver().expect("driven net")),
+    );
+    let searched: Vec<(u32, DelayBounds)> = users
+        .iter()
+        .map(|&user| {
+            (
+                user,
+                exhaustive[&pin_wire(&ctx, info.users()[user as usize])],
+            )
+        })
+        .collect();
+    assert_eq!(estimated, searched);
 }
