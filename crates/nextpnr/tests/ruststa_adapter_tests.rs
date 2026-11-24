@@ -1,5 +1,7 @@
 mod common;
 
+use std::collections::BTreeMap;
+
 use common::{add_cell, add_net, drive, sink, sink_as};
 
 use nextpnr::chipdb::{ChipDb, TimingValue};
@@ -281,8 +283,39 @@ fn net_sinks_map_to_their_wire_arcs(#[case] design: fn(&mut Context)) {
     }
 }
 
-fn untimed_cell(ctx: &mut Context) {
-    add_cell(ctx, "mystery", "UNTIMED");
+fn untimed_lut_in_chain(ctx: &mut Context) -> CellId {
+    let capture = register_chain(ctx, &[0], 1000);
+    let lut = ctx.design.cell_by_name(ctx.id("lut0")).expect("chain has lut0");
+    let untimed = ctx.id("UNTIMED");
+    ctx.design.cell_edit(lut).set_type(untimed);
+    capture
+}
+
+fn register_without_clock_port(ctx: &mut Context) -> CellId {
+    let (lut, register, d) = (add_cell(ctx, "lut", "LUT6"), add_cell(ctx, "reg", "DFF"), add_net(ctx, "d"));
+    drive(ctx, d, lut, "F");
+    sink(ctx, d, register, "D");
+    register
+}
+
+#[rstest]
+#[case::untimed_cell_type(untimed_lut_in_chain, &[("UNTIMED", 1)])]
+#[case::register_without_clock_port(register_without_clock_port, &[])]
+fn build_leaves_the_capture_input_unconstrained(
+    #[case] design: fn(&mut Context) -> CellId,
+    #[case] black_boxes: &[(&str, usize)],
+) {
+    let mut ctx = common::make_example_context();
+    let capture = design(&mut ctx);
+
+    let sta = RustSta::build(&ctx).expect("adapter builds the design");
+    let expected: BTreeMap<String, usize> =
+        black_boxes.iter().map(|&(name, cells)| (name.to_owned(), cells)).collect();
+    assert_eq!(sta.black_boxes(), &expected);
+    let setup = sta
+        .endpoint_slack(CellPin::new(capture, ctx.id("D")))
+        .and_then(|slack| slack.setup_ns);
+    assert_eq!(setup, None);
 }
 
 fn pad_without_port_name(ctx: &mut Context) {
@@ -318,10 +351,6 @@ fn constant_clock(ctx: &mut Context) {
 }
 
 #[rstest]
-#[case::cell_type_without_timing(
-    untimed_cell,
-    |err: &StaBuildError| matches!(err, StaBuildError::CellTypeWithoutTiming { cell_type } if cell_type == "UNTIMED")
-)]
 #[case::pad_without_port_name(
     pad_without_port_name,
     |err: &StaBuildError| matches!(err, StaBuildError::PadWithoutPortName { cell } if cell == "pad")

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ruststa::engine::incr::ReportedPath;
@@ -32,6 +33,7 @@ pub struct DomainReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimingReport {
     pub domains: Vec<DomainReport>,
+    pub black_boxes: BTreeMap<String, usize>,
 }
 
 impl TimingReport {
@@ -90,6 +92,9 @@ impl fmt::Display for TimingReport {
                 }
             }
         }
+        for (cell_type, cells) in &self.black_boxes {
+            writeln!(f, "untimed black box: {cells} cells of type {cell_type}")?;
+        }
         Ok(())
     }
 }
@@ -125,7 +130,10 @@ impl StaSession {
                 }
             })
             .collect();
-        Ok(TimingReport { domains })
+        Ok(TimingReport {
+            domains,
+            black_boxes: self.sta().black_boxes().clone(),
+        })
     }
 
     fn path_report(&self, ctx: &Context, path: &ReportedPath) -> PathReport {

@@ -31,9 +31,15 @@ pub(super) struct Pad {
     pub net: Option<NetId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CellTiming {
+    SpeedGrade { type_idx: usize },
+    BlackBox,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CellRole {
-    Timed { type_idx: usize },
+    Instance(CellTiming),
     Pad(Pad),
     Constant(Level),
     OffChip,
@@ -105,13 +111,15 @@ fn cell_role(
         None => match ctx.name_of(cell.cell_type) {
             "GND" | "GND_DRV" => Ok(CellRole::Constant(Level::Low)),
             "VCC" | "VCC_DRV" => Ok(CellRole::Constant(Level::High)),
-            type_name => ctx
-                .chipdb()
-                .cell_timing_index(speed_grade, ctx.resolve_bucket(cell.cell_type).index())
-                .map(|type_idx| CellRole::Timed { type_idx })
-                .ok_or_else(|| StaBuildError::CellTypeWithoutTiming {
-                    cell_type: type_name.to_owned(),
-                }),
+            _ => Ok(CellRole::Instance(
+                match ctx
+                    .chipdb()
+                    .cell_timing_index(speed_grade, ctx.resolve_bucket(cell.cell_type).index())
+                {
+                    Some(type_idx) => CellTiming::SpeedGrade { type_idx },
+                    None => CellTiming::BlackBox,
+                },
+            )),
         },
     }
 }

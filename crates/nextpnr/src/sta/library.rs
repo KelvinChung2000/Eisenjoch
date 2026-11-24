@@ -6,7 +6,7 @@ use ruststa::engine::delay::annotate::DelayAnnotations;
 use ruststa::engine::incr::SessionNodeKey;
 
 use super::interconnect::DelayBounds;
-use super::role::{CellRole, Roles};
+use super::role::{CellRole, CellTiming, Roles};
 use super::{StaBuildError, PS_IN_NS};
 use crate::chipdb::{ChipDb, SpeedGradePod};
 use crate::common::IdString;
@@ -36,7 +36,7 @@ struct DelayArc {
 
 #[derive(Debug)]
 pub(super) struct CellType {
-    pub type_idx: usize,
+    pub timing: CellTiming,
     pub ports: BTreeMap<String, TypePort>,
     delay_arcs: Vec<DelayArc>,
 }
@@ -48,12 +48,12 @@ pub(super) fn cell_types(
 ) -> Result<BTreeMap<String, CellType>, StaBuildError> {
     let mut types: BTreeMap<String, CellType> = BTreeMap::new();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
-        let CellRole::Timed { type_idx } = roles.cells[&cell_id] else {
+        let CellRole::Instance(timing) = roles.cells[&cell_id] else {
             continue;
         };
         let type_name = ctx.name_of(cell.cell_type).to_owned();
         let cell_type = types.entry(type_name.clone()).or_insert_with(|| CellType {
-            type_idx,
+            timing,
             ports: BTreeMap::new(),
             delay_arcs: Vec::new(),
         });
@@ -76,18 +76,40 @@ pub(super) fn cell_types(
             }
         }
     }
-    for (name, cell_type) in &mut types {
-        cell_type.delay_arcs = delay_arcs(ctx, speed_grade, name, cell_type)?;
+    for cell_type in types.values_mut() {
+        declare_clock_pins(ctx, speed_grade, cell_type);
+    }
+    for cell_type in types.values_mut() {
+        cell_type.delay_arcs = delay_arcs(ctx, speed_grade, cell_type);
     }
     Ok(types)
 }
 
-fn delay_arcs(
-    ctx: &Context,
-    speed_grade: &SpeedGradePod,
-    type_name: &str,
-    cell_type: &CellType,
-) -> Result<Vec<DelayArc>, StaBuildError> {
+fn declare_clock_pins(ctx: &Context, speed_grade: &SpeedGradePod, cell_type: &mut CellType) {
+    let CellTiming::SpeedGrade { type_idx } = cell_type.timing else {
+        return;
+    };
+    let clocks: Vec<IdString> = cell_type
+        .ports
+        .values()
+        .flat_map(|port| register_arcs(ctx, speed_grade, type_idx, port))
+        .map(|(_, _, pod)| IdString(ChipDb::reg_arc_info(pod).clock_port))
+        .collect();
+    for clock in clocks {
+        cell_type
+            .ports
+            .entry(ctx.name_of(clock).to_owned())
+            .or_insert(TypePort {
+                id: clock,
+                dir: PortType::In,
+            });
+    }
+}
+
+fn delay_arcs(ctx: &Context, speed_grade: &SpeedGradePod, cell_type: &CellType) -> Vec<DelayArc> {
+    let CellTiming::SpeedGrade { type_idx } = cell_type.timing else {
+        return Vec::new();
+    };
     let chipdb = ctx.chipdb();
     let outputs = cell_type
         .ports
@@ -102,7 +124,7 @@ fn delay_arcs(
         {
             let timing = chipdb.cell_comb_timing(
                 speed_grade,
-                cell_type.type_idx,
+                type_idx,
                 input.id.index(),
                 output.id.index(),
             );
@@ -115,16 +137,16 @@ fn delay_arcs(
                 });
             }
         }
-        for (clock, edge, pod) in register_arcs(ctx, speed_grade, cell_type.type_idx, &output) {
+        for (clock, edge, pod) in register_arcs(ctx, speed_grade, type_idx, &output) {
             arcs.push(DelayArc {
-                from: cell_type.ports[&clock_pin(type_name, cell_type, clock)?],
+                from: cell_type.ports[clock],
                 to: output,
                 kind: DelayArcKind::Launch(edge),
                 bounds: DelayBounds::of(ChipDb::reg_arc_clock_to_q(pod)),
             });
         }
     }
-    Ok(arcs)
+    arcs
 }
 
 pub(super) fn cell_delay_annotations(
@@ -135,7 +157,7 @@ pub(super) fn cell_delay_annotations(
 ) -> DelayAnnotations<SessionNodeKey> {
     let mut annotations = DelayAnnotations::new();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
-        let CellRole::Timed { .. } = roles.cells[&cell_id] else {
+        let CellRole::Instance(_) = roles.cells[&cell_id] else {
             continue;
         };
         for arc in &types[ctx.name_of(cell.cell_type)].delay_arcs {
@@ -155,21 +177,21 @@ pub(super) fn library(
     ctx: &Context,
     speed_grade: &SpeedGradePod,
     types: &BTreeMap<String, CellType>,
-) -> Result<Library, StaBuildError> {
+) -> Library {
     let cells = types
         .iter()
         .map(|(name, cell_type)| liberty_cell(ctx, speed_grade, name, cell_type))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
     let mut units = Units::default();
     units.time.scale = PS_IN_NS;
-    Ok(Library {
+    Library {
         name: String::from("eisenjoch"),
         time_unit_ns: PS_IN_NS,
         cap_unit_pf: 1.0,
         units,
         cells,
         ..Library::default()
-    })
+    }
 }
 
 fn liberty_cell(
@@ -177,13 +199,13 @@ fn liberty_cell(
     speed_grade: &SpeedGradePod,
     name: &str,
     cell_type: &CellType,
-) -> Result<Cell, StaBuildError> {
+) -> Cell {
     let pins = cell_type
         .ports
         .iter()
         .map(|(pin_name, port)| {
             let arcs = match port.dir {
-                PortType::In => check_arcs(ctx, speed_grade, name, cell_type, port)?,
+                PortType::In => check_arcs(ctx, speed_grade, cell_type, port),
                 PortType::Out | PortType::InOut => cell_type
                     .delay_arcs
                     .iter()
@@ -191,19 +213,19 @@ fn liberty_cell(
                     .map(|arc| delay_arc(ctx, arc))
                     .collect(),
             };
-            Ok(Pin {
+            Pin {
                 name: pin_name.clone(),
                 direction: direction(port.dir),
                 arcs,
                 ..Pin::default()
-            })
+            }
         })
-        .collect::<Result<Vec<_>, StaBuildError>>()?;
-    Ok(Cell {
+        .collect();
+    Cell {
         name: name.to_owned(),
         pins,
         ..Cell::default()
-    })
+    }
 }
 
 fn delay_arc(ctx: &Context, arc: &DelayArc) -> TimingArc {
@@ -225,14 +247,16 @@ fn delay_arc(ctx: &Context, arc: &DelayArc) -> TimingArc {
 fn check_arcs(
     ctx: &Context,
     speed_grade: &SpeedGradePod,
-    type_name: &str,
     cell_type: &CellType,
     input: &TypePort,
-) -> Result<Vec<TimingArc>, StaBuildError> {
+) -> Vec<TimingArc> {
+    let CellTiming::SpeedGrade { type_idx } = cell_type.timing else {
+        return Vec::new();
+    };
     let mut arcs = Vec::new();
-    for (clock, edge, pod) in register_arcs(ctx, speed_grade, cell_type.type_idx, input) {
+    for (clock, edge, pod) in register_arcs(ctx, speed_grade, type_idx, input) {
         let info = ChipDb::reg_arc_info(pod);
-        let related_pin = clock_pin(type_name, cell_type, clock)?;
+        let related_pin = clock.to_owned();
         for (check, value) in [
             ("setup", info.setup.max_delay),
             ("hold", info.hold.max_delay),
@@ -246,7 +270,7 @@ fn check_arcs(
             });
         }
     }
-    Ok(arcs)
+    arcs
 }
 
 fn register_arcs<'a>(
@@ -263,16 +287,6 @@ fn register_arcs<'a>(
             let info = ChipDb::reg_arc_info(pod);
             (ctx.name_of(IdString(info.clock_port)), info.edge, pod)
         })
-}
-
-fn clock_pin(type_name: &str, cell_type: &CellType, clock: &str) -> Result<String, StaBuildError> {
-    match cell_type.ports.get(clock) {
-        Some(_) => Ok(clock.to_owned()),
-        None => Err(StaBuildError::UnknownPin {
-            cell_type: type_name.to_owned(),
-            pin: clock.to_owned(),
-        }),
-    }
 }
 
 fn delay_tables(delay: DelayT) -> TimingArc {

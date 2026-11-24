@@ -21,7 +21,7 @@ use thiserror::Error;
 
 use crate::context::Context;
 use crate::netlist::{CellId, CellPin, NetId, NetInfo, PortType};
-use role::{CellRole, Roles};
+use role::{CellRole, CellTiming, Roles};
 
 pub use delay_table::{DelayTable, PinWire, Reach, TableEntry, TableKey, TileOffset};
 pub use interconnect::{
@@ -50,8 +50,6 @@ fn is_clock_net(net: &NetInfo) -> bool {
 pub enum StaBuildError {
     #[error("chipdb has no speed grade {index}")]
     MissingSpeedGrade { index: usize },
-    #[error("cell type '{cell_type}' has no timing entry in the chipdb speed grade")]
-    CellTypeWithoutTiming { cell_type: String },
     #[error("cell type '{cell_type}' has port '{port}' as both {first:?} and {second:?}")]
     PortTypeConflict {
         cell_type: String,
@@ -59,8 +57,6 @@ pub enum StaBuildError {
         first: PortType,
         second: PortType,
     },
-    #[error("chipdb register arc of cell type '{cell_type}' names clock pin '{pin}', which the cell type does not have")]
-    UnknownPin { cell_type: String, pin: String },
     #[error("IO cell '{cell}' is not named after a top-level port")]
     PadWithoutPortName { cell: String },
     #[error("IO cell '{cell}' has {ports} ports, a pad has exactly one")]
@@ -109,6 +105,7 @@ pub struct RustSta {
     session: TimingSession,
     ids: StaIds,
     cell_delays: DelayAnnotations<SessionNodeKey>,
+    black_boxes: BTreeMap<String, usize>,
 }
 
 impl RustSta {
@@ -119,8 +116,9 @@ impl RustSta {
                 index: ctx.speed_grade_idx(),
             })?;
         let roles = role::roles(ctx, speed_grade)?;
+        let black_boxes = black_boxes(ctx, &roles);
         let types = library::cell_types(ctx, speed_grade, &roles)?;
-        let library = library::library(ctx, speed_grade, &types)?;
+        let library = library::library(ctx, speed_grade, &types);
         let GateDesign {
             netlist,
             pins,
@@ -138,6 +136,7 @@ impl RustSta {
             session,
             ids,
             cell_delays,
+            black_boxes,
         };
         sta.set_net_delays(DelayAnnotations::new())?;
         Ok(sta)
@@ -157,6 +156,10 @@ impl RustSta {
 
     pub fn session(&self) -> &TimingSession {
         &self.session
+    }
+
+    pub fn black_boxes(&self) -> &BTreeMap<String, usize> {
+        &self.black_boxes
     }
 
     pub fn ids(&self) -> &StaIds {
@@ -212,7 +215,7 @@ fn gate_design(
     let mut pins = FxHashMap::default();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
         match &roles.cells[&cell_id] {
-            CellRole::Timed { .. } => {
+            CellRole::Instance(_) => {
                 let inst = netlist.add_instance(
                     &instance_name(cell_id),
                     cell_types[ctx.name_of(cell.cell_type)],
@@ -255,6 +258,16 @@ fn gate_design(
     })
 }
 
+fn black_boxes(ctx: &Context, roles: &Roles) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for (cell_id, cell) in ctx.design.iter_alive_cells() {
+        if let CellRole::Instance(CellTiming::BlackBox) = roles.cells[&cell_id] {
+            *counts.entry(ctx.name_of(cell.cell_type).to_owned()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
     let mut sdc = String::from("set_units -time ns\n");
     for (net_id, net) in ctx.design.iter_alive_nets() {
@@ -272,7 +285,7 @@ fn clock_sdc(ctx: &Context, roles: &Roles) -> Result<String, StaBuildError> {
             });
         }
         let source = match &roles.cells[&driver.cell] {
-            CellRole::Timed { .. } => format!(
+            CellRole::Instance(_) => format!(
                 "get_pins {{{}/{}}}",
                 instance_name(driver.cell),
                 glob_escape(ctx.name_of(driver.port)),
