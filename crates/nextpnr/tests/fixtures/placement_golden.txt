@@ -44,15 +44,15 @@ ram0 2 7 0 RAM
 ram1 3 7 0 RAM
 # legalise_relative_constraints
 ff00 8 8 15 L7_FF
-ff01 4 6 9 L4_FF
+ff01 4 5 9 L4_FF
 ff02 3 8 5 L2_FF
 ff03 2 8 9 L4_FF
 ff04 2 6 13 L6_FF
-ff05 3 2 11 L5_FF
+ff05 3 1 11 L5_FF
 ff06 2 1 13 L6_FF
 ff07 4 3 9 L4_FF
-ff08 3 1 7 L3_FF
-ff09 4 5 3 L1_FF
+ff08 4 6 7 L3_FF
+ff09 3 2 3 L1_FF
 ff10 3 5 1 L0_FF
 ff11 3 4 7 L3_FF
 ff12 4 2 3 L1_FF
@@ -60,15 +60,15 @@ ff13 2 3 13 L6_FF
 ff14 2 4 7 L3_FF
 ff15 3 4 15 L7_FF
 lut00 8 8 14 L7_LUT
-lut01 4 6 8 L4_LUT
+lut01 4 5 8 L4_LUT
 lut02 3 8 4 L2_LUT
 lut03 2 8 8 L4_LUT
 lut04 2 6 12 L6_LUT
-lut05 3 2 10 L5_LUT
+lut05 3 1 10 L5_LUT
 lut06 2 1 12 L6_LUT
 lut07 4 3 8 L4_LUT
-lut08 3 1 6 L3_LUT
-lut09 4 5 2 L1_LUT
+lut08 4 6 6 L3_LUT
+lut09 3 2 2 L1_LUT
 lut10 3 6 12 L6_LUT
 lut11 3 5 10 L5_LUT
 lut12 4 4 4 L2_LUT
@@ -352,12 +352,12 @@ ff03 3 6 15 L7_FF
 ff04 7 4 15 L7_FF
 ff05 5 5 15 L7_FF
 ff06 4 6 15 L7_FF
-ff07 3 4 13 L6_FF
+ff07 3 4 15 L7_FF
 ff08 7 5 15 L7_FF
 ff09 5 6 15 L7_FF
 ff10 6 6 15 L7_FF
 ff11 4 3 15 L7_FF
-ff12 3 4 15 L7_FF
+ff12 3 4 13 L6_FF
 ff13 7 6 15 L7_FF
 ff14 6 3 15 L7_FF
 ff15 4 4 15 L7_FF
@@ -368,7 +368,7 @@ lut03 3 6 14 L7_LUT
 lut04 7 4 14 L7_LUT
 lut05 5 5 14 L7_LUT
 lut06 4 6 14 L7_LUT
-lut07 3 4 12 L6_LUT
+lut07 3 4 14 L7_LUT
 lut08 7 5 14 L7_LUT
 lut09 5 6 14 L7_LUT
 lut10 4 3 14 L7_LUT
@@ -431,7 +431,6 @@ lut23 2 4 0 L0_LUT
 ram0 3 7 0 RAM
 ram1 7 7 0 RAM
 # legalize bipartite
-error: Placement failed: Cannot place cluster child ff07 of root lut07: required BEL slot (3,4,1) of type DFF is unavailable (root at (3,4,0), constr_offset=(0,0,1))
 ff00 2 2 1 L0_FF
 ff01 6 4 1 L0_FF
 ff02 4 5 1 L0_FF
@@ -439,12 +438,12 @@ ff03 3 6 1 L0_FF
 ff04 7 4 1 L0_FF
 ff05 5 5 1 L0_FF
 ff06 4 6 1 L0_FF
-ff07 -
-ff08 -
-ff09 -
+ff07 3 4 1 L0_FF
+ff08 7 5 1 L0_FF
+ff09 5 6 1 L0_FF
 ff10 6 6 1 L0_FF
 ff11 4 3 1 L0_FF
-ff12 3 4 1 L0_FF
+ff12 3 4 3 L1_FF
 ff13 7 6 1 L0_FF
 ff14 6 3 1 L0_FF
 ff15 4 4 1 L0_FF
@@ -456,22 +455,22 @@ lut04 7 4 0 L0_LUT
 lut05 5 5 0 L0_LUT
 lut06 4 6 0 L0_LUT
 lut07 3 4 0 L0_LUT
-lut08 -
-lut09 -
-lut10 -
-lut11 -
-lut12 -
-lut13 -
-lut14 -
-lut15 -
-lut16 -
-lut17 -
-lut18 -
-lut19 -
-lut20 -
-lut21 -
-lut22 -
-lut23 -
+lut08 7 5 0 L0_LUT
+lut09 5 6 0 L0_LUT
+lut10 4 3 0 L0_LUT
+lut11 3 5 0 L0_LUT
+lut12 6 6 0 L0_LUT
+lut13 5 3 0 L0_LUT
+lut14 4 5 2 L1_LUT
+lut15 2 6 0 L0_LUT
+lut16 6 3 0 L0_LUT
+lut17 5 5 2 L1_LUT
+lut18 4 6 2 L1_LUT
+lut19 2 3 0 L0_LUT
+lut20 6 4 2 L1_LUT
+lut21 5 6 2 L1_LUT
+lut22 3 3 0 L0_LUT
+lut23 2 4 0 L0_LUT
 ram0 3 7 0 RAM
 ram1 7 7 0 RAM
 # legalize greedy

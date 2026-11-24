@@ -23,6 +23,27 @@ from os import path
 CPP_NEXTPNR = os.environ.get("NPNR_UPSTREAM", "/home/kelvin/nextpnr-upstream")
 sys.path.append(path.join(CPP_NEXTPNR, "himbaechel"))
 from himbaechel_dbgen.chip import *  # noqa: E402
+from himbaechel_dbgen.bba import BBAWriter  # noqa: E402
+
+
+@dataclass
+class FasmFeature(BBAStruct):
+    feature: IdString
+
+    def serialise(self, context: str, bba: BBAWriter):
+        bba.u32(self.feature.index)
+
+
+def create_pip(tt: TileType, src: str, dst: str, timing_class: str = "") -> PipData:
+    pip = tt.create_pip(src, dst, timing_class=timing_class)
+    pip.extra_data = FasmFeature(tt.strs.id(f"{dst}.{src}"))
+    return pip
+
+
+def create_bel(tt: TileType, name: str, type: str, z: int) -> BelData:
+    bel = tt.create_bel(name, type, z=z)
+    bel.extra_data = FasmFeature(bel.name)
+    return bel
 
 # LUT input count
 K = 6
@@ -71,31 +92,31 @@ def create_switch_matrix(tt, inputs, outputs):
     # input pips
     for i, w in enumerate(inputs):
         for j in range((i % Si), Wl, Si):
-            tt.create_pip(f"SWITCH{j}", w, timing_class="SWINPUT")
+            create_pip(tt, f"SWITCH{j}", w, timing_class="SWINPUT")
     # output pips
     for i, w in enumerate(outputs):
         for j in range((i % Sq), Wl, Sq):
-            tt.create_pip(w, f"SWITCH{j}", timing_class="SWINPUT")
+            create_pip(tt, w, f"SWITCH{j}", timing_class="SWINPUT")
     for i in range(Wl):
-        tt.create_pip("GND", f"SWITCH{i}")
-        tt.create_pip("VCC", f"SWITCH{i}")
+        create_pip(tt, "GND", f"SWITCH{i}")
+        create_pip(tt, "VCC", f"SWITCH{i}")
     for i in range(Wl):
         for j, (d, dx, dy) in enumerate(dirs):
             # Inbound: neighbor wire -> local switch (arrive from neighbor tile)
-            tt.create_pip(f"{d}{(i + j) % Wl}", f"SWITCH{i}", timing_class="SWNEIGH")
+            create_pip(tt, f"{d}{(i + j) % Wl}", f"SWITCH{i}", timing_class="SWNEIGH")
             # Outbound: local switch -> neighbor wire (leave to neighbor tile)
-            tt.create_pip(f"SWITCH{i}", f"{d}{(i + j) % Wl}", timing_class="SWNEIGH")
+            create_pip(tt, f"SWITCH{i}", f"{d}{(i + j) % Wl}", timing_class="SWNEIGH")
     # Dual clock distribution wires and PIPs
     for c in range(N_CLK):
         if not tt.has_wire(f"CLK{c}"):
             tt.create_wire(f"CLK{c}", "TILE_CLK")
         tt.create_wire(f"CLK{c}_PREV", "CLK_ROUTE")
-        tt.create_pip(f"CLK{c}_PREV", f"CLK{c}")
+        create_pip(tt, f"CLK{c}_PREV", f"CLK{c}")
         # Allow switch matrix to drive clock wires (for general clock routing)
         for j in range(0, Wl, Si):
-            tt.create_pip(f"SWITCH{j}", f"CLK{c}")
+            create_pip(tt, f"SWITCH{j}", f"CLK{c}")
         # Allow clock wires to feed back into switch matrix
-        tt.create_pip(f"CLK{c}", f"SWITCH{c}")
+        create_pip(tt, f"CLK{c}", f"SWITCH{c}")
     tt.create_group("SWITCHBOX", "SWITCHBOX")
 
 
@@ -120,26 +141,26 @@ def create_logic_tiletype(chip):
     for i in range(N):
         # Clock mux: per-FF local clock can come from either CLK0 or CLK1
         for c in range(N_CLK):
-            tt.create_pip(f"CLK{c}", f"L{i}_CLK")
+            create_pip(tt, f"CLK{c}", f"L{i}_CLK")
 
         # LUT4
-        lut = tt.create_bel(f"L{i}_LUT", "LUT6", z=(i * 3 + 0))
+        lut = create_bel(tt, f"L{i}_LUT", "LUT6", z=(i * 3 + 0))
         for j in range(K):
             tt.add_bel_pin(lut, f"I[{j}]", f"L{i}_I{j}", PinType.INPUT)
         tt.add_bel_pin(lut, "F", f"L{i}_O", PinType.OUTPUT)
 
         # DFF data routing
-        tt.create_pip(f"L{i}_O", f"L{i}_D")
-        tt.create_pip(f"L{i}_I{K - 1}", f"L{i}_D")
+        create_pip(tt, f"L{i}_O", f"L{i}_D")
+        create_pip(tt, f"L{i}_I{K - 1}", f"L{i}_D")
 
         # DFF (edge-triggered)
-        ff = tt.create_bel(f"L{i}_FF", "DFF", z=(i * 3 + 1))
+        ff = create_bel(tt, f"L{i}_FF", "DFF", z=(i * 3 + 1))
         tt.add_bel_pin(ff, "D", f"L{i}_D", PinType.INPUT)
         tt.add_bel_pin(ff, "CLK", f"L{i}_CLK", PinType.INPUT)
         tt.add_bel_pin(ff, "Q", f"L{i}_Q", PinType.OUTPUT)
 
         # DLATCH (level-sensitive, shares D and Q wires with DFF)
-        latch = tt.create_bel(f"L{i}_LATCH", "DLATCH", z=(i * 3 + 2))
+        latch = create_bel(tt, f"L{i}_LATCH", "DLATCH", z=(i * 3 + 2))
         tt.add_bel_pin(latch, "D", f"L{i}_D", PinType.INPUT)
         tt.add_bel_pin(latch, "G", f"L{i}_CLK", PinType.INPUT)
         tt.add_bel_pin(latch, "Q", f"L{i}_Q", PinType.OUTPUT)
@@ -148,8 +169,8 @@ def create_logic_tiletype(chip):
 
     # Allow GND/VCC to drive clock/gate pins (for always-transparent latches)
     for i in range(N):
-        tt.create_pip("GND", f"L{i}_CLK")
-        tt.create_pip("VCC", f"L{i}_CLK")
+        create_pip(tt, "GND", f"L{i}_CLK")
+        create_pip(tt, "VCC", f"L{i}_CLK")
 
     return tt
 
@@ -169,7 +190,7 @@ def create_io_tiletype(chip):
     for c in range(N_CLK):
         tt.create_wire(f"CLK{c}", "TILE_CLK")
     for i in range(N_IO):
-        io = tt.create_bel(f"IO{i}", "IOB", z=i)
+        io = create_bel(tt, f"IO{i}", "IOB", z=i)
         tt.add_bel_pin(io, "I", f"IO{i}_I", PinType.INPUT)
         tt.add_bel_pin(io, "T", f"IO{i}_T", PinType.INPUT)
         tt.add_bel_pin(io, "O", f"IO{i}_O", PinType.OUTPUT)
@@ -177,7 +198,7 @@ def create_io_tiletype(chip):
     # Global clock outputs: IO0 drives GCLK0, IO1 drives GCLK1
     for c in range(N_CLK):
         tt.create_wire(f"GCLK{c}_OUT", "GCLK")
-        tt.create_pip(f"IO{c}_O", f"GCLK{c}_OUT")
+        create_pip(tt, f"IO{c}_O", f"GCLK{c}_OUT")
     create_switch_matrix(tt, inputs, outputs)
     return tt
 
@@ -200,8 +221,8 @@ def create_bram_tiletype(chip):
         tt.create_wire(f"CLK{c}", "TILE_CLK")
     tt.create_wire("RAM_CLK", "FF_CLK")
     for c in range(N_CLK):
-        tt.create_pip(f"CLK{c}", "RAM_CLK")
-    ram = tt.create_bel("RAM", f"BRAM_{2**Aw}X{Dw}", z=0)
+        create_pip(tt, f"CLK{c}", "RAM_CLK")
+    ram = create_bel(tt, "RAM", f"BRAM_{2**Aw}X{Dw}", z=0)
     tt.add_bel_pin(ram, "CLK", "RAM_CLK", PinType.INPUT)
     for i in range(Aw):
         tt.add_bel_pin(ram, f"WA[{i}]", f"RAM_WA{i}", PinType.INPUT)
@@ -220,12 +241,12 @@ def create_corner_tiletype(chip):
     for c in range(N_CLK):
         tt.create_wire(f"CLK{c}", "TILE_CLK")
         tt.create_wire(f"CLK{c}_PREV", "CLK_ROUTE")
-        tt.create_pip(f"CLK{c}_PREV", f"CLK{c}")
+        create_pip(tt, f"CLK{c}_PREV", f"CLK{c}")
     tt.create_wire("GND", "GND", const_value="GND")
     tt.create_wire("VCC", "VCC", const_value="VCC")
-    gnd = tt.create_bel("GND_DRV", "GND_DRV", z=0)
+    gnd = create_bel(tt, "GND_DRV", "GND_DRV", z=0)
     tt.add_bel_pin(gnd, "GND", "GND", PinType.OUTPUT)
-    vcc = tt.create_bel("VCC_DRV", "VCC_DRV", z=1)
+    vcc = create_bel(tt, "VCC_DRV", "VCC_DRV", z=1)
     tt.add_bel_pin(vcc, "VCC", "VCC", PinType.OUTPUT)
     return tt
 

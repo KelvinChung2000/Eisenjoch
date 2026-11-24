@@ -44,6 +44,9 @@ def main(
         None, help="Timing/utilization report (JSON)"
     ),
     sdf: Optional[Path] = typer.Option(None, help="Write routed delays as SDF 3.0"),
+    fasm: Optional[Path] = typer.Option(
+        None, help="Write the configured features as FASM, named by the chipdb"
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
     debug: bool = typer.Option(False, "--debug", help="Debug output"),
     force: bool = typer.Option(False, "--force", help="Force continue on errors"),
@@ -284,6 +287,17 @@ def main(
             raise typer.Exit(1)
         if verbose:
             typer.echo(f"Wrote SDF to {sdf}")
+
+    if fasm is not None:
+        from nextpnr.fasm_export import write_fasm
+
+        try:
+            write_fasm(ctx.fasm_features(), fasm)
+        except Exception as e:
+            typer.echo(f"Error writing FASM: {e}", err=True)
+            raise typer.Exit(1)
+        if verbose:
+            typer.echo(f"Wrote FASM to {fasm}")
 
     if timing is not None:
         failures = timing_failures(timing)

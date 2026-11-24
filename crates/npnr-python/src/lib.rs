@@ -6,6 +6,7 @@ use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use ::nextpnr::checkpoint;
+use ::nextpnr::fasm;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::Context;
 use ::nextpnr::frontend::parse_json;
@@ -542,6 +543,15 @@ impl PyContext {
             .map_err(sta_error)
     }
 
+    /// FASM features of the routed design, named by the chipdb's pip and BEL data.
+    ///
+    /// Raises RuntimeError when the chipdb lacks FASM data, a cell is unplaced or a parameter has no exact bits.
+    fn fasm_features(&self) -> PyResult<Vec<PyFasmFeature>> {
+        fasm::fasm_features(&self.ctx)
+            .map(|features| features.into_iter().map(PyFasmFeature::from).collect())
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    }
+
     /// Generate a resource utilization report.
     ///
     /// Returns:
@@ -824,6 +834,27 @@ pub struct PyBackAnnotation {
     pub interconnects: Vec<Py<PyInterconnectDelay>>,
 }
 
+/// One FASM feature of `tile`; `bits` is None for a set feature, else its value LSB first.
+#[pyclass(name = "FasmFeature", get_all, frozen)]
+pub struct PyFasmFeature {
+    pub tile: String,
+    pub feature: String,
+    pub bits: Option<Vec<bool>>,
+}
+
+impl From<fasm::FasmFeature> for PyFasmFeature {
+    fn from(feature: fasm::FasmFeature) -> Self {
+        PyFasmFeature {
+            tile: feature.tile,
+            feature: feature.feature,
+            bits: match feature.setting {
+                fasm::FeatureSetting::Enabled => None,
+                fasm::FeatureSetting::Bits { lsb_first } => Some(lsb_first),
+            },
+        }
+    }
+}
+
 fn record<T: pyo3::PyClass>(py: Python<'_>, value: T) -> Py<T>
 where
     T: Into<pyo3::PyClassInitializer<T>>,
@@ -1014,6 +1045,7 @@ fn nextpnr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIopathDelay>()?;
     m.add_class::<PyTimingCheck>()?;
     m.add_class::<PyInterconnectDelay>()?;
+    m.add_class::<PyFasmFeature>()?;
     m.add_function(wrap_pyfunction!(run_upstream, m)?)?;
     Ok(())
 }

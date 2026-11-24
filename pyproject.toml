@@ -21,7 +21,7 @@ nextpnr-himbaechel-rust = "nextpnr.rust_cli:cli"
 nextpnr-ispd-benchmarks = "nextpnr.benchmarks.ispd_benchmarks:main"
 
 [project.optional-dependencies]
-cli = ["loguru>=0.7", "typer>=0.24", "sdf-toolkit"]
+cli = ["loguru>=0.7", "typer>=0.24", "sdf-toolkit", "fasm-toolkit"]
 benchmark = ["matplotlib", "numpy"]
 
 [tool.pytest.ini_options]
@@ -45,3 +45,4 @@ cache-keys = [
 
 [tool.uv.sources]
 sdf-toolkit = { git = "https://github.com/FPGA-Research/SDF-toolkit.git", rev = "adecec94d993aed96b880b6eafc1308bfe97e460" }
+fasm-toolkit = { git = "https://github.com/KelvinChung2000/fasm-toolkit.git", rev = "22d92fa2205bd6d85f93caa8db14328e8d39b6b4" }

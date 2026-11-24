@@ -567,6 +567,14 @@ pub struct ChipExtraDataPod {
     pub packing_rules: RelSlice<PackingRulePod>,
 }
 
+/// The FASM name of a pip feature or BEL feature prefix, held in its `extra_data`.
+#[derive(Copy, Clone)]
+#[repr(C, packed)]
+pub struct FasmFeaturePod {
+    /// Feature name relative to the tile (constid index).
+    pub feature: i32,
+}
+
 // =============================================================================
 // Static size assertions
 // =============================================================================
@@ -585,6 +593,7 @@ const _: () = {
     assert!(std::mem::size_of::<TileWireDataPod>() == 48);
     // PipDataPod: 4+4+4+4+4+4 = 24
     assert!(std::mem::size_of::<PipDataPod>() == 24);
+    assert!(std::mem::size_of::<FasmFeaturePod>() == 4);
     // RelTileWireRefPod: 2+2+2 = 6
     assert!(std::mem::size_of::<RelTileWireRefPod>() == 6);
     // NodeShapePod: 8+4 = 12

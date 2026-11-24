@@ -446,15 +446,37 @@ impl ChipDb {
     pub fn tile_name(&self, tile: i32) -> String {
         let inst = self.tile_inst(tile);
         let prefix = unsafe { read_packed!(*inst, name_prefix) };
-        let prefix_str = self.constid_str(prefix).unwrap_or("TILE");
+        let prefix = self
+            .constid_str(prefix)
+            .expect("chipdb tile name prefix names a valid constid");
         let (x, y) = self.tile_xy(tile);
-        format!("{prefix_str}_X{x}Y{y}")
+        format!("{prefix}X{x}Y{y}")
     }
 
     pub fn tile_type_name(&self, tile: i32) -> &str {
         let tt = self.tile_type(tile);
         let type_name_id: i32 = unsafe { read_packed!(*tt, type_name) };
         self.constid_str(type_name_id).unwrap_or("<unknown>")
+    }
+
+    pub fn pip_fasm_feature(&self, pip: PipId) -> Option<&str> {
+        self.fasm_feature(&self.pip_info(pip).extra_data)
+    }
+
+    pub fn bel_fasm_prefix(&self, bel: BelId) -> Option<&str> {
+        self.fasm_feature(&self.bel_info(bel).extra_data)
+    }
+
+    fn fasm_feature(&self, extra_data: &RelPtr<u8>) -> Option<&str> {
+        if extra_data.is_null() {
+            return None;
+        }
+        let pod = unsafe { &*(extra_data.get() as *const FasmFeaturePod) };
+        let feature = unsafe { read_packed!(*pod, feature) };
+        Some(
+            self.constid_str(feature)
+                .expect("chipdb FASM feature names a valid constid"),
+        )
     }
 
     /// Get the chip extra data (packing rules, etc.), if present.

@@ -75,6 +75,16 @@ wheels = [
 ]
 
 [[package]]
+name = "fasm-toolkit"
+version = "0.0.0.post7"
+source = { git = "https://github.com/KelvinChung2000/fasm-toolkit.git?rev=22d92fa2205bd6d85f93caa8db14328e8d39b6b4#22d92fa2205bd6d85f93caa8db14328e8d39b6b4" }
+dependencies = [
+    { name = "lark" },
+    { name = "loguru" },
+    { name = "typer" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.62.1"
 source = { registry = "https://pypi.org/simple" }
@@ -255,6 +265,7 @@ benchmark = [
     { name = "numpy" },
 ]
 cli = [
+    { name = "fasm-toolkit" },
     { name = "loguru" },
     { name = "sdf-toolkit" },
     { name = "typer" },
@@ -267,6 +278,7 @@ chipdb = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fasm-toolkit", marker = "extra == 'cli'", git = "https://github.com/KelvinChung2000/fasm-toolkit.git?rev=22d92fa2205bd6d85f93caa8db14328e8d39b6b4" },
     { name = "loguru", marker = "extra == 'cli'", specifier = ">=0.7" },
     { name = "matplotlib", marker = "extra == 'benchmark'" },
     { name = "numpy", marker = "extra == 'benchmark'" },
