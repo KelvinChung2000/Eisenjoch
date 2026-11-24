@@ -22,7 +22,7 @@ use ::nextpnr::router::router2::{Router2, Router2Cfg, TimingDrivenCfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::common::DelayT;
 use ::nextpnr::sta::{
-    Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
+    register_clock_nets, CritNorm, Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
     StaSessionError, NOTIONAL_CLASSLESS_PIPS,
 };
 use nextpnr_upstream::{
@@ -306,10 +306,21 @@ impl PyContext {
     ///
     /// Args:
     ///     timing_driven: Weight moves by RustSTA criticality on placed-wire estimates.
-    #[pyo3(signature = (*, timing_driven))]
-    fn refine(&mut self, timing_driven: bool) -> PyResult<()> {
+    ///     crit_norm: "required_time" (1 - s/D_req) or "wns_relaxed" (required times shifted by a failing WNS).
+    #[pyo3(signature = (*, timing_driven, crit_norm))]
+    fn refine(&mut self, timing_driven: bool, crit_norm: &str) -> PyResult<()> {
+        let crit_norm = match crit_norm {
+            "required_time" => CritNorm::RequiredTime,
+            "wns_relaxed" => CritNorm::WnsRelaxed,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "Unknown crit_norm: {other}. Available: required_time, wns_relaxed"
+                )))
+            }
+        };
         let cfg = RefineCfg {
             timing_driven,
+            crit_norm,
             ..RefineCfg::default()
         };
         refine_placement(&mut self.ctx, &cfg)
@@ -437,19 +448,39 @@ impl PyContext {
     ///     freq_mhz: Clock frequency in MHz.
     #[pyo3(signature = (net_name, *, freq_mhz))]
     fn add_clock(&mut self, net_name: &str, freq_mhz: f64) -> PyResult<()> {
-        if !(freq_mhz.is_finite() && freq_mhz > 0.0) {
-            return Err(PyValueError::new_err(format!(
-                "Clock frequency must be positive and finite, got {freq_mhz} MHz"
-            )));
-        }
+        let period_ps = clock_period_ps(freq_mhz)?;
         let net = self
             .ctx
             .design
             .net_by_name(self.ctx.id_pool.intern(net_name))
             .ok_or_else(|| PyValueError::new_err(format!("Unknown clock net: {net_name}")))?;
-        let period_ps = (PS_PER_US / freq_mhz).round() as DelayT;
         self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
         Ok(())
+    }
+
+    /// Constrain every unconstrained net that drives a register clock pin; returns their names.
+    ///
+    /// Raises ValueError when the packed netlist has no unconstrained register clock net.
+    #[pyo3(signature = (*, freq_mhz))]
+    fn constrain_clocks(&mut self, freq_mhz: f64) -> PyResult<Vec<String>> {
+        let period_ps = clock_period_ps(freq_mhz)?;
+        let nets: Vec<NetId> = register_clock_nets(&self.ctx)
+            .map_err(|e| sta_error(StaSessionError::from(e)))?
+            .into_iter()
+            .filter(|&net| self.ctx.design.net(net).clock_constraint == 0)
+            .collect();
+        if nets.is_empty() {
+            return Err(PyValueError::new_err(
+                "No unconstrained net drives a register clock pin; nothing to constrain",
+            ));
+        }
+        for &net in &nets {
+            self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
+        }
+        Ok(nets
+            .iter()
+            .map(|&net| self.ctx.name_of(self.ctx.design.net(net).name).to_owned())
+            .collect())
     }
 
     /// Append SDC commands (times in ns) and check them against the current netlist.
@@ -596,11 +627,6 @@ impl PyContext {
         ::nextpnr::metrics::total_routed_wirelength(&self.ctx)
     }
 
-    /// Write the design to a JSON file (not yet implemented).
-    fn write_design(&self, _path: &str) -> PyResult<()> {
-        Err(PyRuntimeError::new_err("JSON writer not yet implemented"))
-    }
-
     /// Grid width in tiles.
     #[getter]
     fn width(&self) -> i32 {
@@ -704,6 +730,15 @@ impl PyTimingReport {
 }
 
 const PS_PER_US: f64 = 1_000_000.0;
+
+fn clock_period_ps(freq_mhz: f64) -> PyResult<DelayT> {
+    if !(freq_mhz.is_finite() && freq_mhz > 0.0) {
+        return Err(PyValueError::new_err(format!(
+            "Clock frequency must be positive and finite, got {freq_mhz} MHz"
+        )));
+    }
+    Ok((PS_PER_US / freq_mhz).round() as DelayT)
+}
 
 fn sta_error(error: StaSessionError) -> PyErr {
     PyRuntimeError::new_err(format!("Timing analysis error: {error}"))

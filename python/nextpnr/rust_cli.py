@@ -31,18 +31,18 @@ def main(
     json: Optional[Path] = typer.Option(
         None, "--json", help="Input Yosys JSON netlist"
     ),
-    write: Optional[Path] = typer.Option(None, help="Output placed/routed JSON"),
     placer: str = typer.Option("heap", help="Placer algorithm [heap|sa]"),
     router: str = typer.Option("router2", help="Router algorithm [router1|router2]"),
     seed: int = typer.Option(1, help="Random seed"),
-    freq: Optional[float] = typer.Option(None, help="Frequency constraint (MHz)"),
+    freq: Optional[float] = typer.Option(
+        None, help="Clock frequency (MHz) for every register clock net"
+    ),
     package: Optional[str] = typer.Option(None, help="Package name"),
     speed: Optional[str] = typer.Option(None, help="Speed grade"),
     sdc: Optional[Path] = typer.Option(None, help="SDC constraints file"),
     report: Optional[Path] = typer.Option(
         None, help="Timing/utilization report (JSON)"
     ),
-    sdf: Optional[Path] = typer.Option(None, help="SDF timing output"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
     debug: bool = typer.Option(False, "--debug", help="Debug output"),
     force: bool = typer.Option(False, "--force", help="Force continue on errors"),
@@ -121,6 +121,12 @@ def main(
             raise typer.Exit(1)
         return
 
+    if freq is not None and sdc is not None:
+        typer.echo(
+            "Error: --freq and --sdc both define clocks; put create_clock in the SDC",
+            err=True,
+        )
+        raise typer.Exit(1)
     timed = freq is not None or sdc is not None
     if timing_driven and not timed:
         typer.echo(
@@ -189,10 +195,6 @@ def main(
             if not force:
                 raise typer.Exit(1)
 
-    # Set frequency constraint
-    if freq is not None:
-        ctx.add_clock("clk", freq_mhz=freq)
-
     # Run P&R flow
     try:
         if verbose:
@@ -201,6 +203,15 @@ def main(
     except Exception as e:
         typer.echo(f"Packer error: {e}", err=True)
         raise typer.Exit(1)
+
+    if freq is not None:
+        try:
+            clocks = ctx.constrain_clocks(freq_mhz=freq)
+        except Exception as e:
+            typer.echo(f"Error constraining clocks: {e}", err=True)
+            raise typer.Exit(1)
+        if verbose:
+            typer.echo(f"Constrained {', '.join(clocks)} to {freq} MHz")
 
     if sdc is not None:
         try:
@@ -218,7 +229,7 @@ def main(
 
         if verbose:
             typer.echo(f"Running refinement (timing-driven: {timing_driven})...")
-        ctx.refine(timing_driven=timing_driven)
+        ctx.refine(timing_driven=timing_driven, crit_norm="wns_relaxed")
 
         if verbose:
             typer.echo(f"Running router ({router})...")
@@ -261,15 +272,6 @@ def main(
             "num_hold_endpoints": timing.num_hold_endpoints,
         }
         report.write_text(json_mod.dumps(report_data, indent=2))
-
-    # Write output
-    if write is not None:
-        try:
-            ctx.write_design(str(write))
-        except Exception as e:
-            typer.echo(f"Error writing output: {e}", err=True)
-            if not force:
-                raise typer.Exit(1)
 
     if timing is not None:
         failures = timing_failures(timing)
