@@ -33,5 +33,14 @@ norecursedirs = ["python/nextpnr/benchmarks", "chip_database", "target", ".venv"
 [dependency-groups]
 chipdb = ["sdf-toolkit"]
 
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "crates/**/Cargo.toml" },
+    { file = "crates/**/*.rs" },
+]
+
 [tool.uv.sources]
 sdf-toolkit = { path = "../sdf-toolkit", editable = true }
