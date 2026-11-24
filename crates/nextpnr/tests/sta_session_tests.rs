@@ -306,6 +306,21 @@ fn pre_route_slack_is_shortest_pip_path_sum(
     assert_chain_report(&ctx, &session, &expected);
 }
 
+#[rstest]
+#[case::launch("launch")]
+#[case::capture("capture")]
+fn aliased_register_times_as_its_bel_bucket(#[case] register: &str) {
+    let mut ctx = common::make_example_context();
+    let chain = placed_chain(&mut ctx, 0, 1000);
+    ctx.add_cell_type_alias("DFF_ALT", "DFF");
+    let (cell, alias) = (ctx.design.cell_by_name(ctx.id(register)).unwrap(), ctx.id("DFF_ALT"));
+    ctx.design.cell_edit(cell).set_type(alias);
+    let session = session(&ctx, InterconnectStage::Placed);
+
+    let (q_delay, d_delay) = (uniform(2 * SWINPUT_PIP_PS), uniform(NOTIONAL_PIP_PS));
+    assert_chain_timing(&session, &chain, &expected(1000, chain.lut_input, q_delay, d_delay));
+}
+
 fn assert_chain_report(ctx: &Context, session: &StaSession, expected: &Expected) {
     let report = session.report(ctx, 1).expect("the chain reports");
     let [domain] = &report.domains[..] else {

@@ -107,7 +107,7 @@ fn cell_role(
             "VCC" | "VCC_DRV" => Ok(CellRole::Constant(Level::High)),
             type_name => ctx
                 .chipdb()
-                .cell_timing_index(speed_grade, cell.cell_type.index())
+                .cell_timing_index(speed_grade, ctx.resolve_bucket(cell.cell_type).index())
                 .map(|type_idx| CellRole::Timed { type_idx })
                 .ok_or_else(|| StaBuildError::CellTypeWithoutTiming {
                     cell_type: type_name.to_owned(),
