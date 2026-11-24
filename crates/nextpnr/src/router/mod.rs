@@ -48,6 +48,9 @@ pub enum RouterError {
     /// The timing-driven cost needs a positive, finite criticality exponent.
     #[error("criticality_exponent must be positive and finite, got {0}")]
     CriticalityExponent(f64),
+    /// Timing-driven routing found no defined clock, so every connection is unconstrained.
+    #[error("timing-driven routing needs a defined clock and the design has none; define one with add_clock or an SDC create_clock, or route with timing off")]
+    NoClock,
     /// The STA behind the timing-driven cost failed.
     #[error(transparent)]
     Timing(#[from] crate::sta::StaSessionError),

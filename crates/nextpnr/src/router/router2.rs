@@ -439,6 +439,10 @@ impl TimingDriven {
         let model = InterconnectModel::new(ctx, cfg.classless_pips, PlacedEstimate::DelayTable)
             .map_err(StaSessionError::from)?;
         let session = StaSession::build(ctx, model.clone(), InterconnectStage::Placed)?;
+        let clocks = &session.sta().session().state().constraints.clocks;
+        if clocks.is_empty() {
+            return Err(RouterError::NoClock);
+        }
         let pins = nets
             .iter()
             .map(|&net| Ok((net, sink_pins(ctx, &session, net)?)))

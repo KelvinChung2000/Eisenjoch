@@ -115,6 +115,14 @@ def main(
             raise typer.Exit(1)
         return
 
+    if timing_driven and router == "router2" and freq is None and sdc is None:
+        typer.echo(
+            "Error: timing-driven router2 needs a clock; pass --freq or an --sdc "
+            "with create_clock, or pass --no-timing-driven",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     # Load design
     if json is not None:
         try:

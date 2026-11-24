@@ -8,7 +8,7 @@ use nextpnr::context::Context;
 use nextpnr::netlist::PortType;
 use nextpnr::router::common::{collect_routable_nets, validate_all_routed};
 use nextpnr::router::router2::{Router2Cfg, Router2Report, TimingDrivenCfg};
-use nextpnr::router::{Router, Router2};
+use nextpnr::router::{Router, Router2, RouterError};
 use nextpnr::sta::{
     CritNorm, InterconnectModel, InterconnectStage, NetSink, PlacedEstimate, StaSession,
     NOTIONAL_CLASSLESS_PIPS,
@@ -215,6 +215,16 @@ fn zero_criticality_cap_routes_like_timing_off(#[case] period_ps: DelayT) {
     };
     route_baseline(&mut capped, &timing_cfg(cap));
     assert!(routed_trees(&off) == routed_trees(&capped));
+}
+
+#[test]
+fn timing_driven_without_a_clock_is_rejected() {
+    let mut ctx = clocked_baseline(None);
+    let nets = collect_routable_nets(&ctx);
+    assert!(matches!(
+        Router2.route_nets_report(&mut ctx, &timing_cfg(TimingDrivenCfg::default()), &nets),
+        Err(RouterError::NoClock)
+    ));
 }
 
 #[rstest]
