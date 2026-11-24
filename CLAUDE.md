@@ -63,8 +63,9 @@ uv run python python/nextpnr/benchmarks/<benchmark_script>.py
 
 The Rust suite is the real one:
 ```
-cargo test --workspace --release --no-fail-fast
+cargo test --workspace --release --no-fail-fast --features test-utils
 ```
+Without `test-utils` the STA session tests are not compiled.
 
 The `nextpnr-upstream` parity test is `#[ignore]`d and needs a cmake build of
 upstream. README.md gives the command.
