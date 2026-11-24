@@ -66,7 +66,7 @@ fn bel_at(ctx: &Context, (x, y): (i32, i32), name: &str) -> BelId {
 fn wire_at(ctx: &Context, (x, y): (i32, i32), name: &str) -> WireId {
     let tile = ctx.chipdb().tile_by_xy(x, y);
     ctx.chipdb()
-        .wires()
+        .tile_wires()
         .find(|&wire| wire.tile() == tile && ctx.chipdb().wire_name(wire) == name)
         .unwrap_or_else(|| panic!("tile ({x}, {y}) has wire {name}"))
 }
