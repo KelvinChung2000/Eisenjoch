@@ -3,7 +3,8 @@ use std::collections::BinaryHeap;
 use std::ops::Add;
 use std::sync::OnceLock;
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 use ruststa::engine::delay::annotate::ArcDelays;
 use thiserror::Error;
 
@@ -31,6 +32,10 @@ impl DelayBounds {
             early_ps: value.fast_min,
             late_ps: value.slow_max,
         }
+    }
+
+    fn order(self) -> (DelayT, DelayT) {
+        (self.late_ps, self.early_ps)
     }
 
     pub fn arc_delays(self) -> ArcDelays {
@@ -137,12 +142,6 @@ pub(super) struct PipDelays {
     classless: ClasslessPips,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum SearchGoal {
-    AllWires,
-    Sinks(FxHashSet<WireId>),
-}
-
 impl PipDelays {
     fn delay(&self, chipdb: &ChipDb, pip: PipId) -> Option<DelayBounds> {
         match usize::try_from(chipdb.pip_timing_index(pip)) {
@@ -158,38 +157,116 @@ impl PipDelays {
         &self,
         chipdb: &ChipDb,
         source: WireId,
-        mut goal: SearchGoal,
     ) -> FxHashMap<WireId, DelayBounds> {
-        let mut settled: FxHashMap<WireId, DelayBounds> = FxHashMap::default();
-        let mut frontier = BinaryHeap::new();
-        frontier.push(Reverse(SearchEntry::new(DelayBounds::ZERO, source)));
-        while let Some(Reverse(entry)) = frontier.pop() {
-            let (wire, delay) = (entry.wire(), entry.delay());
-            if settled.contains_key(&wire) {
-                continue;
+        let mut search = Search::new(Direction::Downhill, source);
+        while search.settle_next(chipdb, self, |_, _| {}) {}
+        search.settled
+    }
+
+    fn pair_delay(&self, chipdb: &ChipDb, source: WireId, sink: WireId) -> Option<DelayBounds> {
+        let mut forward = Search::new(Direction::Downhill, source);
+        let mut backward = Search::new(Direction::Uphill, sink);
+        let mut best: Option<DelayBounds> = None;
+        loop {
+            let (ahead, behind) = (forward.next_delay(), backward.next_delay());
+            let bound = match (ahead, behind) {
+                (None, None) => return best,
+                (Some(ahead), Some(behind)) => Some(ahead + behind),
+                _ => None,
+            };
+            if let Some(best) =
+                best.filter(|best| bound.is_none_or(|bound| bound.order() >= best.order()))
+            {
+                return Some(best);
             }
-            settled.insert(wire, delay);
-            if let SearchGoal::Sinks(pending) = &mut goal {
-                pending.remove(&wire);
-                if pending.is_empty() {
-                    break;
+            let (expanding, opposite) = match (ahead, behind) {
+                (Some(ahead), Some(behind)) if ahead.order() <= behind.order() => {
+                    (&mut forward, &backward)
                 }
-            }
-            chipdb.node_wires_cb(wire, |peer| {
-                frontier.push(Reverse(SearchEntry::new(delay, peer)));
+                (Some(_), None) => (&mut forward, &backward),
+                _ => (&mut backward, &forward),
+            };
+            expanding.settle_next(chipdb, self, |wire, delay| {
+                if let Some(&rest) = opposite.settled.get(&wire) {
+                    let through = delay + rest;
+                    if best.is_none_or(|best| through.order() < best.order()) {
+                        best = Some(through);
+                    }
+                }
             });
-            for &pip_index in chipdb.wire_info(wire).pips_downhill.get() {
-                let pip = PipId::new(wire.tile(), pip_index);
-                let Some(pip_delay) = self.delay(chipdb, pip) else {
-                    continue;
-                };
-                frontier.push(Reverse(SearchEntry::new(
-                    delay + pip_delay,
-                    chipdb.pip_dst_wire(pip),
-                )));
-            }
         }
-        settled
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Downhill,
+    Uphill,
+}
+
+struct Search {
+    direction: Direction,
+    settled: FxHashMap<WireId, DelayBounds>,
+    frontier: BinaryHeap<Reverse<SearchEntry>>,
+}
+
+impl Search {
+    fn new(direction: Direction, origin: WireId) -> Self {
+        let mut frontier = BinaryHeap::new();
+        frontier.push(Reverse(SearchEntry::new(DelayBounds::ZERO, origin)));
+        Self {
+            direction,
+            settled: FxHashMap::default(),
+            frontier,
+        }
+    }
+
+    fn next_delay(&mut self) -> Option<DelayBounds> {
+        while let Some(Reverse(entry)) = self.frontier.peek() {
+            if !self.settled.contains_key(&entry.wire()) {
+                return Some(entry.delay());
+            }
+            self.frontier.pop();
+        }
+        None
+    }
+
+    fn settle_next(
+        &mut self,
+        chipdb: &ChipDb,
+        pips: &PipDelays,
+        mut reached: impl FnMut(WireId, DelayBounds),
+    ) -> bool {
+        let Some(delay) = self.next_delay() else {
+            return false;
+        };
+        let Reverse(entry) = self.frontier.pop().expect("next_delay saw an entry");
+        let wire = entry.wire();
+        self.settled.insert(wire, delay);
+        reached(wire, delay);
+        chipdb.node_wires_cb(wire, |peer| {
+            reached(peer, delay);
+            self.frontier.push(Reverse(SearchEntry::new(delay, peer)));
+        });
+        let info = chipdb.wire_info(wire);
+        let pips_out = match self.direction {
+            Direction::Downhill => info.pips_downhill.get(),
+            Direction::Uphill => info.pips_uphill.get(),
+        };
+        for &pip_index in pips_out {
+            let pip = PipId::new(wire.tile(), pip_index);
+            let Some(pip_delay) = pips.delay(chipdb, pip) else {
+                continue;
+            };
+            let next = match self.direction {
+                Direction::Downhill => chipdb.pip_dst_wire(pip),
+                Direction::Uphill => chipdb.pip_src_wire(pip),
+            };
+            reached(next, delay + pip_delay);
+            self.frontier
+                .push(Reverse(SearchEntry::new(delay + pip_delay, next)));
+        }
+        true
     }
 }
 
@@ -270,8 +347,7 @@ impl InterconnectModel {
         chipdb: &ChipDb,
         source: WireId,
     ) -> FxHashMap<WireId, DelayBounds> {
-        self.pips
-            .shortest_delays(chipdb, source, SearchGoal::AllWires)
+        self.pips.shortest_delays(chipdb, source)
     }
 
     pub fn net_delays(
@@ -314,16 +390,14 @@ impl InterconnectModel {
         source: WireId,
         sinks: &[(u32, CellPin, WireId)],
     ) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
-        let pending = sinks.iter().map(|&(_, _, wire)| wire).collect();
-        let settled = self
-            .pips
-            .shortest_delays(ctx.chipdb(), source, SearchGoal::Sinks(pending));
         sinks
-            .iter()
-            .map(|&(user, sink, wire)| match settled.get(&wire) {
-                Some(&delay) => Ok((user, delay)),
-                None => Err(unreachable(ctx, net, sink)),
-            })
+            .par_iter()
+            .map(
+                |&(user, sink, wire)| match self.pips.pair_delay(ctx.chipdb(), source, wire) {
+                    Some(delay) => Ok((user, delay)),
+                    None => Err(unreachable(ctx, net, sink)),
+                },
+            )
             .collect()
     }
 

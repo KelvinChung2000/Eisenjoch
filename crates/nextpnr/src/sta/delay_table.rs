@@ -3,7 +3,7 @@ use std::cmp::Reverse;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::interconnect::{DelayBounds, PipDelays, SearchGoal};
+use super::interconnect::{DelayBounds, PipDelays};
 use crate::chipdb::{ChipDb, WireId};
 use crate::netlist::PortType;
 
@@ -83,7 +83,7 @@ impl DelayTable {
             .par_iter()
             .map(|&(sample, wire)| {
                 let source = WireId::new(sample, wire);
-                let settled = pips.shortest_delays(chipdb, source, SearchGoal::AllWires);
+                let settled = pips.shortest_delays(chipdb, source);
                 grid.sink_pins()
                     .map(|sink| {
                         let reach = settled
