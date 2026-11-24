@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Eisenjoch">
+  <style>.bridge{fill:#1F2933}.fabric{fill:#2563EB}.net{fill:#D99A00}.net-line{fill:none;stroke:#D99A00}@media (prefers-color-scheme: dark){.bridge{fill:#E2E8F0}.fabric{fill:#60A5FA}.net{fill:#FACC15}.net-line{fill:none;stroke:#FACC15}}</style>
+  <rect x="4" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="4" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="86" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="4" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="70" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="4" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="54" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="46" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="12" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="12" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="78" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="12" y="70" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="12" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="54" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="12" y="46" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="70" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="20" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="28" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="28" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="28" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="28" y="94" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="28" y="86" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="28" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="36" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="36" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="36" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="36" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="44" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="44" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="44" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="44" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="44" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="52" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="52" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="52" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="52" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="52" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="52" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="60" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="60" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="60" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="60" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="68" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="68" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="76" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="76" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="76" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="84" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="84" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="84" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="84" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="84" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="92" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="92" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="92" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="92" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="92" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="92" y="78" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="92" y="70" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="94" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="70" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="100" y="54" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="118" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="94" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="108" y="86" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="108" y="78" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="70" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="108" y="54" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="108" y="46" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="118" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="116" y="110" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="102" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="94" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="116" y="86" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="78" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="116" y="70" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="62" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="116" y="54" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
+  <rect x="116" y="46" width="6" height="6" rx="1.2" class="fabric"/>
+  <rect x="4" y="34" width="118" height="12" rx="2" class="bridge"/>
+  <rect x="28" y="44" width="6" height="32" class="bridge"/>
+  <rect x="44" y="44" width="6" height="40" class="bridge"/>
+  <rect x="60" y="44" width="6" height="48" class="bridge"/>
+  <rect x="76" y="44" width="6" height="56" class="bridge"/>
+  <rect x="92" y="44" width="6" height="24" class="bridge"/>
+  <path d="M18 45H28V54A5 5 0 0 0 18 54Z" class="bridge"/>
+  <path d="M34 45H44V54A5 5 0 0 0 34 54Z" class="bridge"/>
+  <path d="M50 45H60V54A5 5 0 0 0 50 54Z" class="bridge"/>
+  <path d="M66 45H76V54A5 5 0 0 0 66 54Z" class="bridge"/>
+  <path d="M82 45H92V54A5 5 0 0 0 82 54Z" class="bridge"/>
+  <path d="M98 45H108V54A5 5 0 0 0 98 54Z" class="bridge"/>
+  <path d="M10 28H116" class="net-line" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="10" cy="28" r="4" class="net"/>
+  <circle cx="116" cy="28" r="4" class="net"/>
+</svg>

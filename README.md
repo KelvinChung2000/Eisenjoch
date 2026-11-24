@@ -1,4 +1,9 @@
-# Eisenjoch
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/logo-dark.svg">
+    <img alt="Eisenjoch" src="docs/logo/logo-light.svg" width="400">
+  </picture>
+</h1>
 
 Use `eisenjoch` to run upstream nextpnr packing, placement, and routing. It loads a
 native nextpnr shared library in the Rust process. The first supported device is
