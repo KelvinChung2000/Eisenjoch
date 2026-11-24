@@ -11,8 +11,11 @@ except ImportError:
     )
     sys.exit(1)
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from nextpnr import TimingReport
 
 app = typer.Typer(
     name="nextpnr-himbaechel-rust",
@@ -30,7 +33,7 @@ def main(
     ),
     write: Optional[Path] = typer.Option(None, help="Output placed/routed JSON"),
     placer: str = typer.Option("heap", help="Placer algorithm [heap|sa]"),
-    router: str = typer.Option("router1", help="Router algorithm [router1|router2]"),
+    router: str = typer.Option("router2", help="Router algorithm [router1|router2]"),
     seed: int = typer.Option(1, help="Random seed"),
     freq: Optional[float] = typer.Option(None, help="Frequency constraint (MHz)"),
     package: Optional[str] = typer.Option(None, help="Package name"),
@@ -44,10 +47,14 @@ def main(
     debug: bool = typer.Option(False, "--debug", help="Debug output"),
     force: bool = typer.Option(False, "--force", help="Force continue on errors"),
     timing_driven: bool = typer.Option(
-        True, "--timing-driven/--no-timing-driven", help="Timing-driven P&R"
+        True,
+        "--timing-driven/--no-timing-driven",
+        help="Timing-driven refinement and routing (router2 only)",
     ),
     timing_allow_fail: bool = typer.Option(
-        False, "--timing-allow-fail", help="Allow timing violations"
+        False,
+        "--timing-allow-fail",
+        help="Exit 0 despite negative setup or hold slack",
     ),
     vopt: Optional[list[str]] = typer.Option(
         None, "-o", "--vopt", help="Arch-specific options (key=value)"
@@ -114,10 +121,24 @@ def main(
             raise typer.Exit(1)
         return
 
-    if timing_driven and router == "router2" and freq is None and sdc is None:
+    timed = freq is not None or sdc is not None
+    if timing_driven and not timed:
         typer.echo(
-            "Error: timing-driven router2 needs a clock; pass --freq or an --sdc "
+            "Error: timing-driven P&R needs a clock; pass --freq or an --sdc "
             "with create_clock, or pass --no-timing-driven",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if timing_driven and router != "router2":
+        typer.echo(
+            f"Error: router {router} is not timing-driven; pass --router router2 "
+            "or --no-timing-driven",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if report is not None and not timed:
+        typer.echo(
+            "Error: --report needs a clock; pass --freq or an --sdc with create_clock",
             err=True,
         )
         raise typer.Exit(1)
@@ -134,17 +155,6 @@ def main(
         typer.echo(
             f"Loaded design: {ctx.width}x{ctx.height} grid, {len(ctx.cells)} cells, {len(ctx.nets)} nets"
         )
-
-    # Apply SDC constraints
-    if sdc is not None:
-        try:
-            ctx.apply_sdc(sdc=sdc.read_text())
-            if verbose:
-                typer.echo(f"Loaded SDC constraints from {sdc}")
-        except Exception as e:
-            typer.echo(f"Error loading SDC constraints: {e}", err=True)
-            if not force:
-                raise typer.Exit(1)
 
     # Apply region constraints
     if constraints is not None:
@@ -188,14 +198,31 @@ def main(
         if verbose:
             typer.echo("Running packer...")
         ctx.pack()
+    except Exception as e:
+        typer.echo(f"Packer error: {e}", err=True)
+        raise typer.Exit(1)
 
+    if sdc is not None:
+        try:
+            ctx.apply_sdc(sdc=sdc.read_text())
+        except Exception as e:
+            typer.echo(f"Error loading SDC constraints: {e}", err=True)
+            raise typer.Exit(1)
+        if verbose:
+            typer.echo(f"Loaded SDC constraints from {sdc}")
+
+    try:
         if verbose:
             typer.echo(f"Running placer ({placer})...")
         ctx.place(placer=placer, seed=seed)
 
         if verbose:
+            typer.echo(f"Running refinement (timing-driven: {timing_driven})...")
+        ctx.refine(timing_driven=timing_driven)
+
+        if verbose:
             typer.echo(f"Running router ({router})...")
-        ctx.route(router=router, timing_driven=timing_driven and router == "router2")
+        ctx.route(router=router, timing_driven=timing_driven)
     except Exception as e:
         typer.echo(f"P&R error: {e}", err=True)
         if not force:
@@ -210,26 +237,30 @@ def main(
         except Exception as e:
             typer.echo(f"Error saving checkpoint: {e}", err=True)
 
-    # Timing report
-    try:
-        timing = ctx.timing_report(stage="routed")
-        if verbose or report is not None:
-            typer.echo(str(timing))
+    timing = None
+    if timed:
+        try:
+            timing = ctx.timing_report(stage="routed")
+        except Exception as e:
+            typer.echo(f"Timing analysis error: {e}", err=True)
+            raise typer.Exit(1)
+        typer.echo(str(timing))
 
-        if report is not None:
-            import json as json_mod
+    if report is not None and timing is not None:
+        import json as json_mod
 
-            report_data = {
-                "fmax_mhz": timing.fmax_mhz,
-                "wns_ns": timing.wns_ns,
-                "tns_ns": timing.tns_ns,
-                "num_failing": timing.num_failing,
-                "num_endpoints": timing.num_endpoints,
-            }
-            report.write_text(json_mod.dumps(report_data, indent=2))
-    except Exception as e:
-        if verbose:
-            typer.echo(f"Timing report error: {e}", err=True)
+        report_data = {
+            "fmax_mhz": timing.fmax_mhz,
+            "wns_ns": timing.wns_ns,
+            "tns_ns": timing.tns_ns,
+            "num_failing": timing.num_failing,
+            "num_endpoints": timing.num_endpoints,
+            "hold_wns_ns": timing.hold_wns_ns,
+            "hold_tns_ns": timing.hold_tns_ns,
+            "num_hold_failing": timing.num_hold_failing,
+            "num_hold_endpoints": timing.num_hold_endpoints,
+        }
+        report.write_text(json_mod.dumps(report_data, indent=2))
 
     # Write output
     if write is not None:
@@ -240,8 +271,35 @@ def main(
             if not force:
                 raise typer.Exit(1)
 
+    if timing is not None:
+        failures = timing_failures(timing)
+        for failure in failures:
+            typer.echo(f"Timing check failed: {failure}", err=True)
+        if failures and not timing_allow_fail:
+            typer.echo(
+                "Error: timing constraints not met; pass --timing-allow-fail to accept",
+                err=True,
+            )
+            raise typer.Exit(1)
+
     if verbose:
         typer.echo("Done.")
+
+
+def timing_failures(timing: "TimingReport") -> list[str]:
+    """Return one message per failed sign-off check; an empty list means timing is met."""
+    failures = []
+    if timing.num_endpoints == 0:
+        failures.append("no setup endpoint is constrained; check the clock definitions")
+    if timing.num_failing > 0:
+        failures.append(
+            f"setup WNS {timing.wns_ns:.3f} ns, {timing.num_failing}/{timing.num_endpoints} endpoints failing"
+        )
+    if timing.num_hold_failing > 0:
+        failures.append(
+            f"hold WNS {timing.hold_wns_ns:.3f} ns, {timing.num_hold_failing}/{timing.num_hold_endpoints} endpoints failing"
+        )
+    return failures
 
 
 def cli() -> None:

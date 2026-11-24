@@ -15,15 +15,15 @@ use ::nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
 use ::nextpnr::placer::opt_trans::config::InitStrategy;
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
-use ::nextpnr::placer::Placer;
+use ::nextpnr::placer::{refine_placement, Placer, PlacerPipeline, RefineCfg};
 use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg, TimingDrivenCfg};
 use ::nextpnr::router::Router;
 use ::nextpnr::common::DelayT;
 use ::nextpnr::sta::{
-    Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError,
-    NOTIONAL_CLASSLESS_PIPS,
+    Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
+    StaSessionError, NOTIONAL_CLASSLESS_PIPS,
 };
 use nextpnr_upstream::{
     Nextpnr, Placer as UpstreamPlacer, Request, Router as UpstreamRouter, Stage,
@@ -302,6 +302,21 @@ impl PyContext {
         }
     }
 
+    /// Run placer1 refinement on a legal placement; raises RuntimeError if it fails or leaves it illegal.
+    ///
+    /// Args:
+    ///     timing_driven: Weight moves by RustSTA criticality on placed-wire estimates.
+    #[pyo3(signature = (*, timing_driven))]
+    fn refine(&mut self, timing_driven: bool) -> PyResult<()> {
+        let cfg = RefineCfg {
+            timing_driven,
+            ..RefineCfg::default()
+        };
+        refine_placement(&mut self.ctx, &cfg)
+            .and_then(|_| PlacerPipeline::validate(&self.ctx))
+            .map_err(|e| PyRuntimeError::new_err(format!("Refine placer error: {}", e)))
+    }
+
     /// Run a router on the design.
     ///
     /// Args:
@@ -437,14 +452,18 @@ impl PyContext {
         Ok(())
     }
 
-    /// Append SDC commands (times in ns) to the design constraints.
+    /// Append SDC commands (times in ns) and check them against the current netlist.
     ///
-    /// Args:
-    ///     sdc: SDC text, read by RustSTA at the next timing analysis.
+    /// Raises ValueError, leaving the constraints unchanged, when RustSTA rejects the text.
     #[pyo3(signature = (*, sdc))]
-    fn apply_sdc(&mut self, sdc: &str) {
+    fn apply_sdc(&mut self, sdc: &str) -> PyResult<()> {
+        let accepted = self.ctx.design.sdc.len();
         self.ctx.design.sdc.push_str(sdc);
         self.ctx.design.sdc.push('\n');
+        RustSta::build(&self.ctx).map(|_| ()).map_err(|e| {
+            self.ctx.design.sdc.truncate(accepted);
+            PyValueError::new_err(format!("Timing constraints rejected: {e}"))
+        })
     }
 
     /// Run static timing analysis and return a report.
@@ -473,6 +492,10 @@ impl PyContext {
             tns_ns: report.tns_ns(),
             num_failing: report.failing_endpoints(),
             num_endpoints: report.endpoints(),
+            hold_wns_ns: report.hold_wns_ns(),
+            hold_tns_ns: report.hold_tns_ns(),
+            num_hold_failing: report.hold_failing_endpoints(),
+            num_hold_endpoints: report.hold_endpoints(),
             text: report.to_string(),
         })
     }
@@ -625,7 +648,7 @@ impl PyContext {
 // PyTimingReport
 // ---------------------------------------------------------------------------
 
-/// Setup timing summary over all clock domain pairs; `str()` gives the per-pair report.
+/// Setup and hold summary over all clock domain pairs; `str()` gives the per-pair report.
 #[pyclass(name = "TimingReport")]
 pub struct PyTimingReport {
     /// Lowest same-clock Fmax in MHz, or None without a same-clock domain pair.
@@ -643,6 +666,18 @@ pub struct PyTimingReport {
     /// Constrained setup endpoints, summed over domain pairs.
     #[pyo3(get)]
     pub num_endpoints: usize,
+    /// Worst hold slack in ns, or None without a hold check.
+    #[pyo3(get)]
+    pub hold_wns_ns: Option<f64>,
+    /// Total negative hold slack in ns.
+    #[pyo3(get)]
+    pub hold_tns_ns: f64,
+    /// Endpoints with negative hold slack, summed over domain pairs.
+    #[pyo3(get)]
+    pub num_hold_failing: usize,
+    /// Hold-checked endpoints, summed over domain pairs.
+    #[pyo3(get)]
+    pub num_hold_endpoints: usize,
     text: String,
 }
 
@@ -651,12 +686,15 @@ impl PyTimingReport {
     fn __repr__(&self) -> String {
         let optional = |value: Option<f64>| value.map_or("None".to_owned(), |v| format!("{v:.3}"));
         format!(
-            "TimingReport(fmax_mhz={}, wns_ns={}, tns_ns={:.3}, failing={}/{})",
+            "TimingReport(fmax_mhz={}, wns_ns={}, tns_ns={:.3}, failing={}/{}, hold_wns_ns={}, hold_failing={}/{})",
             optional(self.fmax_mhz),
             optional(self.wns_ns),
             self.tns_ns,
             self.num_failing,
-            self.num_endpoints
+            self.num_endpoints,
+            optional(self.hold_wns_ns),
+            self.num_hold_failing,
+            self.num_hold_endpoints
         )
     }
 
