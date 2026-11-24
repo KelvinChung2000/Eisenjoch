@@ -1,3 +1,4 @@
+mod back_annotation;
 mod criticality;
 mod delay_table;
 mod interconnect;
@@ -35,6 +36,10 @@ pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(Delay
     late_ps: 100,
 });
 pub use criticality::{CritNorm, PairBudget};
+pub use back_annotation::{
+    routed_back_annotation, BackAnnotation, CellDelays, InterconnectDelay, IopathDelay, PinRef,
+    TimingCheck,
+};
 pub use report::{DomainReport, HoldReport, PathPinReport, PathReport, TimingReport};
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use ruststa::engine::types::ClockId;

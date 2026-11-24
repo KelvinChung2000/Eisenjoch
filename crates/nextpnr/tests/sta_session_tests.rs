@@ -5,7 +5,7 @@ use common::{add_cell, add_net, drive, sink};
 use std::collections::HashMap;
 
 use nextpnr::chipdb::{parse_constids_inc, BelId, ChipDb, PipId, WireId};
-use nextpnr::common::DelayT;
+use nextpnr::common::{ClockEdge, DelayT};
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
@@ -17,7 +17,8 @@ use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
     ArcTiming, ClasslessPips, ClockId, CritNorm, DelayBounds, InterconnectError, InterconnectModel,
     InterconnectStage, NetSink, PairBudget, PlacedEstimate, Reach, SinkTiming, StaSession,
-    StaSessionError, TableEntry, Untimed, register_clock_nets,
+    StaSessionError, TableEntry, Untimed, register_clock_nets, routed_back_annotation, IopathDelay,
+    PinRef, TimingCheck,
 };
 use rayon::prelude::*;
 use rstest::rstest;
@@ -401,6 +402,54 @@ fn routed_slack_is_routed_pip_sum(#[case] route: QRoute, #[case] period_ps: Dela
     assert_eq!(session.connection_delay(chain.d_sink()).unwrap(), d_delay);
     let expected = expected(period_ps, chain.lut_input, q_delay, d_delay);
     assert_chain_timing(&session, &chain, &expected);
+}
+
+fn pin(instance: &str, port: &str) -> PinRef {
+    PinRef {
+        instance: instance.to_owned(),
+        port: port.to_owned(),
+    }
+}
+
+#[rstest]
+#[case::direct(QRoute::Direct)]
+#[case::detour(QRoute::Detour)]
+fn back_annotation_carries_routed_and_cell_delays(#[case] route: QRoute) {
+    let mut ctx = common::make_example_context();
+    let chain = routed_chain(&mut ctx, route, 1000);
+
+    let annotation = routed_back_annotation(&ctx, &model(&ctx, NOTIONAL, PlacedEstimate::DelayTable))
+        .expect("the routed chain annotates");
+
+    let delay = |source: PinRef, load: PinRef| {
+        annotation
+            .interconnects
+            .iter()
+            .find(|net| (&net.source, &net.load) == (&source, &load))
+            .unwrap_or_else(|| panic!("no interconnect {source:?} -> {load:?}"))
+            .delay
+    };
+    let lut_input = format!("I[{}]", chain.lut_input);
+    assert_eq!(delay(pin("launch", "Q"), pin("lut", &lut_input)), uniform(route.delay_ps()));
+    assert_eq!(delay(pin("lut", "F"), pin("capture", "D")), uniform(NOTIONAL_PIP_PS));
+    let launch = annotation
+        .cells
+        .iter()
+        .find(|cell| cell.instance == "launch")
+        .expect("the launch register is a timed cell");
+    assert!(launch.iopaths.contains(&IopathDelay {
+        from: "CLK".to_owned(),
+        to: "Q".to_owned(),
+        launch_edge: Some(ClockEdge::Rising),
+        delay: CLK_TO_Q,
+    }));
+    assert!(launch.checks.contains(&TimingCheck {
+        data: "D".to_owned(),
+        clock: "CLK".to_owned(),
+        edge: ClockEdge::Rising,
+        setup_ps: SETUP_PS,
+        hold_ps: HOLD_PS,
+    }));
 }
 
 #[test]

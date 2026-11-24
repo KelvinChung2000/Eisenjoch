@@ -5,6 +5,7 @@ use rusteda_core::liberty::{Cell, Direction, Library, Pin, Table, TimingArc, Uni
 use ruststa::engine::delay::annotate::DelayAnnotations;
 use ruststa::engine::incr::SessionNodeKey;
 
+use super::back_annotation::{IopathDelay, TimingCheck};
 use super::interconnect::DelayBounds;
 use super::role::{CellRole, CellTiming, Roles};
 use super::{StaBuildError, PS_IN_NS};
@@ -107,6 +108,49 @@ pub(super) fn register_clock_nets(
         }
     }
     nets
+}
+
+pub(super) fn iopaths(ctx: &Context, cell_type: &CellType) -> Vec<IopathDelay> {
+    cell_type
+        .delay_arcs
+        .iter()
+        .map(|arc| IopathDelay {
+            from: ctx.name_of(arc.from.id).to_owned(),
+            to: ctx.name_of(arc.to.id).to_owned(),
+            launch_edge: match arc.kind {
+                DelayArcKind::Combinational => None,
+                DelayArcKind::Launch(edge) => Some(edge),
+            },
+            delay: arc.bounds,
+        })
+        .collect()
+}
+
+pub(super) fn timing_checks(
+    ctx: &Context,
+    speed_grade: &SpeedGradePod,
+    cell_type: &CellType,
+) -> Vec<TimingCheck> {
+    let CellTiming::SpeedGrade { type_idx } = cell_type.timing else {
+        return Vec::new();
+    };
+    cell_type
+        .ports
+        .iter()
+        .filter(|(_, port)| port.dir == PortType::In)
+        .flat_map(|(data, port)| {
+            register_arcs(ctx, speed_grade, type_idx, port).map(move |(clock, edge, pod)| {
+                let info = ChipDb::reg_arc_info(pod);
+                TimingCheck {
+                    data: data.clone(),
+                    clock: clock.to_owned(),
+                    edge,
+                    setup_ps: info.setup.max_delay,
+                    hold_ps: info.hold.max_delay,
+                }
+            })
+        })
+        .collect()
 }
 
 fn declare_clock_pins(ctx: &Context, speed_grade: &SpeedGradePod, cell_type: &mut CellType) {
