@@ -426,6 +426,7 @@ struct TimingDriven {
     model: InterconnectModel,
     session: StaSession,
     pins: FxHashMap<NetId, Vec<SinkPin>>,
+    routed: FxHashSet<NetId>,
 }
 
 impl TimingDriven {
@@ -452,6 +453,7 @@ impl TimingDriven {
             model,
             session,
             pins,
+            routed: FxHashSet::default(),
         })
     }
 
@@ -506,6 +508,7 @@ impl TimingDriven {
             }
         }
         self.session.set_connection_delays(&delays)?;
+        self.routed.extend(nets);
         Ok(start.elapsed())
     }
 }
@@ -533,13 +536,41 @@ pub struct IterationRecord {
     pub timing_refresh: Option<Duration>,
 }
 
+/// Where the connection delays of a net in a [`RoutedTiming`] session come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelaySource {
+    Estimated,
+    Routed,
+}
+
+/// The STA session of a timing-driven run: nets this run routed carry their
+/// routed delays, every other net keeps its placed estimate.
+#[derive(Debug)]
+pub struct RoutedTiming {
+    session: StaSession,
+    routed: FxHashSet<NetId>,
+}
+
+impl RoutedTiming {
+    pub fn session(&self) -> &StaSession {
+        &self.session
+    }
+
+    pub fn delay_source(&self, net: NetId) -> Result<DelaySource, StaSessionError> {
+        self.session.net_sinks(net)?;
+        Ok(match self.routed.contains(&net) {
+            true => DelaySource::Routed,
+            false => DelaySource::Estimated,
+        })
+    }
+}
+
 /// What a converged Router2 run did, pass by pass; the first record is the
-/// initial pass. A timing-driven run also returns its STA session, which
-/// holds the routed delay of every timed connection of the routed nets.
+/// initial pass. A timing-driven run also returns its STA session.
 #[derive(Debug)]
 pub struct Router2Report {
     pub iterations: Vec<IterationRecord>,
-    pub timing: Option<StaSession>,
+    pub timing: Option<RoutedTiming>,
 }
 
 fn net_sources(ctx: &Context, nets: &[NetId]) -> Result<Vec<(NetId, WireId)>, RouterError> {
@@ -652,7 +683,10 @@ impl Router2 {
         negotiation.commit(ctx)?;
         Ok(Router2Report {
             iterations,
-            timing: timing.map(|timing| timing.session),
+            timing: timing.map(|timing| RoutedTiming {
+                session: timing.session,
+                routed: timing.routed,
+            }),
         })
     }
 }

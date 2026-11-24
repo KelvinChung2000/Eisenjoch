@@ -5,9 +5,9 @@ use nextpnr::chipdb::{PipId, WireId};
 use nextpnr::common::DelayT;
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
-use nextpnr::netlist::PortType;
+use nextpnr::netlist::{NetId, PortType};
 use nextpnr::router::common::{collect_routable_nets, validate_all_routed};
-use nextpnr::router::router2::{Router2Cfg, Router2Report, TimingDrivenCfg};
+use nextpnr::router::router2::{DelaySource, Router2Cfg, Router2Report, TimingDrivenCfg};
 use nextpnr::router::{Router, Router2, RouterError};
 use nextpnr::sta::{
     CritNorm, InterconnectModel, InterconnectStage, NetSink, PlacedEstimate, StaSession,
@@ -233,9 +233,10 @@ fn timing_driven_without_a_clock_is_rejected() {
 fn criticality_refresh_equals_fresh_routed_build(#[case] period_ps: DelayT) {
     let mut ctx = clocked_baseline(Some(period_ps));
     let report = route_baseline(&mut ctx, &timing_cfg(TimingDrivenCfg::default()));
-    let refreshed = report
+    let timing = report
         .timing
         .expect("a timing-driven run returns its session");
+    let refreshed = timing.session();
     let fresh = session(&ctx, InterconnectStage::Routed);
     assert_eq!(refreshed.domains(), fresh.domains());
     for sink in timed_sinks(&ctx) {
@@ -249,7 +250,38 @@ fn criticality_refresh_equals_fresh_routed_build(#[case] period_ps: DelayT) {
                 .unwrap()
                 .map(f64::to_bits)
         };
-        assert_eq!(bits(&refreshed), bits(&fresh), "{sink:?}");
+        assert_eq!(bits(refreshed), bits(&fresh), "{sink:?}");
+    }
+}
+
+#[test]
+fn subset_route_keeps_placed_estimates_on_the_other_nets() {
+    let mut ctx = clocked_baseline(Some(4000));
+    let nets = collect_routable_nets(&ctx);
+    let routed: Vec<NetId> = nets.iter().copied().step_by(2).collect();
+    let report = Router2
+        .route_nets_report(&mut ctx, &timing_cfg(TimingDrivenCfg::default()), &routed)
+        .expect("negotiation converges on the subset");
+    let timing = report
+        .timing
+        .expect("a timing-driven run returns its session");
+    let mut expected = session(&ctx, InterconnectStage::Placed);
+    expected
+        .update_nets(&ctx, InterconnectStage::Routed, &routed)
+        .expect("routed nets have routed delays");
+    for &net in &nets {
+        let source = match routed.contains(&net) {
+            true => DelaySource::Routed,
+            false => DelaySource::Estimated,
+        };
+        assert_eq!(timing.delay_source(net).unwrap(), source);
+    }
+    for sink in timed_sinks(&ctx) {
+        assert_eq!(
+            timing.session().connection_delay(sink).ok(),
+            expected.connection_delay(sink).ok(),
+            "{sink:?}"
+        );
     }
 }
 
