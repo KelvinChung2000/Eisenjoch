@@ -34,7 +34,7 @@
 //! budget. The local multi-target search in this module bbox-filters peer
 //! expansion itself, keeping the working set bounded by the bbox area.
 
-use crate::chipdb::{PipId, WireId};
+use crate::chipdb::WireId;
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::{CellPin, NetId};
@@ -97,9 +97,6 @@ const VISIT_PER_TILE_GLOBAL: usize = 64;
 /// bbox-filtered peer expansion — fall back to inconclusive and let the
 /// per-pair pass handle the net (its tight per-sink bbox stays small).
 const MAX_GLOBAL_BBOX_TILES: usize = 25_000;
-/// Max peers walked per node-equivalence expansion when registering a pin
-/// wire's ownership. Mirrors `legalize::common::NODE_PEER_CAP`.
-const NODE_PEER_CAP: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct UnreachedSink {
@@ -148,8 +145,8 @@ fn should_skip_net(ctx: &Context, net_id: NetId) -> bool {
     net_name == "$PACKER_GND_NET" || net_name == "$PACKER_VCC_NET"
 }
 
-/// Pin-wire ownership: every BEL pin wire (and its node peers) of a placed
-/// cell mapped to the wire's owning net.
+/// Pin-wire ownership: every BEL pin wire of a placed cell mapped to the
+/// owning net. Wires are canonical, so one entry covers the pin's whole node.
 pub struct PinOwnership {
     map: FxHashMap<WireId, NetId>,
 }
@@ -164,23 +161,10 @@ impl PinOwnership {
             .collect();
         for (cid, bel) in bound {
             for (w, net) in crate::placer::legalize::common::cell_pin_wires_pub(ctx, cid, bel) {
-                Self::insert_with_peers(ctx, w, net, &mut map);
+                map.insert(ctx.chipdb().canonical_wire(w), net);
             }
         }
         Self { map }
-    }
-
-    fn insert_with_peers(ctx: &Context, w: WireId, net: NetId, map: &mut FxHashMap<WireId, NetId>) {
-        map.insert(w, net);
-        let mut peers = 0usize;
-        ctx.chipdb().node_wires_cb(w, |nw| {
-            if peers >= NODE_PEER_CAP {
-                peers += 1;
-                return;
-            }
-            peers += 1;
-            map.insert(nw, net);
-        });
     }
 
     #[inline]
@@ -590,7 +574,7 @@ fn multi_target_search(
     let mut remaining: FxHashSet<WireId> = sinks.iter().map(|&(w, _)| w).collect();
     let mut reached: FxHashSet<WireId> = FxHashSet::default();
     let mut best_cost: FxHashMap<WireId, i32> = FxHashMap::default();
-    let mut nodes_expanded: FxHashSet<u64> = FxHashSet::default();
+    let mut nodes_expanded: FxHashSet<WireId> = FxHashSet::default();
     let mut heap: BinaryHeap<GlobalEntry> = BinaryHeap::new();
 
     // Cache sink (x, y) for quick heuristic recomputation.
@@ -602,11 +586,11 @@ fn multi_target_search(
         })
         .collect();
 
-    let heuristic = |wire: WireId, remaining: &FxHashSet<WireId>| -> i32 {
+    let heuristic = |at: i32, remaining: &FxHashSet<WireId>| -> i32 {
         if remaining.is_empty() {
             return 0;
         }
-        let (wx, wy) = chipdb.tile_xy(wire.tile());
+        let (wx, wy) = chipdb.tile_xy(at);
         sink_xy
             .iter()
             .filter(|(s, _, _)| remaining.contains(s))
@@ -617,7 +601,7 @@ fn multi_target_search(
 
     // Mark `src` as reached if it's also a sink (some BEL pin wires can be
     // shared between driver and sink positions on the same node).
-    let mut mark_reached =
+    let mark_reached =
         |wire: WireId, remaining: &mut FxHashSet<WireId>, reached: &mut FxHashSet<WireId>| {
             if remaining.remove(&wire) {
                 reached.insert(wire);
@@ -626,7 +610,7 @@ fn multi_target_search(
 
     best_cost.insert(src, 0);
     mark_reached(src, &mut remaining, &mut reached);
-    let h0 = heuristic(src, &remaining);
+    let h0 = heuristic(src.tile(), &remaining);
     heap.push(GlobalEntry {
         wire: src,
         cost: 0,
@@ -653,72 +637,45 @@ fn multi_target_search(
             }
         }
 
-        // Node-as-vertex dedup: each node is expanded once.
-        let nid = chipdb.node_id(wire);
-        let should_expand = match nid {
-            Some(id) => nodes_expanded.insert(id),
-            None => true,
-        };
-        if !should_expand {
+        // Wires are canonical, so each node is one entry: reaching it is
+        // reaching every member. Expand it once.
+        if !nodes_expanded.insert(wire) {
             continue;
         }
+        mark_reached(wire, &mut remaining, &mut reached);
+        if remaining.is_empty() {
+            break;
+        }
 
-        // Collect node members (popped wire + its peers, bbox-filtered).
-        // Peers outside the bbox are ignored entirely — neither marked as
-        // reached nor used as a launching point for further pips.
-        let mut members: Vec<WireId> = Vec::with_capacity(8);
-        members.push(wire);
-        if nid.is_some() {
-            chipdb.node_wires_cb(wire, |peer| {
-                let (px, py) = chipdb.tile_xy(peer.tile());
-                if bbox.contains(px, py) {
-                    members.push(peer);
+        // Launch pips from the node's members inside the bbox. Members
+        // outside it are ignored, so a chip-spanning node cannot pull the
+        // whole device into the search.
+        chipdb.pips_downhill_cb(wire, |pip| {
+            let (px, py) = chipdb.tile_xy(pip.tile());
+            if !bbox.contains(px, py) {
+                return;
+            }
+            let next = chipdb.pip_dst_wire(pip);
+            if let Some(owner) = ownership.owner(next) {
+                if owner != own_net {
+                    return;
                 }
+            }
+            let new_cost = cost + 1;
+            let prev = best_cost.get(&next).copied().unwrap_or(i32::MAX);
+            if new_cost >= prev {
+                return;
+            }
+            best_cost.insert(next, new_cost);
+            // Measured from the pip's tile: where the search enters `next`,
+            // which can be far from the node's root.
+            let h = heuristic(pip.tile(), &remaining);
+            heap.push(GlobalEntry {
+                wire: next,
+                cost: new_cost,
+                estimate: new_cost + h,
             });
-        }
-
-        for &member in &members {
-            // Peers inherit the popped wire's cost (free node hop).
-            if member != wire {
-                let prev = best_cost.get(&member).copied().unwrap_or(i32::MAX);
-                if cost < prev {
-                    best_cost.insert(member, cost);
-                }
-            }
-            // Mark sinks reached — applies to the popped wire too.
-            mark_reached(member, &mut remaining, &mut reached);
-            if remaining.is_empty() {
-                break;
-            }
-
-            // Expand pips downhill from this member.
-            let info = chipdb.wire_info(member);
-            for &pip_idx in info.pips_downhill.get() {
-                let pip = PipId::new(member.tile(), pip_idx);
-                let next = chipdb.pip_dst_wire(pip);
-                let (nx, ny) = chipdb.tile_xy(next.tile());
-                if !bbox.contains(nx, ny) {
-                    continue;
-                }
-                if let Some(owner) = ownership.owner(next) {
-                    if owner != own_net {
-                        continue;
-                    }
-                }
-                let new_cost = cost + 1;
-                let prev = best_cost.get(&next).copied().unwrap_or(i32::MAX);
-                if new_cost >= prev {
-                    continue;
-                }
-                best_cost.insert(next, new_cost);
-                let h = heuristic(next, &remaining);
-                heap.push(GlobalEntry {
-                    wire: next,
-                    cost: new_cost,
-                    estimate: new_cost + h,
-                });
-            }
-        }
+        });
     }
 
     let reached_count = reached.len();

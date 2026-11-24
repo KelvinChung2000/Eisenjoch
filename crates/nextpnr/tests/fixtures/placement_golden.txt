@@ -1,0 +1,519 @@
+# sa
+error: Placement failed: Cell ff00 (index 24) is alive but has no BEL after placement
+ff00 -
+ff01 -
+ff02 -
+ff03 -
+ff04 -
+ff05 -
+ff06 -
+ff07 -
+ff08 -
+ff09 -
+ff10 3 5 1 L0_FF
+ff11 3 4 7 L3_FF
+ff12 4 2 3 L1_FF
+ff13 2 3 13 L6_FF
+ff14 2 4 7 L3_FF
+ff15 3 4 15 L7_FF
+lut00 2 5 14 L7_LUT
+lut01 3 6 8 L4_LUT
+lut02 3 5 4 L2_LUT
+lut03 2 5 8 L4_LUT
+lut04 2 5 12 L6_LUT
+lut05 3 4 10 L5_LUT
+lut06 2 2 12 L6_LUT
+lut07 3 3 8 L4_LUT
+lut08 3 6 6 L3_LUT
+lut09 3 4 2 L1_LUT
+lut10 3 6 12 L6_LUT
+lut11 3 5 10 L5_LUT
+lut12 4 4 4 L2_LUT
+lut13 3 3 12 L6_LUT
+lut14 2 3 12 L6_LUT
+lut15 3 4 14 L7_LUT
+lut16 2 4 14 L7_LUT
+lut17 3 5 0 L0_LUT
+lut18 3 5 2 L1_LUT
+lut19 2 4 2 L1_LUT
+lut20 2 2 2 L1_LUT
+lut21 2 2 4 L2_LUT
+lut22 2 2 0 L0_LUT
+lut23 2 2 14 L7_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# legalise_relative_constraints
+ff00 8 8 15 L7_FF
+ff01 4 6 9 L4_FF
+ff02 3 8 5 L2_FF
+ff03 2 8 9 L4_FF
+ff04 2 6 13 L6_FF
+ff05 3 2 11 L5_FF
+ff06 2 1 13 L6_FF
+ff07 4 3 9 L4_FF
+ff08 3 1 7 L3_FF
+ff09 4 5 3 L1_FF
+ff10 3 5 1 L0_FF
+ff11 3 4 7 L3_FF
+ff12 4 2 3 L1_FF
+ff13 2 3 13 L6_FF
+ff14 2 4 7 L3_FF
+ff15 3 4 15 L7_FF
+lut00 8 8 14 L7_LUT
+lut01 4 6 8 L4_LUT
+lut02 3 8 4 L2_LUT
+lut03 2 8 8 L4_LUT
+lut04 2 6 12 L6_LUT
+lut05 3 2 10 L5_LUT
+lut06 2 1 12 L6_LUT
+lut07 4 3 8 L4_LUT
+lut08 3 1 6 L3_LUT
+lut09 4 5 2 L1_LUT
+lut10 3 6 12 L6_LUT
+lut11 3 5 10 L5_LUT
+lut12 4 4 4 L2_LUT
+lut13 3 3 12 L6_LUT
+lut14 2 3 12 L6_LUT
+lut15 3 4 14 L7_LUT
+lut16 2 4 14 L7_LUT
+lut17 3 5 0 L0_LUT
+lut18 3 5 2 L1_LUT
+lut19 2 4 2 L1_LUT
+lut20 2 2 2 L1_LUT
+lut21 2 2 4 L2_LUT
+lut22 2 2 0 L0_LUT
+lut23 2 2 14 L7_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# sa congestion
+error: Placement failed: Cell ff00 (index 24) is alive but has no BEL after placement
+ff00 -
+ff01 -
+ff02 -
+ff03 -
+ff04 -
+ff05 -
+ff06 -
+ff07 -
+ff08 -
+ff09 -
+ff10 2 5 5 L2_FF
+ff11 4 5 13 L6_FF
+ff12 2 4 7 L3_FF
+ff13 2 4 1 L0_FF
+ff14 2 4 5 L2_FF
+ff15 2 4 13 L6_FF
+lut00 2 4 12 L6_LUT
+lut01 3 6 14 L7_LUT
+lut02 3 4 12 L6_LUT
+lut03 1 4 2 L1_LUT
+lut04 2 4 10 L5_LUT
+lut05 2 4 0 L0_LUT
+lut06 2 3 4 L2_LUT
+lut07 2 4 14 L7_LUT
+lut08 4 4 12 L6_LUT
+lut09 4 4 2 L1_LUT
+lut10 3 4 10 L5_LUT
+lut11 4 6 6 L3_LUT
+lut12 3 5 0 L0_LUT
+lut13 2 4 8 L4_LUT
+lut14 2 4 4 L2_LUT
+lut15 3 5 8 L4_LUT
+lut16 2 4 2 L1_LUT
+lut17 3 4 14 L7_LUT
+lut18 3 4 4 L2_LUT
+lut19 3 4 6 L3_LUT
+lut20 2 2 12 L6_LUT
+lut21 2 2 4 L2_LUT
+lut22 2 2 8 L4_LUT
+lut23 2 2 14 L7_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# heap
+ff00 3 4 1 L0_FF
+ff01 4 5 3 L1_FF
+ff02 4 5 9 L4_FF
+ff03 4 5 7 L3_FF
+ff04 4 5 1 L0_FF
+ff05 5 5 11 L5_FF
+ff06 4 4 1 L0_FF
+ff07 4 5 13 L6_FF
+ff08 4 5 15 L7_FF
+ff09 5 5 5 L2_FF
+ff10 4 5 5 L2_FF
+ff11 5 5 1 L0_FF
+ff12 4 4 7 L3_FF
+ff13 4 4 3 L1_FF
+ff14 4 4 5 L2_FF
+ff15 5 5 3 L1_FF
+lut00 3 4 0 L0_LUT
+lut01 4 5 2 L1_LUT
+lut02 4 5 8 L4_LUT
+lut03 4 5 6 L3_LUT
+lut04 4 5 0 L0_LUT
+lut05 5 5 10 L5_LUT
+lut06 4 4 0 L0_LUT
+lut07 4 5 12 L6_LUT
+lut08 4 5 14 L7_LUT
+lut09 5 5 4 L2_LUT
+lut10 4 5 4 L2_LUT
+lut11 5 5 0 L0_LUT
+lut12 5 5 6 L3_LUT
+lut13 4 4 2 L1_LUT
+lut14 4 4 4 L2_LUT
+lut15 4 5 10 L5_LUT
+lut16 5 4 2 L1_LUT
+lut17 5 5 8 L4_LUT
+lut18 5 5 2 L1_LUT
+lut19 5 4 0 L0_LUT
+lut20 2 2 0 L0_LUT
+lut21 2 2 2 L1_LUT
+lut22 2 2 4 L2_LUT
+lut23 2 2 6 L3_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# heap+refine
+ff00 3 5 1 L0_FF
+ff01 4 5 3 L1_FF
+ff02 4 5 9 L4_FF
+ff03 4 5 7 L3_FF
+ff04 4 5 1 L0_FF
+ff05 4 4 11 L5_FF
+ff06 4 4 1 L0_FF
+ff07 4 5 13 L6_FF
+ff08 4 5 15 L7_FF
+ff09 5 5 5 L2_FF
+ff10 4 5 5 L2_FF
+ff11 5 5 9 L4_FF
+ff12 4 4 7 L3_FF
+ff13 4 4 3 L1_FF
+ff14 4 4 5 L2_FF
+ff15 5 5 3 L1_FF
+lut00 3 5 0 L0_LUT
+lut01 4 5 2 L1_LUT
+lut02 4 5 8 L4_LUT
+lut03 4 5 6 L3_LUT
+lut04 4 5 0 L0_LUT
+lut05 4 4 10 L5_LUT
+lut06 4 4 0 L0_LUT
+lut07 4 5 12 L6_LUT
+lut08 4 5 14 L7_LUT
+lut09 5 5 4 L2_LUT
+lut10 4 5 4 L2_LUT
+lut11 5 5 12 L6_LUT
+lut12 5 5 6 L3_LUT
+lut13 4 4 2 L1_LUT
+lut14 4 4 4 L2_LUT
+lut15 5 5 2 L1_LUT
+lut16 5 4 2 L1_LUT
+lut17 5 5 0 L0_LUT
+lut18 5 5 14 L7_LUT
+lut19 5 4 4 L2_LUT
+lut20 2 2 8 L4_LUT
+lut21 2 2 6 L3_LUT
+lut22 2 2 14 L7_LUT
+lut23 2 2 10 L5_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# electro
+ff00 1 1 1 L0_FF
+ff01 1 1 3 L1_FF
+ff02 1 1 5 L2_FF
+ff03 1 1 7 L3_FF
+ff04 1 1 9 L4_FF
+ff05 1 1 11 L5_FF
+ff06 1 1 13 L6_FF
+ff07 1 1 15 L7_FF
+ff08 2 1 1 L0_FF
+ff09 2 1 3 L1_FF
+ff10 2 1 5 L2_FF
+ff11 2 1 7 L3_FF
+ff12 2 1 9 L4_FF
+ff13 2 1 11 L5_FF
+ff14 2 1 13 L6_FF
+ff15 2 1 15 L7_FF
+lut00 1 1 0 L0_LUT
+lut01 1 1 2 L1_LUT
+lut02 1 1 4 L2_LUT
+lut03 1 1 6 L3_LUT
+lut04 1 1 8 L4_LUT
+lut05 1 1 10 L5_LUT
+lut06 1 1 12 L6_LUT
+lut07 1 1 14 L7_LUT
+lut08 2 1 0 L0_LUT
+lut09 2 1 2 L1_LUT
+lut10 2 1 4 L2_LUT
+lut11 2 1 6 L3_LUT
+lut12 2 1 8 L4_LUT
+lut13 2 1 10 L5_LUT
+lut14 2 1 12 L6_LUT
+lut15 2 1 14 L7_LUT
+lut16 1 2 0 L0_LUT
+lut17 1 2 2 L1_LUT
+lut18 1 2 4 L2_LUT
+lut19 1 2 6 L3_LUT
+lut20 1 2 8 L4_LUT
+lut21 1 2 10 L5_LUT
+lut22 1 2 12 L6_LUT
+lut23 1 2 14 L7_LUT
+ram0 2 7 0 RAM
+ram1 4 7 0 RAM
+# initial_placement_topological
+ff00 -
+ff01 -
+ff02 -
+ff03 -
+ff04 -
+ff05 -
+ff06 -
+ff07 -
+ff08 -
+ff09 -
+ff10 5 5 3 L1_FF
+ff11 5 4 1 L0_FF
+ff12 5 4 3 L1_FF
+ff13 5 5 7 L3_FF
+ff14 5 5 5 L2_FF
+ff15 5 5 1 L0_FF
+lut00 3 5 0 L0_LUT
+lut01 3 4 0 L0_LUT
+lut02 3 5 6 L3_LUT
+lut03 3 5 4 L2_LUT
+lut04 3 5 2 L1_LUT
+lut05 4 5 2 L1_LUT
+lut06 4 5 0 L0_LUT
+lut07 4 5 6 L3_LUT
+lut08 4 5 8 L4_LUT
+lut09 4 5 4 L2_LUT
+lut10 4 5 12 L6_LUT
+lut11 5 4 2 L1_LUT
+lut12 5 5 2 L1_LUT
+lut13 4 5 10 L5_LUT
+lut14 5 4 6 L3_LUT
+lut15 5 4 4 L2_LUT
+lut16 5 4 0 L0_LUT
+lut17 6 5 2 L1_LUT
+lut18 6 5 0 L0_LUT
+lut19 5 5 0 L0_LUT
+lut20 1 1 0 L0_LUT
+lut21 1 1 12 L6_LUT
+lut22 1 2 0 L0_LUT
+lut23 1 1 2 L1_LUT
+ram0 2 7 0 RAM
+ram1 3 7 0 RAM
+# legalize sorted
+ff00 2 2 1 L0_FF
+ff01 6 4 1 L0_FF
+ff02 4 5 3 L1_FF
+ff03 3 6 1 L0_FF
+ff04 7 4 1 L0_FF
+ff05 5 5 1 L0_FF
+ff06 4 6 1 L0_FF
+ff07 3 4 1 L0_FF
+ff08 7 5 1 L0_FF
+ff09 5 6 1 L0_FF
+ff10 6 6 1 L0_FF
+ff11 4 3 1 L0_FF
+ff12 3 4 3 L1_FF
+ff13 7 6 1 L0_FF
+ff14 6 3 1 L0_FF
+ff15 4 4 1 L0_FF
+lut00 2 2 0 L0_LUT
+lut01 6 4 0 L0_LUT
+lut02 4 5 2 L1_LUT
+lut03 3 6 0 L0_LUT
+lut04 7 4 0 L0_LUT
+lut05 5 5 0 L0_LUT
+lut06 4 6 0 L0_LUT
+lut07 3 4 0 L0_LUT
+lut08 7 5 0 L0_LUT
+lut09 5 6 0 L0_LUT
+lut10 4 3 0 L0_LUT
+lut11 3 5 0 L0_LUT
+lut12 6 6 0 L0_LUT
+lut13 5 3 0 L0_LUT
+lut14 4 5 0 L0_LUT
+lut15 2 6 0 L0_LUT
+lut16 6 3 0 L0_LUT
+lut17 5 5 2 L1_LUT
+lut18 4 6 2 L1_LUT
+lut19 2 3 0 L0_LUT
+lut20 2 2 6 L3_LUT
+lut21 2 2 8 L4_LUT
+lut22 2 2 4 L2_LUT
+lut23 2 2 2 L1_LUT
+ram0 3 7 0 RAM
+ram1 7 7 0 RAM
+# legalize ring
+ff00 2 2 15 L7_FF
+ff01 6 4 15 L7_FF
+ff02 4 5 15 L7_FF
+ff03 3 6 15 L7_FF
+ff04 7 4 15 L7_FF
+ff05 5 5 15 L7_FF
+ff06 4 6 15 L7_FF
+ff07 3 4 13 L6_FF
+ff08 7 5 15 L7_FF
+ff09 5 6 15 L7_FF
+ff10 6 6 15 L7_FF
+ff11 4 3 15 L7_FF
+ff12 3 4 15 L7_FF
+ff13 7 6 15 L7_FF
+ff14 6 3 15 L7_FF
+ff15 4 4 15 L7_FF
+lut00 2 2 14 L7_LUT
+lut01 6 4 14 L7_LUT
+lut02 4 5 14 L7_LUT
+lut03 3 6 14 L7_LUT
+lut04 7 4 14 L7_LUT
+lut05 5 5 14 L7_LUT
+lut06 4 6 14 L7_LUT
+lut07 3 4 12 L6_LUT
+lut08 7 5 14 L7_LUT
+lut09 5 6 14 L7_LUT
+lut10 4 3 14 L7_LUT
+lut11 3 5 14 L7_LUT
+lut12 6 6 14 L7_LUT
+lut13 5 3 14 L7_LUT
+lut14 4 5 12 L6_LUT
+lut15 2 6 14 L7_LUT
+lut16 6 3 14 L7_LUT
+lut17 5 5 12 L6_LUT
+lut18 4 6 12 L6_LUT
+lut19 2 3 14 L7_LUT
+lut20 6 4 12 L6_LUT
+lut21 5 6 12 L6_LUT
+lut22 3 3 14 L7_LUT
+lut23 2 4 14 L7_LUT
+ram0 3 7 0 RAM
+ram1 7 7 0 RAM
+# legalize snap
+ff00 2 2 1 L0_FF
+ff01 6 4 1 L0_FF
+ff02 4 5 1 L0_FF
+ff03 3 6 1 L0_FF
+ff04 7 4 1 L0_FF
+ff05 5 5 1 L0_FF
+ff06 4 6 1 L0_FF
+ff07 3 4 1 L0_FF
+ff08 7 5 1 L0_FF
+ff09 5 6 1 L0_FF
+ff10 6 6 1 L0_FF
+ff11 4 3 1 L0_FF
+ff12 3 4 3 L1_FF
+ff13 7 6 1 L0_FF
+ff14 6 3 1 L0_FF
+ff15 4 4 1 L0_FF
+lut00 2 2 0 L0_LUT
+lut01 6 4 0 L0_LUT
+lut02 4 5 0 L0_LUT
+lut03 3 6 0 L0_LUT
+lut04 7 4 0 L0_LUT
+lut05 5 5 0 L0_LUT
+lut06 4 6 0 L0_LUT
+lut07 3 4 0 L0_LUT
+lut08 7 5 0 L0_LUT
+lut09 5 6 0 L0_LUT
+lut10 4 3 0 L0_LUT
+lut11 3 5 0 L0_LUT
+lut12 6 6 0 L0_LUT
+lut13 5 3 0 L0_LUT
+lut14 4 5 14 L7_LUT
+lut15 2 6 0 L0_LUT
+lut16 6 3 0 L0_LUT
+lut17 5 5 14 L7_LUT
+lut18 4 6 14 L7_LUT
+lut19 2 3 0 L0_LUT
+lut20 6 4 14 L7_LUT
+lut21 5 6 14 L7_LUT
+lut22 3 3 0 L0_LUT
+lut23 2 4 0 L0_LUT
+ram0 3 7 0 RAM
+ram1 7 7 0 RAM
+# legalize bipartite
+error: Placement failed: Cannot place cluster child ff07 of root lut07: required BEL slot (3,4,1) of type DFF is unavailable (root at (3,4,0), constr_offset=(0,0,1))
+ff00 2 2 1 L0_FF
+ff01 6 4 1 L0_FF
+ff02 4 5 1 L0_FF
+ff03 3 6 1 L0_FF
+ff04 7 4 1 L0_FF
+ff05 5 5 1 L0_FF
+ff06 4 6 1 L0_FF
+ff07 -
+ff08 -
+ff09 -
+ff10 6 6 1 L0_FF
+ff11 4 3 1 L0_FF
+ff12 3 4 1 L0_FF
+ff13 7 6 1 L0_FF
+ff14 6 3 1 L0_FF
+ff15 4 4 1 L0_FF
+lut00 2 2 0 L0_LUT
+lut01 6 4 0 L0_LUT
+lut02 4 5 0 L0_LUT
+lut03 3 6 0 L0_LUT
+lut04 7 4 0 L0_LUT
+lut05 5 5 0 L0_LUT
+lut06 4 6 0 L0_LUT
+lut07 3 4 0 L0_LUT
+lut08 -
+lut09 -
+lut10 -
+lut11 -
+lut12 -
+lut13 -
+lut14 -
+lut15 -
+lut16 -
+lut17 -
+lut18 -
+lut19 -
+lut20 -
+lut21 -
+lut22 -
+lut23 -
+ram0 3 7 0 RAM
+ram1 7 7 0 RAM
+# legalize greedy
+ff00 2 2 1 L0_FF
+ff01 6 4 1 L0_FF
+ff02 4 5 1 L0_FF
+ff03 3 6 1 L0_FF
+ff04 7 4 1 L0_FF
+ff05 5 5 1 L0_FF
+ff06 4 6 1 L0_FF
+ff07 3 4 1 L0_FF
+ff08 7 5 1 L0_FF
+ff09 5 6 1 L0_FF
+ff10 6 6 1 L0_FF
+ff11 4 3 1 L0_FF
+ff12 3 4 3 L1_FF
+ff13 7 6 1 L0_FF
+ff14 6 3 1 L0_FF
+ff15 4 4 1 L0_FF
+lut00 2 2 0 L0_LUT
+lut01 6 4 0 L0_LUT
+lut02 4 5 0 L0_LUT
+lut03 3 6 0 L0_LUT
+lut04 7 4 0 L0_LUT
+lut05 5 5 0 L0_LUT
+lut06 4 6 0 L0_LUT
+lut07 3 4 0 L0_LUT
+lut08 7 5 0 L0_LUT
+lut09 5 6 0 L0_LUT
+lut10 4 3 0 L0_LUT
+lut11 3 5 0 L0_LUT
+lut12 6 6 0 L0_LUT
+lut13 5 3 0 L0_LUT
+lut14 4 5 2 L1_LUT
+lut15 2 6 0 L0_LUT
+lut16 6 3 0 L0_LUT
+lut17 5 5 2 L1_LUT
+lut18 4 6 2 L1_LUT
+lut19 2 3 0 L0_LUT
+lut20 6 4 2 L1_LUT
+lut21 5 6 2 L1_LUT
+lut22 3 3 0 L0_LUT
+lut23 2 4 0 L0_LUT
+ram0 3 7 0 RAM
+ram1 7 7 0 RAM

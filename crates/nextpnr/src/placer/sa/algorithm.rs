@@ -7,6 +7,7 @@ use crate::metrics::total_hpwl;
 use crate::netlist::CellId;
 use log::{debug, info};
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use super::config::PlacerSaCfg;
 use super::congestion::CongestionCache;
@@ -23,6 +24,34 @@ fn moveable_cells(ctx: &Context) -> Vec<CellId> {
         }
     }
     result
+}
+
+/// Candidates per bucket, and per `(bucket, region)` for constrained cells.
+type CandidateLists = (
+    FxHashMap<IdString, Arc<[BelId]>>,
+    FxHashMap<(IdString, u32), Vec<BelId>>,
+);
+
+/// Candidate lists per bucket, not per cell type, so aliases share one. The
+/// unconstrained list is the context's own; a region list holds only that
+/// region's BELs, since moves index into it at random.
+fn candidate_lists(ctx: &Context, moveable: &[CellId]) -> CandidateLists {
+    let mut bel_cache: FxHashMap<IdString, Arc<[BelId]>> = FxHashMap::default();
+    let mut region_bel_cache: FxHashMap<(IdString, u32), Vec<BelId>> = FxHashMap::default();
+    for &ci in moveable {
+        let bucket = ctx.resolve_bucket(ctx.design.cell(ci).cell_type);
+        let bels = bel_cache
+            .entry(bucket)
+            .or_insert_with(|| ctx.bucket_bel_list(bucket));
+        if let Some(rid) = ctx.design.cell(ci).region {
+            region_bel_cache.entry((bucket, rid)).or_insert_with(|| {
+                ctx.bucket_positions_in_region(bels, rid)
+                    .map(|i| bels[i])
+                    .collect()
+            });
+        }
+    }
+    (bel_cache, region_bel_cache)
 }
 
 /// Run the SA placer on the given context.
@@ -47,35 +76,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
     }
     info!("SA Placer: {} moveable cells.", num_cells);
 
-    // Pre-cache BELs per cell type to avoid re-collecting every inner iteration.
-    let mut bel_cache: FxHashMap<IdString, Vec<BelId>> = FxHashMap::default();
-    for &ci in &moveable {
-        let cell = ctx.cell(ci);
-        let cell_type = cell.cell_type_id();
-        bel_cache
-            .entry(cell_type)
-            .or_insert_with(|| ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect());
-    }
-
-    // Pre-cache region-filtered BELs for cells with region constraints.
-    let mut region_bel_cache: FxHashMap<(IdString, u32), Vec<BelId>> = FxHashMap::default();
-    for &ci in &moveable {
-        let cell = ctx.cell(ci);
-        let cell_type = cell.cell_type_id();
-        if let Some(rid) = ctx.design.cell(ci).region {
-            region_bel_cache.entry((cell_type, rid)).or_insert_with(|| {
-                bel_cache
-                    .get(&cell_type)
-                    .map(|bels| {
-                        bels.iter()
-                            .copied()
-                            .filter(|&b| ctx.is_bel_in_region(b, rid))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            });
-        }
-    }
+    let (bel_cache, region_bel_cache) = candidate_lists(ctx, &moveable);
 
     // Step 2: compute initial cost.
     let mut current_cost = total_hpwl(ctx);
@@ -117,7 +118,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
             // Pick a random moveable cell.
             let cell_idx = moveable[ctx.rng_mut().next_range(num_cells as u32) as usize];
             let cell = ctx.cell(cell_idx);
-            let cell_type = cell.cell_type_id();
+            let bucket = ctx.resolve_bucket(cell.cell_type_id());
             let old_bel = cell.bel().map(|b| b.id());
 
             let old_bel = match old_bel {
@@ -128,13 +129,13 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
             // Get candidate BELs from cache, filtered by cell's region constraint.
             let cell_region = ctx.design.cell(cell_idx).region;
             let bucket_bels = if let Some(rid) = cell_region {
-                match region_bel_cache.get(&(cell_type, rid)) {
+                match region_bel_cache.get(&(bucket, rid)) {
                     Some(bels) => bels.as_slice(),
                     None => continue,
                 }
             } else {
-                match bel_cache.get(&cell_type) {
-                    Some(bels) => bels.as_slice(),
+                match bel_cache.get(&bucket) {
+                    Some(bels) => &bels[..],
                     None => continue,
                 }
             };
@@ -244,4 +245,40 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
     PlacerPipeline::validate(ctx)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::example_context;
+    use crate::netlist::Rect;
+
+    /// Aliases of one bucket share its candidate list, and a region list
+    /// holds that region's BELs once per bucket, however many types use it.
+    #[test]
+    fn candidate_lists_do_not_scale_with_alias_count() {
+        let mut ctx = example_context();
+        let region = ctx.design.add_region(ctx.id("r"));
+        ctx.design.region_mut(region).rects.push(Rect::new(1, 1, 2, 2));
+        let mut cells = Vec::new();
+        for i in 0..50 {
+            let alias = format!("ALIAS{i}");
+            ctx.add_cell_type_alias(&alias, "LUT6");
+            let cell = ctx
+                .design
+                .add_cell(ctx.id(format!("c{i}").as_str()), ctx.id(alias.as_str()));
+            if i % 2 == 0 {
+                ctx.design.cell_edit(cell).set_region(Some(region));
+            }
+            cells.push(cell);
+        }
+        let (bels, region_bels) = candidate_lists(&ctx, &cells);
+        let lut = ctx.id("LUT6");
+        assert_eq!(bels.len(), 1);
+        assert!(Arc::ptr_eq(&bels[&lut], &ctx.bucket_bel_list(lut)));
+        assert_eq!(region_bels.len(), 1);
+        let in_region = ctx.bels_for_bucket_in_region(lut, region).count();
+        assert!(in_region > 0);
+        assert_eq!(region_bels[&(lut, region)].len(), in_region);
+    }
 }

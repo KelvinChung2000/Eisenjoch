@@ -1,6 +1,6 @@
 //! Shared legalization helpers: unbinding movable cells and placing cluster children.
 
-use crate::chipdb::{BelId, WireId};
+use crate::chipdb::{BelId, Loc, WireId};
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::{CellId, NetId, PortType};
@@ -44,7 +44,6 @@ pub(crate) fn unbind_movable_cells(ctx: &mut Context, idx_to_cell: &[CellId]) {
 /// stomped on.)
 pub(crate) fn place_cluster_children(
     ctx: &mut Context,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     cell_id: CellId,
     root_bel: BelId,
 ) -> Result<(), PlacerError> {
@@ -74,15 +73,8 @@ pub(crate) fn place_cluster_children(
             root_loc.z + constr_z
         };
 
-        // O(1) lookup against the caller-built (bucket, x, y, z) -> BelId
-        // index. The previous code did `ctx.bels_for_bucket(child_type).collect()`
-        // matching the slot, which on FPGA01 (~1 M LUT BELs) was ~1 M ops per
-        // child × thousands of cluster roots, dominating the post-rejection
-        // bind cost.
-        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
-        let candidate = bel_by_loc
-            .get(&key)
-            .copied()
+        let candidate = ctx
+            .bucket_bel_at(child_type, Loc::new(want_x, want_y, want_z))
             .filter(|&b| ctx.bel(b).is_available());
 
         // STRONG, not PLACER: a cluster child must stay refinable, and
@@ -217,29 +209,18 @@ pub fn cell_pin_wires_pub(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(Wi
 /// a single net. This is the placer-side gate that prevents the router's
 /// later `try_bind_wire_node` from rejecting a pre-reservation as a conflict.
 ///
-/// Storage is per-node, not per-wire. The previous implementation expanded
-/// every claimed wire's node-equivalence class into `claimed` at record
-/// time and re-walked the class at is_legal time. Both walks were O(peers),
-/// and mega-nodes (BUFG ≈ 65 k peers) were silently truncated at
-/// `NODE_PEER_CAP`. Keying directly on `chipdb.node_id(w)` makes record and
-/// is_legal both O(1) per pin, and the mega-node truncation goes away.
+/// Storage is per node: pin wires are canonical, so one entry covers a node
+/// however many tiles it spans, and record and is_legal are O(1) per pin.
 pub(crate) struct DriverNodeRegistry {
-    /// Multi-tile node id -> owning NetId. Populated for every BEL-pin wire
-    /// of a placed cell whose `chipdb.node_id(...)` returns `Some(_)`.
-    claimed_nodes: FxHashMap<u64, NetId>,
-    /// Tile-local wires (no multi-tile node) keyed directly.
-    claimed_local: FxHashMap<WireId, NetId>,
+    /// Canonical node wire -> owning NetId, for every BEL-pin wire of a
+    /// placed cell.
+    claimed: FxHashMap<WireId, NetId>,
 }
 
 impl DriverNodeRegistry {
-    pub fn new() -> Self {
-        Self::with_capacity(0)
-    }
-
     fn with_capacity(pins: usize) -> Self {
         Self {
-            claimed_nodes: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
-            claimed_local: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
+            claimed: FxHashMap::with_capacity_and_hasher(pins, Default::default()),
         }
     }
 
@@ -263,22 +244,12 @@ impl DriverNodeRegistry {
 
     #[inline]
     fn lookup(&self, ctx: &Context, wire: WireId) -> Option<NetId> {
-        match ctx.chipdb().node_id(wire) {
-            Some(node) => self.claimed_nodes.get(&node).copied(),
-            None => self.claimed_local.get(&wire).copied(),
-        }
+        self.claimed.get(&ctx.chipdb().canonical_wire(wire)).copied()
     }
 
     #[inline]
     fn insert(&mut self, ctx: &Context, wire: WireId, net: NetId) {
-        match ctx.chipdb().node_id(wire) {
-            Some(node) => {
-                self.claimed_nodes.insert(node, net);
-            }
-            None => {
-                self.claimed_local.insert(wire, net);
-            }
-        }
+        self.claimed.insert(ctx.chipdb().canonical_wire(wire), net);
     }
 
     /// True iff placing `cell_id` at `bel` would not collide with an existing
@@ -307,7 +278,6 @@ impl DriverNodeRegistry {
     /// per-call cost is only the `bel.pin_wire(name)` lookups + a single
     /// `node_id` resolution per pin, skipping per-call cell-port walks.
     pub fn is_legal_template(&self, ctx: &Context, template: &CellPinTemplate, bel: BelId) -> bool {
-        let bel_view = ctx.bel(bel);
         for &(port_canon, net) in &template.pin_ports {
             let Some(w) = ctx.bel_pin_wire_canon(bel, port_canon) else {
                 continue;
@@ -436,7 +406,6 @@ pub(crate) fn build_cell_legality_cache(ctx: &Context, root_id: CellId) -> CellL
 pub(crate) fn cluster_is_legal_cached(
     ctx: &Context,
     registry: &DriverNodeRegistry,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     cache: &CellLegalityCache,
     root_bel: BelId,
 ) -> bool {
@@ -451,8 +420,8 @@ pub(crate) fn cluster_is_legal_cached(
         let want_x = root_loc.x + cx;
         let want_y = root_loc.y + cy;
         let want_z = if *abs_z { *cz } else { root_loc.z + cz };
-        let key = (ctx.resolve_bucket(*child_type), want_x, want_y, want_z);
-        let Some(&child_bel) = bel_by_loc.get(&key) else {
+        let Some(child_bel) = ctx.bucket_bel_at(*child_type, Loc::new(want_x, want_y, want_z))
+        else {
             return false;
         };
         if !ctx.bel(child_bel).is_available() {
@@ -468,7 +437,6 @@ pub(crate) fn cluster_is_legal_cached(
 pub(crate) fn cluster_is_legal(
     ctx: &Context,
     registry: &DriverNodeRegistry,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     root_id: CellId,
     root_bel: BelId,
 ) -> bool {
@@ -498,12 +466,8 @@ pub(crate) fn cluster_is_legal(
         } else {
             root_loc.z + constr_z
         };
-        // O(1) lookup against the caller-built (cell_type, x, y, z) -> BelId
-        // index. Replaces the per-call full `bels_for_bucket(child_type).find(...)`
-        // scan, which on FPGA01 was O(n_bels_for_bucket) ≈ 1M per cluster_is_legal
-        // call, dominating ring-legalize wall time at ~1 trillion ops total.
-        let key = (ctx.resolve_bucket(child_type), want_x, want_y, want_z);
-        let Some(&child_bel) = bel_by_loc.get(&key) else {
+        let Some(child_bel) = ctx.bucket_bel_at(child_type, Loc::new(want_x, want_y, want_z))
+        else {
             return false;
         };
         if !ctx.bel(child_bel).is_available() {
@@ -514,21 +478,6 @@ pub(crate) fn cluster_is_legal(
         }
     }
     true
-}
-
-/// Build a `(bucket, x, y, z) -> BelId` index over every bucket+location.
-/// Lets `cluster_is_legal` resolve a constraint-offset child slot in O(1)
-/// instead of O(n_bels_for_bucket). The caller passes `cell_type`; the lookup
-/// resolves to bucket via `ctx.resolve_bucket` so cell_type aliases work.
-pub(crate) fn build_bel_by_loc(ctx: &Context) -> FxHashMap<(IdString, i32, i32, i32), BelId> {
-    let mut idx: FxHashMap<(IdString, i32, i32, i32), BelId> = FxHashMap::default();
-    for bucket_id in ctx.bel_buckets() {
-        for bel in ctx.bels_for_bucket(bucket_id) {
-            let loc = bel.loc();
-            idx.insert((bucket_id, loc.x, loc.y, loc.z), bel.id());
-        }
-    }
-    idx
 }
 
 /// After legalization, verify no two placed cells claim the same routing
@@ -544,22 +493,18 @@ pub(crate) fn verify_shared_mux_legality(ctx: &Context) -> Result<(), PlacerErro
 
     for (cid, bel) in bound {
         for (w, net) in cell_pin_wires(ctx, cid, bel) {
-            let mut node_wires: Vec<WireId> = Vec::with_capacity(8);
-            node_wires.push(w);
-            ctx.chipdb().node_wires_cb(w, |nw| node_wires.push(nw));
-            for nw in node_wires {
-                if let Some(&(other_cid, other_net)) = seen.get(&nw) {
-                    if other_net != net {
-                        return Err(PlacerError::PlacementFailed(format!(
-                            "Shared-mux conflict: {} and {} both claim node containing wire {:?}",
-                            describe_cell(ctx, cid),
-                            describe_cell(ctx, other_cid),
-                            nw,
-                        )));
-                    }
-                } else {
-                    seen.insert(nw, (cid, net));
+            let node = ctx.chipdb().canonical_wire(w);
+            if let Some(&(other_cid, other_net)) = seen.get(&node) {
+                if other_net != net {
+                    return Err(PlacerError::PlacementFailed(format!(
+                        "Shared-mux conflict: {} and {} both claim node {:?}",
+                        describe_cell(ctx, cid),
+                        describe_cell(ctx, other_cid),
+                        node,
+                    )));
                 }
+            } else {
+                seen.insert(node, (cid, net));
             }
         }
     }

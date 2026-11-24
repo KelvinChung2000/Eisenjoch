@@ -13,11 +13,7 @@ pub struct SpectralPreconditioner {
     nx: usize,
     ny: usize,
     inv_eigenvalues: Vec<f64>,
-    row_dst: Arc<dyn Dst1<f64>>,
-    col_dst: Arc<dyn Dst1<f64>>,
     round_trip_scale: f64,
-    row_scratch_len: usize,
-    col_scratch_len: usize,
 }
 
 impl SpectralPreconditioner {
@@ -25,10 +21,6 @@ impl SpectralPreconditioner {
     pub fn new(nx: usize, ny: usize, epsilon: f64) -> Self {
         assert!(nx > 0, "SpectralPreconditioner requires nx > 0");
         assert!(ny > 0, "SpectralPreconditioner requires ny > 0");
-
-        let mut planner = DctPlanner::new();
-        let row_dst = planner.plan_dst1(nx);
-        let col_dst = planner.plan_dst1(ny);
 
         let mut inv_eigenvalues = vec![0.0; nx * ny];
         for j in 0..ny {
@@ -41,39 +33,13 @@ impl SpectralPreconditioner {
             }
         }
 
-        let row_scratch_len = row_dst.get_scratch_len();
-        let col_scratch_len = col_dst.get_scratch_len();
         let round_trip_scale = 4.0 / ((nx + 1) * (ny + 1)) as f64;
 
         Self {
             nx,
             ny,
             inv_eigenvalues,
-            row_dst,
-            col_dst,
             round_trip_scale,
-            row_scratch_len,
-            col_scratch_len,
-        }
-    }
-
-    fn apply_dst_rows(&self, field: &mut [f64], row_buf: &mut [f64], row_scratch: &mut [f64]) {
-        for row in field.chunks_exact_mut(self.nx) {
-            row_buf.copy_from_slice(row);
-            self.row_dst.process_dst1_with_scratch(row_buf, row_scratch);
-            row.copy_from_slice(row_buf);
-        }
-    }
-
-    fn apply_dst_cols(&self, field: &mut [f64], col_buf: &mut [f64], col_scratch: &mut [f64]) {
-        for x in 0..self.nx {
-            for y in 0..self.ny {
-                col_buf[y] = field[y * self.nx + x];
-            }
-            self.col_dst.process_dst1_with_scratch(col_buf, col_scratch);
-            for y in 0..self.ny {
-                field[y * self.nx + x] = col_buf[y];
-            }
         }
     }
 
@@ -171,23 +137,6 @@ impl SpectralPreconditioner {
 
             out.copy_from_slice(field);
         });
-    }
-
-    fn dst_round_trip_slice(&self, values: &mut [f64]) {
-        let mut field = values.to_vec();
-        let mut row_buf = vec![0.0; self.nx];
-        let mut col_buf = vec![0.0; self.ny];
-        let mut row_scratch = vec![0.0; self.row_scratch_len];
-        let mut col_scratch = vec![0.0; self.col_scratch_len];
-
-        self.apply_dst_rows(&mut field, &mut row_buf, &mut row_scratch);
-        self.apply_dst_cols(&mut field, &mut col_buf, &mut col_scratch);
-        self.apply_dst_cols(&mut field, &mut col_buf, &mut col_scratch);
-        self.apply_dst_rows(&mut field, &mut row_buf, &mut row_scratch);
-        for value in field.iter_mut() {
-            *value *= self.round_trip_scale;
-        }
-        values.copy_from_slice(&field);
     }
 }
 
@@ -396,20 +345,14 @@ mod tests {
     }
 
     #[test]
-    fn dst_round_trip_matches_identity() {
+    fn apply_matches_apply_in_place() {
         let nx = 7;
         let ny = 5;
         let n = nx * ny;
         let precond = SpectralPreconditioner::new(nx, ny, 0.25);
 
-        let mut values: Vec<f64> = (0..n).map(|i| ((i * 5 + 1) as f64).sin()).collect();
-        let original = values.clone();
-
-        precond.dst_round_trip_slice(&mut values);
-
-        for (actual, expected) in values.iter().zip(original.iter()) {
-            assert!((actual - expected).abs() < 1e-9);
-        }
+        let original: Vec<f64> = (0..n).map(|i| ((i * 5 + 1) as f64).sin()).collect();
+        let values: Vec<f64> = (0..n).map(|i| ((i * 3 + 2) as f64).cos()).collect();
 
         let mut rhs = vec![0.0; 2 * n];
         rhs[..n].copy_from_slice(&original);
@@ -429,6 +372,52 @@ mod tests {
 
         for (lhs, rhs) in out.iter().zip(inplace.iter()) {
             assert!((lhs - rhs).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn apply_inverts_the_exact_grid_operator() {
+        let nx = 9;
+        let ny = 6;
+        let n = nx * ny;
+        let epsilon = 0.125;
+        let precond = SpectralPreconditioner::new(nx, ny, epsilon);
+
+        let x: Vec<f64> = (0..n).map(|i| ((i * 7 + 1) as f64).sin()).collect();
+
+        let mut ax = vec![0.0; n];
+        for row in 0..ny {
+            for col in 0..nx {
+                let i = grid_index(nx, col, row);
+                let mut acc = (4.0 + epsilon) * x[i];
+                if col > 0 {
+                    acc -= x[grid_index(nx, col - 1, row)];
+                }
+                if col + 1 < nx {
+                    acc -= x[grid_index(nx, col + 1, row)];
+                }
+                if row > 0 {
+                    acc -= x[grid_index(nx, col, row - 1)];
+                }
+                if row + 1 < ny {
+                    acc -= x[grid_index(nx, col, row + 1)];
+                }
+                ax[i] = acc;
+            }
+        }
+
+        let ax_mat = faer::MatRef::from_column_major_slice(&ax, n, 1);
+        let mut out = vec![0.0; n];
+        let out_mat = faer::MatMut::from_column_major_slice_mut(&mut out, n, 1);
+        let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
+        let mut stack = MemStack::new(&mut buf);
+        precond.apply(out_mat, ax_mat, faer::Par::Seq, &mut stack);
+
+        for (i, (recovered, expected)) in out.iter().zip(x.iter()).enumerate() {
+            assert!(
+                (recovered - expected).abs() < 1e-10,
+                "node {i}: got {recovered}, want {expected}"
+            );
         }
     }
 }

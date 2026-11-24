@@ -27,10 +27,10 @@ pub fn compute_congestion_pressure(
     for pipe in &network.pipes {
         let r_eff = resistance_model.effective_resistance(pipe);
         let r_excess = r_eff - pipe.base_resistance;
-        pressure[pipe.from] += r_excess;
-        pressure[pipe.to] += r_excess;
-        degree[pipe.from] += 1;
-        degree[pipe.to] += 1;
+        pressure[pipe.from as usize] += r_excess;
+        pressure[pipe.to as usize] += r_excess;
+        degree[pipe.from as usize] += 1;
+        degree[pipe.to as usize] += 1;
     }
 
     for i in 0..n {
@@ -102,30 +102,20 @@ pub fn compute_beckmann_potential(network: &PipeNetwork) -> f64 {
 mod tests {
     use super::*;
     use crate::placer::opt_trans::network::{Direction, Node, Pipe, PipeNetwork, PipeType};
-    use rustc_hash::FxHashMap;
 
-    fn make_pipe(from: usize, to: usize, base: f64, capacity: f64, net_count: f64) -> Pipe {
+    fn make_pipe(from: u32, to: u32, base: f64, capacity: f64, net_count: f64) -> Pipe {
         Pipe {
             from,
             to,
             base_resistance: base,
             capacity,
-            flow: 0.0,
             net_count,
-            raw_cell_density: 0.0,
-            cell_density: 0.0,
             eff_conductance: 1.0,
             pipe_type: PipeType::InterTile(Direction::East),
         }
     }
 
     fn make_network(nodes: Vec<Node>, pipes: Vec<Pipe>) -> PipeNetwork {
-        let n = nodes.len();
-        let mut node_pipes = vec![Vec::new(); n];
-        for (i, pipe) in pipes.iter().enumerate() {
-            node_pipes[pipe.from].push(i);
-            node_pipes[pipe.to].push(i);
-        }
         let pipe_costs: Vec<f64> = pipes
             .iter()
             .map(|p| 1.0 / p.eff_conductance.max(1e-12))
@@ -136,22 +126,19 @@ mod tests {
             .collect();
         let tile_grid = crate::placer::opt_trans::network::TileGrid::build(&pipes, &nodes, 2, 2);
         let flat_adjacency =
-            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
+            crate::placer::opt_trans::network::FlatAdjacency::build(nodes.len(), &pipes);
         let tile_templates = std::sync::Arc::new(Vec::new());
         let n_nodes = nodes.len();
-        let n_pipes = pipes.len();
         PipeNetwork {
             nodes,
             pipes,
-            node_pipes,
             pipe_costs,
             pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
-            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(n_pipes),
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(),
             flat_adjacency,
             tile_templates,
             tile_grid,
-            pipe_lookup: FxHashMap::default(),
             tile_type_by_node: vec![0; n_nodes],
             width: 2,
             height: 2,

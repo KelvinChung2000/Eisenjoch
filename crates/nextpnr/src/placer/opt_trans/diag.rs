@@ -45,7 +45,6 @@ pub struct PlateauStat {
 /// A single committed move (old grid -> new grid position).
 #[derive(Clone, Copy, Debug)]
 pub struct MoveRecord {
-    pub cell_idx: usize,
     pub old_gx: i32,
     pub old_gy: i32,
     pub new_gx: i32,

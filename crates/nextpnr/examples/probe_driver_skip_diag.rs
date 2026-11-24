@@ -33,10 +33,6 @@ struct NetDiag {
     net_idx: NetId,
     fanout: usize,
     hpwl: i32,
-    drv_x: i32,
-    drv_y: i32,
-    centroid_x: f64,
-    centroid_y: f64,
     drv_displace: f64,
     sink_rms_spread: f64,
     drv_is_pure: bool,
@@ -141,10 +137,6 @@ fn diag_net(ctx: &Context, net_idx: NetId) -> Option<NetDiag> {
         net_idx,
         fanout,
         hpwl,
-        drv_x: drv_loc.x,
-        drv_y: drv_loc.y,
-        centroid_x: cx,
-        centroid_y: cy,
         drv_displace,
         sink_rms_spread,
         drv_is_pure,
@@ -190,11 +182,6 @@ fn main() {
     println!("\n========== Placing with opt_trans (50 iters, 8 threads, softmin on) ==========");
     let mut ctx_ot = load_fresh(&chipdb_path, &design_path);
     place_otb(&mut ctx_ot);
-
-    // Build a lookup of HeAP's net_idx -> NetDiag, then iterate by the
-    // SAME net_idx in opt_trans. This keeps the net identity stable.
-    let heap_by_idx: std::collections::HashMap<NetId, NetDiag> =
-        heap_diags.iter().map(|d| (d.net_idx, d.clone())).collect();
 
     println!("\n\n========= PER-NET DIAGNOSTIC (top-20 fanout) =========");
     println!(

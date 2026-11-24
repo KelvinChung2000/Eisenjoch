@@ -25,9 +25,6 @@ pub struct DisplacementTable {
     /// as `pipe_costs_int`). `u32::MAX` means no path within the radius from
     /// the center to that offset.
     pub dist: Vec<u32>,
-    pub center_node: usize,
-    pub center_tile_x: i32,
-    pub center_tile_y: i32,
     /// Dominant tile type in the fabric; used as the "uniform" class.
     pub uniform_tile_type: u16,
 }
@@ -86,9 +83,6 @@ impl DisplacementTable {
             radius: DISP_RADIUS,
             stride,
             dist,
-            center_node,
-            center_tile_x: center_x,
-            center_tile_y: center_y,
             uniform_tile_type,
         })
     }

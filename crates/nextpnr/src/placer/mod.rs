@@ -1,7 +1,6 @@
 //! Placer trait and implementations.
 
 pub mod common;
-pub mod fast_bels;
 pub mod place_common;
 pub mod electro_place;
 pub mod heap;

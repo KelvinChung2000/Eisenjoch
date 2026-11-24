@@ -9,7 +9,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    build_bel_by_loc, place_cluster_children, unbind_movable_cells,
+    place_cluster_children, unbind_movable_cells,
 };
 use crate::placer::PlacerError;
 
@@ -77,7 +77,6 @@ pub fn legalize_bipartite(
     type_aware: &TypeAwarePlacement,
 ) -> Result<f64, PlacerError> {
     unbind_movable_cells(ctx, idx_to_cell);
-    let bel_by_loc = build_bel_by_loc(ctx);
 
     // Group cells by type
     let mut groups: FxHashMap<crate::common::IdString, Vec<usize>> = FxHashMap::default();
@@ -184,7 +183,7 @@ pub fn legalize_bipartite(
             let dy = by as f64 - cell_y[solver_idx];
             total_displacement += dx * dx + dy * dy;
 
-            place_cluster_children(ctx, &bel_by_loc, cell_id, bel_id)?;
+            place_cluster_children(ctx, cell_id, bel_id)?;
         }
     }
 

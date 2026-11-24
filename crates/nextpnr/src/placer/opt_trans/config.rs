@@ -380,53 +380,29 @@ impl OptTransPlacerCfg {
     /// outer iteration or per cell.
     pub fn apply_env_overrides(&mut self) {
         use std::env;
-        if let Some(v) = env::var("NPNR_OT_BLEND_ALPHA")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_BLEND_ALPHA") {
             self.blend_alpha = v.clamp(0.0, 1.0);
         }
-        if let Some(v) = env::var("NPNR_OT_STEINER")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_STEINER") {
             self.steiner_weight = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_LOCKED_PIN_WEIGHT")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_LOCKED_PIN_WEIGHT") {
             self.locked_pin_weight = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_MST_EDGE")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_MST_EDGE") {
             self.mst_edge_weight = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_JACOBI_ALPHA")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_JACOBI_ALPHA") {
             self.jacobi_alpha = v.clamp(0.0, 1.0);
         }
-        if let Some(v) = env::var("NPNR_OT_SEED")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-        {
+        if let Some(v) = crate::env::var::<u64>("NPNR_OT_SEED") {
             self.seed = v;
         }
-        if let Some(v) = env::var("NPNR_OT_DCD_ITERS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-        {
+        if let Some(v) = crate::env::var::<usize>("NPNR_OT_DCD_ITERS") {
             assert!(v > 0, "NPNR_OT_DCD_ITERS must be > 0, got {v}");
             self.dcd_iters_per_cell = v;
         }
-        if let Some(v) = env::var("NPNR_OT_MAX_ITERS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-        {
+        if let Some(v) = crate::env::var::<usize>("NPNR_OT_MAX_ITERS") {
             self.max_outer_iters = v;
         }
         if let Some(v) = env::var("NPNR_OT_SWEEP").ok() {
@@ -487,46 +463,25 @@ impl OptTransPlacerCfg {
         if let Some(v) = env::var("NPNR_OT_SOFTMIN").ok() {
             self.softmin_enabled = matches!(v.as_str(), "1" | "true" | "TRUE");
         }
-        if let Some(v) = env::var("NPNR_OT_SOFTMIN_THETA_START")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_SOFTMIN_THETA_START") {
             self.softmin_theta_start = v.max(1e-6);
         }
-        if let Some(v) = env::var("NPNR_OT_SOFTMIN_THETA_END")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_SOFTMIN_THETA_END") {
             self.softmin_theta_end = v.max(1e-6);
         }
-        if let Some(v) = env::var("NPNR_OT_TPRESS_WEIGHT")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_TPRESS_WEIGHT") {
             self.tile_pressure_weight = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_TPRESS_DECAY")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_TPRESS_DECAY") {
             self.tile_pressure_decay = v.clamp(0.0, 1.0);
         }
-        if let Some(v) = env::var("NPNR_OT_TPRESS_STEP")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_TPRESS_STEP") {
             self.tile_pressure_step = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_HARDEN_STEP")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_HARDEN_STEP") {
             self.hardening_step = v.max(0.0);
         }
-        if let Some(v) = env::var("NPNR_OT_PROXIMAL")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-        {
+        if let Some(v) = crate::env::var::<f64>("NPNR_OT_PROXIMAL") {
             self.proximal_weight = v.max(0.0);
         }
     }

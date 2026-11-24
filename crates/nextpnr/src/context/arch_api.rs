@@ -75,14 +75,12 @@ impl Context {
 
     /// `getBelGlobalBuf` -- whether a BEL drives a global buffer network.
     ///
-    /// `BaseArch` returns false unconditionally and himbaechel does not
-    /// override it, so this is faithful rather than a stub. It matters because
-    /// `get_net_metric` skips global-buffer nets entirely when scoring
-    /// wirelength: an arch that grows a real notion of global buffers must
-    /// override this or those nets will be costed as ordinary routing.
+    /// Himbaechel reads the chipdb's `BEL_FLAG_GLOBAL`, as this does.
+    /// `get_net_metric` skips global-buffer nets when scoring wirelength,
+    /// since they route on dedicated resources.
     #[inline]
-    pub fn bel_global_buf(&self, _bel: BelId) -> bool {
-        false
+    pub fn bel_global_buf(&self, bel: BelId) -> bool {
+        self.chipdb.bel_is_global(bel)
     }
 
     /// `getConflictingBelCell` -- the cell currently occupying `bel`.

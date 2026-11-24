@@ -378,13 +378,9 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place constrained cells first.
         for (ci, region_idx) in &constrained {
-            let region_bels = ctx
+            let mut available: Vec<BelId> = ctx
                 .bels_for_bucket_in_region(cell_type, *region_idx)
-                .to_vec();
-            let mut available: Vec<BelId> = region_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+                .filter(|&b| ctx.bel(b).is_available())
                 .collect();
 
             if available.is_empty() {
@@ -408,15 +404,14 @@ pub fn initial_placement(ctx: &mut Context) -> Result<(), PlacerError> {
 
         // Place unconstrained cells.
         if !unconstrained.is_empty() {
-            let bucket_bels: Vec<_> = ctx.bels_for_bucket(cell_type).map(|bel| bel.id()).collect();
-            if bucket_bels.is_empty() {
+            if !ctx.has_bel_type(cell_type) {
                 return Err(PlacerError::NoBelsAvailable(cell_type_name));
             }
 
-            let mut available: Vec<BelId> = bucket_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+            let mut available: Vec<BelId> = ctx
+                .bels_for_bucket(cell_type)
+                .filter(|b| b.is_available())
+                .map(|b| b.id())
                 .collect();
 
             ctx.rng_mut().shuffle(&mut available);
@@ -478,13 +473,9 @@ pub fn initial_placement_topological(ctx: &mut Context) -> Result<(), PlacerErro
             let Some(region_idx) = cell.region else {
                 continue;
             };
-            let region_bels = ctx
+            let mut available: Vec<BelId> = ctx
                 .bels_for_bucket_in_region(cell_type, region_idx)
-                .to_vec();
-            let mut available: Vec<BelId> = region_bels
-                .iter()
-                .copied()
-                .filter(|b| ctx.bel(*b).is_available())
+                .filter(|&b| ctx.bel(b).is_available())
                 .collect();
             if available.is_empty() {
                 let cell_name = ctx.cell(ci).name_id();
@@ -625,7 +616,7 @@ fn snap_and_bind_cells_to_bels(
             let mut found: Option<u32> = None;
             for radius in 0..=max_radius {
                 let mut best: Option<u32> = None;
-                let mut consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
+                let consider = |tx: i32, ty: i32, best: &mut Option<u32>| {
                     if let Some(b) = best_in_tile(tx, ty, &available, &tile_remaining) {
                         if best.is_none_or(|cur| b < cur) {
                             *best = Some(b);
@@ -1061,10 +1052,8 @@ pub fn init_positions_topological(
     // per SLICE = ~4.8 cells/tile mean). Without this, the natural layered
     // layout spans the full chip and ends up at ~1.2 cells/tile, leaving DCD
     // stuck in a low-density local minimum.
-    let target_density: f64 = std::env::var("NPNR_OT_TOPO_DENSITY")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.6);
+    let target_density =
+        crate::env::var::<f64>("NPNR_OT_TOPO_DENSITY").unwrap_or(0.6);
     if target_density > 0.0 && target_density < 1.0 && n >= 2 {
         const CAP_PER_TILE: f64 = 8.0;
         let target_tiles = (n as f64 / (target_density * CAP_PER_TILE)).max(1.0);
@@ -1970,7 +1959,7 @@ impl MuxSlotTracker {
                         continue;
                     }
                     let wire = WireId::new(bel_id.tile(), pin.wire());
-                    roots.insert(node_root(ctx, wire));
+                    roots.insert(ctx.chipdb().canonical_wire(wire));
                 }
             }
             if !roots.is_empty() {
@@ -2268,22 +2257,6 @@ fn cell_drives_external(ctx: &Context, cell_id: CellId) -> bool {
         }
     }
     false
-}
-
-/// Canonical node root: the (tile, index)-lexicographically smallest wire
-/// across the routing node containing `wire`. Two wires share a node iff
-/// they have the same root.
-fn node_root(ctx: &Context, wire: WireId) -> WireId {
-    let mut root = wire;
-    let mut root_key = (wire.tile(), wire.index());
-    ctx.chipdb().node_wires_cb(wire, |nw| {
-        let key = (nw.tile(), nw.index());
-        if key < root_key {
-            root = nw;
-            root_key = key;
-        }
-    });
-    root
 }
 
 #[cfg(test)]

@@ -149,7 +149,6 @@ fn left_io_reaches_right_io() {
         return;
     };
 
-    let w = db.width();
     let h = db.height();
 
     let (mut min_iob_x, mut max_iob_x) = (i32::MAX, i32::MIN);
@@ -207,10 +206,7 @@ fn left_io_reaches_right_io() {
     // The real prjxray IO_INT_INTERFACE bridge explores the span network
     // much more widely than the old IO_BRIDGE IMUX fan-out, so bump the
     // default cap; 150M pops comfortably reaches the right column on sv3.
-    let cap: usize = std::env::var("BFS_CAP")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(150_000_000);
+    let cap = nextpnr::env::var::<usize>("BFS_CAP").unwrap_or(150_000_000);
 
     let src = left_sources[0];
     let (sx, _sy) = db.tile_xy(src.tile());

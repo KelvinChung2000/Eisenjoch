@@ -100,9 +100,9 @@ struct NetInfo {
 /// `f32` storage gives 7 digits of precision — plenty for argmin selection
 /// in the cost path; values are bounded by `chip_diameter × max_pipe_cost`.
 ///
-/// Code paths that genuinely need a dense row (BB-pyramid build, the
-/// Bresenham-surrogate writer) call `materialize_row` to copy the sparse
-/// entries into a caller-supplied scratch buffer once per use.
+/// Every writer keeps only nodes within `cache_radius_tiles` of a pin (see
+/// `write_dist_row`), so a row is bounded by the net's search window and never
+/// by the chip.
 struct DistCache {
     rows: Vec<FxHashMap<u32, f32>>,
     n_nets: usize,
@@ -255,12 +255,6 @@ impl DistCache {
         }
     }
 
-    fn reset(&mut self) {
-        for row in &mut self.rows {
-            row.clear();
-        }
-    }
-
     #[inline]
     fn row(&self, net_idx: usize) -> &FxHashMap<u32, f32> {
         &self.rows[net_idx]
@@ -381,17 +375,6 @@ impl DistCache {
         }
     }
 
-    /// Copy this net's sparse row into a dense scratch buffer of length
-    /// `n_nodes`. Absent entries become `f32::INFINITY`. Used by code paths
-    /// that need contiguous random-access reads (BB-pyramid build).
-    fn materialize_row(&self, net_idx: usize, scratch: &mut [f32]) {
-        debug_assert_eq!(scratch.len(), self.n_nodes);
-        scratch.fill(f32::INFINITY);
-        for (&node, &v) in &self.rows[net_idx] {
-            scratch[node as usize] = v;
-        }
-    }
-
     /// Diagnostic: total live entries and total reserved capacity across all
     /// rows. Returned `est_bytes` estimates hashbrown overhead (~9 B/slot:
     /// 8 B for `(K, V)` + 1 ctrl byte) plus 48 B per FxHashMap header.
@@ -422,9 +405,7 @@ fn cache_radius_tiles() -> i32 {
     use std::sync::OnceLock;
     static RADIUS: OnceLock<i32> = OnceLock::new();
     *RADIUS.get_or_init(|| {
-        std::env::var("NPNR_OT_CACHE_RADIUS")
-            .ok()
-            .and_then(|s| s.parse::<i32>().ok())
+        crate::env::var::<i32>("NPNR_OT_CACHE_RADIUS")
             .map(|v| v.max(0))
             .unwrap_or(12)
     })
@@ -768,16 +749,9 @@ struct SolveAccum {
     /// the two have completely different fixes.
     diag_fan_nets: [u64; 6],
     diag_fan_settles: [u64; 6],
-    /// Tally of how many times the rayon fold-init closure ran. With many
-    /// splits each init pays a fresh `vec![0.0; n_pipes]` allocation, so
-    /// this is the second possible source of large transient memory.
+    /// Tally of how many times the rayon map-init closure checked out a
+    /// pooled workspace.
     diag_init_count: u32,
-}
-
-#[inline]
-fn pipe_lookup_key(a: usize, b: usize) -> u64 {
-    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-    ((lo as u64) << 32) | hi as u64
 }
 
 #[inline]
@@ -794,24 +768,12 @@ fn position_to_node(network: &PipeNetwork, x: f64, y: f64) -> usize {
     coord_to_node(network, gx, gy)
 }
 
-/// Pin position in tile coords plus the index of the cell whose motion
-/// drives this pin. Cluster children move rigidly with their root, so their
-/// pin position is `root_pos + (constr_x, constr_y)` and the gradient is
-/// attributed to the root index — this is what tells the optimizer that
-/// minimizing wirelength on a cluster-child net should move the root.
-fn pin_pos(
-    ctx: &Context,
-    cell_id: CellId,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
-    network: &PipeNetwork,
-) -> (f64, f64, Option<usize>) {
-    let (x, y, idx, _) = pin_pos_src(ctx, cell_id, cell_to_idx, cell_x, cell_y, network);
-    (x, y, idx)
-}
-
-/// As [`pin_pos`], also returning the [`PinSource`] the position came from.
+/// Pin position in tile coords, the index of the cell whose motion drives this
+/// pin, and the [`PinSource`] the position came from. Cluster children move
+/// rigidly with their root, so their pin position is
+/// `root_pos + (constr_x, constr_y)` and the gradient is attributed to the root
+/// index. That is what tells the optimizer that minimizing wirelength on a
+/// cluster-child net should move the root.
 fn pin_pos_src(
     ctx: &Context,
     cell_id: CellId,
@@ -930,10 +892,9 @@ fn refresh_net_infos(
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
 ) {
     if !cache_netinfo() || buf.is_empty() {
-        *buf = collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network, cfg);
+        *buf = collect_net_infos_simple(ctx, net_ids, cell_to_idx, cell_x, cell_y, network);
         return;
     }
     buf.par_iter_mut().for_each(|info| {
@@ -951,7 +912,6 @@ fn collect_net_infos_simple(
     cell_x: &[f64],
     cell_y: &[f64],
     network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
 ) -> Vec<NetInfo> {
     let mut nets: Vec<_> = net_ids
         .nets
@@ -1064,7 +1024,7 @@ fn solve_all_nets_with_displacement(
             net_infos,
             cfg,
             solve_pool,
-            dist_cache,
+            &mut dist_cache.rows,
             collect_usage,
         );
     }
@@ -1082,7 +1042,6 @@ fn solve_all_nets_with_displacement(
         None => skip_mask,
     };
 
-    let n_pipes = network.num_pipes();
     let batch_size =
         path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
 
@@ -1091,205 +1050,288 @@ fn solve_all_nets_with_displacement(
         net_infos.len(),
         "DistCache must hold exactly one row per net being solved"
     );
-    let dist_rows = &mut dist_cache.rows;
 
-    // Each chunk reports only the pipes its own nets touched. Results come
-    // back in chunk order and are summed serially, so the floating-point
-    // association order no longer depends on how rayon happened to schedule
-    // the work. The previous shape -- a pairwise `reduce` over per-task
-    // `vec![0.0; n_pipes]` arrays -- was both O(chip) per merge and a source
-    // of run-to-run nondeterminism.
+    let mut edge_usage = vec![0.0; if collect_usage { network.num_pipes() } else { 0 }];
     let init_count = AtomicU32::new(0);
-    let chunk_outs: Vec<ChunkUsage> = solve_pool.install(|| {
-        net_infos
-            .par_chunks(batch_size)
-            .zip(dist_rows.par_chunks_mut(batch_size))
-            .enumerate()
-            .map_init(
-                || {
-                    init_count.fetch_add(1, AtomicOrdering::Relaxed);
-                    ws_pool.checkout()
-                },
-                |ws, (chunk_idx, (chunk, dist_chunk))| {
-                    let mut out = ChunkUsage::default();
-                    let base_net_idx = chunk_idx * batch_size;
-                    for (local_idx, info) in chunk.iter().enumerate() {
-                        let net_idx = base_net_idx + local_idx;
-                        // Skip-refresh: reuse the previous iter's dist_cache
-                        // row for this net when the caller says its pin
-                        // signature is unchanged. Pipe costs may have drifted
-                        // slightly via BPR, but the cached labels are a
-                        // good-enough approximation for the DCD sweep's
-                        // argmin selection.
-                        if skip_mask.map(|m| m[net_idx]).unwrap_or(false) {
-                            continue;
-                        }
-                        let Some(source) = source_node(info) else {
-                            out.stats.failures += 1;
-                            continue;
-                        };
-                        // Demand normalization: each NET represents ONE physical
-                        // wire that the driver fans out to K sinks. Summed
-                        // source-edge flow must therefore be 1 wire per net,
-                        // not K. Splitting `1/K` across sinks gives the
-                        // correct per-net source load; edge usage on shared
-                        // common-path pipes accumulates to 1, which is the
-                        // physical wire count.
-                        let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
-                        if n_sinks == 0 {
-                            out.stats.failures += 1;
-                            continue;
-                        }
-                        let per_sink = 1.0 / n_sinks as f64;
-                        let sink_demands: Vec<(usize, f64)> = info
-                            .pins
-                            .iter()
-                            .filter(|pin| !pin.is_driver)
-                            .map(|pin| (pin.node, per_sink))
-                            .collect();
+    let (chunks, energy) = solve_windowed(
+        net_infos,
+        &mut dist_cache.rows,
+        batch_size,
+        solve_pool,
+        &mut edge_usage,
+        || {
+            init_count.fetch_add(1, AtomicOrdering::Relaxed);
+            ws_pool.checkout()
+        },
+        |ws, net_idx, info, dist_out, out: &mut ChunkUsage, flows| {
+            // Skip-refresh: reuse the previous iter's dist_cache row for this
+            // net when the caller says its pin signature is unchanged. Pipe
+            // costs may have drifted slightly via BPR, but the cached labels
+            // are a good-enough approximation for the DCD sweep's argmin.
+            if skip_mask.map(|m| m[net_idx]).unwrap_or(false) {
+                return 0.0;
+            }
+            let Some(source) = source_node(info) else {
+                out.stats.failures += 1;
+                return 0.0;
+            };
+            // Demand normalization: each NET represents ONE physical wire
+            // that the driver fans out to K sinks. Summed source-edge flow
+            // must therefore be 1 wire per net, not K. Splitting `1/K` across
+            // sinks gives the correct per-net source load; edge usage on
+            // shared common-path pipes accumulates to 1, which is the
+            // physical wire count.
+            let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
+            if n_sinks == 0 {
+                out.stats.failures += 1;
+                return 0.0;
+            }
+            let per_sink = 1.0 / n_sinks as f64;
+            let sink_demands: Vec<(usize, f64)> = info
+                .pins
+                .iter()
+                .filter(|pin| !pin.is_driver)
+                .map(|pin| (pin.node, per_sink))
+                .collect();
 
-                        ws.begin_net();
-                        let result = path_solver::dial_logit_load_dispatch(
-                            network,
-                            source,
-                            &sink_demands,
-                            ws,
-                            collect_usage,
-                            displacement,
-                            cfg.graph_model,
-                        );
-
-                        out.stats.total_solves += 1;
-                        out.stats.total_heap_pops += result.heap_pops;
-                        out.stats.max_heap_pops = out.stats.max_heap_pops.max(result.heap_pops);
-                        if result.missing_demand > 0.0 {
-                            out.stats.failures += 1;
-                        }
-
-                        let settle_len = ws.settle_order.len() as u64;
-                        out.diag_solves += 1;
-                        out.diag_settle_sum += settle_len;
-                        out.diag_above_sum += result.settle_above_sink as u64;
-                        out.diag_load_nz_sum += result.load_nonzero as u64;
-                        out.diag_heur_prune_sum += result.heuristic_prunable as u64;
-                        out.diag_load_mat_sum += result.load_material as u64;
-                        let bucket = match settle_len {
-                            0..=99 => 0,
-                            100..=999 => 1,
-                            1_000..=4_999 => 2,
-                            5_000..=19_999 => 3,
-                            20_000..=59_999 => 4,
-                            _ => 5,
-                        };
-                        out.diag_hist_nets[bucket] += 1;
-                        out.diag_hist_settles[bucket] += settle_len;
-                        let fan_bucket = match n_sinks {
-                            0..=1 => 0,
-                            2..=4 => 1,
-                            5..=16 => 2,
-                            17..=64 => 3,
-                            65..=256 => 4,
-                            _ => 5,
-                        };
-                        out.diag_fan_nets[fan_bucket] += 1;
-                        out.diag_fan_settles[fan_bucket] += settle_len;
-                        if settle_len as u32 > out.diag_settle_max {
-                            out.diag_settle_max = settle_len as u32;
-                        }
-                        if result.corridor_fallback {
-                            out.diag_corridor_fallback += 1;
-                        }
-                        if result.cap_armed {
-                            out.diag_cap_armed += 1;
-                        }
-                        if collect_usage {
-                            ws.accumulate_edge_usage();
-                        }
-
-                        // Filter cache writes by "within R Manhattan tiles of
-                        // any pin of this net". DCD's per-cell cost eval
-                        // queries `dist_cache.get(net, candidate_pos)` only
-                        // for candidate positions that a cell on this net
-                        // might occupy — which by construction is a small
-                        // bbox around each pin. Distances beyond that radius
-                        // are computed by Dijkstra (needed for the Dial
-                        // back-pass) but never read by DCD, so storing them
-                        // is pure waste. On FPGA01 chip-spanning nets this
-                        // is the dominant DistCache cost.
-                        let r = cache_radius_tiles();
-                        let width_n = network.width as usize;
-                        ws.pin_xy_scratch.clear();
-                        ws.pin_xy_scratch.reserve(info.pins.len());
-                        for pin in &info.pins {
-                            ws.pin_xy_scratch
-                                .push(((pin.node % width_n) as i32, (pin.node / width_n) as i32));
-                        }
-
-                        let dist_out = &mut dist_chunk[local_idx];
-                        dist_out.clear();
-                        dist_out.reserve(ws.settle_order.len() / 4 + 8);
-                        for &node in &ws.settle_order {
-                            let nx = (node % width_n) as i32;
-                            let ny = (node / width_n) as i32;
-                            let mut near = false;
-                            for &(px, py) in ws.pin_xy_scratch.iter() {
-                                if (nx - px).abs() + (ny - py).abs() <= r {
-                                    near = true;
-                                    break;
-                                }
-                            }
-                            if near {
-                                dist_out.insert(node as u32, ws.dist[node] as f32);
-                            }
-                        }
-                        // Reclaim capacity if a previous iter grew this row
-                        // (e.g. the cell was near a high-fanout net then moved
-                        // away). `clear()` keeps hashbrown's table allocation,
-                        // so without this hashmaps that ever ballooned stay
-                        // ballooned and total memory grows monotonically.
-                        if dist_out.capacity() > 4 * dist_out.len().max(8) {
-                            dist_out.shrink_to_fit();
-                        }
-                        out.energy += net_path_weight(info, cfg) * result.energy;
-                    }
-                    out
-                },
-            )
-            .collect()
-    });
-
-    let mut accum = merge_chunk_usage(
-        n_pipes,
-        chunk_outs,
-        init_count.load(AtomicOrdering::Relaxed),
-    );
-    // Every guard has been dropped by now (the parallel iterator finished and
-    // `chunk_outs` was collected), so all workspaces are back in the pool and
-    // their running totals are complete.
-    if collect_usage {
-        ws_pool.drain_usage_into(&mut accum.edge_usage);
-        {
-            let (n_ws, bytes) = ws_pool.pool_stats();
-            eprintln!(
-                "MEM_POOL: workspaces={} dense_usage_mb={:.0} n_pipes={}",
-                n_ws,
-                bytes as f64 / (1024.0 * 1024.0),
-                n_pipes,
+            ws.begin_net();
+            let result = path_solver::dial_logit_load_dispatch(
+                network,
+                source,
+                &sink_demands,
+                ws,
+                collect_usage,
+                displacement,
+                cfg.graph_model,
             );
-        }
+
+            out.stats.total_solves += 1;
+            out.stats.total_heap_pops += result.heap_pops;
+            out.stats.max_heap_pops = out.stats.max_heap_pops.max(result.heap_pops);
+            if result.missing_demand > 0.0 {
+                out.stats.failures += 1;
+            }
+
+            let settle_len = ws.settle_order.len() as u64;
+            out.diag_solves += 1;
+            out.diag_settle_sum += settle_len;
+            out.diag_above_sum += result.settle_above_sink as u64;
+            out.diag_load_nz_sum += result.load_nonzero as u64;
+            out.diag_heur_prune_sum += result.heuristic_prunable as u64;
+            out.diag_load_mat_sum += result.load_material as u64;
+            let bucket = match settle_len {
+                0..=99 => 0,
+                100..=999 => 1,
+                1_000..=4_999 => 2,
+                5_000..=19_999 => 3,
+                20_000..=59_999 => 4,
+                _ => 5,
+            };
+            out.diag_hist_nets[bucket] += 1;
+            out.diag_hist_settles[bucket] += settle_len;
+            let fan_bucket = match n_sinks {
+                0..=1 => 0,
+                2..=4 => 1,
+                5..=16 => 2,
+                17..=64 => 3,
+                65..=256 => 4,
+                _ => 5,
+            };
+            out.diag_fan_nets[fan_bucket] += 1;
+            out.diag_fan_settles[fan_bucket] += settle_len;
+            if settle_len as u32 > out.diag_settle_max {
+                out.diag_settle_max = settle_len as u32;
+            }
+            if result.corridor_fallback {
+                out.diag_corridor_fallback += 1;
+            }
+            if result.cap_armed {
+                out.diag_cap_armed += 1;
+            }
+            flows.extend_from_slice(ws.edge_flows());
+            write_dist_row(dist_out, info, network, ws);
+            net_path_weight(info, cfg) * result.energy
+        },
+    );
+
+    let mut accum = merge_chunk_usage(chunks, init_count.load(AtomicOrdering::Relaxed));
+    accum.edge_usage = edge_usage;
+    accum.energy = energy;
+    if collect_usage {
+        let (n_ws, bytes) = ws_pool.pool_stats();
+        eprintln!(
+            "MEM_POOL: workspaces={} workspace_mb={:.0} n_pipes={}",
+            n_ws,
+            bytes as f64 / (1024.0 * 1024.0),
+            network.num_pipes(),
+        );
     }
     accum
 }
 
-/// One chunk's contribution to a solve pass.
+/// Nets per solve thread between two usage merges. The `(pipe, flow)` pairs
+/// held at once are bounded by two windows of this many nets per thread, so
+/// they scale with threads × search window and not with the design.
+const SOLVE_WINDOW_NETS_PER_THREAD: usize = 256;
+
+/// One chunk of a solve window: its own stats, plus the usage pairs and energy
+/// of each of its nets in net order.
+struct ChunkOut<S> {
+    stats: S,
+    flows: Vec<(u32, f64)>,
+    energies: Vec<f64>,
+}
+
+/// Solve every net window by window and fold usage and energy in net order.
 ///
-/// Edge usage is NOT here: it accumulates directly into the solving
-/// workspace's dense `usage_accum` and is collected from the pool afterwards,
-/// which keeps peak memory proportional to concurrency instead of to the total
-/// number of pipe-touches across all nets.
+/// `solve_net(ws, net_idx, info, slot, stats, flows)` solves one net, appends
+/// its `(pipe, flow)` pairs to `flows` and returns its energy.
+///
+/// Usage is added into `edge_usage` pair by pair in net index order, so it is
+/// the sum a one-thread run computes whatever the thread count or chunking.
+/// Summing per-workspace totals instead let scheduling decide which nets
+/// shared a partial sum, and held one `n_pipes` array per thread. The
+/// previous window merges while the next one solves.
+///
+/// Energy is summed in `batch_size` groups of consecutive nets, then over the
+/// groups, which is the association the chunked solve has always used.
+fn solve_windowed<T: Send, S: Default + Send, W>(
+    net_infos: &[NetInfo],
+    slots: &mut [T],
+    batch_size: usize,
+    solve_pool: &rayon::ThreadPool,
+    edge_usage: &mut [f64],
+    init: impl Fn() -> W + Sync + Send,
+    solve_net: impl Fn(&mut W, usize, &NetInfo, &mut T, &mut S, &mut Vec<(u32, f64)>) -> f64
+        + Sync
+        + Send,
+) -> (Vec<S>, f64) {
+    assert_eq!(slots.len(), net_infos.len());
+    let threads = solve_pool.current_num_threads().max(1);
+    let window = threads * SOLVE_WINDOW_NETS_PER_THREAD;
+    let chunk = (window / (threads * 8)).max(1);
+    let batch_size = batch_size.max(1);
+
+    let mut stats: Vec<S> = Vec::new();
+    let mut energy = 0.0f64;
+    let mut group_energy = 0.0f64;
+    let mut merged_nets = 0usize;
+    let mut merge = |outs: Vec<ChunkOut<S>>| {
+        for out in outs {
+            for &(pipe, flow) in &out.flows {
+                edge_usage[pipe as usize] += flow;
+            }
+            for e in out.energies {
+                group_energy += e;
+                merged_nets += 1;
+                if merged_nets % batch_size == 0 || merged_nets == net_infos.len() {
+                    energy += group_energy;
+                    group_energy = 0.0;
+                }
+            }
+            stats.push(out.stats);
+        }
+    };
+
+    solve_pool.install(|| {
+        let mut pending: Option<Vec<ChunkOut<S>>> = None;
+        for (w_idx, (infos, slots)) in net_infos
+            .chunks(window)
+            .zip(slots.chunks_mut(window))
+            .enumerate()
+        {
+            let prev = pending.take();
+            let ((), outs) = rayon::join(
+                || prev.map_or((), &mut merge),
+                || {
+                    infos
+                        .par_chunks(chunk)
+                        .zip(slots.par_chunks_mut(chunk))
+                        .enumerate()
+                        .map_init(&init, |ws, (c_idx, (infos, slots))| {
+                            let mut out = ChunkOut {
+                                stats: S::default(),
+                                flows: Vec::new(),
+                                energies: Vec::with_capacity(infos.len()),
+                            };
+                            let first = w_idx * window + c_idx * chunk;
+                            for (i, (info, slot)) in infos.iter().zip(slots.iter_mut()).enumerate()
+                            {
+                                let e = solve_net(
+                                    ws,
+                                    first + i,
+                                    info,
+                                    slot,
+                                    &mut out.stats,
+                                    &mut out.flows,
+                                );
+                                out.energies.push(e);
+                            }
+                            out
+                        })
+                        .collect::<Vec<_>>()
+                },
+            );
+            pending = Some(outs);
+        }
+        if let Some(outs) = pending {
+            merge(outs);
+        }
+    });
+    (stats, energy)
+}
+
+/// Overwrite `row` with the labels of the solve just run on `ws`, keeping only
+/// nodes within `cache_radius_tiles` of one of the net's pins.
+///
+/// DCD queries `dist_cache.get(net, candidate)` only at positions a cell on
+/// this net might move to, a small window around each pin. Farther labels are
+/// needed by the Dial back-pass but never read from the cache, and storing
+/// them is what made chip-spanning nets dominate DistCache. Every writer goes
+/// through here so the bound holds whichever sweep refreshed the row.
+fn write_dist_row(
+    row: &mut FxHashMap<u32, f32>,
+    info: &NetInfo,
+    network: &PipeNetwork,
+    ws: &mut PathSolverWorkspace,
+) {
+    let r = cache_radius_tiles();
+    let width_n = network.width as usize;
+    ws.pin_xy_scratch.clear();
+    ws.pin_xy_scratch.reserve(info.pins.len());
+    for pin in &info.pins {
+        ws.pin_xy_scratch
+            .push(((pin.node % width_n) as i32, (pin.node / width_n) as i32));
+    }
+
+    row.clear();
+    row.reserve(ws.settle_order.len() / 4 + 8);
+    for &node in &ws.settle_order {
+        let nx = (node % width_n) as i32;
+        let ny = (node / width_n) as i32;
+        let near = ws
+            .pin_xy_scratch
+            .iter()
+            .any(|&(px, py)| (nx - px).abs() + (ny - py).abs() <= r);
+        if near {
+            row.insert(node as u32, ws.dist[node] as f32);
+        }
+    }
+    shrink_dist_row(row);
+}
+
+/// Reclaim capacity if a previous iter grew this row (e.g. the cell was near a
+/// high-fanout net then moved away). `clear()` keeps hashbrown's table, so
+/// without this a row that ever ballooned stays ballooned.
+fn shrink_dist_row(row: &mut FxHashMap<u32, f32>) {
+    if row.capacity() > 4 * row.len().max(8) {
+        row.shrink_to_fit();
+    }
+}
+
+/// One chunk's scalar contribution to a solve pass.
 #[derive(Default)]
 struct ChunkUsage {
-    energy: f64,
     stats: PathStats,
     diag_corridor_fallback: u64,
     diag_cap_armed: u64,
@@ -1316,11 +1358,11 @@ struct ChunkUsage {
     diag_fan_settles: [u64; 6],
 }
 
-/// Sum per-chunk scalar contributions in chunk order. Usage is merged
-/// separately, from the workspace pool.
-fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -> SolveAccum {
+/// Sum per-chunk scalar contributions. Usage and energy are folded by
+/// `solve_windowed`.
+fn merge_chunk_usage(chunks: Vec<ChunkUsage>, init_count: u32) -> SolveAccum {
     let mut accum = SolveAccum {
-        edge_usage: vec![0.0; n_pipes],
+        edge_usage: Vec::new(),
         energy: 0.0,
         stats: PathStats::default(),
         diag_corridor_fallback: 0,
@@ -1339,7 +1381,6 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
         diag_init_count: init_count,
     };
     for chunk in chunks {
-        accum.energy += chunk.energy;
         accum.stats.total_solves += chunk.stats.total_solves;
         accum.stats.total_heap_pops += chunk.stats.total_heap_pops;
         accum.stats.max_heap_pops = accum.stats.max_heap_pops.max(chunk.stats.max_heap_pops);
@@ -1363,102 +1404,27 @@ fn merge_chunk_usage(n_pipes: usize, chunks: Vec<ChunkUsage>, init_count: u32) -
     accum
 }
 
-#[derive(Default)]
-struct TemplateAccum {
-    edge_usage: Vec<f64>,
-    energy: f64,
-    failures: usize,
-}
-
+/// Bresenham-template solve over every net. With `dist_rows` it also writes
+/// each net's surrogate field; without, it only books usage.
 fn solve_all_nets_bresenham_logit(
     network: &PipeNetwork,
     net_infos: &[NetInfo],
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
-    dist_cache: &mut DistCache,
+    dist_rows: &mut [FxHashMap<u32, f32>],
     collect_usage: bool,
 ) -> SolveAccum {
-    let n_pipes = network.num_pipes();
-    let batch_size =
-        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
     assert_eq!(
-        dist_cache.rows.len(),
+        dist_rows.len(),
         net_infos.len(),
         "DistCache must hold exactly one row per net being solved"
     );
-    let dist_rows = &mut dist_cache.rows;
-
-    solve_pool
-        .install(|| {
-            net_infos
-                .par_chunks(batch_size)
-                .zip(dist_rows.par_chunks_mut(batch_size))
-                .fold(
-                    || TemplateAccum {
-                        edge_usage: vec![0.0; n_pipes],
-                        energy: 0.0,
-                        failures: 0,
-                    },
-                    |mut accum, (chunk, dist_chunk)| {
-                        for (info, dist_out) in chunk.iter().zip(dist_chunk.iter_mut()) {
-                            // Bresenham writes every node, so the hashmap
-                            // ends up dense — no memory win vs the legacy
-                            // flat layout. Default Dijkstra path stays
-                            // sparse; this branch is opt-in via PathModel.
-                            dist_out.clear();
-                            dist_out.reserve(network.num_nodes());
-
-                            let Some(source) = source_node(info) else {
-                                accum.failures += 1;
-                                continue;
-                            };
-                            fill_bresenham_surrogate_field(network, source, dist_out);
-
-                            let sinks: Vec<usize> = info
-                                .pins
-                                .iter()
-                                .filter(|pin| !pin.is_driver)
-                                .map(|pin| pin.node)
-                                .collect();
-                            if sinks.is_empty() {
-                                accum.failures += 1;
-                                continue;
-                            }
-                            let result = solve_net_bresenham_logit(
-                                network,
-                                source,
-                                &sinks,
-                                if collect_usage {
-                                    Some(&mut accum.edge_usage)
-                                } else {
-                                    None
-                                },
-                            );
-                            if result.failures > 0 {
-                                accum.failures += result.failures;
-                            }
-                            accum.energy += net_path_weight(info, cfg) * result.energy;
-                        }
-                        accum
-                    },
-                )
-                .reduce(
-                    || TemplateAccum {
-                        edge_usage: vec![0.0; n_pipes],
-                        energy: 0.0,
-                        failures: 0,
-                    },
-                    |mut a, b| {
-                        for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
-                            *dst += src;
-                        }
-                        a.energy += b.energy;
-                        a.failures += b.failures;
-                        a
-                    },
-                )
-        })
-        .into_solve_accum(net_infos.len())
+    bresenham_pass(network, net_infos, cfg, solve_pool, dist_rows, collect_usage, |row, info, pin_xy| {
+        row.clear();
+        if let Some(source) = source_node(info) {
+            fill_bresenham_surrogate_field(network, source, info, pin_xy, row);
+        }
+    })
 }
 
 fn solve_bresenham_usage_only(
@@ -1467,94 +1433,57 @@ fn solve_bresenham_usage_only(
     cfg: &OptTransPlacerCfg,
     solve_pool: &rayon::ThreadPool,
 ) -> SolveAccum {
-    let n_pipes = network.num_pipes();
-    let batch_size =
-        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
-
-    solve_pool
-        .install(|| {
-            net_infos
-                .par_chunks(batch_size)
-                .fold(
-                    || TemplateAccum {
-                        edge_usage: vec![0.0; n_pipes],
-                        energy: 0.0,
-                        failures: 0,
-                    },
-                    |mut accum, chunk| {
-                        for info in chunk {
-                            let Some(source) = source_node(info) else {
-                                accum.failures += 1;
-                                continue;
-                            };
-                            let sinks: Vec<usize> = info
-                                .pins
-                                .iter()
-                                .filter(|pin| !pin.is_driver)
-                                .map(|pin| pin.node)
-                                .collect();
-                            if sinks.is_empty() {
-                                accum.failures += 1;
-                                continue;
-                            }
-                            let result = solve_net_bresenham_logit(
-                                network,
-                                source,
-                                &sinks,
-                                Some(&mut accum.edge_usage),
-                            );
-                            accum.failures += result.failures;
-                            accum.energy += net_path_weight(info, cfg) * result.energy;
-                        }
-                        accum
-                    },
-                )
-                .reduce(
-                    || TemplateAccum {
-                        edge_usage: vec![0.0; n_pipes],
-                        energy: 0.0,
-                        failures: 0,
-                    },
-                    |mut a, b| {
-                        for (dst, src) in a.edge_usage.iter_mut().zip(b.edge_usage) {
-                            *dst += src;
-                        }
-                        a.energy += b.energy;
-                        a.failures += b.failures;
-                        a
-                    },
-                )
-        })
-        .into_solve_accum(net_infos.len())
+    let mut no_rows = vec![(); net_infos.len()];
+    bresenham_pass(network, net_infos, cfg, solve_pool, &mut no_rows, true, |_, _, _| {})
 }
 
-impl TemplateAccum {
-    fn into_solve_accum(self, total_solves: usize) -> SolveAccum {
-        SolveAccum {
-            edge_usage: self.edge_usage,
-            energy: self.energy,
-            stats: PathStats {
-                total_solves,
-                total_heap_pops: 0,
-                max_heap_pops: 0,
-                failures: self.failures,
-            },
-            diag_corridor_fallback: 0,
-            diag_cap_armed: 0,
-            diag_solves: 0,
-            diag_settle_sum: 0,
-            diag_settle_max: 0,
-            diag_above_sum: 0,
-            diag_load_nz_sum: 0,
-            diag_load_mat_sum: 0,
-            diag_heur_prune_sum: 0,
-            diag_hist_nets: [0; 6],
-            diag_hist_settles: [0; 6],
-            diag_fan_nets: [0; 6],
-            diag_fan_settles: [0; 6],
-            diag_init_count: 0,
-        }
-    }
+fn bresenham_pass<T: Send>(
+    network: &PipeNetwork,
+    net_infos: &[NetInfo],
+    cfg: &OptTransPlacerCfg,
+    solve_pool: &rayon::ThreadPool,
+    slots: &mut [T],
+    collect_usage: bool,
+    write_slot: impl Fn(&mut T, &NetInfo, &mut Vec<(i32, i32)>) + Sync + Send,
+) -> SolveAccum {
+    let batch_size =
+        path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
+    let mut edge_usage = vec![0.0; if collect_usage { network.num_pipes() } else { 0 }];
+    let (chunks, energy) = solve_windowed(
+        net_infos,
+        slots,
+        batch_size,
+        solve_pool,
+        &mut edge_usage,
+        Vec::new,
+        |pin_xy, _, info, slot, failures: &mut usize, flows| {
+            write_slot(slot, info, pin_xy);
+            let Some(source) = source_node(info) else {
+                *failures += 1;
+                return 0.0;
+            };
+            let sinks: Vec<usize> = info
+                .pins
+                .iter()
+                .filter(|pin| !pin.is_driver)
+                .map(|pin| pin.node)
+                .collect();
+            if sinks.is_empty() {
+                *failures += 1;
+                return 0.0;
+            }
+            let result =
+                solve_net_bresenham_logit(network, source, &sinks, collect_usage.then_some(flows));
+            *failures += result.failures;
+            net_path_weight(info, cfg) * result.energy
+        },
+    );
+    let mut accum = merge_chunk_usage(Vec::new(), 0);
+    accum.edge_usage = edge_usage;
+    accum.energy = energy;
+    accum.stats.total_solves = net_infos.len();
+    accum.stats.failures = chunks.iter().sum();
+    accum
 }
 
 struct TemplateSolveResult {
@@ -1562,11 +1491,13 @@ struct TemplateSolveResult {
     failures: usize,
 }
 
+/// Book each sink's template usage as one `(pipe, share)` pair per template
+/// pipe, in template order.
 fn solve_net_bresenham_logit(
     network: &PipeNetwork,
     source: usize,
     sinks: &[usize],
-    mut edge_usage: Option<&mut [f64]>,
+    mut flows: Option<&mut Vec<(u32, f64)>>,
 ) -> TemplateSolveResult {
     let mut energy = 0.0;
     let mut failures = 0usize;
@@ -1612,15 +1543,13 @@ fn solve_net_bresenham_logit(
         // logit edge-usage spread below, but the scalar we report/minimize is
         // the same physical "routed cost" as the dial-logit path uses.
         energy += min_cost;
-        if let Some(usage) = edge_usage.as_deref_mut() {
+        if let Some(flows) = flows.as_deref_mut() {
             for (path, weight) in templates.iter().zip(weights) {
                 if weight <= 0.0 {
                     continue;
                 }
                 let p = weight / z;
-                for &pipe_idx in path {
-                    usage[pipe_idx] += p;
-                }
+                flows.extend(path.iter().map(|&pipe_idx| (pipe_idx as u32, p)));
             }
         }
     }
@@ -1643,32 +1572,54 @@ fn template_path_cost(network: &PipeNetwork, path: &[usize]) -> f64 {
     cost
 }
 
+/// The analytic surrogate field, written only within `cache_radius_tiles` of
+/// one of the net's pins: the same window `write_dist_row` keeps for the
+/// Dijkstra labels, and the only one DCD reads.
 fn fill_bresenham_surrogate_field(
     network: &PipeNetwork,
     source: usize,
+    info: &NetInfo,
+    pin_xy: &mut Vec<(i32, i32)>,
     dist_out: &mut FxHashMap<u32, f32>,
 ) {
+    let r = cache_radius_tiles();
     let src = &network.nodes[source];
-    for (node_idx, node) in network.nodes.iter().enumerate() {
-        let dx = (node.tile_x - src.tile_x).abs() as f64;
-        let dy = (node.tile_y - src.tile_y).abs() as f64;
-        let manhattan = dx + dy;
-        // Sparse route templates provide the usage estimate. The DCD field is
-        // deliberately a cheap smooth surrogate: route length plus a local
-        // BPR-like pressure sample around the candidate node.
-        dist_out.insert(
-            node_idx as u32,
-            (manhattan + local_node_pressure(network, node_idx)) as f32,
-        );
+    pin_xy.clear();
+    pin_xy.extend(info.pins.iter().map(|pin| {
+        let node = &network.nodes[pin.node];
+        (node.tile_x, node.tile_y)
+    }));
+    pin_xy.sort_unstable();
+    pin_xy.dedup();
+    for &(px, py) in pin_xy.iter() {
+        for y in (py - r).max(0)..=(py + r).min(network.height - 1) {
+            let reach = r - (y - py).abs();
+            for x in (px - reach).max(0)..=(px + reach).min(network.width - 1) {
+                let node_idx = network.node_index(x, y);
+                if dist_out.contains_key(&(node_idx as u32)) {
+                    continue;
+                }
+                let manhattan = ((x - src.tile_x).abs() + (y - src.tile_y).abs()) as f64;
+                // Sparse route templates provide the usage estimate. The DCD
+                // field is deliberately a cheap smooth surrogate: route length
+                // plus a local BPR-like pressure sample around the node.
+                dist_out.insert(
+                    node_idx as u32,
+                    (manhattan + local_node_pressure(network, node_idx)) as f32,
+                );
+            }
+        }
     }
+    shrink_dist_row(dist_out);
 }
 
 fn local_node_pressure(network: &PipeNetwork, node: usize) -> f64 {
     let model = ResistanceModel;
     let mut pressure = 0.0;
     let mut n = 0usize;
-    for &pipe_idx in &network.node_pipes[node] {
-        let pipe = &network.pipes[pipe_idx];
+    let adj = &network.flat_adjacency;
+    for e in adj.range(node) {
+        let pipe = &network.pipes[adj.pipe_idx[e] as usize];
         if pipe.capacity <= 0.0 || pipe.base_resistance <= 0.0 {
             continue;
         }
@@ -1856,7 +1807,7 @@ fn append_adjacent_pipe(
     }
     let a = network.node_index(x0, y0);
     let b = network.node_index(x1, y1);
-    let Some(&pipe_idx) = network.pipe_lookup.get(&pipe_lookup_key(a, b)) else {
+    let Some(pipe_idx) = network.pipe_between(a, b) else {
         return false;
     };
     out.push(pipe_idx);
@@ -1933,7 +1884,7 @@ fn update_effective_conductance(
         network.refresh_flat_edge_costs();
         return;
     }
-    network.span_cost_table.reset_disabled(network.pipes.len());
+    network.span_cost_table.reset_disabled();
     solve_pool.install(|| {
         let pipes = &mut network.pipes;
         let pipe_costs = &mut network.pipe_costs;
@@ -3096,7 +3047,6 @@ fn place_dcd_sweep(
         }
         if collect_stats {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -3311,15 +3261,7 @@ fn refresh_dist_row(
 
     ws.begin_net();
     path_solver::dial_logit_load(network, source, &sink_demands, ws, false);
-
-    row.clear();
-    row.reserve(ws.settle_order.len());
-    for &node in &ws.settle_order {
-        row.insert(node as u32, ws.dist[node] as f32);
-    }
-    if row.capacity() > 4 * row.len().max(8) {
-        row.shrink_to_fit();
-    }
+    write_dist_row(row, info, network, ws);
 }
 
 /// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): measure the cell net-adjacency coloring
@@ -3436,10 +3378,7 @@ fn build_cell_coloring(
 
 /// DIAGNOSTIC (NPNR_OT_COLOR_DIAG=1): print the coloring stats and exit.
 fn measure_cell_coloring(net_infos: &[NetInfo], cell_net_map: &CellNetMap, n: usize) {
-    let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(16);
+    let threshold = crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
     let col = build_cell_coloring(net_infos, cell_net_map, n, threshold);
     let mut sizes: Vec<usize> = vec![0; col.num_colors as usize];
     for &c in &col.colors {
@@ -3554,7 +3493,6 @@ fn place_dcd_sweep_median(
         }
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -3590,6 +3528,7 @@ fn place_dcd_sweep_colored_gs(
     validity: &CellValidityMask,
     mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
+    ws_pool: &WorkspacePool,
 ) -> usize {
     let n = cell_x.len();
     // Per-sweep displacement cap (damping): limit each cell's move to within
@@ -3598,10 +3537,7 @@ fn place_dcd_sweep_colored_gs(
     // small per-sweep steps let the outer congestion refresh keep pace. Default
     // = unlimited (i32::MAX) so behaviour is unchanged unless NPNR_OT_COLOR_MOVE_CAP
     // is set.
-    let move_cap: i32 = std::env::var("NPNR_OT_COLOR_MOVE_CAP")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(i32::MAX);
+    let move_cap = crate::env::var::<i32>("NPNR_OT_COLOR_MOVE_CAP").unwrap_or(i32::MAX);
 
     let mut by_color: Vec<Vec<usize>> = vec![Vec::new(); coloring.num_colors as usize];
     for ci in 0..n {
@@ -3669,7 +3605,6 @@ fn place_dcd_sweep_colored_gs(
             }
             if diag.enabled {
                 diag.record_move(MoveRecord {
-                    cell_idx: ci,
                     old_gx: ogx,
                     old_gy: ogy,
                     new_gx: ngx,
@@ -3681,11 +3616,8 @@ fn place_dcd_sweep_colored_gs(
 
         // Phase 3: incremental refresh of only the touched nets so the next color
         // sees the fresh field. Parallel over DISJOINT dist_cache rows — safe (no
-        // unsafe): each row is independent and gets a per-thread workspace via
-        // for_each_init. `solve_all_nets` reaches its rows the same way, by
-        // zipping `par_chunks_mut` over the cache alongside the net list; the
-        // shared `edge_usage` write it also performs is handled by per-thread
-        // fold accumulators rather than shared mutable state.
+        // unsafe): each row is independent and gets a pooled workspace via
+        // for_each_init, so a colour costs no workspace allocation.
         touched.sort_unstable();
         touched.dedup();
         let mut touched_mask = vec![false; net_infos.len()];
@@ -3693,10 +3625,8 @@ fn place_dcd_sweep_colored_gs(
             touched_mask[net_idx] = true;
         }
         let ni: &[NetInfo] = net_infos;
-        let n_nodes = network.num_nodes();
-        let n_pipes = network.num_pipes();
         dist_cache.rows.par_iter_mut().enumerate().for_each_init(
-            || PathSolverWorkspace::new(n_nodes, n_pipes),
+            || ws_pool.checkout(),
             |tls, (net_idx, row)| {
                 if touched_mask[net_idx] {
                     refresh_dist_row(row, &ni[net_idx], network, tls);
@@ -3770,7 +3700,6 @@ fn place_dcd_sweep_jacobi_bisection(
         }
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -4168,7 +4097,6 @@ fn place_dcd_sweep_jacobi_bb(
                         }
                         if diag.enabled {
                             diag.record_move(MoveRecord {
-                                cell_idx: ci,
                                 old_gx,
                                 old_gy,
                                 new_gx: cx,
@@ -4193,7 +4121,6 @@ fn place_dcd_sweep_jacobi_bb(
             }
             if diag.enabled {
                 diag.record_move(MoveRecord {
-                    cell_idx: ci,
                     old_gx,
                     old_gy,
                     new_gx,
@@ -4369,10 +4296,9 @@ fn place_dcd_sweep_sequential_bisection(
     validity: &CellValidityMask,
     mux_tracker: &MuxSlotTracker,
     diag: &mut DiagCtx,
+    ws_pool: &WorkspacePool,
 ) -> usize {
-    let n_nodes = network.num_nodes();
-    let n_pipes = network.num_pipes();
-    let mut ws = PathSolverWorkspace::new(n_nodes, n_pipes);
+    let mut ws = ws_pool.checkout();
     let mut moved = 0usize;
     let max_iters = cfg.dcd_iters_per_cell.max(1);
     let want_perf = std::env::var("NPNR_OT_SEQ_PERF").ok().as_deref() == Some("1");
@@ -4454,7 +4380,6 @@ fn place_dcd_sweep_sequential_bisection(
 
         if diag.enabled {
             diag.record_move(MoveRecord {
-                cell_idx: ci,
                 old_gx,
                 old_gy,
                 new_gx,
@@ -4513,7 +4438,7 @@ pub fn run_inner_outer(
     let mut dist_cache = DistCache::new(0, n_nodes);
     // One pool for the whole placement: solver workspaces are chip-sized and
     // were previously rebuilt for every rayon task on every outer iteration.
-    let ws_pool = WorkspacePool::new(n_nodes, network.num_pipes());
+    let ws_pool = WorkspacePool::new(n_nodes);
     let max_iter = cfg.max_outer_iters.max(1);
     let mut diag_ctx = DiagCtx::from_env();
 
@@ -4589,14 +4514,10 @@ pub fn run_inner_outer(
     // not depend on the BPR ramp). NPNR_OT_DISP_TOL sets the average-tile
     // threshold (default 0.5); NPNR_OT_DISP_STALL sets how many consecutive
     // sub-threshold iters trigger stop (default 3).
-    let disp_tol = std::env::var("NPNR_OT_DISP_TOL")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
+    let disp_tol = crate::env::var::<f64>("NPNR_OT_DISP_TOL")
         .map(|v| v.max(0.0))
         .unwrap_or(0.5);
-    let max_disp_stalls = std::env::var("NPNR_OT_DISP_STALL")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    let max_disp_stalls = crate::env::var::<usize>("NPNR_OT_DISP_STALL")
         .unwrap_or(3);
     let mut disp_stalls = 0usize;
     let mut prev_cell_x: Option<Vec<f64>> = None;
@@ -4642,7 +4563,6 @@ pub fn run_inner_outer(
             cell_x,
             cell_y,
             network,
-            cfg,
         );
         COLLECT_NS.fetch_add(t_collect.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
@@ -5416,8 +5336,8 @@ pub fn run_inner_outer(
                 }
                 ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
                 for (excess, pi, nc, cap, span) in ranked.iter().take(5) {
-                    let node_from = &network.nodes[network.pipes[*pi].from];
-                    let node_to = &network.nodes[network.pipes[*pi].to];
+                    let node_from = &network.nodes[network.pipes[*pi].from as usize];
+                    let node_to = &network.nodes[network.pipes[*pi].to as usize];
                     let tt_from = ctx
                         .chipdb()
                         .tile_type_name(ctx.chipdb().tile_by_xy(node_from.tile_x, node_from.tile_y))
@@ -5483,6 +5403,7 @@ pub fn run_inner_outer(
                 validity,
                 &mux_tracker,
                 &mut diag_ctx,
+                &ws_pool,
             ),
             super::config::SweepMode::JacobiBisection => place_dcd_sweep_jacobi_bisection(
                 &mut net_infos,
@@ -5505,13 +5426,12 @@ pub fn run_inner_outer(
                 let t_pyr = std::time::Instant::now();
                 let pyramids = region_min::build_all(
                     &dist_cache.rows,
-                    dist_cache.n_nodes,
                     network.width,
                     network.height,
                 );
                 let pyr_ms = t_pyr.elapsed().as_millis();
                 if want_perf {
-                    let bytes: usize = pyramids.iter().map(|p| p.bytes()).sum();
+                    let bytes: usize = pyramids.iter().map(|p| p.heap_bytes()).sum();
                     eprintln!(
                         "    bb_pyramid_build: {}ms, {} nets, {:.1} MB",
                         pyr_ms,
@@ -5626,10 +5546,8 @@ pub fn run_inner_outer(
                 &mut diag_ctx,
             ),
             super::config::SweepMode::ColoredGs => {
-                let threshold: usize = std::env::var("NPNR_OT_COLOR_FANOUT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(16);
+                let threshold =
+                    crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
                 let coloring = build_cell_coloring(&net_infos, &cell_net_map, n, threshold);
                 if outer == 0 {
                     eprintln!(
@@ -5649,6 +5567,7 @@ pub fn run_inner_outer(
                     validity,
                     &mux_tracker,
                     &mut diag_ctx,
+                    &ws_pool,
                 )
             }
         };
@@ -5679,7 +5598,6 @@ pub fn run_inner_outer(
             cell_x,
             cell_y,
             network,
-            cfg,
         );
         COLLECT_NS.fetch_add(t_collect2.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
@@ -6047,10 +5965,7 @@ pub fn run_inner_outer(
         // and skips driver-side cost. If many pairs show improvement, the
         // plateau is a CD trap; if few, the plateau is driven by driver-
         // blindness or missing cluster moves.
-        if let Some(n_probe) = std::env::var("NPNR_OT_SWAP_PROBE")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-        {
+        if let Some(n_probe) = crate::env::var::<usize>("NPNR_OT_SWAP_PROBE") {
             if n_probe > 0 && n >= 2 {
                 // xorshift64 (no external rand dep needed for a diagnostic)
                 let mut rng_state = cfg
@@ -6351,7 +6266,7 @@ mod hardening_tests {
     /// shares tile type, span, capacity and base cost, so they all collapse
     /// into a single `SpanCostTable` bucket — which is exactly the condition
     /// under which a per-pipe term can silently vanish.
-    fn chain(n: usize, capacity: f64, net_count: f64) -> PipeNetwork {
+    pub(super) fn chain(n: usize, capacity: f64, net_count: f64) -> PipeNetwork {
         let nodes: Vec<Node> = (0..n)
             .map(|i| Node {
                 tile_x: i as i32,
@@ -6361,23 +6276,15 @@ mod hardening_tests {
             .collect();
         let pipes: Vec<Pipe> = (0..n - 1)
             .map(|i| Pipe {
-                from: i,
-                to: i + 1,
+                from: i as u32,
+                to: i as u32 + 1,
                 base_resistance: 1.0,
                 capacity,
-                flow: 0.0,
                 net_count,
-                raw_cell_density: 0.0,
-                cell_density: 0.0,
                 eff_conductance: 1.0,
                 pipe_type: PipeType::InterTile(Direction::East),
             })
             .collect();
-        let mut node_pipes = vec![Vec::new(); n];
-        for (i, p) in pipes.iter().enumerate() {
-            node_pipes[p.from].push(i);
-            node_pipes[p.to].push(i);
-        }
         let pipe_costs: Vec<f64> = pipes.iter().map(|p| p.base_resistance).collect();
         let pipe_costs_int: Vec<u32> = pipe_costs
             .iter()
@@ -6385,19 +6292,17 @@ mod hardening_tests {
             .collect();
         let n_pipes = pipes.len();
         let tile_grid = TileGrid::build(&pipes, &nodes, n as i32, 1);
-        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        let flat_adjacency = FlatAdjacency::build(nodes.len(), &pipes);
         PipeNetwork {
             nodes,
             pipes,
-            node_pipes,
             pipe_history: vec![0.0; n_pipes],
             pipe_costs,
             pipe_costs_int,
-            span_cost_table: SpanCostTable::disabled(n_pipes),
+            span_cost_table: SpanCostTable::disabled(),
             flat_adjacency,
             tile_templates: std::sync::Arc::new(Vec::new()),
             tile_grid,
-            pipe_lookup: FxHashMap::default(),
             tile_type_by_node: vec![0; n],
             width: n as i32,
             height: 1,
@@ -6556,40 +6461,30 @@ mod driver_hole_tests {
             .collect();
         let pipes: Vec<Pipe> = (0..n - 1)
             .map(|i| Pipe {
-                from: i,
-                to: i + 1,
+                from: i as u32,
+                to: i as u32 + 1,
                 base_resistance: 1.0,
                 capacity: 10.0,
-                flow: 0.0,
                 net_count: 0.0,
-                raw_cell_density: 0.0,
-                cell_density: 0.0,
                 eff_conductance: 1.0,
                 pipe_type: PipeType::InterTile(Direction::East),
             })
             .collect();
-        let mut node_pipes = vec![Vec::new(); n];
-        for (i, p) in pipes.iter().enumerate() {
-            node_pipes[p.from].push(i);
-            node_pipes[p.to].push(i);
-        }
         let n_pipes = pipes.len();
         let pipe_costs = vec![1.0; n_pipes];
         let pipe_costs_int = vec![100u32; n_pipes];
         let tile_grid = TileGrid::build(&pipes, &nodes, GRID_W, H);
-        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        let flat_adjacency = FlatAdjacency::build(nodes.len(), &pipes);
         PipeNetwork {
             nodes,
             pipes,
-            node_pipes,
             pipe_history: vec![0.0; n_pipes],
             pipe_costs,
             pipe_costs_int,
-            span_cost_table: SpanCostTable::disabled(n_pipes),
+            span_cost_table: SpanCostTable::disabled(),
             flat_adjacency,
             tile_templates: std::sync::Arc::new(Vec::new()),
             tile_grid,
-            pipe_lookup: FxHashMap::default(),
             tile_type_by_node: vec![0; n],
             width: GRID_W,
             height: H,
@@ -6779,5 +6674,137 @@ mod proximal_tests {
             .unwrap()
             .0;
         assert_eq!(argmin, 0, "cell moved despite a huge proximal weight: {:?}", p);
+    }
+}
+
+#[cfg(test)]
+mod memory_bound_tests {
+    use super::hardening_tests::chain;
+    use super::*;
+
+    fn pin(node: usize, is_driver: bool) -> PinNode {
+        PinNode { node, cell_idx: None, is_driver, is_fixed: true }
+    }
+
+    fn two_pin_net(driver: usize, sink: usize) -> NetInfo {
+        NetInfo {
+            net_id: NetId::from_raw(0),
+            debug_name: Arc::from("n"),
+            pins: vec![pin(driver, true), pin(sink, false)],
+            pin_src: Vec::new(),
+            has_fixed_pin: true,
+        }
+    }
+
+    fn line(n: usize) -> PipeNetwork {
+        let mut net = chain(n, 10.0, 0.0);
+        net.refresh_flat_edge_costs();
+        net
+    }
+
+    /// Nodes within `r` of one pin on a line: a row may hold no more than
+    /// this per pin, however far the solve itself spread.
+    fn window(r: i32) -> usize {
+        (2 * r + 1) as usize
+    }
+
+    /// The sequential and coloured sweeps refresh rows through
+    /// `refresh_dist_row`, which used to keep every settled node. A long net
+    /// settles its whole corridor, so its row grew with the chip.
+    #[test]
+    fn refreshed_row_keeps_only_the_window_around_pins() {
+        let network = line(2000);
+        let info = two_pin_net(0, 1500);
+        let mut ws = PathSolverWorkspace::new(network.num_nodes());
+        let mut row = FxHashMap::default();
+        refresh_dist_row(&mut row, &info, &network, &mut ws);
+
+        let r = cache_radius_tiles();
+        assert!(ws.settle_order.len() > 1000, "the solve spans the corridor");
+        assert!(row.len() <= 2 * window(r), "{} entries kept", row.len());
+        // Inside the window every label survives unchanged.
+        for &node in &ws.settle_order {
+            let near = (node as i32).abs() <= r || (node as i32 - 1500).abs() <= r;
+            assert_eq!(row.get(&(node as u32)).copied(), near.then(|| ws.dist[node] as f32));
+        }
+    }
+
+    /// The Bresenham surrogate used to be written at every node of the chip
+    /// for every net. It is now the default path's window, so it must not
+    /// depend on the grid at all.
+    #[test]
+    fn surrogate_field_does_not_scale_with_grid_size() {
+        let info = two_pin_net(0, 150);
+        let mut sizes = Vec::new();
+        for n in [200, 20_000] {
+            let network = line(n);
+            let mut row = FxHashMap::default();
+            fill_bresenham_surrogate_field(&network, 0, &info, &mut Vec::new(), &mut row);
+            for (&node, &v) in &row {
+                // Unloaded pipes: the field is the Manhattan distance alone.
+                assert_eq!(v, node as f32);
+            }
+            sizes.push((row.len(), row.capacity()));
+        }
+        assert_eq!(sizes[0], sizes[1]);
+        assert!(sizes[1].0 <= 2 * window(cache_radius_tiles()));
+    }
+
+    fn net_list(n: usize) -> Vec<NetInfo> {
+        (0..n).map(|i| two_pin_net(i, i + 1)).collect()
+    }
+
+    /// Deterministic stand-in for a net solve: a few pairs on a handful of
+    /// shared pipes, with flows whose sums depend on association order.
+    fn fake_solve(net_idx: usize, flows: &mut Vec<(u32, f64)>) -> f64 {
+        let mut h = net_idx as u64 ^ 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..(1 + net_idx % 5) {
+            h = h.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1442695040888963407);
+            flows.push(((h >> 59) as u32, 1.0 / (3.0 + (h >> 40) as f64 % 97.0)));
+        }
+        (h >> 11) as f64 / (1u64 << 53) as f64 / 7.0
+    }
+
+    /// Usage and energy must not depend on how many threads solved the nets:
+    /// usage is the net-order sum, energy the `batch_size`-grouped sum.
+    #[test]
+    fn windowed_solve_is_independent_of_thread_count() {
+        let nets = net_list(5_000);
+        let batch_size = 37;
+        let mut want_usage = vec![0.0f64; 32];
+        let (mut want_energy, mut group) = (0.0f64, 0.0f64);
+        for i in 0..nets.len() {
+            let mut flows = Vec::new();
+            group += fake_solve(i, &mut flows);
+            for (pipe, flow) in flows {
+                want_usage[pipe as usize] += flow;
+            }
+            if (i + 1) % batch_size == 0 || i + 1 == nets.len() {
+                want_energy += group;
+                group = 0.0;
+            }
+        }
+
+        for threads in [1, 3, 8] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let mut usage = vec![0.0f64; 32];
+            let mut slots = vec![(); nets.len()];
+            let (stats, energy) = solve_windowed(
+                &nets,
+                &mut slots,
+                batch_size,
+                &pool,
+                &mut usage,
+                || (),
+                |_, net_idx, _, _, solved: &mut usize, flows| {
+                    *solved += 1;
+                    fake_solve(net_idx, flows)
+                },
+            );
+            assert_eq!(stats.iter().sum::<usize>(), nets.len());
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&usage), bits(&want_usage), "{threads} threads");
+            assert_eq!(energy.to_bits(), want_energy.to_bits(), "{threads} threads");
+        }
     }
 }

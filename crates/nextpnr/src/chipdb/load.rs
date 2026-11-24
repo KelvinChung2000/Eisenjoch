@@ -59,6 +59,7 @@ impl ChipDb {
             chip_info,
             constid_strs,
             constid_canon: std::sync::OnceLock::new(),
+            global_network: std::sync::OnceLock::new(),
         })
     }
 
@@ -119,6 +120,7 @@ impl ChipDb {
             chip_info,
             constid_strs,
             constid_canon: std::sync::OnceLock::new(),
+            global_network: std::sync::OnceLock::new(),
         })
     }
 }

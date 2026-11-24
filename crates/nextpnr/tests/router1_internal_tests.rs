@@ -469,7 +469,7 @@ fn apply_route_plan_binds_wires() {
         }],
     };
 
-    apply_route_plan(&mut ctx, &plan);
+    apply_route_plan(&mut ctx, &plan).unwrap();
 
     // Source wire should be bound
     assert!(!ctx.wire(src_wire).is_available());
@@ -506,7 +506,7 @@ fn compute_then_apply_matches_route_net() {
     // Method 1: compute + apply
     let plan = compute_route_r1(&ctx1, net_idx, &penalty, 0, 50, None).unwrap();
     if plan.source_wire.is_valid() {
-        apply_route_plan(&mut ctx1, &plan);
+        apply_route_plan(&mut ctx1, &plan).unwrap();
     }
 
     // Method 2: route_net

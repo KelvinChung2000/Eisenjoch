@@ -278,13 +278,17 @@ fn pip_src_dst_wires_are_valid() {
     assert_eq!(pips.len(), 100, "chipdb should have at least 100 PIPs");
 
     for pip in pips {
-        let src = chipdb.pip_src_wire(pip);
-        let dst = chipdb.pip_dst_wire(pip);
+        // The tile wires sit in the pip's own tile...
+        let src = chipdb.pip_src_tile_wire(pip);
+        let dst = chipdb.pip_dst_tile_wire(pip);
         assert_eq!(src.tile(), pip.tile());
         assert_eq!(dst.tile(), pip.tile());
         let tt = chipdb.tile_type(pip.tile());
         assert!((src.index() as usize) < tt.wires.get().len());
         assert!((dst.index() as usize) < tt.wires.get().len());
+        // ...and the endpoints are the nodes those tile wires belong to.
+        assert_eq!(chipdb.pip_src_wire(pip), chipdb.canonical_wire(src));
+        assert_eq!(chipdb.pip_dst_wire(pip), chipdb.canonical_wire(dst));
     }
 }
 

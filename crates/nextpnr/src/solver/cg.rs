@@ -523,7 +523,7 @@ pub fn solve_cg_batched_reuse(
     mat: &(impl LinOp<f64> + Sized),
     precond: &(impl Precond<f64> + Sized),
     rhs_mat: faer::MatRef<'_, f64>,
-    mut x_mat: faer::MatMut<'_, f64>,
+    x_mat: faer::MatMut<'_, f64>,
     tol: f64,
     max_iters: usize,
     buf: &mut MemBuffer,

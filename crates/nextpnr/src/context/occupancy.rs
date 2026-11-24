@@ -20,13 +20,26 @@ impl Context {
         self.bel_to_cell.get_mut(tile, index)
     }
 
-    /// Return the current binding of a wire, or `None` if unbound or the id is
-    /// out of range. Sparse lookup: `O(1)` against the hash map.
+    /// The occupancy key for `wire`: its node's canonical wire. One node is
+    /// one binding however many tiles it crosses, so occupancy grows with the
+    /// routed nodes rather than with their length.
+    #[inline]
+    fn wire_key(&self, wire: WireId) -> Option<(u32, u32)> {
+        let wire = self.chipdb.canonical_wire(wire);
+        Some((u32::try_from(wire.tile()).ok()?, u32::try_from(wire.index()).ok()?))
+    }
+
+    /// Return the current binding of `wire`'s node, or `None` if unbound or
+    /// the id is out of range. Any member of the node answers the same.
     #[inline]
     pub fn wire_binding(&self, wire: WireId) -> Option<(NetId, PlaceStrength)> {
-        let tile = u32::try_from(wire.tile()).ok()?;
-        let index = u32::try_from(wire.index()).ok()?;
-        self.wire_to_net.get(&(tile, index)).copied()
+        self.wire_to_net.get(&self.wire_key(wire)?).copied()
+    }
+
+    /// Number of bound wire entries. Memory for wire occupancy is this times
+    /// one map entry.
+    pub fn bound_wire_count(&self) -> usize {
+        self.wire_to_net.len()
     }
 
     /// Return the current binding of a pip, or `None` if unbound or out of
@@ -77,75 +90,39 @@ impl Context {
         }
     }
 
-    /// Bind a wire to a net.
+    /// Bind `wire`'s node to a net.
     pub fn bind_wire(
         &mut self,
         wire: impl Into<WireId>,
         net_idx: impl Into<NetId>,
         strength: PlaceStrength,
     ) {
-        let wire = wire.into();
-        let net_idx = net_idx.into();
-        let Ok(tile) = u32::try_from(wire.tile()) else {
-            return;
-        };
-        let Ok(index) = u32::try_from(wire.index()) else {
-            return;
-        };
-        self.wire_to_net.insert((tile, index), (net_idx, strength));
+        if let Some(key) = self.wire_key(wire.into()) {
+            self.wire_to_net.insert(key, (net_idx.into(), strength));
+        }
     }
 
-    /// Unbind a wire. O(1) hash-map removal; no-op if not bound.
+    /// Unbind `wire`'s node. No-op if not bound.
     pub fn unbind_wire(&mut self, wire: impl Into<WireId>) {
-        let wire = wire.into();
-        let Ok(tile) = u32::try_from(wire.tile()) else {
-            return;
-        };
-        let Ok(index) = u32::try_from(wire.index()) else {
-            return;
-        };
-        self.wire_to_net.remove(&(tile, index));
+        if let Some(key) = self.wire_key(wire.into()) {
+            self.wire_to_net.remove(&key);
+        }
     }
 
-    /// Bind `wire` and all node-equivalent wires to `net`. Returns `Err` if
-    /// any wire in the node is already bound to a different net. Either all
-    /// bindings succeed or none do — no partial application.
-    ///
-    /// Binding the same net to a wire that already holds that binding is
-    /// treated as idempotent (no error, no change).
+    /// Bind `wire`'s node to `net`, or return `Err(wire)` if a different net
+    /// already holds it. Rebinding the same net is idempotent.
     pub fn try_bind_wire_node(
         &mut self,
         wire: WireId,
         net_idx: NetId,
         strength: PlaceStrength,
     ) -> Result<(), WireId> {
-        // Collect wire + all node-equivalent wires.
-        let mut wires: Vec<WireId> = Vec::with_capacity(8);
-        wires.push(wire);
-        self.chipdb().node_wires_cb(wire, |nw| {
-            wires.push(nw);
-        });
-
-        // Phase 1: verify no wire is bound to a different net.
-        for &w in &wires {
-            if let Some((owner, _)) = self.wire_binding(w) {
-                if owner != net_idx {
-                    return Err(w);
-                }
+        if let Some((owner, _)) = self.wire_binding(wire) {
+            if owner != net_idx {
+                return Err(wire);
             }
         }
-
-        // Phase 2: apply all bindings.
-        for &w in &wires {
-            let Ok(tile) = u32::try_from(w.tile()) else {
-                continue;
-            };
-            let Ok(index) = u32::try_from(w.index()) else {
-                continue;
-            };
-            self.wire_to_net.insert((tile, index), (net_idx, strength));
-        }
-
+        self.bind_wire(wire, net_idx, strength);
         Ok(())
     }
 

@@ -5,6 +5,7 @@ use memmap2::Mmap;
 use super::pod::ChipInfoPod;
 use super::relptr::RelPtr;
 use super::ChipDbError;
+use super::WireId;
 use crate::read_packed;
 
 /// One entry of the resolved constid table.
@@ -29,6 +30,8 @@ pub struct ChipDb {
     pub(super) constid_strs: Vec<ConstIdStr>,
     /// Built on first use. See [`ChipDb::constid_canon`].
     pub(super) constid_canon: std::sync::OnceLock<ConstIdCanon>,
+    /// Built on first use. See [`ChipDb::global_network`].
+    pub(super) global_network: std::sync::OnceLock<rustc_hash::FxHashSet<WireId>>,
 }
 
 /// Constids that spell the same string collapsed to one representative, so a

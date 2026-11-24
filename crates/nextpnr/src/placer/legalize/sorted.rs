@@ -1,26 +1,27 @@
 //! Nearest-BEL legalization with region support.
 //!
-//! Phase A: index each cell type's BELs by tile.
+//! Phase A: one BEL pool per bucket, borrowed from the context.
 //! Phase B (sequential): greedy assignment, outer cells first.
 
-use crate::chipdb::BelId;
+use crate::chipdb::{BelId, Loc};
 use crate::common::{IdString, PlaceStrength};
-use crate::context::Context;
+use crate::context::{BucketGrid, Context};
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
-use crate::placer::legalize::bel_grid::{BelGrid, RingCandidates};
+use crate::placer::legalize::bel_grid::RingCandidates;
 use crate::placer::legalize::common::{
     build_cell_pin_template, place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use super::{leg_timers, Legalizer};
 
 
 /// Nearest-BEL legalization with region support.
 ///
-/// Phase A: index each cell type's BELs by tile.
+/// Phase A: one BEL pool per bucket, borrowed from the context.
 /// Phase B (sequential): greedy assignment, outer cells first.
 pub struct SortedLegalizer;
 
@@ -37,10 +38,35 @@ impl Legalizer for SortedLegalizer {
     }
 }
 
+/// One bucket's BELs, and which of them are bound.
+struct Pool {
+    bels: Arc<[BelId]>,
+    /// One flag per position in `bels`.
+    taken: Vec<bool>,
+}
+
+/// Phase A: one pool per bucket, so aliases share a list and its flags.
+///
+/// `taken` is seeded from what is already bound, so the ring walk never
+/// offers a BEL the caller would reject. Phase B is the only thing binding
+/// from here on, so the flags stay exact.
+fn build_pools(ctx: &Context, cell_infos: &[CellLegalizeInfo]) -> FxHashMap<IdString, Pool> {
+    let mut pools: FxHashMap<IdString, Pool> = FxHashMap::default();
+    for info in cell_infos {
+        pools.entry(info.bucket).or_insert_with(|| {
+            let bels = ctx.bucket_bel_list(info.bucket);
+            let taken = bels.iter().map(|&b| !ctx.bel(b).is_available()).collect();
+            Pool { bels, taken }
+        });
+    }
+    pools
+}
+
 /// Per-cell info gathered before assignment.
 struct CellLegalizeInfo {
     cell_idx: CellId,
-    cell_type_id: IdString,
+    /// Resolved, so aliases of one bucket share its pool.
+    bucket: IdString,
     cell_type_name: String,
     cell_name: String,
     cell_region: Option<u32>,
@@ -53,7 +79,8 @@ struct CellLegalizeInfo {
     cluster_children: Vec<(CellId, IdString, i32, i32, i32, bool)>,
 }
 
-/// Every BEL of `info`'s type, sorted by `(dist_sq, enum_index)`.
+/// The BELs at `positions` of `info`'s bucket, sorted by
+/// `(dist_sq, enum_index)`.
 ///
 /// Distance ties are broken on enumeration order because they are the common
 /// case -- a tile holds many slots at identical x/y -- and the order among
@@ -62,33 +89,18 @@ struct CellLegalizeInfo {
 /// the oracle that test proves it against.
 fn candidate_list(
     info: &CellLegalizeInfo,
-    bel_data_cache: &FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>>,
-    region_bel_sets: &FxHashMap<u32, FxHashSet<BelId>>,
+    grid: BucketGrid<'_>,
+    positions: impl Iterator<Item = usize>,
 ) -> Vec<BelId> {
-    let Some(bels) = bel_data_cache.get(&info.cell_type_id) else {
-        return Vec::new();
-    };
-
     // Carry each candidate's position in the BEL enumeration and break
-    // distance ties on it. Equidistant BELs are common (a tile holds many
-    // slots at identical x/y) and the order among them decides which one
-    // Phase B binds. Making the comparison total is what lets `RingCandidates`
-    // reproduce this sequence from a heap keyed on
+    // distance ties on it. Making the comparison total is what lets
+    // `RingCandidates` reproduce this sequence from a heap keyed on
     // `(dist_sq.to_bits(), enum_index)` -- an unstable sort and a heap agree
     // only when the order is total.
-    let mut candidates: Vec<(BelId, f64, usize)> = bels
-        .iter()
-        .enumerate()
-        .filter(|(_, &(bel_id, _, _, _))| {
-            if let Some(rid) = info.cell_region {
-                region_bel_sets
-                    .get(&rid)
-                    .map_or(false, |s| s.contains(&bel_id))
-            } else {
-                true
-            }
-        })
-        .map(|(order, &(bel_id, bx, by, _bz))| {
+    let mut candidates: Vec<(BelId, f64, usize)> = positions
+        .map(|order| {
+            let bel_id = grid.bels()[order];
+            let (bx, by) = grid.xy(bel_id);
             let dx = bx as f64 - info.target_x;
             let dy = by as f64 - info.target_y;
             (bel_id, dx * dx + dy * dy, order)
@@ -124,7 +136,6 @@ fn candidate_list(
 fn try_bind_cell(
     ctx: &mut Context,
     info: &CellLegalizeInfo,
-    bel_by_loc: &FxHashMap<(IdString, i32, i32, i32), BelId>,
     registry: &mut DriverNodeRegistry,
     // `(BelId, enumeration index)`. The region-constrained path has no
     // enumeration index and passes `u32::MAX`.
@@ -158,7 +169,8 @@ fn try_bind_cell(
             let want_x = root_loc.x + cx_off;
             let want_y = root_loc.y + cy_off;
             let want_z = if abs_z { cz_off } else { root_loc.z + cz_off };
-            let Some(&child_bel) = bel_by_loc.get(&(child_type, want_x, want_y, want_z)) else {
+            let Some(child_bel) = ctx.bucket_bel_at(child_type, Loc::new(want_x, want_y, want_z))
+            else {
                 *cluster_footprint_rejects += 1;
                 continue 'outer;
             };
@@ -215,7 +227,7 @@ fn try_bind_cell(
         }
         // place_cluster_children binds each child to its constrained
         // slot. The child slots we resolved above must match exactly.
-        place_cluster_children(ctx, &bel_by_loc, info.cell_idx, bel)?;
+        place_cluster_children(ctx, info.cell_idx, bel)?;
 
         // Re-check with the children bound. This is not redundant: a lone
         // LUT in a slice is valid, and it is binding the FF beside it that
@@ -259,7 +271,7 @@ fn try_bind_cell(
 /// Nearest-BEL legalization.
 ///
 /// 1. Unbinds all movable cells.
-/// 2. Builds BEL data and a tile index per cell type.
+/// 2. Takes each bucket's BEL list from the context.
 /// 3. Assigns cells sequentially (outer-first), skipping cluster children,
 ///    walking each cell's BELs nearest-first until one is legal.
 /// 4. Calls `place_cluster_children` for cluster roots.
@@ -279,56 +291,6 @@ pub fn sorted_legalize(
 
     // Unbind all movable cells.
     unbind_movable_cells(ctx, idx_to_cell);
-
-    // Pre-collect BEL data per cell type into plain data (BelId, x, y, z).
-    // Detaching it from `ctx` is what lets Phase B hold it while binding, and
-    // its enumeration order is the tie-break both candidate paths sort on.
-    let mut bel_data_cache: FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>> = FxHashMap::default();
-    for &cell_idx in idx_to_cell {
-        let cell_type_id = ctx.cell(cell_idx).cell_type_id();
-        bel_data_cache.entry(cell_type_id).or_insert_with(|| {
-            ctx.bels_for_bucket(cell_type_id)
-                .map(|bel| {
-                    let loc = bel.loc();
-                    (bel.id(), loc.x, loc.y, loc.z)
-                })
-                .collect()
-        });
-    }
-
-    // Cluster-child types may not appear among `idx_to_cell` (children are
-    // not in cell_to_idx). Pre-fetch their BEL pools too so we can probe
-    // child slots when scoring cluster-root candidates.
-    let mut child_types: FxHashSet<IdString> = FxHashSet::default();
-    for &cell_idx in idx_to_cell {
-        if let Some(cluster) = ctx.design.clusters.get(&cell_idx) {
-            for &child_id in &cluster.constr_children {
-                child_types.insert(ctx.design.cell(child_id).cell_type);
-            }
-        }
-    }
-    for child_type in child_types {
-        bel_data_cache.entry(child_type).or_insert_with(|| {
-            ctx.bels_for_bucket(child_type)
-                .map(|bel| {
-                    let loc = bel.loc();
-                    (bel.id(), loc.x, loc.y, loc.z)
-                })
-                .collect()
-        });
-    }
-
-    // Index by exact (cell_type, x, y, z) so cluster-root candidate scoring
-    // can look up "is the child slot available?" in O(1).
-    let bel_by_loc: FxHashMap<(IdString, i32, i32, i32), BelId> = {
-        let mut idx = FxHashMap::default();
-        for (cell_type_id, bels) in &bel_data_cache {
-            for &(bel_id, x, y, z) in bels {
-                idx.insert((*cell_type_id, x, y, z), bel_id);
-            }
-        }
-        idx
-    };
 
     // Sort movable cells by distance from center (place outer cells first).
     let grid_w = ctx.chipdb().width();
@@ -375,7 +337,7 @@ pub fn sorted_legalize(
                 .unwrap_or_default();
             CellLegalizeInfo {
                 cell_idx,
-                cell_type_id: cell.cell_type_id(),
+                bucket: ctx.resolve_bucket(cell.cell_type_id()),
                 cell_type_name: cell.cell_type().to_owned(),
                 cell_name: cell.name().to_owned(),
                 cell_region: ctx.design.cell(cell_idx).region,
@@ -390,70 +352,10 @@ pub fn sorted_legalize(
     if leg_timers() {
         eprintln!("  LEG_T cell_infos: {:.3}s", t_leg.elapsed().as_secs_f64());
     }
-    // Pre-compute region BEL sets for region-constrained cells.
-    let region_bel_sets: FxHashMap<u32, FxHashSet<BelId>> = {
-        let mut map = FxHashMap::default();
-        for info in &cell_infos {
-            if let Some(rid) = info.cell_region {
-                map.entry(rid).or_insert_with(|| {
-                    let region = ctx.design.region(rid);
-                    let mut set = FxHashSet::default();
-                    if let Some(bbox) = region.bounding_box() {
-                        for bel in ctx.bels() {
-                            let loc = bel.loc();
-                            if region.contains(loc.x, loc.y)
-                                && loc.x >= bbox.x0
-                                && loc.x <= bbox.x1
-                                && loc.y >= bbox.y0
-                                && loc.y <= bbox.y1
-                            {
-                                set.insert(bel.id());
-                            }
-                        }
-                    }
-                    set
-                });
-            }
-        }
-        map
-    };
+    let mut pools = build_pools(ctx, &cell_infos);
 
     if leg_timers() {
-        eprintln!("  LEG_T region_sets: {:.3}s", t_leg.elapsed().as_secs_f64());
-    }
-    // Phase A: one spatial index per cell type, replacing the per-cell
-    // shortlists.
-    //
-    // The old Phase A held a distance-sorted list per cell: O(cells * bels),
-    // bounded to 1024 entries only by capping, which bounded work and not
-    // legality -- 25% of FPGA01's cells exhausted the cap and paid a full
-    // re-scan and re-sort of up to 1.08M entries. Indexing per *type* instead
-    // is O(bels) once, and the walk keeps one cell's candidates live.
-    //
-    // Built from `bel_data_cache`, so the candidate universe is identical to
-    // `candidate_list`'s by construction: same alias resolution via
-    // `bels_for_bucket`, same filtering, same enumeration order.
-    // One flag per BEL per type, seeded from what the packer already bound, so
-    // the ring walk never offers a BEL the caller would reject. Phase B is the
-    // only thing binding from here on, so the flags stay exact.
-    let mut bel_taken: FxHashMap<IdString, Vec<bool>> = bel_data_cache
-        .iter()
-        .map(|(&type_id, bels)| {
-            let flags = bels
-                .iter()
-                .map(|&(id, ..)| !ctx.bel(id).is_available())
-                .collect();
-            (type_id, flags)
-        })
-        .collect();
-
-    let bel_grids: FxHashMap<IdString, BelGrid> = bel_data_cache
-        .iter()
-        .map(|(&type_id, bels)| (type_id, BelGrid::build(bels, grid_w, grid_h)))
-        .collect();
-
-    if leg_timers() {
-        eprintln!("  LEG_T bel_grids: {:.3}s", t_leg.elapsed().as_secs_f64());
+        eprintln!("  LEG_T pools: {:.3}s", t_leg.elapsed().as_secs_f64());
     }
     // Seed the shared-mux registry from already-bound cells (packer-placed
     // fixed cells: BUFG, IO, clock buffers). Movable cells were just unbound
@@ -482,15 +384,17 @@ pub fn sorted_legalize(
         // the whole device before finding anything; bounding rings by the
         // region bbox is a separate geometry problem and a documented
         // follow-up. FPGA01 has no region-constrained cells.
-        let disp = if info.cell_region.is_some() {
-            let candidates = candidate_list(info, &bel_data_cache, &region_bel_sets);
+        let pool = &pools[&info.bucket];
+        let grid = ctx.bucket_grid(&pool.bels);
+        let disp = if let Some(rid) = info.cell_region {
+            let candidates =
+                candidate_list(info, grid, ctx.bucket_positions_in_region(&pool.bels, rid));
             if candidates.is_empty() {
                 return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
             }
             try_bind_cell(
                 ctx,
                 info,
-                &bel_by_loc,
                 &mut registry,
                 candidates.into_iter().map(|b| (b, u32::MAX)),
                 &mut cluster_footprint_rejects,
@@ -498,13 +402,7 @@ pub fn sorted_legalize(
                 &mut arch_validity_rejects,
             )?
         } else {
-            let (Some(grid), Some(bels)) = (
-                bel_grids.get(&info.cell_type_id),
-                bel_data_cache.get(&info.cell_type_id),
-            ) else {
-                return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
-            };
-            if grid.is_empty() {
+            if pool.bels.is_empty() {
                 return Err(PlacerError::NoBelsAvailable(info.cell_type_name.clone()));
             }
             // Exhaustive by construction, so there is no shortlist to widen
@@ -513,15 +411,8 @@ pub fn sorted_legalize(
             try_bind_cell(
                 ctx,
                 info,
-                &bel_by_loc,
                 &mut registry,
-                RingCandidates::new(
-                    grid,
-                    bels,
-                    &bel_taken[&info.cell_type_id],
-                    info.target_x,
-                    info.target_y,
-                ),
+                RingCandidates::new(grid, &pool.taken, info.target_x, info.target_y),
                 &mut cluster_footprint_rejects,
                 &mut shared_mux_rejects,
                 &mut arch_validity_rejects,
@@ -532,9 +423,10 @@ pub fn sorted_legalize(
             Some((d, enum_index)) => {
                 total_displacement += d;
                 if enum_index != u32::MAX {
-                    bel_taken
-                        .get_mut(&info.cell_type_id)
-                        .expect("grid exists for this type")[enum_index as usize] = true;
+                    pools
+                        .get_mut(&info.bucket)
+                        .expect("pool exists for this bucket")
+                        .taken[enum_index as usize] = true;
                 }
             }
             None => {
@@ -567,24 +459,16 @@ mod candidate_list_tests {
 
     /// A grid of BELs with `per_tile` slots at every (x, y), so equidistant
     /// candidates are the common case rather than the exception.
-    fn grid_bels(dim: i32, per_tile: i32) -> Vec<(BelId, i32, i32, i32)> {
-        let mut bels = Vec::new();
-        let mut tile = 0;
-        for x in 0..dim {
-            for y in 0..dim {
-                for z in 0..per_tile {
-                    bels.push((BelId::new(tile, z), x, y, z));
-                }
-                tile += 1;
-            }
-        }
-        bels
+    fn grid_bels(dim: i32, per_tile: i32) -> Vec<BelId> {
+        (0..dim * dim)
+            .flat_map(|tile| (0..per_tile).map(move |z| BelId::new(tile, z)))
+            .collect()
     }
 
     fn info_at(target_x: f64, target_y: f64) -> CellLegalizeInfo {
         CellLegalizeInfo {
             cell_idx: CellId::NONE,
-            cell_type_id: IdString(1),
+            bucket: IdString(1),
             cell_type_name: "SLICE".to_string(),
             cell_name: "c0".to_string(),
             cell_region: None,
@@ -595,47 +479,24 @@ mod candidate_list_tests {
         }
     }
 
-    fn cache(bels: Vec<(BelId, i32, i32, i32)>) -> FxHashMap<IdString, Vec<(BelId, i32, i32, i32)>> {
-        let mut m = FxHashMap::default();
-        m.insert(IdString(1), bels);
-        m
-    }
-
-    /// Region-constrained cells must see only their region's BELs.
-    ///
-    /// This is the one path the ring walk does NOT take -- walking outward from
-    /// a cell whose region sits far from its target would scan the device
-    /// before finding anything -- so it stays on `candidate_list`, and this is
-    /// what holds that filter in place. Every other test here leaves
-    /// `cell_region` unset, so without this the filter was unguarded.
+    /// A region-constrained cell sees only the positions it is handed, nearest
+    /// first, even when its region sits far from its target.
     #[test]
     fn a_region_constrained_cell_sees_only_its_regions_bels() {
         let bels = grid_bels(6, 2);
-        let c = cache(bels.clone());
+        let grid = BucketGrid::new(&bels, 6, 6);
 
         // The region is the single tile (5, 5) -- the far corner from the
         // target, so an unfiltered list would put other BELs first.
-        let in_region: FxHashSet<BelId> = bels
-            .iter()
-            .filter(|&&(_, x, y, _)| (x, y) == (5, 5))
-            .map(|&(id, _, _, _)| id)
-            .collect();
+        let in_region: Vec<usize> = grid.span(5, 5).collect();
         assert_eq!(in_region.len(), 2, "fixture: (5,5) should hold 2 BELs");
 
-        let mut regions = FxHashMap::default();
-        regions.insert(7u32, in_region.clone());
+        let got = candidate_list(&info_at(0.0, 0.0), grid, in_region.iter().copied());
+        let want: Vec<BelId> = in_region.iter().map(|&i| bels[i]).collect();
+        assert_eq!(got, want);
 
-        let mut info = info_at(0.0, 0.0);
-        info.cell_region = Some(7);
-
-        let got = candidate_list(&info, &c, &regions);
-        assert_eq!(got.len(), 2, "region cell got {} candidates", got.len());
-        for id in &got {
-            assert!(in_region.contains(id), "candidate {id} is outside the region");
-        }
-
-        // And with no region set, the same cell sees everything, nearest first.
-        let unconstrained = candidate_list(&info_at(0.0, 0.0), &c, &regions);
+        // And with every position, the same cell sees everything, nearest first.
+        let unconstrained = candidate_list(&info_at(0.0, 0.0), grid, 0..bels.len());
         assert_eq!(unconstrained.len(), bels.len());
         assert_ne!(
             unconstrained[0], got[0],
@@ -643,21 +504,36 @@ mod candidate_list_tests {
         );
     }
 
+    /// Cells of many aliases of one bucket share one pool, which borrows the
+    /// context's list: the only per-call storage is one flag per BEL.
+    #[test]
+    fn pools_do_not_scale_with_alias_count() {
+        let mut ctx = crate::context::example_context();
+        let list = ctx.bucket_bel_list(ctx.id("DFF"));
+        let mut infos = Vec::new();
+        for i in 0..50 {
+            let alias = format!("ALIAS{i}");
+            ctx.add_cell_type_alias(&alias, "DFF");
+            let mut info = info_at(0.0, 0.0);
+            info.bucket = ctx.resolve_bucket(ctx.id(alias.as_str()));
+            infos.push(info);
+        }
+        let pools = build_pools(&ctx, &infos);
+        assert_eq!(pools.len(), 1);
+        let pool = pools.values().next().expect("one pool");
+        assert!(Arc::ptr_eq(&pool.bels, &list));
+        assert_eq!(pool.taken.len(), list.len());
+    }
+
     /// Sparse islands: most tiles empty, so the walk actually expands.
-    fn sparse_bels(dim: i32, stride: i32, per_tile: i32) -> Vec<(BelId, i32, i32, i32)> {
+    fn sparse_bels(dim: i32, stride: i32, per_tile: i32) -> Vec<BelId> {
         let mut bels = Vec::new();
-        let mut tile = 0;
-        let mut x = 0;
-        while x < dim {
-            let mut y = 0;
-            while y < dim {
+        for y in (0..dim).step_by(stride as usize) {
+            for x in (0..dim).step_by(stride as usize) {
                 for z in 0..per_tile {
-                    bels.push((BelId::new(tile, z), x, y, z));
+                    bels.push(BelId::new(y * dim + x, z));
                 }
-                tile += 1;
-                y += stride;
             }
-            x += stride;
         }
         bels
     }
@@ -669,14 +545,9 @@ mod candidate_list_tests {
     /// a heuristic one. It has to be full-sequence because Phase B walks
     /// deep: FPGA01 averages ~285 rejected candidates per cell, so the 200th
     /// element matters as much as the first.
-    ///
-    /// It is also the only thing that certifies the swap. Nothing on this
-    /// branch is bit-reproducible (`e3efbf3` is not merged), so a live run
-    /// cannot tell a legalizer regression from ordinary run-to-run spread.
     #[test]
     fn the_walk_emits_candidate_lists_exact_sequence() {
-        let regions = FxHashMap::default();
-        let layouts: Vec<(&str, i32, Vec<(BelId, i32, i32, i32)>)> = vec![
+        let layouts: Vec<(&str, i32, Vec<BelId>)> = vec![
             ("dense 10x10 x4", 10, grid_bels(10, 4)),
             ("dense 7x7 x1", 7, grid_bels(7, 1)),
             ("dense 20x20 x8", 20, grid_bels(20, 8)),
@@ -684,8 +555,7 @@ mod candidate_list_tests {
             ("sparse stride 7", 28, sparse_bels(28, 7, 1)),
         ];
         for (label, dim, bels) in &layouts {
-            let c = cache(bels.clone());
-            let grid = BelGrid::build(bels, *dim, *dim);
+            let grid = BucketGrid::new(bels, *dim, *dim);
             for &(tx, ty) in &[
                 (0.0, 0.0),
                 (4.5, 4.5),
@@ -695,10 +565,9 @@ mod candidate_list_tests {
                 (-1.5, 2.0),
                 (*dim as f64 + 1.5, *dim as f64 + 0.5),
             ] {
-                let info = info_at(tx, ty);
-                let want = candidate_list(&info, &c, &regions);
+                let want = candidate_list(&info_at(tx, ty), grid, 0..bels.len());
                 let free = vec![false; bels.len()];
-                let got: Vec<BelId> = RingCandidates::new(&grid, bels, &free, tx, ty)
+                let got: Vec<BelId> = RingCandidates::new(grid, &free, tx, ty)
                     .map(|(id, _)| id)
                     .collect();
                 assert_eq!(

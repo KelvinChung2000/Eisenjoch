@@ -5,7 +5,7 @@
 //! When a corridor is active the sweep iterates the sparse `corridor_marked`
 //! list directly in the four raster orderings, avoiding any bbox-wide scan.
 //! Long-range pipes are relaxed as a sparse step between sweep rounds and may
-//! trigger another round. A post-sweep forward pass over bucket-sorted
+//! trigger another round. A post-sweep forward pass over distance-sorted
 //! `settle_order` computes `path_weight[v]` exactly as the fused Dijkstra.
 //!
 //! Full-graph (no-corridor) paths fall back to a raster sweep of the whole
@@ -70,7 +70,7 @@ pub(crate) fn fsm_dist_and_forward(
     }
 
     // Collect settled nodes into `settle_order`, ascending by dist_int.
-    bucket_collect_settle_order(network, ws, max_d, use_corridor);
+    collect_settle_order(network, ws, use_corridor);
 
     // Forward pass in ascending-dist order: replicate `dijkstra_and_forward`'s
     // accumulation of `path_weight` from every upstream-settled neighbour.
@@ -112,7 +112,6 @@ pub(crate) fn fsm_dist_and_forward(
         ws.path_weight[node] = acc;
     }
 
-    ws.max_bucket = max_d;
     let _ = (w, h);
     relax_count
 }
@@ -395,8 +394,8 @@ fn long_pipe_relax(
     for &pipe_idx in pipe_iter {
         let pipe = &pipes[pipe_idx as usize];
         let cost = network.pipe_cost_int(pipe_idx as usize);
-        let from = pipe.from;
-        let to = pipe.to;
+        let from = pipe.from as usize;
+        let to = pipe.to as usize;
         let df = ws.dist_int[from];
         let dt = ws.dist_int[to];
         if df != u32::MAX {
@@ -424,47 +423,23 @@ fn long_pipe_relax(
     (count, max_d)
 }
 
-/// Bucket-sort every reached tile into `ws.settle_order` in ascending dist
-/// order. Reuses Dial's `ws.buckets` storage; left empty on exit.
-fn bucket_collect_settle_order(
-    network: &PipeNetwork,
-    ws: &mut PathSolverWorkspace,
-    max_d: u32,
-    use_corridor: bool,
-) {
-    let total = (network.width * network.height) as usize;
-    let need_len = (max_d as usize) + 1;
-    if ws.buckets.len() < need_len {
-        ws.buckets.resize(need_len, Vec::new());
-    }
-
-    let use_marked = use_corridor && !ws.corridor_marked.is_empty();
-    if use_marked {
-        let marked_len = ws.corridor_marked.len();
-        for i in 0..marked_len {
-            let node = ws.corridor_marked[i];
-            let d = ws.dist_int[node];
-            if d != u32::MAX {
-                ws.buckets[d as usize].push(node as u32);
-            }
-        }
+/// Every reached tile into `ws.settle_order`, ascending by distance, ties in
+/// scan order.
+///
+/// A stable sort of the reached tiles rather than a bucket per distance:
+/// labels are absolute integer costs that pass 10^7 under congestion, so
+/// buckets cost a `Vec` header per distance unit, held in every pooled
+/// workspace. This holds one entry per reached tile.
+fn collect_settle_order(network: &PipeNetwork, ws: &mut PathSolverWorkspace, use_corridor: bool) {
+    let dist_int = &ws.dist_int;
+    if use_corridor && !ws.corridor_marked.is_empty() {
+        let reached = ws.corridor_marked.iter().copied();
+        ws.settle_order.extend(reached.filter(|&n| dist_int[n] != u32::MAX));
     } else {
-        for node in 0..total {
-            let d = ws.dist_int[node];
-            if d != u32::MAX {
-                ws.buckets[d as usize].push(node as u32);
-            }
-        }
+        let total = (network.width * network.height) as usize;
+        ws.settle_order.extend((0..total).filter(|&n| dist_int[n] != u32::MAX));
     }
-
-    for d in 0..=max_d as usize {
-        let bucket_len = ws.buckets[d].len();
-        for i in 0..bucket_len {
-            let tile = ws.buckets[d][i];
-            ws.settle_order.push(tile as usize);
-        }
-        ws.buckets[d].clear();
-    }
+    ws.settle_order.sort_by_key(|&n| dist_int[n]);
 }
 
 #[cfg(test)]
@@ -472,7 +447,6 @@ mod tests {
     use super::super::network::{Direction, Node, Pipe, PipeNetwork, PipeType, TileGrid};
     use super::super::path_solver::{dijkstra_single_source_for_test, PathSolverWorkspace};
     use super::*;
-    use rustc_hash::FxHashMap;
 
     fn build_grid(
         w: i32,
@@ -491,63 +465,44 @@ mod tests {
             }
         }
         let mut pipes = Vec::new();
-        let mut node_pipes = vec![Vec::new(); (w * h) as usize];
         let idx = |x: i32, y: i32| (y * w + x) as usize;
 
         for y in 0..h {
             for x in 0..w - 1 {
-                let i = pipes.len();
                 pipes.push(Pipe {
-                    from: idx(x, y),
-                    to: idx(x + 1, y),
+                    from: idx(x, y) as u32,
+                    to: idx(x + 1, y) as u32,
                     base_resistance: span1_cost,
                     capacity: 10.0,
-                    flow: 0.0,
                     net_count: 0.0,
-                    raw_cell_density: 0.0,
-                    cell_density: 0.0,
                     eff_conductance: 1.0 / span1_cost,
                     pipe_type: PipeType::InterTile(Direction::East),
                 });
-                node_pipes[idx(x, y)].push(i);
-                node_pipes[idx(x + 1, y)].push(i);
             }
         }
         for y in 0..h - 1 {
             for x in 0..w {
-                let i = pipes.len();
                 pipes.push(Pipe {
-                    from: idx(x, y),
-                    to: idx(x, y + 1),
+                    from: idx(x, y) as u32,
+                    to: idx(x, y + 1) as u32,
                     base_resistance: span1_cost,
                     capacity: 10.0,
-                    flow: 0.0,
                     net_count: 0.0,
-                    raw_cell_density: 0.0,
-                    cell_density: 0.0,
                     eff_conductance: 1.0 / span1_cost,
                     pipe_type: PipeType::InterTile(Direction::South),
                 });
-                node_pipes[idx(x, y)].push(i);
-                node_pipes[idx(x, y + 1)].push(i);
             }
         }
         for &(sx, sy, dx, dy, cost) in long_pipes {
-            let i = pipes.len();
             pipes.push(Pipe {
-                from: idx(sx, sy),
-                to: idx(sx + dx, sy + dy),
+                from: idx(sx, sy) as u32,
+                to: idx(sx + dx, sy + dy) as u32,
                 base_resistance: cost,
                 capacity: 10.0,
-                flow: 0.0,
                 net_count: 0.0,
-                raw_cell_density: 0.0,
-                cell_density: 0.0,
                 eff_conductance: 1.0 / cost,
                 pipe_type: PipeType::LongRange { dx, dy },
             });
-            node_pipes[idx(sx, sy)].push(i);
-            node_pipes[idx(sx + dx, sy + dy)].push(i);
         }
 
         let pipe_costs: Vec<f64> = pipes
@@ -560,25 +515,20 @@ mod tests {
             .collect();
         let tile_grid = TileGrid::build(&pipes, &nodes, w, h);
         let flat_adjacency =
-            crate::placer::opt_trans::network::FlatAdjacency::build(&node_pipes, &pipes);
+            crate::placer::opt_trans::network::FlatAdjacency::build(nodes.len(), &pipes);
         let tile_templates = std::sync::Arc::new(Vec::new());
-        let n_pipe_entries = pipes.len();
         let n_node_entries = nodes.len();
 
         let mut net = PipeNetwork {
             nodes,
             pipes,
-            node_pipes,
             pipe_costs,
             pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
-            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(
-                n_pipe_entries,
-            ),
+            span_cost_table: crate::placer::opt_trans::tile_cache::SpanCostTable::disabled(),
             flat_adjacency,
             tile_templates,
             tile_grid,
-            pipe_lookup: FxHashMap::default(),
             tile_type_by_node: vec![0; n_node_entries],
             width: w,
             height: h,
@@ -595,7 +545,7 @@ mod tests {
     #[test]
     fn fsm_matches_dijkstra_on_uniform_grid() {
         let network = build_grid(8, 8, 1.0, &[]);
-        let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+        let mut ws = PathSolverWorkspace::new(network.num_nodes());
         fsm_dist_and_forward(&network, 0, &mut ws, false);
         let dij = dijkstra_single_source_for_test(&network, 0);
         for n in 0..network.num_nodes() {
@@ -606,12 +556,39 @@ mod tests {
     #[test]
     fn fsm_matches_dijkstra_with_long_pipe() {
         let network = build_grid(6, 6, 1.0, &[(0, 0, 5, 5, 1.5)]);
-        let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+        let mut ws = PathSolverWorkspace::new(network.num_nodes());
         fsm_dist_and_forward(&network, 0, &mut ws, false);
         let dij = dijkstra_single_source_for_test(&network, 0);
         for n in 0..network.num_nodes() {
             assert_eq!(ws.dist_int[n], dij[n], "mismatch at node {}", n);
         }
+    }
+
+    /// Labels are absolute integer costs. Settle ordering used one bucket per
+    /// distance unit, so a single 10^7-cost pipe made every pooled workspace
+    /// hold ~10^7 `Vec` headers. Ordering must cost only what was reached.
+    #[test]
+    fn settle_order_does_not_scale_with_distance() {
+        let mut bytes = Vec::new();
+        for cost in [100, 50_000_000] {
+            let mut network = build_grid(5, 5, 1.0, &[]);
+            let slot = (2 * 5 + 2) as usize;
+            let pipe_idx = network.tile_grid.pipe_e[slot] as usize;
+            network.pipe_costs_int[pipe_idx] = cost;
+            network.refresh_flat_edge_costs();
+
+            let mut ws = PathSolverWorkspace::new(network.num_nodes());
+            fsm_dist_and_forward(&network, 0, &mut ws, false);
+            let dij = dijkstra_single_source_for_test(&network, 0);
+            let order: Vec<u32> = ws.settle_order.iter().map(|&n| ws.dist_int[n]).collect();
+            assert!(order.windows(2).all(|w| w[0] <= w[1]), "not ascending: {order:?}");
+            assert_eq!(ws.settle_order.len(), network.num_nodes());
+            for n in 0..network.num_nodes() {
+                assert_eq!(ws.dist_int[n], dij[n], "mismatch at node {}", n);
+            }
+            bytes.push(ws.heap_bytes());
+        }
+        assert_eq!(bytes[0], bytes[1]);
     }
 
     #[test]
@@ -623,7 +600,7 @@ mod tests {
         network.pipe_costs_int[pipe_idx] =
             ((network.pipe_costs[pipe_idx] * DIST_SCALE).round() as u32).max(1);
 
-        let mut ws = PathSolverWorkspace::new(network.num_nodes(), network.num_pipes());
+        let mut ws = PathSolverWorkspace::new(network.num_nodes());
         fsm_dist_and_forward(&network, 0, &mut ws, false);
         let dij = dijkstra_single_source_for_test(&network, 0);
         for n in 0..network.num_nodes() {

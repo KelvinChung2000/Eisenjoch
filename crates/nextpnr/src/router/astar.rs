@@ -9,26 +9,19 @@
 //! # Graph model
 //!
 //! Vertices are *routing nodes* — one electrical wire that may span multiple
-//! tiles. All [`WireId`] entries returned by
-//! [`ChipDb::node_wires_cb`](crate::chipdb::ChipDb::node_wires_cb) for a given
-//! wire belong to the same node. Moving between node peers is free (hop cost
-//! 0): peers share a single electrical conductor.
+//! tiles — identified by their canonical wire (see
+//! [`ChipDb::canonical_wire`](crate::chipdb::ChipDb::canonical_wire)). Edges
+//! are PIPs. Each PIP lives in one tile, and expanding a node walks the pips
+//! driven from every tile the node crosses.
 //!
-//! Edges are PIPs. Each PIP lives in a single tile and connects two wires in
-//! that tile; one of those wires may be a node peer in a different tile.
+//! A node is one vertex with one visited entry however many tiles it spans,
+//! so search state grows with the nodes explored, not with their length. A
+//! chip-spanning clock node is one pop, not tens of thousands.
 //!
-//! # Why node-as-vertex
-//!
-//! Treating each tile-wire as a separate vertex would have the algorithm
-//! push every peer of a large node onto the heap each time any member is
-//! popped, which is wasteful — all peers have the same g-cost as their
-//! first-popped member. A 65k-peer clock-distribution node would generate
-//! 65k redundant heap operations per pop; total work would be O(N²).
-//!
-//! Instead, `astar_search` expands each node exactly once: the first member
-//! to pop triggers a walk of every member's `pips_downhill`, marks all
-//! members visited at that cost, and marks the node id in
-//! `nodes_expanded` so subsequent pops of peer wires skip the walk.
+//! Each queue entry also carries the tile wire the search entered the node
+//! through. Position-dependent decisions — the search region and the
+//! heuristic — use that, because a long node's root can be far from where
+//! the search actually is.
 //!
 //! # Admissibility
 //!
@@ -39,7 +32,6 @@
 //! cheapest pip class, which is a true lower bound on any uncongested
 //! route's cost.
 
-use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{hash_map::Entry, BinaryHeap};
 
@@ -204,7 +196,62 @@ fn default_visit_limit_for_search(
 enum SearchRegion<'a> {
     Unbounded,
     Single(&'a BoundingBox),
-    Mask(Vec<u8>),
+    Mask(RegionMask),
+}
+
+/// Tiles covered by a union of boxes, stored over the union's bounding
+/// rectangle.
+struct RegionMask {
+    x0: i32,
+    y0: i32,
+    width: usize,
+    height: usize,
+    bits: Vec<bool>,
+}
+
+impl RegionMask {
+    /// The union of `boxes` clipped to a `w` x `h` grid, and how many tiles
+    /// it covers. Storage is the union's bounding rectangle: a corridor
+    /// search costs its corridor, whatever the device.
+    fn from_boxes(boxes: &[BoundingBox], w: i32, h: i32) -> (Self, usize) {
+        let x0 = boxes.iter().map(|b| b.x0).min().unwrap_or(0).max(0);
+        let y0 = boxes.iter().map(|b| b.y0).min().unwrap_or(0).max(0);
+        let x1 = boxes.iter().map(|b| b.x1).max().unwrap_or(-1).min(w - 1);
+        let y1 = boxes.iter().map(|b| b.y1).max().unwrap_or(-1).min(h - 1);
+        let width = (x1 - x0 + 1).max(0) as usize;
+        let height = (y1 - y0 + 1).max(0) as usize;
+        let mut bits = vec![false; width * height];
+        let mut covered = 0usize;
+        for bb in boxes {
+            for y in bb.y0.max(y0)..=bb.y1.min(y1) {
+                for x in bb.x0.max(x0)..=bb.x1.min(x1) {
+                    let idx = (y - y0) as usize * width + (x - x0) as usize;
+                    if !bits[idx] {
+                        bits[idx] = true;
+                        covered += 1;
+                    }
+                }
+            }
+        }
+        let mask = Self {
+            x0,
+            y0,
+            width,
+            height,
+            bits,
+        };
+        (mask, covered)
+    }
+
+    #[inline]
+    fn contains(&self, x: i32, y: i32) -> bool {
+        let (dx, dy) = (x - self.x0, y - self.y0);
+        dx >= 0
+            && dy >= 0
+            && (dx as usize) < self.width
+            && (dy as usize) < self.height
+            && self.bits[dy as usize * self.width + dx as usize]
+    }
 }
 
 impl<'a> SearchRegion<'a> {
@@ -216,10 +263,10 @@ impl<'a> SearchRegion<'a> {
                 let (x, y) = chipdb.tile_xy(tile);
                 bb.contains(x, y)
             }
-            Self::Mask(mask) => usize::try_from(tile)
-                .ok()
-                .and_then(|idx| mask.get(idx))
-                .is_some_and(|&bit| bit != 0),
+            Self::Mask(mask) => {
+                let (x, y) = chipdb.tile_xy(tile);
+                mask.contains(x, y)
+            }
         }
     }
 }
@@ -232,21 +279,8 @@ fn build_search_region<'a>(
         [] => (SearchRegion::Unbounded, None),
         [bb] => (SearchRegion::Single(bb), Some(bbox_area(bb))),
         many => {
-            let num_tiles = chipdb.num_tiles().max(0) as usize;
-            let mut mask = vec![0u8; num_tiles];
-            let mut covered_tiles = 0usize;
-            for bb in many {
-                for y in bb.y0..=bb.y1 {
-                    for x in bb.x0..=bb.x1 {
-                        let tile = chipdb.tile_by_xy(x, y);
-                        let idx = tile as usize;
-                        if mask[idx] == 0 {
-                            mask[idx] = 1;
-                            covered_tiles += 1;
-                        }
-                    }
-                }
-            }
+            let (mask, covered_tiles) =
+                RegionMask::from_boxes(many, chipdb.width(), chipdb.height());
             (SearchRegion::Mask(mask), Some(covered_tiles))
         }
     }
@@ -294,43 +328,6 @@ impl VisitState {
                 scores.insert(wire, 0);
                 parents.insert(wire, (None, wire));
             }
-        }
-    }
-
-    fn update_peer(&mut self, wire: WireId, cost: DelayT, penalty: DelayT, from: WireId) -> bool {
-        let score = cost + penalty;
-        match self {
-            Self::Trace(visited) => match visited.entry(wire) {
-                Entry::Occupied(mut entry) => {
-                    let &(prev_cost, prev_penalty, _, _) = entry.get();
-                    if prev_cost + prev_penalty <= score {
-                        false
-                    } else {
-                        entry.insert((cost, penalty, None, from));
-                        true
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert((cost, penalty, None, from));
-                    true
-                }
-            },
-            Self::Fast { scores, parents } => match scores.entry(wire) {
-                Entry::Occupied(mut entry) => {
-                    if *entry.get() <= score {
-                        false
-                    } else {
-                        entry.insert(score);
-                        parents.insert(wire, (None, from));
-                        true
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(score);
-                    parents.insert(wire, (None, from));
-                    true
-                }
-            },
         }
     }
 
@@ -399,7 +396,11 @@ impl VisitState {
 
 #[derive(Clone, Copy)]
 struct QueueEntry {
+    /// The node, as its canonical wire.
     wire: WireId,
+    /// The tile wire the search entered `wire`'s node through. A node can
+    /// span the chip; this is where the search actually is.
+    at: WireId,
     cost: DelayT,
     penalty: DelayT,
     estimate: DelayT,
@@ -476,7 +477,7 @@ pub fn astar_search<M: PathCostModel>(
     let init_cap = src_wires.len().saturating_mul(8).max(16);
     let mut heap: BinaryHeap<QueueEntry> = BinaryHeap::with_capacity(init_cap);
     let mut visited = VisitState::with_capacity(init_cap, opts.retain_trace);
-    let mut nodes_expanded: FxHashSet<u64> =
+    let mut nodes_expanded: FxHashSet<WireId> =
         FxHashSet::with_capacity_and_hasher(init_cap, Default::default());
 
     let grid_area = (chipdb.width() as usize) * (chipdb.height() as usize);
@@ -495,19 +496,11 @@ pub fn astar_search<M: PathCostModel>(
         .visit_limit
         .unwrap_or_else(|| default_visit_limit_for_search(grid_area, min_manhattan, region_tiles));
 
-    // Whether dst is ever a peer of the node currently being expanded.
-    let dst_node_id = chipdb.node_id(dst_wire);
-
-    // Seed: push each source wire onto the heap. The first-pop handler
-    // fires the same dst-peer short-circuit as any other node expansion,
-    // so we don't need to walk every peer of every source up front. That
-    // matters on mega-nodes where a source's peer set is in the tens of
-    // thousands — walking it here would cost O(peers × sources) at seed
-    // time, for no benefit beyond what the first pop already does.
     for &src in src_wires {
         let hval = model.heuristic(ctx, src, dst_wire);
         heap.push(QueueEntry {
             wire: src,
+            at: src,
             cost: 0,
             penalty: 0,
             estimate: hval,
@@ -529,10 +522,10 @@ pub fn astar_search<M: PathCostModel>(
             break;
         }
 
-        let (ex, ey) = chipdb.tile_xy(entry.wire.tile());
+        let (ex, ey) = chipdb.tile_xy(entry.at.tile());
         min_approach = min_approach.min(((ex - dst_x).abs() + (ey - dst_y).abs()) as usize);
 
-        // Stale skip: if we already reached this wire at a strictly lower
+        // Stale skip: if we already reached this node at a strictly lower
         // score, the current entry is obsolete.
         if let Some(prev_score) = visited.score(entry.wire) {
             if entry.cost + entry.penalty > prev_score {
@@ -541,114 +534,68 @@ pub fn astar_search<M: PathCostModel>(
         }
 
         // Destination reached: first pop is optimal under admissible h
-        // when node hops and pip costs are non-negative.
+        // when pip costs are non-negative.
         if !opts.exhaustive && entry.wire == dst_wire {
             best_score = entry.cost + entry.penalty;
             reached = true;
             break;
         }
 
-        // Node-as-vertex expansion. Walk every member's `pips_downhill`
-        // exactly once per node.
-        let nid = chipdb.node_id(entry.wire);
-        let should_expand_node = match nid {
-            Some(id) => nodes_expanded.insert(id),
-            None => true, // tile-local: not a multi-tile node, always expand
-        };
+        // Expand each node once, from every tile it spans: the pips any
+        // member drives all leave the same conductor.
+        if !nodes_expanded.insert(entry.wire) {
+            continue;
+        }
 
-        if should_expand_node {
-            // Early short-circuit: if `dst` is a peer of this node, there's
-            // no routing work to do — BUFG_O and its clock-distribution
-            // members are electrically one wire. Mark `dst` reached via a
-            // free node hop (no pip) and break. Avoids walking tens of
-            // thousands of peers on mega-nodes just to reach this same
-            // conclusion after the fact.
-            if !opts.exhaustive && nid.is_some() && dst_node_id == nid {
-                visited.update_peer(dst_wire, entry.cost, entry.penalty, entry.wire);
-                best_score = entry.cost + entry.penalty;
-                reached = true;
-                break;
+        let mut touched_dst = false;
+        chipdb.pips_downhill_cb(entry.wire, |pip| {
+            if touched_dst {
+                return;
+            }
+            // A pip sits in one tile; that is where the search would be.
+            if !search_region.contains_tile(chipdb, pip.tile()) {
+                return;
+            }
+            let next_wire = chipdb.pip_dst_wire(pip);
+
+            // Hard-block wires the cost model marks as impassable (e.g.
+            // bound to a different net). Skipping here keeps them out of the
+            // heap entirely so A* drains the heap quickly when no unblocked
+            // path exists — a soft penalty just wastes the visit budget.
+            if model.is_blocked(ctx, next_wire) {
+                return;
             }
 
-            // Shared flag across the closure and the outer loop. The closure
-            // captures `&touched_dst` (Cell's interior mutability lets it
-            // write through a shared borrow), so the outer `touched_dst.get()`
-            // check after each call observes the latest value without
-            // conflicting with the closure's other mutable captures.
-            let touched_dst: Cell<bool> = Cell::new(false);
+            let pip_cost = model.pip_cost(ctx, pip);
+            let penalty = model.wire_penalty(ctx, next_wire);
+            let new_cost = entry.cost + pip_cost;
+            let new_pen = entry.penalty + penalty;
+            let new_score = new_cost + new_pen;
 
-            // Enumerate members (the popped wire itself + every peer) so we
-            // can iterate once without allocating a Vec.
-            let mut expand_member = |member: WireId| {
-                if touched_dst.get() {
-                    return;
-                }
-                // Mark the member as reached at the current cost. A peer
-                // reached via a free node hop stores None for the pip and
-                // records the popped wire as came_from.
-                if member != entry.wire {
-                    visited.update_peer(member, entry.cost, entry.penalty, entry.wire);
-                }
-
-                // Expand pip_downhill for this member.
-                let wire_info = chipdb.wire_info(member);
-                for &pip_idx in wire_info.pips_downhill.get() {
-                    let pip = PipId::new(member.tile(), pip_idx);
-                    let next_wire = chipdb.pip_dst_wire(pip);
-
-                    if !search_region.contains_tile(chipdb, next_wire.tile()) {
-                        continue;
-                    }
-
-                    // Hard-block wires the cost model marks as impassable
-                    // (e.g. bound to a different net). Skipping here keeps
-                    // them out of the heap entirely so A* drains the heap
-                    // quickly when no unblocked path exists — a soft
-                    // penalty just wastes the visit budget.
-                    if model.is_blocked(ctx, next_wire) {
-                        continue;
-                    }
-
-                    let pip_cost = model.pip_cost(ctx, pip);
-                    let penalty = model.wire_penalty(ctx, next_wire);
-                    let new_cost = entry.cost + pip_cost;
-                    let new_pen = entry.penalty + penalty;
-                    let new_score = new_cost + new_pen;
-
-                    if !visited.update_step(next_wire, new_cost, new_pen, pip, member) {
-                        continue;
-                    }
-
-                    if stop_on_touch && next_wire == dst_wire {
-                        touched_dst.set(true);
-                        return;
-                    }
-
-                    let hval = model.heuristic(ctx, next_wire, dst_wire);
-                    heap.push(QueueEntry {
-                        wire: next_wire,
-                        cost: new_cost,
-                        penalty: new_pen,
-                        estimate: new_score + hval,
-                    });
-                }
-            };
-
-            // Expand the popped wire itself.
-            expand_member(entry.wire);
-
-            // Then its peers, if any.
-            if nid.is_some() && !touched_dst.get() {
-                // node_wires_cb excludes `entry.wire` already.
-                chipdb.node_wires_cb(entry.wire, &mut expand_member);
+            if !visited.update_step(next_wire, new_cost, new_pen, pip, entry.wire) {
+                return;
             }
 
-            drop(expand_member);
-            if touched_dst.get() {
-                best_score = visited.score(dst_wire).unwrap_or(DelayT::MAX);
-                reached = true;
-                break;
+            if stop_on_touch && next_wire == dst_wire {
+                touched_dst = true;
+                return;
             }
+
+            let at = chipdb.pip_dst_tile_wire(pip);
+            let hval = model.heuristic(ctx, at, dst_wire);
+            heap.push(QueueEntry {
+                wire: next_wire,
+                at,
+                cost: new_cost,
+                penalty: new_pen,
+                estimate: new_score + hval,
+            });
+        });
+
+        if touched_dst {
+            best_score = visited.score(dst_wire).unwrap_or(DelayT::MAX);
+            reached = true;
+            break;
         }
     }
 
@@ -770,15 +717,33 @@ mod tests {
     // a real ChipDb; pure-algorithm tests below don't instantiate it.
 
     #[test]
+    fn region_mask_covers_the_union_and_is_sized_by_it() {
+        let bb = |x0, y0, x1, y1| BoundingBox { x0, y0, x1, y1 };
+        let boxes = [bb(10, 10, 11, 11), bb(11, 11, 13, 12), bb(-5, 12, 10, 12)];
+        for (w, h) in [(20, 20), (10_000, 10_000)] {
+            let (mask, covered) = RegionMask::from_boxes(&boxes, w, h);
+            // x 0..=13, y 10..=12 whatever the grid: the device size must
+            // not reach the per-search allocation.
+            assert_eq!((mask.width, mask.height), (14, 3));
+            assert_eq!(covered, 4 + 6 - 1 + 11);
+            assert!(mask.contains(10, 10) && mask.contains(13, 12) && mask.contains(0, 12));
+            assert!(!mask.contains(12, 10) && !mask.contains(0, 11) && !mask.contains(14, 12));
+            assert!(!mask.contains(-1, 12) && !mask.contains(5, 9));
+        }
+    }
+
+    #[test]
     fn queue_entry_orders_by_estimate_then_cost() {
         let a = QueueEntry {
             wire: WireId::new(0, 0),
+            at: WireId::new(0, 0),
             cost: 10,
             penalty: 0,
             estimate: 100,
         };
         let b = QueueEntry {
             wire: WireId::new(0, 1),
+            at: WireId::new(0, 1),
             cost: 5,
             penalty: 0,
             estimate: 100,
@@ -789,6 +754,7 @@ mod tests {
 
         let c = QueueEntry {
             wire: WireId::new(0, 2),
+            at: WireId::new(0, 2),
             cost: 1000,
             penalty: 0,
             estimate: 50,

@@ -103,13 +103,9 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // run. Empirically the energy landscape has multiple basins that differ
     // by 30-40% in final energy; picking among warmups avoids the lottery
     // of single-seed initialization.
-    let warmup_starts = std::env::var("NPNR_OT_WARMUP_STARTS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    let warmup_starts = crate::env::var::<usize>("NPNR_OT_WARMUP_STARTS")
         .unwrap_or(0);
-    let warmup_iters = std::env::var("NPNR_OT_WARMUP_ITERS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
+    let warmup_iters = crate::env::var::<usize>("NPNR_OT_WARMUP_ITERS")
         .unwrap_or(5);
 
     if warmup_starts >= 2 {

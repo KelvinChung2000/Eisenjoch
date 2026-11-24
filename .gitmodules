@@ -1,0 +1,3 @@
+[submodule "nextpnr"]
+	path = third_party/nextpnr
+	url = https://github.com/YosysHQ/nextpnr.git

@@ -6,21 +6,22 @@ build-backend = "maturin"
 name = "nextpnr"
 requires-python = ">=3.14"
 dynamic = ["version"]
-description = "Rust reimplementation of nextpnr FPGA place-and-route"
+description = "FPGA place-and-route with upstream nextpnr and Eisenjoch's Rust algorithms"
 dependencies = []
 
 [tool.maturin]
 manifest-path = "crates/npnr-python/Cargo.toml"
 features = ["pyo3/extension-module"]
 python-source = "python"
-module-name = "nextpnr"
+module-name = "nextpnr.nextpnr"
 
 [project.scripts]
-nextpnr-himbaechel = "nextpnr_cli:cli"
+eisenjoch = "nextpnr.cli:cli"
+nextpnr-himbaechel-rust = "nextpnr.rust_cli:cli"
 nextpnr-ispd-benchmarks = "nextpnr.benchmarks.ispd_benchmarks:main"
 
 [project.optional-dependencies]
-cli = ["typer>=0.9"]
+cli = ["loguru>=0.7", "typer>=0.24"]
 benchmark = ["matplotlib", "numpy"]
 
 [tool.pytest.ini_options]

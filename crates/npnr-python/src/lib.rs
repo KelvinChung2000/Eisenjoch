@@ -25,8 +25,11 @@ use ::nextpnr::sta::{
     Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError,
     NOTIONAL_CLASSLESS_PIPS,
 };
+use nextpnr_upstream::{
+    Nextpnr, Placer as UpstreamPlacer, Request, Router as UpstreamRouter, Stage,
+};
 use rustc_hash::FxHashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // PyContext
@@ -113,7 +116,6 @@ impl PyContext {
         for r in rects {
             region.rects.push(Rect::new(r[0], r[1], r[2], r[3]));
         }
-        self.ctx.invalidate_region_cache();
         Ok(idx)
     }
 
@@ -728,11 +730,72 @@ impl PyUtilizationReport {
 // Python module
 // ---------------------------------------------------------------------------
 
+/// Run the upstream Himbächel flow using a trusted bridge library and chipdb.
+#[pyfunction(signature = (*, library, device, chipdb, input, output, placer=None, router=None, seed=1, stop_after="route"))]
+#[allow(clippy::too_many_arguments)]
+fn run_upstream(
+    py: Python<'_>,
+    library: PathBuf,
+    device: &str,
+    chipdb: PathBuf,
+    input: PathBuf,
+    output: PathBuf,
+    placer: Option<&str>,
+    router: Option<&str>,
+    seed: u64,
+    stop_after: &str,
+) -> PyResult<()> {
+    let placer = match placer {
+        Some("heap") => Some(UpstreamPlacer::Heap),
+        Some("sa") => Some(UpstreamPlacer::Sa),
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "Unknown upstream placer: {other}"
+            )))
+        }
+        None => None,
+    };
+    let router = match router {
+        Some("router1") => Some(UpstreamRouter::Router1),
+        Some("router2") => Some(UpstreamRouter::Router2),
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "Unknown upstream router: {other}"
+            )))
+        }
+        None => None,
+    };
+    let stop_after = match stop_after {
+        "pack" => Stage::Pack,
+        "place" => Stage::Place,
+        "route" => Stage::Route,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "Unknown upstream stage: {other}"
+            )))
+        }
+    };
+    let request = Request {
+        device,
+        chipdb: &chipdb,
+        input: &input,
+        output: &output,
+        placer,
+        router,
+        seed,
+        stop_after,
+    };
+    py.detach(|| unsafe { Nextpnr::load(&library)?.run(&request) })
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+}
+
 /// The `nextpnr` Python module.
 #[pymodule]
 fn nextpnr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyContext>()?;
+    m.add("RustContext", m.getattr("Context")?)?;
     m.add_class::<PyTimingReport>()?;
     m.add_class::<PyUtilizationReport>()?;
+    m.add_function(wrap_pyfunction!(run_upstream, m)?)?;
     Ok(())
 }

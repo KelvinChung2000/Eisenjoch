@@ -44,23 +44,19 @@ pub struct Node {
     pub pressure: f64,
 }
 
-/// A pipe connecting two nodes.
+/// A pipe connecting two nodes. One exists per routing span of every tile, so
+/// its size multiplies the pipe count: node indices fit u32, and nothing that
+/// is not read by the solver is kept here.
 #[derive(Debug, Clone)]
 pub struct Pipe {
-    pub from: usize,
-    pub to: usize,
+    pub from: u32,
+    pub to: u32,
     /// Base resistance (from chipdb geometry, constant).
     pub base_resistance: f64,
     /// Routing capacity (wire count or BEL count).
     pub capacity: f64,
-    /// Diagnostic flow-like field derived from the current effective conductance.
-    pub flow: f64,
     /// Expected net usage assigned to this pipe.
     pub net_count: f64,
-    /// Raw continuous occupancy projected from the unified pin-demand field.
-    pub raw_cell_density: f64,
-    /// Normalized occupancy used by the passive congestion law.
-    pub cell_density: f64,
     /// Effective conductance used in the current Laplacian (updated each iteration).
     pub eff_conductance: f64,
     pub pipe_type: PipeType,
@@ -138,22 +134,17 @@ pub(crate) fn build_tile_templates(chipdb: &ChipDb) -> Vec<TileTypeTemplate> {
     out
 }
 
-/// CSR-flattened adjacency view over `PipeNetwork::node_pipes`.
+/// CSR adjacency over the pipe set: every pipe is listed under both of its
+/// endpoints, in pipe order, since the solvers traverse pipes in either
+/// direction.
 ///
-/// Built once at network construction. The hot Dijkstra/Dial loops stream
-/// through this instead of the `Vec<Vec<usize>>` + `pipes[pipe_idx]` pair:
+///   - `offsets[n+1]` gives node `n`'s edge range in `neighbors` / `pipe_idx`.
+///   - `neighbors[e]` is the pre-resolved neighbor node, saving a random read
+///     of `pipes[pipe_idx]` just to recover `from`/`to`.
+///   - `pipe_idx[e]` keeps the original pipe index for cost lookups and usage
+///     accounting.
 ///
-///   - `offsets[n+1]` gives node `n`'s directed-edge range in `neighbors` /
-///     `pipe_idx`.
-///   - `neighbors[e]` is the pre-resolved neighbor node, saving the 88-byte
-///     random read of `pipes[pipe_idx]` just to recover `from`/`to`.
-///   - `pipe_idx[e]` keeps the original pipe index so cost lookups via
-///     `PipeNetwork::pipe_cost_int` and usage accumulation via
-///     `record_edge_usage(pipe_idx, …)` keep working unchanged.
-///
-/// Memory: `2 * n_pipes * (4 + 4)` bytes (directed edges). On sv3 that's
-/// ≈ 123 MB, a wash with the existing `node_pipes: Vec<Vec<usize>>` layout
-/// (15.4 M usize entries) but streamed sequentially per source node.
+/// Memory: `2 * n_pipes * (4 + 4 + 4 + 4)` bytes including the cost columns.
 pub struct FlatAdjacency {
     pub offsets: Vec<u32>,
     pub neighbors: Vec<u32>,
@@ -170,40 +161,33 @@ pub struct FlatAdjacency {
 }
 
 impl FlatAdjacency {
-    pub fn build(node_pipes: &[Vec<usize>], pipes: &[Pipe]) -> Self {
-        let n_nodes = node_pipes.len();
-        let total: usize = node_pipes.iter().map(|v| v.len()).sum();
-        let mut offsets = Vec::with_capacity(n_nodes + 1);
-        let mut neighbors = Vec::with_capacity(total);
-        let mut pipe_idx = Vec::with_capacity(total);
-        offsets.push(0u32);
-        for (node, adj) in node_pipes.iter().enumerate() {
-            for &pidx in adj {
-                let pipe = &pipes[pidx];
-                let neighbor = pipe.from ^ pipe.to ^ node;
-                neighbors.push(neighbor as u32);
-                pipe_idx.push(pidx as u32);
-            }
-            offsets.push(neighbors.len() as u32);
+    pub fn build(n_nodes: usize, pipes: &[Pipe]) -> Self {
+        let mut offsets = vec![0u32; n_nodes + 1];
+        for pipe in pipes {
+            offsets[pipe.from as usize + 1] += 1;
+            offsets[pipe.to as usize + 1] += 1;
         }
-        let cost_int = vec![0u32; total];
-        let cost_f = vec![0.0f32; total];
+        for i in 0..n_nodes {
+            offsets[i + 1] += offsets[i];
+        }
+        let total = offsets[n_nodes] as usize;
+        let mut neighbors = vec![0u32; total];
+        let mut pipe_idx = vec![0u32; total];
+        let mut next = offsets[..n_nodes].to_vec();
+        for (idx, pipe) in pipes.iter().enumerate() {
+            for (node, other) in [(pipe.from, pipe.to), (pipe.to, pipe.from)] {
+                let slot = &mut next[node as usize];
+                neighbors[*slot as usize] = other;
+                pipe_idx[*slot as usize] = idx as u32;
+                *slot += 1;
+            }
+        }
         Self {
             offsets,
             neighbors,
             pipe_idx,
-            cost_int,
-            cost_f,
-        }
-    }
-
-    pub fn empty(n_nodes: usize) -> Self {
-        Self {
-            offsets: vec![0u32; n_nodes + 1],
-            neighbors: Vec::new(),
-            pipe_idx: Vec::new(),
-            cost_int: Vec::new(),
-            cost_f: Vec::new(),
+            cost_int: vec![0u32; total],
+            cost_f: vec![0.0f32; total],
         }
     }
 
@@ -228,8 +212,8 @@ impl TileGrid {
         for (idx, pipe) in pipes.iter().enumerate() {
             match pipe.pipe_type {
                 PipeType::InterTile(dir) => {
-                    let from = &nodes[pipe.from];
-                    let to = &nodes[pipe.to];
+                    let from = &nodes[pipe.from as usize];
+                    let to = &nodes[pipe.to as usize];
                     let (src, dst) = if (to.tile_x + to.tile_y) > (from.tile_x + from.tile_y) {
                         (from, to)
                     } else {
@@ -277,7 +261,6 @@ impl TileGrid {
 pub struct PipeNetwork {
     pub nodes: Vec<Node>,
     pub pipes: Vec<Pipe>,
-    pub node_pipes: Vec<Vec<usize>>,
     /// Per-pipe routing cost `1.0 / eff_conductance`. Refreshed alongside
     /// `eff_conductance` in `update_effective_conductance`. Hot Dijkstra loop
     /// reads this directly instead of recomputing `1.0 / g` per edge visit.
@@ -297,9 +280,8 @@ pub struct PipeNetwork {
     pub pipe_costs_int: Vec<u32>,
     /// Cache-backed span-template costs. Disabled in the flat model.
     pub span_cost_table: SpanCostTable,
-    /// CSR-flattened adjacency over `node_pipes`. Built once at construction;
-    /// Dijkstra/Dial/FSM hot loops stream through this instead of hopping
-    /// through `Vec<Vec<usize>>` + random `pipes[pipe_idx]` reads.
+    /// CSR adjacency, the only adjacency the network keeps. Built once at
+    /// construction.
     pub flat_adjacency: FlatAdjacency,
     /// Per-tile-type internal PIP templates. Populated when the chipdb is
     /// available (production `from_context` path); empty in test fixtures.
@@ -309,7 +291,6 @@ pub struct PipeNetwork {
     /// at network construction; pipe costs are read live from `pipe_costs_int`
     /// so this struct does not need to be rebuilt between outer iters.
     pub tile_grid: TileGrid,
-    pub pipe_lookup: FxHashMap<u64, usize>,
     /// Representative tile type for each network node.
     pub tile_type_by_node: Vec<u16>,
     /// Tile grid dimensions.
@@ -407,7 +388,6 @@ impl PipeNetwork {
         eprintln!("  BUILD_T tile_type_by_node: {:.1}s", t_build.elapsed().as_secs_f64());
         let total_nodes = nodes.len();
         let mut pipes = Vec::new();
-        let mut node_pipes = vec![Vec::new(); total_nodes];
 
         // 1. Aggregate tile properties into coarse cells and build connectivity.
         let mut zero_bel_tiles = 0usize;
@@ -471,10 +451,7 @@ impl PipeNetwork {
         // lines as a delay/resistance proxy (current default). exp=1.0 makes the
         // base cost linear in span, so the driver-star Dijkstra distance tracks
         // routed wirelength (matches an HPWL/wirelength objective like elfPlace).
-        let pipe_cost_exp: f64 = std::env::var("NPNR_OT_PIPE_COST_EXP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0.5);
+        let pipe_cost_exp = crate::env::var::<f64>("NPNR_OT_PIPE_COST_EXP").unwrap_or(0.5);
         let mut n_span1 = 0usize;
         let mut n_long_range = 0usize;
         let mut n_skipped_null_src = 0usize;
@@ -558,7 +535,6 @@ impl PipeNetwork {
                     };
                     add_pipe(
                         &mut pipes,
-                        &mut node_pipes,
                         src_ci,
                         dst_ci,
                         base,
@@ -633,8 +609,8 @@ impl PipeNetwork {
                     continue;
                 }
                 n_thin += 1;
-                let fn_ = &nodes[pipe.from];
-                let tn_ = &nodes[pipe.to];
+                let fn_ = &nodes[pipe.from as usize];
+                let tn_ = &nodes[pipe.to as usize];
                 let ffx = fn_.tile_x * coarsen_i32;
                 let ffy = fn_.tile_y * coarsen_i32;
                 let tfx = tn_.tile_x * coarsen_i32;
@@ -681,7 +657,6 @@ impl PipeNetwork {
             12.0 * 1.0_f64.powf(pipe_cost_exp),
         );
 
-        let pipe_lookup = build_pipe_lookup(&pipes);
         eprintln!("  BUILD_T pipe_loop: {:.1}s", t_build.elapsed().as_secs_f64());
         let pipe_costs: Vec<f64> = pipes
             .iter()
@@ -691,9 +666,9 @@ impl PipeNetwork {
             .iter()
             .map(|&c| ((c * DIST_SCALE).round() as u32).max(1))
             .collect();
-        let span_cost_table = SpanCostTable::disabled(pipes.len());
+        let span_cost_table = SpanCostTable::disabled();
         let tile_grid = TileGrid::build(&pipes, &nodes, w, h);
-        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        let flat_adjacency = FlatAdjacency::build(nodes.len(), &pipes);
         eprintln!("  BUILD_T grids_and_adjacency: {:.1}s", t_build.elapsed().as_secs_f64());
         let tile_templates = Arc::new(build_tile_templates(ctx.chipdb()));
         eprintln!("  BUILD_T tile_templates: {:.1}s", t_build.elapsed().as_secs_f64());
@@ -701,7 +676,6 @@ impl PipeNetwork {
         let mut net = Self {
             nodes,
             pipes,
-            node_pipes,
             pipe_costs,
             pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
@@ -709,7 +683,6 @@ impl PipeNetwork {
             flat_adjacency,
             tile_templates,
             tile_grid,
-            pipe_lookup,
             tile_type_by_node,
             width: w,
             height: h,
@@ -759,8 +732,8 @@ impl PipeNetwork {
     #[inline]
     pub fn pipe_delta(&self, pipe_idx: usize) -> (i32, i32) {
         let pipe = &self.pipes[pipe_idx];
-        let from = &self.nodes[pipe.from];
-        let to = &self.nodes[pipe.to];
+        let from = &self.nodes[pipe.from as usize];
+        let to = &self.nodes[pipe.to as usize];
         (to.tile_x - from.tile_x, to.tile_y - from.tile_y)
     }
 
@@ -845,26 +818,38 @@ impl PipeNetwork {
         }
     }
 
-    /// Reset all dynamic state (pressures, flows, net counts).
+    /// Reset all dynamic state (pressures, net counts, history).
     pub fn reset(&mut self) {
         self.nodes.par_iter_mut().for_each(|node| {
             node.pressure = 0.0;
         });
         self.pipes.par_iter_mut().for_each(|p| {
-            p.flow = 0.0;
             p.net_count = 0.0;
-            p.cell_density = 0.0;
         });
         self.pipe_history.iter_mut().for_each(|h| *h = 0.0);
     }
 
-    /// Maximum utilization ratio |flow|/capacity across all pipes.
-    pub fn max_utilization(&self) -> f64 {
-        self.pipes
-            .par_iter()
-            .filter(|p| p.capacity > 0.0)
-            .map(|p| p.flow.abs() / p.capacity)
-            .reduce(|| 0.0, f64::max)
+    /// The pipe joining nodes `a` and `b`, preferring one built `a -> b`.
+    ///
+    /// Pipes are built per source cell, so a pair can carry one in each
+    /// direction; a symmetric key would silently keep whichever came last.
+    /// The reverse pipe still serves, since the solvers traverse pipes both
+    /// ways. Scans `a`'s adjacency rather than holding a pipe-count-sized map
+    /// that only the Bresenham templates ever read.
+    pub fn pipe_between(&self, a: usize, b: usize) -> Option<usize> {
+        let adj = &self.flat_adjacency;
+        let mut reverse = None;
+        for e in adj.range(a) {
+            if adj.neighbors[e] as usize != b {
+                continue;
+            }
+            let pipe_idx = adj.pipe_idx[e] as usize;
+            if self.pipes[pipe_idx].from as usize == a {
+                return Some(pipe_idx);
+            }
+            reverse.get_or_insert(pipe_idx);
+        }
+        reverse
     }
 
     /// Print a per-span pipe utilization histogram. For each span bucket emits
@@ -968,7 +953,6 @@ impl PipeNetwork {
 
         let total_nodes = nodes.len();
         let mut pipes = Vec::new();
-        let mut node_pipes = vec![Vec::new(); total_nodes];
 
         // Aggregate BEL counts per column/row and build chain connectivity.
         let mut bels_per_node = vec![0usize; chain_len];
@@ -1005,7 +989,6 @@ impl PipeNetwork {
             };
             add_pipe(
                 &mut pipes,
-                &mut node_pipes,
                 i,
                 i + 1,
                 1.0 / g,
@@ -1022,7 +1005,6 @@ impl PipeNetwork {
             total_nodes,
             pipes.len(),
         );
-        let pipe_lookup = build_pipe_lookup(&pipes);
         let pipe_costs: Vec<f64> = pipes
             .iter()
             .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
@@ -1031,15 +1013,14 @@ impl PipeNetwork {
             .iter()
             .map(|&c| ((c * DIST_SCALE).round() as u32).max(1))
             .collect();
-        let span_cost_table = SpanCostTable::disabled(pipes.len());
+        let span_cost_table = SpanCostTable::disabled();
         let tile_grid = TileGrid::build(&pipes, &nodes, grid_w, grid_h);
-        let flat_adjacency = FlatAdjacency::build(&node_pipes, &pipes);
+        let flat_adjacency = FlatAdjacency::build(nodes.len(), &pipes);
         let tile_templates = Arc::new(build_tile_templates(ctx.chipdb()));
 
         let mut net = Self {
             nodes,
             pipes,
-            node_pipes,
             pipe_costs,
             pipe_history: vec![0.0; pipe_costs_int.len()],
             pipe_costs_int,
@@ -1047,7 +1028,6 @@ impl PipeNetwork {
             flat_adjacency,
             tile_templates,
             tile_grid,
-            pipe_lookup,
             tile_type_by_node: vec![0; total_nodes],
             width: grid_w,
             height: grid_h,
@@ -1062,45 +1042,23 @@ impl PipeNetwork {
     }
 }
 
-/// Add a pipe and update adjacency lists.
 fn add_pipe(
     pipes: &mut Vec<Pipe>,
-    node_pipes: &mut [Vec<usize>],
     from: usize,
     to: usize,
     base_resistance: f64,
     capacity: f64,
     pipe_type: PipeType,
 ) {
-    let pipe_idx = pipes.len();
     pipes.push(Pipe {
-        from,
-        to,
+        from: from as u32,
+        to: to as u32,
         base_resistance,
         capacity,
-        flow: 0.0,
         net_count: 0.0,
-        raw_cell_density: 0.0,
-        cell_density: 0.0,
         eff_conductance: 1.0 / base_resistance.max(1e-12),
         pipe_type,
     });
-    node_pipes[from].push(pipe_idx);
-    node_pipes[to].push(pipe_idx);
-}
-
-#[inline]
-fn pipe_key(a: usize, b: usize) -> u64 {
-    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-    ((lo as u64) << 32) | hi as u64
-}
-
-fn build_pipe_lookup(pipes: &[Pipe]) -> FxHashMap<u64, usize> {
-    pipes
-        .iter()
-        .enumerate()
-        .map(|(idx, pipe)| (pipe_key(pipe.from, pipe.to), idx))
-        .collect()
 }
 
 /// Estimate routing capacity between adjacent tiles in the given direction.
@@ -1132,17 +1090,14 @@ fn estimate_wire_count(ctx: &Context, x: i32, y: i32, direction: Direction) -> u
 /// the BPR congestion function's mild-overflow tolerance).
 type SpanHistogram = FxHashMap<(i32, i32), usize>;
 
-/// Return true if the wire name is a global/clock network (GCLK, HCLK, VCC,
-/// GND) that should be excluded from span histograms. These wires can span
-/// the entire chip and would otherwise corrupt the coarse pipe capacity model
-/// with pipes whose span exceeds anything that physical routing offers.
-fn is_global_network_wire(name: &str) -> bool {
-    name.contains("GCLK")
-        || name.contains("HCLK")
-        || name.contains("GND")
-        || name.contains("VCC")
-        || name.contains("CLK_HROW")
-        || name.contains("CLK_BUFG")
+/// True for wires excluded from span histograms: constant (GND/VCC) wires and
+/// the dedicated global network. Both can span the whole chip and would
+/// otherwise corrupt the coarse pipe capacity model with pipes whose span
+/// exceeds anything general routing offers. Read from the chipdb's
+/// `const_value` and global-buffer flags, not from wire names.
+fn is_global_network_wire(chipdb: &ChipDb, wire: crate::chipdb::WireId) -> bool {
+    let wire = chipdb.canonical_wire(wire);
+    chipdb.wire_info(wire).const_value != 0 || chipdb.global_network().contains(&wire)
 }
 
 /// Analyze chipdb routing node shapes to build per-tile-type span histograms.
@@ -1183,7 +1138,7 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
     // internal to the home composite tile (absorbed, not exposed to fabric).
     let wire_reach = |tile: i32, wire_idx: usize| -> Option<(i32, i32)> {
         let wid = crate::chipdb::WireId::new(tile, wire_idx as i32);
-        if is_global_network_wire(chipdb.wire_name(wid)) {
+        if is_global_network_wire(chipdb, wid) {
             return None;
         }
         let ns = chipdb.wire_node_shape(tile, wire_idx)?;
@@ -1281,70 +1236,113 @@ fn build_span_histograms(chipdb: &ChipDb) -> Vec<SpanHistogram> {
 mod flat_adjacency_tests {
     use super::*;
 
-    fn make_pipe(from: usize, to: usize) -> Pipe {
+    fn make_pipe(from: u32, to: u32) -> Pipe {
         Pipe {
             from,
             to,
             base_resistance: 1.0,
             capacity: 1.0,
-            flow: 0.0,
             net_count: 0.0,
-            raw_cell_density: 0.0,
-            cell_density: 0.0,
             eff_conductance: 1.0,
             pipe_type: PipeType::InterTile(Direction::East),
         }
     }
 
+    /// The solvers sum over a node's edges in adjacency order, so the CSR must
+    /// list each node's pipes in pipe order, exactly as the per-node lists it
+    /// replaced did, or every label shifts in the last bits.
     #[test]
-    fn flat_adjacency_matches_node_pipes_enumeration() {
-        // Simple diamond: 0 - 1, 0 - 2, 1 - 3, 2 - 3.
+    fn flat_adjacency_lists_each_nodes_pipes_in_pipe_order() {
+        // Diamond 0-1, 0-2, 1-3, 2-3, plus a reverse 1->0 and a self loop.
         let pipes = vec![
             make_pipe(0, 1),
             make_pipe(0, 2),
             make_pipe(1, 3),
             make_pipe(2, 3),
+            make_pipe(1, 0),
+            make_pipe(2, 2),
         ];
         let mut node_pipes: Vec<Vec<usize>> = vec![Vec::new(); 4];
         for (i, p) in pipes.iter().enumerate() {
-            node_pipes[p.from].push(i);
-            node_pipes[p.to].push(i);
+            node_pipes[p.from as usize].push(i);
+            node_pipes[p.to as usize].push(i);
         }
-        let adj = FlatAdjacency::build(&node_pipes, &pipes);
+        let adj = FlatAdjacency::build(4, &pipes);
 
         assert_eq!(adj.offsets.len(), 5);
         assert_eq!(*adj.offsets.last().unwrap() as usize, adj.neighbors.len());
         assert_eq!(adj.neighbors.len(), adj.pipe_idx.len());
-
         for node in 0..4 {
-            let range = adj.range(node);
-            let mut flat_pairs: Vec<(u32, u32)> = range
-                .clone()
+            let flat: Vec<(u32, u32)> = adj
+                .range(node)
                 .map(|e| (adj.neighbors[e], adj.pipe_idx[e]))
                 .collect();
-            let mut ref_pairs: Vec<(u32, u32)> = node_pipes[node]
+            let reference: Vec<(u32, u32)> = node_pipes[node]
                 .iter()
                 .map(|&pidx| {
                     let p = &pipes[pidx];
-                    let n = p.from ^ p.to ^ node;
-                    (n as u32, pidx as u32)
+                    (p.from ^ p.to ^ node as u32, pidx as u32)
                 })
                 .collect();
-            flat_pairs.sort();
-            ref_pairs.sort();
-            assert_eq!(flat_pairs, ref_pairs, "mismatch at node {}", node);
+            assert_eq!(flat, reference, "mismatch at node {}", node);
         }
     }
 
-    #[test]
-    fn flat_adjacency_empty_has_correct_shape() {
-        let adj = FlatAdjacency::empty(7);
-        assert_eq!(adj.offsets.len(), 8);
-        assert!(adj.offsets.iter().all(|&x| x == 0));
-        assert!(adj.neighbors.is_empty());
-        assert!(adj.pipe_idx.is_empty());
-        for node in 0..7 {
-            assert!(adj.range(node).is_empty());
+    fn network(pipes: Vec<Pipe>, n: usize) -> PipeNetwork {
+        let nodes: Vec<Node> = (0..n)
+            .map(|i| Node { tile_x: i as i32, tile_y: 0, pressure: 0.0 })
+            .collect();
+        let n_pipes = pipes.len();
+        PipeNetwork {
+            tile_grid: TileGrid::build(&pipes, &nodes, n as i32, 1),
+            flat_adjacency: FlatAdjacency::build(n, &pipes),
+            nodes,
+            pipes,
+            pipe_costs: vec![1.0; n_pipes],
+            pipe_history: vec![0.0; n_pipes],
+            pipe_costs_int: vec![100; n_pipes],
+            span_cost_table: SpanCostTable::disabled(),
+            tile_templates: Arc::new(Vec::new()),
+            tile_type_by_node: vec![0; n],
+            width: n as i32,
+            height: 1,
+            x0: 0,
+            y0: 0,
+            zero_bel_tiles: 0,
+            total_bels: 0,
+            coarsen: 1,
         }
+    }
+
+    /// Pipes are directed and a pair may carry both directions. The lookup
+    /// must return the pipe for the asked-for direction, not whichever of
+    /// the two was built last.
+    #[test]
+    fn pipe_between_prefers_the_pipe_built_in_that_direction() {
+        let net = network(vec![make_pipe(0, 1), make_pipe(1, 0), make_pipe(1, 2)], 3);
+        assert_eq!(net.pipe_between(0, 1), Some(0));
+        assert_eq!(net.pipe_between(1, 0), Some(1));
+        // Only 1 -> 2 exists; it still joins the pair the other way round.
+        assert_eq!(net.pipe_between(1, 2), Some(2));
+        assert_eq!(net.pipe_between(2, 1), Some(2));
+        assert_eq!(net.pipe_between(0, 2), None);
+    }
+
+    /// One `Pipe` exists per routing span of every tile (2.5 M on a 311x223
+    /// grid), so its size is the network's footprint. It was 88 B.
+    #[test]
+    fn pipe_stays_small() {
+        assert!(std::mem::size_of::<Pipe>() <= 56, "{}", std::mem::size_of::<Pipe>());
+    }
+
+    /// Nothing reads the span table's per-pipe entries while it is disabled.
+    #[test]
+    fn disabled_span_table_holds_no_per_pipe_storage() {
+        let mut table = SpanCostTable::disabled();
+        assert_eq!(table.pipe_entry.capacity(), 0);
+        table.pipe_entry = vec![0; 1000];
+        table.epoch = 7;
+        table.reset_disabled();
+        assert_eq!((table.pipe_entry.capacity(), table.epoch), (0, 7));
     }
 }

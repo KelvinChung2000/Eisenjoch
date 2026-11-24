@@ -455,12 +455,8 @@ fn main() {
     }
 
     let t = Instant::now();
-    let envf = |k: &str, d: f64| -> f64 {
-        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
-    };
-    let envu = |k: &str, d: usize| -> usize {
-        std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
-    };
+    let envf = |k: &str, d: f64| -> f64 { nextpnr::env::var::<f64>(k).unwrap_or(d) };
+    let envu = |k: &str, d: usize| -> usize { nextpnr::env::var::<usize>(k).unwrap_or(d) };
     let mut cfg = OptTransPlacerCfg::default();
     cfg.num_threads = envu("OT_THREADS", 8);
     cfg.max_outer_iters = envu("OT_ITERS", 50);

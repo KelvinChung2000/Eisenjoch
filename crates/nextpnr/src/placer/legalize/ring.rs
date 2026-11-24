@@ -8,7 +8,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    build_bel_by_loc, build_cell_legality_cache, cluster_is_legal_cached, place_cluster_children,
+    build_cell_legality_cache, cluster_is_legal_cached, place_cluster_children,
     unbind_movable_cells, CellLegalityCache, DriverNodeRegistry,
 };
 use crate::placer::legalize::snap::snap_to_clb_grid;
@@ -76,14 +76,6 @@ pub fn legalize_ring(
     unbind_movable_cells(ctx, idx_to_cell);
     let t_unbind_ms = t_phase.elapsed().as_millis();
 
-    // (bucket, x, y, z) -> BelId index built once; `cluster_is_legal` consults
-    // it for each cluster child. Without this, every cluster legality probe
-    // did `bels_for_bucket(child_type).find(...)` on a 500k-1M-element bucket
-    // iterator, dominating ring-legalize wall time.
-    let t_phase = std::time::Instant::now();
-    let bel_by_loc = build_bel_by_loc(ctx);
-    let t_belloc_ms = t_phase.elapsed().as_millis();
-
     // Seed shared-mux registry from already-bound cells (packer-placed
     // fixed cells: BUFG, IO, clock buffers). Movable cells were just
     // unbound so they don't contribute.
@@ -103,9 +95,6 @@ pub fn legalize_ring(
     let t_cache_ms = t_phase.elapsed().as_millis();
 
     let mut rejected_for_shared_mux: u64 = 0;
-    let mut probe_islegal_us: u128 = 0;
-    let mut probe_record_us: u128 = 0;
-    let mut probe_ring_search_us: u128 = 0;
     let mut probe_islegal_calls: u64 = 0;
     let mut probe_record_calls: u64 = 0;
 
@@ -118,7 +107,6 @@ pub fn legalize_ring(
 
     let mut total_displacement = 0.0;
     let t_assign_start = std::time::Instant::now();
-    let mut probe_assign_phase_ms: u128 = 0;
     let mut probe_islegal_only_us: u128 = 0;
     let mut probe_islegal_sample_count: u64 = 0;
 
@@ -243,7 +231,6 @@ pub fn legalize_ring(
                                         let r = cluster_is_legal_cached(
                                             ctx,
                                             &registry,
-                                            &bel_by_loc,
                                             cache,
                                             bid,
                                         );
@@ -254,7 +241,6 @@ pub fn legalize_ring(
                                         cluster_is_legal_cached(
                                             ctx,
                                             &registry,
-                                            &bel_by_loc,
                                             cache,
                                             bid,
                                         )
@@ -316,7 +302,7 @@ pub fn legalize_ring(
             let dy = by as f64 - phys_y[solver_idx];
             total_displacement += dx * dx + dy * dy;
 
-            place_cluster_children(ctx, &bel_by_loc, cell_id, bel_id)?;
+            place_cluster_children(ctx, cell_id, bel_id)?;
 
             // Cluster children are bound via place_cluster_children; register
             // their driver wires too so subsequent cells in the outer loop
@@ -333,7 +319,7 @@ pub fn legalize_ring(
         }
     }
 
-    probe_assign_phase_ms = t_assign_start.elapsed().as_millis();
+    let probe_assign_phase_ms = t_assign_start.elapsed().as_millis();
     let n = idx_to_cell.len() as f64;
     let rms_disp = (total_displacement / n.max(1.0)).sqrt();
     let _max_disp = total_displacement;
@@ -349,10 +335,9 @@ pub fn legalize_ring(
         (probe_islegal_only_us / probe_islegal_sample_count as u128) * probe_islegal_calls as u128
     };
     eprintln!(
-        "  ring_phase_ms: prespread={} unbind={} bel_by_loc={} seed={} cache={} assign_loop={} (total={}); est_islegal_ms={} prespread_used={}",
+        "  ring_phase_ms: prespread={} unbind={} seed={} cache={} assign_loop={} (total={}); est_islegal_ms={} prespread_used={}",
         t_prespread_ms,
         t_unbind_ms,
-        t_belloc_ms,
         t_seed_ms,
         t_cache_ms,
         probe_assign_phase_ms,
@@ -370,9 +355,6 @@ pub fn legalize_ring(
             probe_islegal_only_us / probe_islegal_sample_count as u128
         },
     );
-    let _ = probe_ring_search_us;
-    let _ = probe_islegal_us;
-    let _ = probe_record_us;
 
     Ok(total_displacement)
 }
