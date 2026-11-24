@@ -1425,7 +1425,7 @@ dependencies = [
 [[package]]
 name = "rusteda-compute"
 version = "0.1.0"
-source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
+source = "git+https://github.com/KelvinChung2000/RustEDA-Common.git?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "rayon",
@@ -1435,7 +1435,7 @@ dependencies = [
 [[package]]
 name = "rusteda-core"
 version = "0.1.0"
-source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
+source = "git+https://github.com/KelvinChung2000/RustEDA-Common.git?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "rustc-hash",
@@ -1444,7 +1444,7 @@ dependencies = [
 [[package]]
 name = "rusteda-formats"
 version = "0.1.0"
-source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
+source = "git+https://github.com/KelvinChung2000/RustEDA-Common.git?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "flate2",
  "rayon",
@@ -1458,7 +1458,7 @@ dependencies = [
 [[package]]
 name = "rusteda-workspace"
 version = "0.1.0"
-source = "git+file:///home/kelvin/side-project/RustEDA-Common?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
+source = "git+https://github.com/KelvinChung2000/RustEDA-Common.git?rev=0000eddda623758702cb21f360d2e577eeb26c57#0000eddda623758702cb21f360d2e577eeb26c57"
 dependencies = [
  "bytemuck",
  "memmap2",
@@ -1486,6 +1486,7 @@ dependencies = [
 [[package]]
 name = "ruststa"
 version = "0.4.3"
+source = "git+https://github.com/KelvinChung2000/RustSTA.git?rev=d5b3a6db16a52106b12c12e7cdd535138bf67398#d5b3a6db16a52106b12c12e7cdd535138bf67398"
 dependencies = [
  "bytemuck",
  "rayon",

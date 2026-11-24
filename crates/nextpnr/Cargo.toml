@@ -23,7 +23,7 @@ ndarray = { workspace = true }
 lapjv = { workspace = true }
 faer = { version = "0.24", features = ["sparse"] }
 dyn-stack = { version = "0.13", features = ["alloc"] }
-ruststa = { path = "../../../RustSTA/crates/engines/ruststa" }
+ruststa = { git = "https://github.com/KelvinChung2000/RustSTA.git", rev = "d5b3a6db16a52106b12c12e7cdd535138bf67398" }
 rusteda-core = { git = "https://github.com/lab-emi/RustEDA-Common.git", rev = "ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56" }
 
 [dev-dependencies]

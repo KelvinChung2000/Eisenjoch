@@ -21,7 +21,7 @@ lapjv = "0.3"
 nextpnr = { path = "crates/nextpnr" }
 
 [patch."https://github.com/lab-emi/RustEDA-Common.git"]
-rusteda-core = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
-rusteda-workspace = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
-rusteda-compute = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
-rusteda-formats = { git = "file:///home/kelvin/side-project/RustEDA-Common", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-core = { git = "https://github.com/KelvinChung2000/RustEDA-Common.git", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-workspace = { git = "https://github.com/KelvinChung2000/RustEDA-Common.git", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-compute = { git = "https://github.com/KelvinChung2000/RustEDA-Common.git", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
+rusteda-formats = { git = "https://github.com/KelvinChung2000/RustEDA-Common.git", rev = "0000eddda623758702cb21f360d2e577eeb26c57" }
