@@ -256,6 +256,7 @@ benchmark = [
 ]
 cli = [
     { name = "loguru" },
+    { name = "sdf-toolkit" },
     { name = "typer" },
 ]
 
@@ -269,6 +270,7 @@ requires-dist = [
     { name = "loguru", marker = "extra == 'cli'", specifier = ">=0.7" },
     { name = "matplotlib", marker = "extra == 'benchmark'" },
     { name = "numpy", marker = "extra == 'benchmark'" },
+    { name = "sdf-toolkit", marker = "extra == 'cli'", git = "https://github.com/FPGA-Research/SDF-toolkit.git?rev=adecec94d993aed96b880b6eafc1308bfe97e460" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.24" },
 ]
 provides-extras = ["benchmark", "cli"]

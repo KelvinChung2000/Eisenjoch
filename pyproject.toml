@@ -21,7 +21,7 @@ nextpnr-himbaechel-rust = "nextpnr.rust_cli:cli"
 nextpnr-ispd-benchmarks = "nextpnr.benchmarks.ispd_benchmarks:main"
 
 [project.optional-dependencies]
-cli = ["loguru>=0.7", "typer>=0.24"]
+cli = ["loguru>=0.7", "typer>=0.24", "sdf-toolkit"]
 benchmark = ["matplotlib", "numpy"]
 
 [tool.pytest.ini_options]

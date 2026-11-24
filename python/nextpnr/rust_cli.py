@@ -43,6 +43,7 @@ def main(
     report: Optional[Path] = typer.Option(
         None, help="Timing/utilization report (JSON)"
     ),
+    sdf: Optional[Path] = typer.Option(None, help="Write routed delays as SDF 3.0"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
     debug: bool = typer.Option(False, "--debug", help="Debug output"),
     force: bool = typer.Option(False, "--force", help="Force continue on errors"),
@@ -272,6 +273,17 @@ def main(
             "num_hold_endpoints": timing.num_hold_endpoints,
         }
         report.write_text(json_mod.dumps(report_data, indent=2))
+
+    if sdf is not None:
+        from nextpnr.sdf_export import write_sdf
+
+        try:
+            write_sdf(ctx.routed_back_annotation(), sdf)
+        except Exception as e:
+            typer.echo(f"Error writing SDF: {e}", err=True)
+            raise typer.Exit(1)
+        if verbose:
+            typer.echo(f"Wrote SDF to {sdf}")
 
     if timing is not None:
         failures = timing_failures(timing)

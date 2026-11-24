@@ -20,9 +20,9 @@ use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg, TimingDrivenCfg};
 use ::nextpnr::router::Router;
-use ::nextpnr::common::DelayT;
+use ::nextpnr::common::{ClockEdge, DelayT};
 use ::nextpnr::sta::{
-    register_clock_nets, CritNorm, Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
+    register_clock_nets, routed_back_annotation, BackAnnotation, CritNorm, DelayBounds, Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
     StaSessionError, NOTIONAL_CLASSLESS_PIPS,
 };
 use nextpnr_upstream::{
@@ -531,6 +531,17 @@ impl PyContext {
         })
     }
 
+    /// Routed cell and interconnect delays in ps, for writing an SDF file.
+    ///
+    /// Raises RuntimeError when a net is not fully routed or the chipdb has no speed grade.
+    fn routed_back_annotation(&self) -> PyResult<PyBackAnnotation> {
+        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
+            .map_err(|e| sta_error(StaSessionError::from(e)))?;
+        routed_back_annotation(&self.ctx, &model)
+            .map(PyBackAnnotation::from)
+            .map_err(sta_error)
+    }
+
     /// Generate a resource utilization report.
     ///
     /// Returns:
@@ -762,6 +773,135 @@ fn ideal_net_criticality(ctx: &Context) -> Result<FxHashMap<NetId, f32>, StaSess
 }
 
 // ---------------------------------------------------------------------------
+// Back-annotation records
+// ---------------------------------------------------------------------------
+
+/// One INTERCONNECT delay from a driver pin to a load pin.
+#[pyclass(name = "InterconnectDelay", get_all, frozen)]
+pub struct PyInterconnectDelay {
+    pub source_instance: String,
+    pub source_port: String,
+    pub load_instance: String,
+    pub load_port: String,
+    pub early_ps: DelayT,
+    pub late_ps: DelayT,
+}
+
+/// One IOPATH delay; launch_edge is "posedge" or "negedge" for a clock-to-output arc.
+#[pyclass(name = "IopathDelay", get_all, frozen)]
+pub struct PyIopathDelay {
+    pub from_port: String,
+    pub to_port: String,
+    pub launch_edge: Option<&'static str>,
+    pub early_ps: DelayT,
+    pub late_ps: DelayT,
+}
+
+/// Setup and hold limits of a data pin against a clock edge ("posedge" or "negedge").
+#[pyclass(name = "TimingCheck", get_all, frozen)]
+pub struct PyTimingCheck {
+    pub data_port: String,
+    pub clock_port: String,
+    pub clock_edge: &'static str,
+    pub setup_ps: DelayT,
+    pub hold_ps: DelayT,
+}
+
+/// The IOPATH delays and timing checks of one cell instance.
+#[pyclass(name = "CellDelays", get_all, frozen)]
+pub struct PyCellDelays {
+    pub instance: String,
+    pub cell_type: String,
+    pub iopaths: Vec<Py<PyIopathDelay>>,
+    pub checks: Vec<Py<PyTimingCheck>>,
+}
+
+/// Routed delays of the top module `design`, cells and interconnect sorted by name.
+#[pyclass(name = "BackAnnotation", get_all, frozen)]
+pub struct PyBackAnnotation {
+    pub design: String,
+    pub cells: Vec<Py<PyCellDelays>>,
+    pub interconnects: Vec<Py<PyInterconnectDelay>>,
+}
+
+fn record<T: pyo3::PyClass>(py: Python<'_>, value: T) -> Py<T>
+where
+    T: Into<pyo3::PyClassInitializer<T>>,
+{
+    Py::new(py, value).expect("allocating a frozen record cannot fail")
+}
+
+fn sdf_edge(edge: ClockEdge) -> &'static str {
+    match edge {
+        ClockEdge::Rising => "posedge",
+        ClockEdge::Falling => "negedge",
+    }
+}
+
+impl From<BackAnnotation> for PyBackAnnotation {
+    fn from(annotation: BackAnnotation) -> Self {
+        Python::attach(|py| {
+            let bounds = |delay: DelayBounds| (delay.early_ps, delay.late_ps);
+            PyBackAnnotation {
+                design: annotation.design,
+                cells: annotation
+                    .cells
+                    .into_iter()
+                    .map(|cell| {
+                        record(py, PyCellDelays {
+                            instance: cell.instance,
+                            cell_type: cell.cell_type,
+                            iopaths: cell
+                                .iopaths
+                                .into_iter()
+                                .map(|arc| {
+                                    let (early_ps, late_ps) = bounds(arc.delay);
+                                    record(py, PyIopathDelay {
+                                        from_port: arc.from,
+                                        to_port: arc.to,
+                                        launch_edge: arc.launch_edge.map(sdf_edge),
+                                        early_ps,
+                                        late_ps,
+                                    })
+                                })
+                                .collect(),
+                            checks: cell
+                                .checks
+                                .into_iter()
+                                .map(|check| {
+                                    record(py, PyTimingCheck {
+                                        data_port: check.data,
+                                        clock_port: check.clock,
+                                        clock_edge: sdf_edge(check.edge),
+                                        setup_ps: check.setup_ps,
+                                        hold_ps: check.hold_ps,
+                                    })
+                                })
+                                .collect(),
+                        })
+                    })
+                    .collect(),
+                interconnects: annotation
+                    .interconnects
+                    .into_iter()
+                    .map(|net| {
+                        let (early_ps, late_ps) = bounds(net.delay);
+                        record(py, PyInterconnectDelay {
+                            source_instance: net.source.instance,
+                            source_port: net.source.port,
+                            load_instance: net.load.instance,
+                            load_port: net.load.port,
+                            early_ps,
+                            late_ps,
+                        })
+                    })
+                    .collect(),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PyUtilizationReport
 // ---------------------------------------------------------------------------
 
@@ -869,6 +1009,11 @@ fn nextpnr(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RustContext", m.getattr("Context")?)?;
     m.add_class::<PyTimingReport>()?;
     m.add_class::<PyUtilizationReport>()?;
+    m.add_class::<PyBackAnnotation>()?;
+    m.add_class::<PyCellDelays>()?;
+    m.add_class::<PyIopathDelay>()?;
+    m.add_class::<PyTimingCheck>()?;
+    m.add_class::<PyInterconnectDelay>()?;
     m.add_function(wrap_pyfunction!(run_upstream, m)?)?;
     Ok(())
 }
