@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use ruststa::engine::delay::annotate::DelayAnnotations;
 use ruststa::engine::incr::{
     ArcTiming, ArcTimingTable, Criticality, IncrementalStats, SessionError, SessionNodeKey,
@@ -85,6 +85,8 @@ pub enum StaSessionError {
     UntimedSink { sink: NetSink, reason: Untimed },
     #[error("{0:?} is a clock pin of an ideal clock and carries no interconnect delay")]
     IdealClockSink(NetSink),
+    #[error("{0:?} is a register clock pin that no defined clock reaches, so RustSTA leaves the register unconstrained; define a clock on its net with add_clock or an SDC create_clock")]
+    UnclockedClockSink(NetSink),
     #[error("clock '{clock}' is propagated, but clock pins carry no interconnect delay, so its skew would time as zero")]
     PropagatedClock { clock: String },
     #[error("the check records of the corner were released")]
@@ -99,10 +101,25 @@ struct ArcLink {
     delay: DelayBounds,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockPin {
+    Ideal,
+    Unclocked,
+}
+
+impl ClockPin {
+    fn sink_error(self, sink: NetSink) -> StaSessionError {
+        match self {
+            ClockPin::Ideal => StaSessionError::IdealClockSink(sink),
+            ClockPin::Unclocked => StaSessionError::UnclockedClockSink(sink),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SinkLink {
     Untimed(Untimed),
-    IdealClock { arc: usize },
+    ClockPin { arc: usize, pin: ClockPin },
     Arc(ArcLink),
 }
 
@@ -200,7 +217,7 @@ impl StaSession {
             .count();
         let mapped = links
             .iter()
-            .filter(|link| matches!(link, SinkLink::Arc(_) | SinkLink::IdealClock { .. }))
+            .filter(|link| matches!(link, SinkLink::Arc(_) | SinkLink::ClockPin { .. }))
             .count();
         if graph_net_arcs != mapped {
             return Err(StaSessionError::UnmappedNetArcs {
@@ -293,7 +310,7 @@ impl StaSession {
             let entry = self.index.entry(sink)?;
             let link = match self.links[entry] {
                 SinkLink::Arc(link) => link,
-                SinkLink::IdealClock { .. } => return Err(StaSessionError::IdealClockSink(sink)),
+                SinkLink::ClockPin { pin, .. } => return Err(pin.sink_error(sink)),
                 SinkLink::Untimed(reason) => {
                     return Err(StaSessionError::UntimedSink { sink, reason })
                 }
@@ -333,7 +350,7 @@ impl StaSession {
     ) -> Result<Option<f64>, StaSessionError> {
         let arc = match self.links[self.index.entry(sink)?] {
             SinkLink::Untimed(_) => return Ok(None),
-            SinkLink::IdealClock { arc } | SinkLink::Arc(ArcLink { arc, .. }) => arc,
+            SinkLink::ClockPin { arc, .. } | SinkLink::Arc(ArcLink { arc, .. }) => arc,
         };
         Ok(self
             .budgets
@@ -358,7 +375,7 @@ impl StaSession {
     pub fn connection_delay(&self, sink: NetSink) -> Result<DelayBounds, StaSessionError> {
         match self.links[self.index.entry(sink)?] {
             SinkLink::Arc(link) => Ok(link.delay),
-            SinkLink::IdealClock { .. } => Err(StaSessionError::IdealClockSink(sink)),
+            SinkLink::ClockPin { pin, .. } => Err(pin.sink_error(sink)),
             SinkLink::Untimed(reason) => Err(StaSessionError::UntimedSink { sink, reason }),
         }
     }
@@ -381,7 +398,7 @@ impl StaSession {
         for (timing, link) in self.timing.iter_mut().zip(&self.links) {
             *timing = match link {
                 SinkLink::Untimed(reason) => SinkTiming::Untimed(*reason),
-                SinkLink::IdealClock { arc } => SinkTiming::Arc(rows[*arc].timing),
+                SinkLink::ClockPin { arc, .. } => SinkTiming::Arc(rows[*arc].timing),
                 SinkLink::Arc(link) => SinkTiming::Arc(rows[link.arc].timing),
             };
         }
@@ -416,18 +433,17 @@ fn timed_users(links: &[SinkLink]) -> Vec<u32> {
         .collect()
 }
 
-fn ideal_clock_pins(session: &TimingSession) -> Result<FxHashSet<NodeId>, StaSessionError> {
+fn clock_pins(session: &TimingSession) -> Result<FxHashMap<NodeId, ClockPin>, StaSessionError> {
     let graph = session.graph();
     let clock_model = &session.default_corner().clock_model;
-    let clock_pins: Vec<NodeId> = graph
+    let pins: Vec<NodeId> = graph
         .launches()
         .iter()
         .map(|launch| launch.clock_pin)
         .chain(graph.checks().iter().map(|check| check.clock_pin))
-        .filter(|&pin| !clock_model.node_clocks(pin).is_empty())
         .collect();
     let clocks = &session.state().constraints.clocks;
-    if let Some(clock) = clock_pins
+    if let Some(clock) = pins
         .iter()
         .flat_map(|&pin| clock_model.node_clocks(pin))
         .map(|&(clock, _)| &clocks[clock.index()])
@@ -437,7 +453,13 @@ fn ideal_clock_pins(session: &TimingSession) -> Result<FxHashSet<NodeId>, StaSes
             clock: clock.name.clone(),
         });
     }
-    Ok(clock_pins.into_iter().collect())
+    Ok(pins
+        .into_iter()
+        .map(|pin| match clock_model.node_clocks(pin).is_empty() {
+            true => (pin, ClockPin::Unclocked),
+            false => (pin, ClockPin::Ideal),
+        })
+        .collect())
 }
 
 fn sink_links(
@@ -446,7 +468,7 @@ fn sink_links(
     index: &SinkIndex,
 ) -> Result<Vec<SinkLink>, StaSessionError> {
     let ids = sta.ids();
-    let clock_pins = ideal_clock_pins(&sta.session)?;
+    let clock_pins = clock_pins(&sta.session)?;
     let mut links = Vec::with_capacity(index.len());
     for net in index.nets.iter().flatten().copied() {
         let info = ctx.design.net(net);
@@ -454,15 +476,15 @@ fn sink_links(
         for (user, &sink) in info.users().iter().enumerate() {
             let user = u32::try_from(user).expect("net user index fits in u32");
             let link = match (ids.net_arcs.get(&NetSink { net, user }), info.driver()) {
-                (Some(&arc), Some(_)) if clock_pins.contains(&ids.pins[&sink].node) => {
-                    SinkLink::IdealClock { arc }
-                }
-                (Some(&arc), Some(driver)) => SinkLink::Arc(ArcLink {
-                    from: ids.pins[&driver].key,
-                    to: ids.pins[&sink].key,
-                    arc,
-                    delay: DelayBounds::ZERO,
-                }),
+                (Some(&arc), Some(driver)) => match clock_pins.get(&ids.pins[&sink].node) {
+                    Some(&pin) => SinkLink::ClockPin { arc, pin },
+                    None => SinkLink::Arc(ArcLink {
+                        from: ids.pins[&driver].key,
+                        to: ids.pins[&sink].key,
+                        arc,
+                        delay: DelayBounds::ZERO,
+                    }),
+                },
                 _ if !sink.is_valid() => SinkLink::Untimed(Untimed::VacantUser),
                 _ if off_chip => SinkLink::Untimed(Untimed::OffChip),
                 (_, None) => SinkLink::Untimed(Untimed::Undriven),

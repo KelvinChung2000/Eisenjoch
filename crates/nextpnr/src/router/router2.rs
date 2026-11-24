@@ -364,7 +364,11 @@ fn sink_pins(
         let user = u32::try_from(user).expect("net user index fits in u32");
         let timed = match session.connection_delay(NetSink { net, user }) {
             Ok(_) => true,
-            Err(StaSessionError::IdealClockSink(_) | StaSessionError::UntimedSink { .. }) => false,
+            Err(
+                StaSessionError::IdealClockSink(_)
+                | StaSessionError::UnclockedClockSink(_)
+                | StaSessionError::UntimedSink { .. },
+            ) => false,
             Err(error) => return Err(error),
         };
         pins.push(SinkPin {

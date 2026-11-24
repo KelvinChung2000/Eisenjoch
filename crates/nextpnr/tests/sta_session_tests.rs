@@ -931,10 +931,32 @@ impl ClockDefinition {
         }
     }
 
-    fn ideal_users(self) -> &'static [u32] {
+    fn rejects_clock_sink(
+        self,
+        result: Result<impl Sized, StaSessionError>,
+        sink: NetSink,
+    ) -> bool {
+        match (self, result) {
+            (
+                ClockDefinition::NetConstraint | ClockDefinition::UserSdcNamedApart,
+                Err(StaSessionError::IdealClockSink(rejected)),
+            )
+            | (ClockDefinition::Undefined, Err(StaSessionError::UnclockedClockSink(rejected))) => {
+                rejected == sink
+            }
+            _ => false,
+        }
+    }
+
+    fn clock_sink_timing(self) -> SinkTiming {
         match self {
-            ClockDefinition::NetConstraint | ClockDefinition::UserSdcNamedApart => &[0, 1],
-            ClockDefinition::Undefined => &[],
+            ClockDefinition::NetConstraint | ClockDefinition::UserSdcNamedApart => {
+                SinkTiming::Arc(ArcTiming::Propagated {
+                    setup: None,
+                    hold_slack_ns: None,
+                })
+            }
+            ClockDefinition::Undefined => SinkTiming::Arc(ArcTiming::NoArrival),
         }
     }
 }
@@ -942,10 +964,14 @@ impl ClockDefinition {
 #[rstest]
 #[case::placed(placed, InterconnectStage::Placed)]
 #[case::routed(routed_direct, InterconnectStage::Routed)]
-fn clock_sinks_are_ideal(
+fn clock_sinks_carry_no_delay(
     #[case] design: fn(&mut Context) -> Chain,
     #[case] stage: InterconnectStage,
-    #[values(ClockDefinition::NetConstraint, ClockDefinition::UserSdcNamedApart)]
+    #[values(
+        ClockDefinition::NetConstraint,
+        ClockDefinition::UserSdcNamedApart,
+        ClockDefinition::Undefined
+    )]
     clock: ClockDefinition,
 ) {
     let mut ctx = common::make_example_context();
@@ -957,22 +983,36 @@ fn clock_sinks_are_ideal(
             net: chain.clk,
             user,
         };
-        assert!(matches!(
-            session.connection_delay(clock_sink),
-            Err(StaSessionError::IdealClockSink(sink)) if sink == clock_sink
-        ));
+        assert!(clock.rejects_clock_sink(session.connection_delay(clock_sink), clock_sink));
         assert_eq!(
             session.sink_timing(clock_sink).unwrap(),
-            SinkTiming::Arc(ArcTiming::Propagated {
-                setup: None,
-                hold_slack_ns: None
-            })
+            clock.clock_sink_timing()
         );
-        assert!(matches!(
+        assert!(clock.rejects_clock_sink(
             session.set_connection_delays(&[(clock_sink, uniform(1))]),
-            Err(StaSessionError::IdealClockSink(sink)) if sink == clock_sink
+            clock_sink
         ));
     }
+}
+
+#[rstest]
+#[case::placed(placed, InterconnectStage::Placed)]
+#[case::routed(routed_direct, InterconnectStage::Routed)]
+fn unclocked_register_is_unconstrained(
+    #[case] design: fn(&mut Context) -> Chain,
+    #[case] stage: InterconnectStage,
+) {
+    let mut ctx = common::make_example_context();
+    let chain = design(&mut ctx);
+    ClockDefinition::Undefined.apply(&mut ctx, chain.clk);
+    let session = session(&ctx, stage);
+    for sink in [chain.q_sink(), chain.d_sink()] {
+        assert_eq!(
+            session.sink_timing(sink).unwrap(),
+            SinkTiming::Arc(ArcTiming::NoArrival)
+        );
+    }
+    assert!(session.domains().is_empty());
 }
 
 fn clock_also_drives_lut(ctx: &mut Context) -> (Chain, NetSink) {
@@ -987,12 +1027,13 @@ fn clock_also_drives_lut(ctx: &mut Context) -> (Chain, NetSink) {
 }
 
 #[rstest]
-#[case::net_constraint(ClockDefinition::NetConstraint, PlacedEstimate::DelayTable)]
-#[case::user_sdc_named_apart(ClockDefinition::UserSdcNamedApart, PlacedEstimate::DelayTable)]
-#[case::undefined_clock_pins_untabulated(ClockDefinition::Undefined, PlacedEstimate::ExactSearch)]
 fn clock_net_data_sink_keeps_its_delay(
-    #[case] clock: ClockDefinition,
-    #[case] estimate: PlacedEstimate,
+    #[values(
+        ClockDefinition::NetConstraint,
+        ClockDefinition::UserSdcNamedApart,
+        ClockDefinition::Undefined
+    )]
+    clock: ClockDefinition,
 ) {
     let mut ctx = common::make_example_context();
     let (chain, data_sink) = clock_also_drives_lut(&mut ctx);
@@ -1005,28 +1046,21 @@ fn clock_net_data_sink_keeps_its_delay(
         )
         .expect("session builds the design")
     };
-    let (table, exact) = (build(estimate), build(PlacedEstimate::ExactSearch));
-    for user in 0..=data_sink.user {
-        let sink = NetSink {
+    let (table, exact) = (
+        build(PlacedEstimate::DelayTable),
+        build(PlacedEstimate::ExactSearch),
+    );
+    for user in 0..data_sink.user {
+        let clock_sink = NetSink {
             net: chain.clk,
             user,
         };
-        match clock.ideal_users().contains(&user) {
-            true => assert!(matches!(
-                table.connection_delay(sink),
-                Err(StaSessionError::IdealClockSink(ideal)) if ideal == sink
-            )),
-            false => assert_eq!(
-                table
-                    .connection_delay(sink)
-                    .expect("a data sink has a delay"),
-                exact
-                    .connection_delay(sink)
-                    .expect("a data sink has a delay"),
-                "{sink:?}"
-            ),
-        }
+        assert!(clock.rejects_clock_sink(table.connection_delay(clock_sink), clock_sink));
     }
+    assert_eq!(
+        table.connection_delay(data_sink).unwrap(),
+        exact.connection_delay(data_sink).unwrap()
+    );
     assert!(table.connection_delay(data_sink).unwrap().late_ps > 0);
 }
 
