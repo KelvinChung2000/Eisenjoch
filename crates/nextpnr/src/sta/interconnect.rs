@@ -189,23 +189,15 @@ impl PipDelays {
         let mut backward = Search::new(Direction::Uphill, sink);
         let mut best: Option<DelayBounds> = None;
         loop {
-            let (ahead, behind) = (forward.next_delay(), backward.next_delay());
-            let bound = match (ahead, behind) {
-                (None, None) => return best,
-                (Some(ahead), Some(behind)) => Some(ahead + behind),
-                _ => None,
+            let (Some(ahead), Some(behind)) = (forward.next_delay(), backward.next_delay()) else {
+                return best;
             };
-            if let Some(best) =
-                best.filter(|best| bound.is_none_or(|bound| bound.order() >= best.order()))
-            {
-                return Some(best);
+            if best.is_some_and(|best| (ahead + behind).order() >= best.order()) {
+                return best;
             }
-            let (expanding, opposite) = match (ahead, behind) {
-                (Some(_), Some(_)) if forward.frontier.len() <= backward.frontier.len() => {
-                    (&mut forward, &backward)
-                }
-                (Some(_), None) => (&mut forward, &backward),
-                _ => (&mut backward, &forward),
+            let (expanding, opposite) = match forward.frontier.len() <= backward.frontier.len() {
+                true => (&mut forward, &backward),
+                false => (&mut backward, &forward),
             };
             expanding.settle_next(chipdb, self, |wire, delay| {
                 if let Some(&rest) = opposite.labels.get(&wire) {
@@ -425,14 +417,17 @@ impl InterconnectModel {
         source: WireId,
         sinks: &[(u32, CellPin, WireId)],
     ) -> Result<Vec<(u32, DelayBounds)>, InterconnectError> {
-        sinks
+        let delays: Vec<Option<DelayBounds>> = sinks
             .par_iter()
-            .map(
-                |&(user, sink, wire)| match self.pips.pair_delay(ctx.chipdb(), source, wire) {
-                    Some(delay) => Ok((user, delay)),
-                    None => Err(unreachable(ctx, net, sink)),
-                },
-            )
+            .map(|&(_, _, wire)| self.pips.pair_delay(ctx.chipdb(), source, wire))
+            .collect();
+        sinks
+            .iter()
+            .zip(delays)
+            .map(|(&(user, sink, _), delay)| match delay {
+                Some(delay) => Ok((user, delay)),
+                None => Err(unreachable(ctx, net, sink)),
+            })
             .collect()
     }
 
