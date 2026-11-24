@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Eisenjoch">
-  <style>.bridge{fill:#1F2933}.fabric{fill:#2563EB}.net{fill:#D99A00}.net-line{fill:none;stroke:#D99A00}@media (prefers-color-scheme: dark){.bridge{fill:#E2E8F0}.fabric{fill:#60A5FA}.net{fill:#FACC15}.net-line{fill:none;stroke:#FACC15}}</style>
+  <style>.bridge{fill:#1F2933}.fabric{fill:#2563EB}.net{fill:#B7791F}.net-line{fill:none;stroke:#B7791F}@media (prefers-color-scheme: dark){.bridge{fill:#E2E8F0}.fabric{fill:#60A5FA}.net{fill:#FACC15}.net-line{fill:none;stroke:#FACC15}}</style>
   <rect x="4" y="118" width="6" height="6" rx="1.2" class="fabric"/>
   <rect x="4" y="110" width="6" height="6" rx="1.2" class="fabric" fill-opacity=".3"/>
   <rect x="4" y="102" width="6" height="6" rx="1.2" class="fabric"/>

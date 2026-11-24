@@ -10,7 +10,7 @@ from pathlib import Path
 out = Path(__file__).parent
 HEIGHTS = [10, 10, 8, 6, 4, 5, 6, 4, 2, 3, 5, 7, 9, 10, 10]  # fabric cells per column
 PIERS = [3, 5, 7, 9, 11]                                     # columns carrying a pier
-LIGHT = dict(bridge="#1F2933", fabric="#2563EB", net="#D99A00")
+LIGHT = dict(bridge="#1F2933", fabric="#2563EB", net="#B7791F")
 DARK = dict(bridge="#E2E8F0", fabric="#60A5FA", net="#FACC15")
 
 def x(c): return 4 + 8 * c

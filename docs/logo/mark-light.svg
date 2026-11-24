@@ -110,7 +110,7 @@
   <path d="M66 45H76V54A5 5 0 0 0 66 54Z" fill="#1F2933"/>
   <path d="M82 45H92V54A5 5 0 0 0 82 54Z" fill="#1F2933"/>
   <path d="M98 45H108V54A5 5 0 0 0 98 54Z" fill="#1F2933"/>
-  <path d="M10 28H116" fill="none" stroke="#D99A00" stroke-width="3.5" stroke-linecap="round"/>
-  <circle cx="10" cy="28" r="4" fill="#D99A00"/>
-  <circle cx="116" cy="28" r="4" fill="#D99A00"/>
+  <path d="M10 28H116" fill="none" stroke="#B7791F" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="10" cy="28" r="4" fill="#B7791F"/>
+  <circle cx="116" cy="28" r="4" fill="#B7791F"/>
 </svg>
