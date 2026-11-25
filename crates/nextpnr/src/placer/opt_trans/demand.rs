@@ -159,4 +159,3 @@ pub fn continuous_line_estimate(
         })
         .reduce(|| 0.0, |a, b| a + b)
 }
-

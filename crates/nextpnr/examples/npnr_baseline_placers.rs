@@ -252,7 +252,12 @@ fn score_by_class(ctx: &Context) -> ClassStats {
     for net in ctx.nets() {
         let id = net.id();
         let info = ctx.design.net(id);
-        let live: Vec<_> = info.users().iter().copied().filter(|p| p.cell.is_some()).collect();
+        let live: Vec<_> = info
+            .users()
+            .iter()
+            .copied()
+            .filter(|p| p.cell.is_some())
+            .collect();
         let drv = info.driver().filter(|p| p.cell.is_some());
 
         // Mirror constrain_cell_pairs: LUT4 output, single sink, sink is a DFF.
@@ -383,8 +388,7 @@ fn main() {
             let Some(d) = ref_ctx.design.net(net.id()).driver() else {
                 continue;
             };
-            if ref_ctx.port_timing_class(d.cell, d.port)
-                != nextpnr::common::TimingPortClass::Ignore
+            if ref_ctx.port_timing_class(d.cell, d.port) != nextpnr::common::TimingPortClass::Ignore
             {
                 non_ignore += 1;
             }
@@ -466,7 +470,11 @@ fn main() {
     cfg.seed = envu("OT_SEED", cfg.seed as usize) as u64;
     eprintln!(
         "  cfg: iters={} dcd_iters={} steiner={} mst={} seed={}",
-        cfg.max_outer_iters, cfg.dcd_iters_per_cell, cfg.steiner_weight, cfg.mst_edge_weight, cfg.seed
+        cfg.max_outer_iters,
+        cfg.dcd_iters_per_cell,
+        cfg.steiner_weight,
+        cfg.mst_edge_weight,
+        cfg.seed
     );
     match place_opt_trans(&mut ot_ctx, &cfg) {
         Ok(()) => {
@@ -522,7 +530,9 @@ fn main() {
             if let Ok(path) = std::env::var("OT_WRITE_PLACEMENT") {
                 write_placement_json(&ot_ctx, bench, &path);
             }
-            println!("opt_trans    : wirelength {wl:>8}   nets {nets:>5}   bound {b}/{tot}   {secs:.1}s");
+            println!(
+                "opt_trans    : wirelength {wl:>8}   nets {nets:>5}   bound {b}/{tot}   {secs:.1}s"
+            );
             report_classes("", os);
             println!(
                 "               excess:   lutff-pair {:>6} | io {:>6} | core {:>6}",
@@ -550,6 +560,9 @@ fn main() {
                 );
             }
         }
-        Err(e) => println!("opt_trans    : FAILED after {:.1}s: {e}", t.elapsed().as_secs_f64()),
+        Err(e) => println!(
+            "opt_trans    : FAILED after {:.1}s: {e}",
+            t.elapsed().as_secs_f64()
+        ),
     }
 }

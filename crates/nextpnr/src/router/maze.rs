@@ -6,10 +6,10 @@
 //! penalties.
 
 use crate::chipdb::{PipId, WireId};
+use crate::common::DelayT;
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::NetId;
-use crate::common::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::astar::{

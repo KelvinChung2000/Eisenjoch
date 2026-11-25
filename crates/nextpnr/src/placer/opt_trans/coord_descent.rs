@@ -6,8 +6,8 @@
 //! moves update the cached distance fields. Pipe usage and effective
 //! conductance are refreshed between sweeps.
 
-use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 static COLLECT_NS: AtomicU64 = AtomicU64::new(0);
@@ -787,7 +787,11 @@ fn pin_pos_src(
             cell_x[idx],
             cell_y[idx],
             Some(idx),
-            PinSource::Movable { idx, off_x: 0.0, off_y: 0.0 },
+            PinSource::Movable {
+                idx,
+                off_x: 0.0,
+                off_y: 0.0,
+            },
         );
     }
 
@@ -1051,7 +1055,14 @@ fn solve_all_nets_with_displacement(
         "DistCache must hold exactly one row per net being solved"
     );
 
-    let mut edge_usage = vec![0.0; if collect_usage { network.num_pipes() } else { 0 }];
+    let mut edge_usage = vec![
+        0.0;
+        if collect_usage {
+            network.num_pipes()
+        } else {
+            0
+        }
+    ];
     let init_count = AtomicU32::new(0);
     let (chunks, energy) = solve_windowed(
         net_infos,
@@ -1419,12 +1430,20 @@ fn solve_all_nets_bresenham_logit(
         net_infos.len(),
         "DistCache must hold exactly one row per net being solved"
     );
-    bresenham_pass(network, net_infos, cfg, solve_pool, dist_rows, collect_usage, |row, info, pin_xy| {
-        row.clear();
-        if let Some(source) = source_node(info) {
-            fill_bresenham_surrogate_field(network, source, info, pin_xy, row);
-        }
-    })
+    bresenham_pass(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        dist_rows,
+        collect_usage,
+        |row, info, pin_xy| {
+            row.clear();
+            if let Some(source) = source_node(info) {
+                fill_bresenham_surrogate_field(network, source, info, pin_xy, row);
+            }
+        },
+    )
 }
 
 fn solve_bresenham_usage_only(
@@ -1434,7 +1453,15 @@ fn solve_bresenham_usage_only(
     solve_pool: &rayon::ThreadPool,
 ) -> SolveAccum {
     let mut no_rows = vec![(); net_infos.len()];
-    bresenham_pass(network, net_infos, cfg, solve_pool, &mut no_rows, true, |_, _, _| {})
+    bresenham_pass(
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        &mut no_rows,
+        true,
+        |_, _, _| {},
+    )
 }
 
 fn bresenham_pass<T: Send>(
@@ -1448,7 +1475,14 @@ fn bresenham_pass<T: Send>(
 ) -> SolveAccum {
     let batch_size =
         path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
-    let mut edge_usage = vec![0.0; if collect_usage { network.num_pipes() } else { 0 }];
+    let mut edge_usage = vec![
+        0.0;
+        if collect_usage {
+            network.num_pipes()
+        } else {
+            0
+        }
+    ];
     let (chunks, energy) = solve_windowed(
         net_infos,
         slots,
@@ -2663,9 +2697,9 @@ fn deterministic_sweep() -> bool {
     static DET: OnceLock<bool> = OnceLock::new();
     *DET.get_or_init(|| match std::env::var("NPNR_OT_DET_SWEEP") {
         Ok(v) => {
-            let n: u32 = v.parse().unwrap_or_else(|_| {
-                panic!("NPNR_OT_DET_SWEEP must be 0 or 1, got {v:?}")
-            });
+            let n: u32 = v
+                .parse()
+                .unwrap_or_else(|_| panic!("NPNR_OT_DET_SWEEP must be 0 or 1, got {v:?}"));
             assert!(n <= 1, "NPNR_OT_DET_SWEEP must be 0 or 1, got {n}");
             n == 1
         }
@@ -2994,8 +3028,10 @@ fn place_dcd_sweep(
             let mut start = 0usize;
             while start < n {
                 let end = (start + chunk).min(n);
-                let plans: Vec<CellPlan> =
-                    (start..end).into_par_iter().map(|ci| plan_cell(ci)).collect();
+                let plans: Vec<CellPlan> = (start..end)
+                    .into_par_iter()
+                    .map(|ci| plan_cell(ci))
+                    .collect();
                 for (offset, plan) in plans.into_iter().enumerate() {
                     let ci = start + offset;
                     let (gx, gy, committed) = commit_cell(ci, &plan);
@@ -4481,8 +4517,11 @@ pub fn run_inner_outer(
         let adj = &network.flat_adjacency;
         let pipes_b = network.pipes.capacity() * std::mem::size_of::<super::network::Pipe>();
         let nodes_b = network.nodes.capacity() * std::mem::size_of::<super::network::Node>();
-        let adj_b = (adj.offsets.capacity() + adj.neighbors.capacity() + adj.pipe_idx.capacity()
-            + adj.cost_int.capacity()) * 4
+        let adj_b = (adj.offsets.capacity()
+            + adj.neighbors.capacity()
+            + adj.pipe_idx.capacity()
+            + adj.cost_int.capacity())
+            * 4
             + adj.cost_f.capacity() * 4;
         let costvecs_b = network.pipe_costs.capacity() * 8
             + network.pipe_costs_int.capacity() * 4
@@ -4517,8 +4556,7 @@ pub fn run_inner_outer(
     let disp_tol = crate::env::var::<f64>("NPNR_OT_DISP_TOL")
         .map(|v| v.max(0.0))
         .unwrap_or(0.5);
-    let max_disp_stalls = crate::env::var::<usize>("NPNR_OT_DISP_STALL")
-        .unwrap_or(3);
+    let max_disp_stalls = crate::env::var::<usize>("NPNR_OT_DISP_STALL").unwrap_or(3);
     let mut disp_stalls = 0usize;
     let mut prev_cell_x: Option<Vec<f64>> = None;
     let mut prev_cell_y: Option<Vec<f64>> = None;
@@ -4532,7 +4570,10 @@ pub fn run_inner_outer(
     let named_nets = NameFilteredNets::new(ctx, alive_net_ids, cfg);
     let mut netinfo_buf: Vec<NetInfo> = Vec::new();
     let mut post_netinfo_buf: Vec<NetInfo> = Vec::new();
-    eprintln!("  ALG_T dcd_setup_done: {:.2}s (pre-loop)", t_dcd_entry.elapsed().as_secs_f64());
+    eprintln!(
+        "  ALG_T dcd_setup_done: {:.2}s (pre-loop)",
+        t_dcd_entry.elapsed().as_secs_f64()
+    );
     for outer in 0..max_iter {
         let t_outer = std::time::Instant::now();
 
@@ -4564,8 +4605,12 @@ pub fn run_inner_outer(
             cell_y,
             network,
         );
-        COLLECT_NS.fetch_add(t_collect.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
-        let cell_net_map = CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
+        COLLECT_NS.fetch_add(
+            t_collect.elapsed().as_nanos() as u64,
+            AtomicOrdering::Relaxed,
+        );
+        let cell_net_map =
+            CellNetMap::build_cached(&net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         if outer == 0 && std::env::var("NPNR_OT_COLOR_DIAG").ok().as_deref() == Some("1") {
             measure_cell_coloring(&net_infos, &cell_net_map, n);
         }
@@ -4618,7 +4663,11 @@ pub fn run_inner_outer(
 
         let t_refresh = std::time::Instant::now();
         if set_analytic_phase(outer) {
-            eprintln!("    analytic_phase[outer={}]: solve skipped, k={}", outer, analytic_k_seed());
+            eprintln!(
+                "    analytic_phase[outer={}]: solve skipped, k={}",
+                outer,
+                analytic_k_seed()
+            );
         }
         update_effective_conductance(network, solve_pool, resistance_model, cfg.graph_model);
         report_reff_distribution(network, resistance_model, outer);
@@ -4632,7 +4681,11 @@ pub fn run_inner_outer(
         } else {
             None
         };
-        eprintln!("PHASE_MARK outer={} enter=pre_solve rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
+        eprintln!(
+            "PHASE_MARK outer={} enter=pre_solve rss={:.0}MB",
+            outer,
+            process_rss_kb() as f64 / 1024.0
+        );
         let rss_before_pre_solve = process_rss_kb();
         let pre_solve = solve_distance_cache(
             network,
@@ -4652,9 +4705,7 @@ pub fn run_inner_outer(
                 let mut r: u64 = 0;
                 for (k, v) in row.iter() {
                     r = r.wrapping_add(
-                        (*k as u64)
-                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                            ^ (v.to_bits() as u64),
+                        (*k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (v.to_bits() as u64),
                     );
                 }
                 h_dist = h_dist.rotate_left(5).wrapping_add(r);
@@ -4764,17 +4815,12 @@ pub fn run_inner_outer(
                     if rem == 0 {
                         return Some(total);
                     }
-                    let (s, e) = (
-                        adj.offsets[cur] as usize,
-                        adj.offsets[cur + 1] as usize,
-                    );
+                    let (s, e) = (adj.offsets[cur] as usize, adj.offsets[cur + 1] as usize);
                     let mut best: Option<(f64, f64, usize)> = None;
                     for k in s..e {
                         let nb = adj.neighbors[k] as usize;
                         let (nx, ny) = (network.nodes[nb].tile_x, network.nodes[nb].tile_y);
-                        if (tx - nx).abs() > (tx - cx).abs()
-                            || (ty - ny).abs() > (ty - cy).abs()
-                        {
+                        if (tx - nx).abs() > (tx - cx).abs() || (ty - ny).abs() > (ty - cy).abs() {
                             continue;
                         }
                         let prog = rem - ((tx - nx).abs() + (ty - ny).abs());
@@ -5368,7 +5414,8 @@ pub fn run_inner_outer(
         if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
             let mut h: u64 = 0;
             for (x, y) in cell_x.iter().zip(cell_y.iter()) {
-                h = h.rotate_left(5)
+                h = h
+                    .rotate_left(5)
                     .wrapping_add(x.to_bits())
                     .rotate_left(7)
                     .wrapping_add(y.to_bits());
@@ -5376,7 +5423,11 @@ pub fn run_inner_outer(
             eprintln!("    det_presweep[outer={}]: pos={:016x}", outer, h);
         }
         diag_ctx.sweep_begin(n, outer);
-        eprintln!("PHASE_MARK outer={} enter=dcd_sweep rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
+        eprintln!(
+            "PHASE_MARK outer={} enter=dcd_sweep rss={:.0}MB",
+            outer,
+            process_rss_kb() as f64 / 1024.0
+        );
         let t_dcd = std::time::Instant::now();
         let moved = match cfg.sweep_mode {
             super::config::SweepMode::JacobiFullscan => place_dcd_sweep(
@@ -5424,11 +5475,8 @@ pub fn run_inner_outer(
                 // optimize every cell in topological order (drivers before
                 // sinks).
                 let t_pyr = std::time::Instant::now();
-                let pyramids = region_min::build_all(
-                    &dist_cache.rows,
-                    network.width,
-                    network.height,
-                );
+                let pyramids =
+                    region_min::build_all(&dist_cache.rows, network.width, network.height);
                 let pyr_ms = t_pyr.elapsed().as_millis();
                 if want_perf {
                     let bytes: usize = pyramids.iter().map(|p| p.heap_bytes()).sum();
@@ -5546,8 +5594,7 @@ pub fn run_inner_outer(
                 &mut diag_ctx,
             ),
             super::config::SweepMode::ColoredGs => {
-                let threshold =
-                    crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
+                let threshold = crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
                 let coloring = build_cell_coloring(&net_infos, &cell_net_map, n, threshold);
                 if outer == 0 {
                     eprintln!(
@@ -5574,19 +5621,31 @@ pub fn run_inner_outer(
         if std::env::var("NPNR_OT_DETERMINISM").ok().as_deref() == Some("1") {
             let mut h: u64 = 0;
             for (x, y) in cell_x.iter().zip(cell_y.iter()) {
-                h = h.rotate_left(5)
+                h = h
+                    .rotate_left(5)
                     .wrapping_add(x.to_bits())
                     .rotate_left(7)
                     .wrapping_add(y.to_bits());
             }
-            eprintln!("    det_postsweep[outer={}]: pos={:016x} moved={}", outer, h, moved);
+            eprintln!(
+                "    det_postsweep[outer={}]: pos={:016x} moved={}",
+                outer, h, moved
+            );
         }
-        eprintln!("PHASE_MARK outer={} leave=dcd_sweep rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
+        eprintln!(
+            "PHASE_MARK outer={} leave=dcd_sweep rss={:.0}MB",
+            outer,
+            process_rss_kb() as f64 / 1024.0
+        );
         let dcd_ms = t_dcd.elapsed().as_millis();
 
         common::clamp_positions(cell_x, cell_y, phys_max_x, phys_max_y);
 
-        eprintln!("PHASE_MARK outer={} enter=post_refresh rss={:.0}MB", outer, process_rss_kb() as f64 / 1024.0);
+        eprintln!(
+            "PHASE_MARK outer={} enter=post_refresh rss={:.0}MB",
+            outer,
+            process_rss_kb() as f64 / 1024.0
+        );
         let t_post_refresh = std::time::Instant::now();
         let t_collect2 = std::time::Instant::now();
         let mut post_net_infos = std::mem::take(&mut post_netinfo_buf);
@@ -5599,8 +5658,12 @@ pub fn run_inner_outer(
             cell_y,
             network,
         );
-        COLLECT_NS.fetch_add(t_collect2.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
-        let post_cell_net_map = CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
+        COLLECT_NS.fetch_add(
+            t_collect2.elapsed().as_nanos() as u64,
+            AtomicOrdering::Relaxed,
+        );
+        let post_cell_net_map =
+            CellNetMap::build_cached(&post_net_infos, n, want_topo_order(cfg), &mut netmap_cache);
         let (state_energy, refresh_ms, solve_stats) = if cfg.path_model == PathModel::BresenhamLogit
         {
             let post_solve = solve_bresenham_usage_only(network, &post_net_infos, cfg, solve_pool);
@@ -5680,7 +5743,14 @@ pub fn run_inner_outer(
                     })
                     .collect();
                 eprintln!("    settle_hist[outer={}]: {}", outer, hist.join("  "));
-                let fan_labels = ["fan1", "fan2-4", "fan5-16", "fan17-64", "fan65-256", "fan>256"];
+                let fan_labels = [
+                    "fan1",
+                    "fan2-4",
+                    "fan5-16",
+                    "fan17-64",
+                    "fan65-256",
+                    "fan>256",
+                ];
                 let fan: Vec<String> = (0..6)
                     .map(|b| {
                         format!(
@@ -5688,8 +5758,7 @@ pub fn run_inner_outer(
                             fan_labels[b],
                             post_solve.diag_fan_nets[b],
                             if total_settles > 0 {
-                                100.0 * post_solve.diag_fan_settles[b] as f64
-                                    / total_settles as f64
+                                100.0 * post_solve.diag_fan_settles[b] as f64 / total_settles as f64
                             } else {
                                 0.0
                             }
@@ -6363,7 +6432,12 @@ mod hardening_tests {
         let first = after_first_overflow.unwrap();
         assert!(first > 0.0);
         // Six quiet-or-overflow iters later it must have grown, not decayed.
-        assert!(prev > first, "final {} did not exceed first {}", prev, first);
+        assert!(
+            prev > first,
+            "final {} did not exceed first {}",
+            prev,
+            first
+        );
     }
 
     #[test]
@@ -6448,7 +6522,9 @@ mod hardening_tests {
 #[cfg(test)]
 mod driver_hole_tests {
     use super::*;
-    use crate::placer::opt_trans::network::{Direction, FlatAdjacency, Node, Pipe, PipeType, TileGrid};
+    use crate::placer::opt_trans::network::{
+        Direction, FlatAdjacency, Node, Pipe, PipeType, TileGrid,
+    };
     use crate::placer::opt_trans::tile_cache::SpanCostTable;
 
     pub(super) const GRID_W: i32 = 8;
@@ -6457,7 +6533,11 @@ mod driver_hole_tests {
     pub(super) fn line_network() -> PipeNetwork {
         let n = (GRID_W * H) as usize;
         let nodes: Vec<Node> = (0..n)
-            .map(|i| Node { tile_x: i as i32, tile_y: 0, pressure: 0.0 })
+            .map(|i| Node {
+                tile_x: i as i32,
+                tile_y: 0,
+                pressure: 0.0,
+            })
             .collect();
         let pipes: Vec<Pipe> = (0..n - 1)
             .map(|i| Pipe {
@@ -6503,9 +6583,24 @@ mod driver_hole_tests {
             debug_name: Arc::from("n"),
             pin_src: Vec::new(),
             pins: vec![
-                PinNode { node: 0, cell_idx: Some(0), is_driver: true, is_fixed: false },
-                PinNode { node: 6, cell_idx: None, is_driver: false, is_fixed: true },
-                PinNode { node: 7, cell_idx: None, is_driver: false, is_fixed: true },
+                PinNode {
+                    node: 0,
+                    cell_idx: Some(0),
+                    is_driver: true,
+                    is_fixed: false,
+                },
+                PinNode {
+                    node: 6,
+                    cell_idx: None,
+                    is_driver: false,
+                    is_fixed: true,
+                },
+                PinNode {
+                    node: 7,
+                    cell_idx: None,
+                    is_driver: false,
+                    is_fixed: true,
+                },
             ],
             has_fixed_pin: true,
         }]
@@ -6530,7 +6625,17 @@ mod driver_hole_tests {
         let cell_nets = [(0usize, 0usize)];
         (0..GRID_W)
             .map(|gx| {
-                evaluate_cell_at(0, gx, 0, &cell_nets, &net_infos, &dist_cache, &network, &cfg, &validity)
+                evaluate_cell_at(
+                    0,
+                    gx,
+                    0,
+                    &cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    &network,
+                    &cfg,
+                    &validity,
+                )
             })
             .collect()
     }
@@ -6569,12 +6674,24 @@ mod driver_hole_tests {
             .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        assert_eq!(argmin, 6, "driver settled at x={}, profile {:?}", argmin, profile);
+        assert_eq!(
+            argmin, 6,
+            "driver settled at x={}, profile {:?}",
+            argmin, profile
+        );
         for w in profile[..=argmin].windows(2) {
-            assert!(w[1] < w[0], "not decreasing up to the neighbour: {:?}", profile);
+            assert!(
+                w[1] < w[0],
+                "not decreasing up to the neighbour: {:?}",
+                profile
+            );
         }
         for w in profile[argmin..].windows(2) {
-            assert!(w[1] > w[0], "not increasing past the neighbour: {:?}", profile);
+            assert!(
+                w[1] > w[0],
+                "not increasing past the neighbour: {:?}",
+                profile
+            );
         }
     }
 
@@ -6620,7 +6737,15 @@ mod proximal_tests {
         (0..GRID_W)
             .map(|gx| {
                 evaluate_cell_at(
-                    0, gx, 0, &cell_nets, &net_infos, &dist_cache, &network, &cfg, &validity,
+                    0,
+                    gx,
+                    0,
+                    &cell_nets,
+                    &net_infos,
+                    &dist_cache,
+                    &network,
+                    &cfg,
+                    &validity,
                 )
             })
             .collect()
@@ -6673,7 +6798,11 @@ mod proximal_tests {
             .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap()
             .0;
-        assert_eq!(argmin, 0, "cell moved despite a huge proximal weight: {:?}", p);
+        assert_eq!(
+            argmin, 0,
+            "cell moved despite a huge proximal weight: {:?}",
+            p
+        );
     }
 }
 
@@ -6683,7 +6812,12 @@ mod memory_bound_tests {
     use super::*;
 
     fn pin(node: usize, is_driver: bool) -> PinNode {
-        PinNode { node, cell_idx: None, is_driver, is_fixed: true }
+        PinNode {
+            node,
+            cell_idx: None,
+            is_driver,
+            is_fixed: true,
+        }
     }
 
     fn two_pin_net(driver: usize, sink: usize) -> NetInfo {
@@ -6725,7 +6859,10 @@ mod memory_bound_tests {
         // Inside the window every label survives unchanged.
         for &node in &ws.settle_order {
             let near = (node as i32).abs() <= r || (node as i32 - 1500).abs() <= r;
-            assert_eq!(row.get(&(node as u32)).copied(), near.then(|| ws.dist[node] as f32));
+            assert_eq!(
+                row.get(&(node as u32)).copied(),
+                near.then(|| ws.dist[node] as f32)
+            );
         }
     }
 
@@ -6759,7 +6896,9 @@ mod memory_bound_tests {
     fn fake_solve(net_idx: usize, flows: &mut Vec<(u32, f64)>) -> f64 {
         let mut h = net_idx as u64 ^ 0x9e37_79b9_7f4a_7c15;
         for _ in 0..(1 + net_idx % 5) {
-            h = h.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1442695040888963407);
+            h = h
+                .wrapping_mul(0x5851_f42d_4c95_7f2d)
+                .wrapping_add(1442695040888963407);
             flows.push(((h >> 59) as u32, 1.0 / (3.0 + (h >> 40) as f64 % 97.0)));
         }
         (h >> 11) as f64 / (1u64 << 53) as f64 / 7.0
@@ -6786,7 +6925,10 @@ mod memory_bound_tests {
         }
 
         for threads in [1, 3, 8] {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             let mut usage = vec![0.0f64; 32];
             let mut slots = vec![(); nets.len()];
             let (stats, energy) = solve_windowed(

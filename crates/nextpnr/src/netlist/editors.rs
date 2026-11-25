@@ -1,6 +1,6 @@
 use crate::chipdb::{BelId, PipId, WireId};
-use crate::common::{IdString, PlaceStrength};
 use crate::common::DelayT;
+use crate::common::{IdString, PlaceStrength};
 
 use super::{
     CellId, CellInfo, CellPin, FlatIndex, NetId, NetInfo, PipMap, PortType, Property, TimingIndex,

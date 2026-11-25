@@ -6,11 +6,10 @@ use pyo3::exceptions::{PyFileNotFoundError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use ::nextpnr::checkpoint;
-use ::nextpnr::fasm;
-use ::nextpnr::report_json::report_json;
-use ::nextpnr::routed_json::routed_json;
 use ::nextpnr::chipdb::ChipDb;
+use ::nextpnr::common::{ClockEdge, DelayT};
 use ::nextpnr::context::Context;
+use ::nextpnr::fasm;
 use ::nextpnr::frontend::parse_json;
 use ::nextpnr::netlist::{NetId, Rect};
 use ::nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
@@ -19,13 +18,15 @@ use ::nextpnr::placer::opt_trans::config::InitStrategy;
 use ::nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use ::nextpnr::placer::sa::{PlacerSa, PlacerSaCfg};
 use ::nextpnr::placer::{refine_placement, Placer, PlacerPipeline, RefineCfg};
+use ::nextpnr::report_json::report_json;
+use ::nextpnr::routed_json::routed_json;
 use ::nextpnr::router::maze::{Router1, Router1Cfg};
 use ::nextpnr::router::raster::{RasterRouter, RasterRouterCfg};
 use ::nextpnr::router::router2::{Router2, Router2Cfg, TimingDrivenCfg};
 use ::nextpnr::router::Router;
-use ::nextpnr::common::{ClockEdge, DelayT};
 use ::nextpnr::sta::{
-    register_clock_nets, routed_back_annotation, BackAnnotation, CritNorm, DelayBounds, Criticality, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
+    register_clock_nets, routed_back_annotation, BackAnnotation, CritNorm, Criticality,
+    DelayBounds, InterconnectModel, InterconnectStage, PlacedEstimate, RustSta, StaSession,
     StaSessionError, NOTIONAL_CLASSLESS_PIPS,
 };
 use nextpnr_upstream::{
@@ -457,7 +458,10 @@ impl PyContext {
             .design
             .net_by_name(self.ctx.id_pool.intern(net_name))
             .ok_or_else(|| PyValueError::new_err(format!("Unknown clock net: {net_name}")))?;
-        self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
+        self.ctx
+            .design
+            .net_edit(net)
+            .set_clock_constraint(period_ps);
         Ok(())
     }
 
@@ -471,7 +475,10 @@ impl PyContext {
             .filter(|&net| self.ctx.design.net(net).clock_constraint == 0)
             .collect();
         for &net in &nets {
-            self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
+            self.ctx
+                .design
+                .net_edit(net)
+                .set_clock_constraint(period_ps);
         }
         Ok(nets
             .iter()
@@ -509,10 +516,16 @@ impl PyContext {
                 )))
             }
         };
-        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
-            .map_err(|e| sta_error(StaSessionError::from(e)))?;
+        let model = InterconnectModel::new(
+            &self.ctx,
+            NOTIONAL_CLASSLESS_PIPS,
+            PlacedEstimate::ExactSearch,
+        )
+        .map_err(|e| sta_error(StaSessionError::from(e)))?;
         let session = StaSession::build(&self.ctx, model, stage).map_err(sta_error)?;
-        let report = session.report(&self.ctx, paths_per_domain).map_err(sta_error)?;
+        let report = session
+            .report(&self.ctx, paths_per_domain)
+            .map_err(sta_error)?;
         Ok(PyTimingReport {
             fmax_mhz: report.fmax_mhz(),
             wns_ns: report.wns_ns(),
@@ -533,8 +546,12 @@ impl PyContext {
     ///
     /// Raises RuntimeError when a net is not fully routed or the chipdb has no speed grade.
     fn routed_back_annotation(&self) -> PyResult<PyBackAnnotation> {
-        let model = InterconnectModel::new(&self.ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
-            .map_err(|e| sta_error(StaSessionError::from(e)))?;
+        let model = InterconnectModel::new(
+            &self.ctx,
+            NOTIONAL_CLASSLESS_PIPS,
+            PlacedEstimate::ExactSearch,
+        )
+        .map_err(|e| sta_error(StaSessionError::from(e)))?;
         routed_back_annotation(&self.ctx, &model)
             .map(PyBackAnnotation::from)
             .map_err(sta_error)
@@ -553,7 +570,8 @@ impl PyContext {
     ///
     /// Raises RuntimeError when a property is an integer wider than 32 bits.
     fn routed_json(&self) -> PyResult<String> {
-        let json = routed_json(&self.ctx).map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        let json =
+            routed_json(&self.ctx).map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
         Ok(serde_json::to_string_pretty(&json).expect("a JSON value serialises"))
     }
 
@@ -887,37 +905,46 @@ impl From<BackAnnotation> for PyBackAnnotation {
                     .cells
                     .into_iter()
                     .map(|cell| {
-                        record(py, PyCellDelays {
-                            instance: cell.instance,
-                            cell_type: cell.cell_type,
-                            iopaths: cell
-                                .iopaths
-                                .into_iter()
-                                .map(|arc| {
-                                    let (early_ps, late_ps) = bounds(arc.delay);
-                                    record(py, PyIopathDelay {
-                                        from_port: arc.from,
-                                        to_port: arc.to,
-                                        launch_edge: arc.launch_edge.map(sdf_edge),
-                                        early_ps,
-                                        late_ps,
+                        record(
+                            py,
+                            PyCellDelays {
+                                instance: cell.instance,
+                                cell_type: cell.cell_type,
+                                iopaths: cell
+                                    .iopaths
+                                    .into_iter()
+                                    .map(|arc| {
+                                        let (early_ps, late_ps) = bounds(arc.delay);
+                                        record(
+                                            py,
+                                            PyIopathDelay {
+                                                from_port: arc.from,
+                                                to_port: arc.to,
+                                                launch_edge: arc.launch_edge.map(sdf_edge),
+                                                early_ps,
+                                                late_ps,
+                                            },
+                                        )
                                     })
-                                })
-                                .collect(),
-                            checks: cell
-                                .checks
-                                .into_iter()
-                                .map(|check| {
-                                    record(py, PyTimingCheck {
-                                        data_port: check.data,
-                                        clock_port: check.clock,
-                                        clock_edge: sdf_edge(check.edge),
-                                        setup_ps: check.setup_ps,
-                                        hold_ps: check.hold_ps,
+                                    .collect(),
+                                checks: cell
+                                    .checks
+                                    .into_iter()
+                                    .map(|check| {
+                                        record(
+                                            py,
+                                            PyTimingCheck {
+                                                data_port: check.data,
+                                                clock_port: check.clock,
+                                                clock_edge: sdf_edge(check.edge),
+                                                setup_ps: check.setup_ps,
+                                                hold_ps: check.hold_ps,
+                                            },
+                                        )
                                     })
-                                })
-                                .collect(),
-                        })
+                                    .collect(),
+                            },
+                        )
                     })
                     .collect(),
                 interconnects: annotation
@@ -925,14 +952,17 @@ impl From<BackAnnotation> for PyBackAnnotation {
                     .into_iter()
                     .map(|net| {
                         let (early_ps, late_ps) = bounds(net.delay);
-                        record(py, PyInterconnectDelay {
-                            source_instance: net.source.instance,
-                            source_port: net.source.port,
-                            load_instance: net.load.instance,
-                            load_port: net.load.port,
-                            early_ps,
-                            late_ps,
-                        })
+                        record(
+                            py,
+                            PyInterconnectDelay {
+                                source_instance: net.source.instance,
+                                source_port: net.source.port,
+                                load_instance: net.load.instance,
+                                load_port: net.load.port,
+                                early_ps,
+                                late_ps,
+                            },
+                        )
                     })
                     .collect(),
             }

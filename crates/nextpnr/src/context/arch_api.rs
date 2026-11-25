@@ -17,8 +17,8 @@
 
 use crate::chipdb::{BelId, Loc, WireId};
 use crate::common::IdString;
-use crate::netlist::{CellId, CellPin, NetId};
 use crate::common::{DelayT, TimingPortClass};
+use crate::netlist::{CellId, CellPin, NetId};
 
 use super::Context;
 
@@ -187,13 +187,10 @@ impl Context {
         let Some(port_info) = info.ports.get(&port) else {
             return TimingPortClass::Ignore;
         };
-        let type_idx = info
-            .timing_index
-            .map(|ti| ti.0 as usize)
-            .or_else(|| {
-                self.chipdb()
-                    .cell_timing_index(speed_grade, info.cell_type.index())
-            });
+        let type_idx = info.timing_index.map(|ti| ti.0 as usize).or_else(|| {
+            self.chipdb()
+                .cell_timing_index(speed_grade, info.cell_type.index())
+        });
         let Some(type_idx) = type_idx else {
             return TimingPortClass::Ignore;
         };
@@ -312,7 +309,10 @@ impl Context {
         if root_info.constr_abs_z {
             root_loc.z = root_info.constr_z;
             root_bel = self.bel_by_location(root_loc)?;
-            if !self.bel(root_bel).is_valid_for_cell_type(root_info.cell_type) {
+            if !self
+                .bel(root_bel)
+                .is_valid_for_cell_type(root_info.cell_type)
+            {
                 return None;
             }
         }

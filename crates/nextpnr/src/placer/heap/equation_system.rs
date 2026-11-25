@@ -136,12 +136,12 @@ impl EquationSystem {
 fn diagonal_preconditioner(a: &[Vec<(i32, f64)>]) -> Vec<f64> {
     a.iter()
         .enumerate()
-        .map(|(j, entries)| {
-            match entries.iter().find(|&&(row, _)| row == j as i32) {
+        .map(
+            |(j, entries)| match entries.iter().find(|&&(row, _)| row == j as i32) {
                 Some(&(_, val)) if val != 0.0 => 1.0 / val,
                 _ => 1.0,
-            }
-        })
+            },
+        )
         .collect()
 }
 

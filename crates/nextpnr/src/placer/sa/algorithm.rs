@@ -259,7 +259,10 @@ mod tests {
     fn candidate_lists_do_not_scale_with_alias_count() {
         let mut ctx = example_context();
         let region = ctx.design.add_region(ctx.id("r"));
-        ctx.design.region_mut(region).rects.push(Rect::new(1, 1, 2, 2));
+        ctx.design
+            .region_mut(region)
+            .rects
+            .push(Rect::new(1, 1, 2, 2));
         let mut cells = Vec::new();
         for i in 0..50 {
             let alias = format!("ALIAS{i}");

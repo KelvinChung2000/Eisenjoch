@@ -6,10 +6,10 @@
 mod common;
 
 use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::common::{DelayQuad, DelayT};
 use nextpnr::common::{IdString, PlaceStrength};
 use nextpnr::context::BelPin;
 use nextpnr::netlist::{PortType, Property};
-use nextpnr::common::{DelayQuad, DelayT};
 use rstest::rstest;
 
 // =========================================================================

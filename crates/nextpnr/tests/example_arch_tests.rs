@@ -6,6 +6,7 @@
 mod common;
 
 use nextpnr::chipdb::{BelId, ChipDb, TileTypePod};
+use nextpnr::common::ClockEdge;
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::{BelPin, Context};
 use nextpnr::netlist::CellId;
@@ -13,7 +14,6 @@ use nextpnr::placer::heap::{place_heap, PlacerHeapCfg};
 use nextpnr::read_packed;
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
-use nextpnr::common::ClockEdge;
 
 // =====================================================================
 // Test helpers

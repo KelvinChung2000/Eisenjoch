@@ -134,12 +134,7 @@ impl CostModel {
 
     /// `get_timing_cost` -- arc delay weighted by criticality, normalised per
     /// `crit_norm` and raised to `crit_exp`, so the critical few dominate.
-    fn arc_costs(
-        ctx: &Context,
-        sta: Option<&StaSession>,
-        net: NetId,
-        cfg: &RefineCfg,
-    ) -> Vec<f64> {
+    fn arc_costs(ctx: &Context, sta: Option<&StaSession>, net: NetId, cfg: &RefineCfg) -> Vec<f64> {
         let info = ctx.design.net(net);
         let Some(sta) = sta else {
             return Vec::new();
@@ -227,8 +222,7 @@ impl CostModel {
             let bb = Self::net_bounds(ctx, net);
             let arcs = Self::arc_costs(ctx, sta, net, cfg);
             staged.wirelen_delta += bb.hpwl(cfg) - self.bounds[i].hpwl(cfg);
-            staged.timing_delta +=
-                arcs.iter().sum::<f64>() - self.arc_cost[i].iter().sum::<f64>();
+            staged.timing_delta += arcs.iter().sum::<f64>() - self.arc_cost[i].iter().sum::<f64>();
             staged.touched.push((i, bb, arcs));
         }
         staged
@@ -237,11 +231,7 @@ impl CostModel {
     /// Arcs carrying a nonzero timing cost. A zero here means criticality came
     /// back flat and the timing half of the objective is doing nothing.
     pub(super) fn critical_arcs(&self) -> usize {
-        self.arc_cost
-            .iter()
-            .flatten()
-            .filter(|&&c| c > 0.0)
-            .count()
+        self.arc_cost.iter().flatten().filter(|&&c| c > 0.0).count()
     }
 
     /// `commit_cost_changes`.

@@ -108,7 +108,11 @@ fn parse_hex_f64(s: &str) -> f64 {
         scale /= 16.0;
     }
     let out = value * 2f64.powi(exp);
-    if neg { -out } else { out }
+    if neg {
+        -out
+    } else {
+        out
+    }
 }
 
 fn assert_close(got: &[f64], want: &[f64], eps: f64, what: &str) {
@@ -154,7 +158,10 @@ fn relative_residual(es: &EquationSystem, x: &[f64]) -> f64 {
             ax[row as usize] += val * x[col];
         }
     }
-    let num: f64 = (0..n).map(|i| (ax[i] - es.rhs[i]).powi(2)).sum::<f64>().sqrt();
+    let num: f64 = (0..n)
+        .map(|i| (ax[i] - es.rhs[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
     let den: f64 = es.rhs.iter().map(|v| v * v).sum::<f64>().sqrt();
     num / den
 }
@@ -228,7 +235,10 @@ fn solve_converges_to_the_same_answer_as_eigen() {
     // not.
     let golden = load_golden();
 
-    for (n, band, key) in [(32i32, 3i32, "solve 32 3 1e-13"), (64, 4, "solve 64 4 1e-13")] {
+    for (n, band, key) in [
+        (32i32, 3i32, "solve 32 3 1e-13"),
+        (64, 4, "solve 64 4 1e-13"),
+    ] {
         let want: Vec<f64> = golden
             .get(key)
             .unwrap_or_else(|| panic!("golden fixture missing `{key}`"))

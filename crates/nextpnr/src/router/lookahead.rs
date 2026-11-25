@@ -29,9 +29,9 @@
 //! per tile of advance.
 
 use crate::chipdb::{ChipDb, PipId, WireId};
+use crate::common::DelayT;
 use crate::context::Context;
 use crate::read_packed;
-use crate::common::DelayT;
 use rustc_hash::FxHashMap;
 
 use super::astar::default_pip_cost;

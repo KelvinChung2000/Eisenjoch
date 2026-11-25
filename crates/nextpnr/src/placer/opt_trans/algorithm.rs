@@ -24,12 +24,18 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     cfg.apply_env_overrides();
     let t_alg = std::time::Instant::now();
     PlacerPipeline::prepare_discrete(ctx, cfg.seed)?;
-    eprintln!("  ALG_T prepare_discrete: {:.1}s", t_alg.elapsed().as_secs_f64());
+    eprintln!(
+        "  ALG_T prepare_discrete: {:.1}s",
+        t_alg.elapsed().as_secs_f64()
+    );
     crate::solver::set_solver_threads(cfg.num_threads);
 
     let target_scale = 1.0;
     let (cell_to_idx, idx_to_cell) = common::collect_movable_cells(ctx);
-    eprintln!("  ALG_T collect_movable: {:.1}s", t_alg.elapsed().as_secs_f64());
+    eprintln!(
+        "  ALG_T collect_movable: {:.1}s",
+        t_alg.elapsed().as_secs_f64()
+    );
     let alive_net_ids: Vec<_> = ctx
         .design
         .iter_alive_nets()
@@ -103,10 +109,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     // run. Empirically the energy landscape has multiple basins that differ
     // by 30-40% in final energy; picking among warmups avoids the lottery
     // of single-seed initialization.
-    let warmup_starts = crate::env::var::<usize>("NPNR_OT_WARMUP_STARTS")
-        .unwrap_or(0);
-    let warmup_iters = crate::env::var::<usize>("NPNR_OT_WARMUP_ITERS")
-        .unwrap_or(5);
+    let warmup_starts = crate::env::var::<usize>("NPNR_OT_WARMUP_STARTS").unwrap_or(0);
+    let warmup_iters = crate::env::var::<usize>("NPNR_OT_WARMUP_ITERS").unwrap_or(5);
 
     if warmup_starts >= 2 {
         eprintln!(
@@ -236,7 +240,10 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
     }
 
     crate::placer::legalize::legalize(ctx, &idx_to_cell, &phys_x, &phys_y, &cfg.legalization)?;
-    eprintln!("  ALG_T legalize_done: {:.2}s", t_alg.elapsed().as_secs_f64());
+    eprintln!(
+        "  ALG_T legalize_done: {:.2}s",
+        t_alg.elapsed().as_secs_f64()
+    );
 
     if std::env::var("NPNR_OT_CHECK_ROUTABILITY").ok().as_deref() == Some("1") {
         let report_g = crate::placer::routability::check_routability_global(ctx);

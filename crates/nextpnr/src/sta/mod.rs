@@ -35,11 +35,11 @@ pub const NOTIONAL_CLASSLESS_PIPS: ClasslessPips = ClasslessPips::Notional(Delay
     early_ps: 100,
     late_ps: 100,
 });
-pub use criticality::{CritNorm, PairBudget};
 pub use back_annotation::{
     routed_back_annotation, BackAnnotation, CellDelays, InterconnectDelay, IopathDelay, PinRef,
     TimingCheck,
 };
+pub use criticality::{CritNorm, PairBudget};
 pub use report::{DomainReport, HoldReport, PathPinReport, PathReport, TimingReport};
 pub use ruststa::engine::incr::{ArcTiming, Criticality};
 pub use ruststa::engine::types::ClockId;
@@ -285,7 +285,9 @@ fn black_boxes(ctx: &Context, roles: &Roles) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
         if let CellRole::Instance(CellTiming::BlackBox) = roles.cells[&cell_id] {
-            *counts.entry(ctx.name_of(cell.cell_type).to_owned()).or_insert(0) += 1;
+            *counts
+                .entry(ctx.name_of(cell.cell_type).to_owned())
+                .or_insert(0) += 1;
         }
     }
     counts

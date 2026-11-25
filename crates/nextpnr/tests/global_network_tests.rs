@@ -87,7 +87,11 @@ fn global_network_is_what_only_global_buffers_drive() {
             t
         })
         .collect();
-    assert!(tiles.len() > 10, "global network spans {} tiles", tiles.len());
+    assert!(
+        tiles.len() > 10,
+        "global network spans {} tiles",
+        tiles.len()
+    );
 
     // Dedicated means dedicated: nothing outside the network drives it, and
     // every node it leaves for is also driven from elsewhere.
@@ -96,7 +100,10 @@ fn global_network_is_what_only_global_buffers_drive() {
             continue;
         }
         db.pips_uphill_cb(w, |pip| {
-            assert!(net.contains(&db.pip_src_wire(pip)), "{w} driven from outside");
+            assert!(
+                net.contains(&db.pip_src_wire(pip)),
+                "{w} driven from outside"
+            );
         });
     }
     for &w in net {
@@ -121,9 +128,14 @@ fn a_net_driven_by_a_global_buffer_is_global() {
     let net = ctx.design.add_net(ctx.id("clk"));
     let port = ctx.id("O");
     ctx.design.cell_edit(cell).add_port(port, PortType::Out);
-    ctx.design.cell_edit(cell).set_port_net(port, Some(net), None);
+    ctx.design
+        .cell_edit(cell)
+        .set_port_net(port, Some(net), None);
     ctx.design.net_edit(net).set_driver(cell, port);
-    assert!(!is_global_net(&ctx, net), "an unplaced driver is not on a global buffer");
+    assert!(
+        !is_global_net(&ctx, net),
+        "an unplaced driver is not on a global buffer"
+    );
     assert!(ctx.bind_bel(pad, cell, PlaceStrength::Strong));
     assert!(is_global_net(&ctx, net));
 }

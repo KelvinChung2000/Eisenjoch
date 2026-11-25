@@ -26,7 +26,10 @@ impl Context {
     #[inline]
     fn wire_key(&self, wire: WireId) -> Option<(u32, u32)> {
         let wire = self.chipdb.canonical_wire(wire);
-        Some((u32::try_from(wire.tile()).ok()?, u32::try_from(wire.index()).ok()?))
+        Some((
+            u32::try_from(wire.tile()).ok()?,
+            u32::try_from(wire.index()).ok()?,
+        ))
     }
 
     /// Return the current binding of `wire`'s node, or `None` if unbound or

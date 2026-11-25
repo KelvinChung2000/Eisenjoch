@@ -23,7 +23,11 @@ pub struct BucketGrid<'a> {
 impl<'a> BucketGrid<'a> {
     /// `bels` must be in chipdb order, as every list from the context is.
     pub fn new(bels: &'a [BelId], width: i32, height: i32) -> Self {
-        Self { bels, width, height }
+        Self {
+            bels,
+            width,
+            height,
+        }
     }
 
     pub fn bels(&self) -> &'a [BelId] {

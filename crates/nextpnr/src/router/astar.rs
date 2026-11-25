@@ -38,9 +38,9 @@ use std::collections::{hash_map::Entry, BinaryHeap};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::chipdb::{ChipDb, PipId, WireId};
+use crate::common::DelayT;
 use crate::context::Context;
 use crate::metrics::BoundingBox;
-use crate::common::DelayT;
 
 // ---------------------------------------------------------------------------
 // Cost model trait

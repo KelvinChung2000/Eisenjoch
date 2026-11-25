@@ -28,10 +28,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::chipdb::{BelId, Loc};
 use crate::common::PlaceStrength;
+use crate::common::TimingPortClass;
 use crate::context::Context;
 use crate::netlist::{CellId, NetId, Property};
 use crate::placer::PlacerError;
-use crate::common::TimingPortClass;
 
 /// `wirelen_t`.
 pub type WirelenT = i64;
@@ -456,10 +456,7 @@ impl ConstraintLegaliseWorker {
 
         let current_loc = match ctx.design.cell(cell).bel {
             Some(bel) => ctx.chipdb().bel_loc(bel),
-            None => *self
-                .old_locations
-                .get(&cell)
-                .unwrap_or(&Loc::new(0, 0, 0)),
+            None => *self.old_locations.get(&cell).unwrap_or(&Loc::new(0, 0, 0)),
         };
 
         let mut x_search = IncreasingDiameterSearch::new(current_loc.x, 0, ctx.grid_dim_x() - 1);
@@ -578,10 +575,7 @@ impl ConstraintLegaliseWorker {
             // bound cells.
             let bels = ctx.bels_valid_for_cell_type(cell_type);
             let region = ctx.design.cell(cell).region;
-            let old_loc = *self
-                .old_locations
-                .get(&cell)
-                .unwrap_or(&Loc::new(0, 0, 0));
+            let old_loc = *self.old_locations.get(&cell).unwrap_or(&Loc::new(0, 0, 0));
 
             let mut iter = 0;
             let mut best_bel: Option<BelId> = None;
@@ -730,7 +724,10 @@ impl ConstraintLegaliseWorker {
 
         log::info!("    moved {moved_cells} cells, {unplaced_cells} unplaced (after {point})");
         if moved_cells > 0 {
-            log::info!("       average distance {}", distance_sum / moved_cells as f32);
+            log::info!(
+                "       average distance {}",
+                distance_sum / moved_cells as f32
+            );
             log::info!("       maximum distance {max_distance}");
         }
 

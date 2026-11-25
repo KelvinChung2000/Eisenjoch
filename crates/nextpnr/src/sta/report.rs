@@ -65,7 +65,10 @@ impl TimingReport {
     }
 
     pub fn tns_ns(&self) -> f64 {
-        self.domains.iter().map(|domain| domain.summary.tns_ns).sum()
+        self.domains
+            .iter()
+            .map(|domain| domain.summary.tns_ns)
+            .sum()
     }
 
     pub fn fmax_mhz(&self) -> Option<f64> {
@@ -76,7 +79,10 @@ impl TimingReport {
     }
 
     pub fn endpoints(&self) -> usize {
-        self.domains.iter().map(|domain| domain.summary.endpoints).sum()
+        self.domains
+            .iter()
+            .map(|domain| domain.summary.endpoints)
+            .sum()
     }
 
     pub fn failing_endpoints(&self) -> usize {
@@ -87,7 +93,10 @@ impl TimingReport {
     }
 
     pub fn hold_wns_ns(&self) -> Option<f64> {
-        self.hold.iter().map(|pair| pair.summary.wns_ns).reduce(f64::min)
+        self.hold
+            .iter()
+            .map(|pair| pair.summary.wns_ns)
+            .reduce(f64::min)
     }
 
     pub fn hold_tns_ns(&self) -> f64 {
@@ -99,7 +108,10 @@ impl TimingReport {
     }
 
     pub fn hold_failing_endpoints(&self) -> usize {
-        self.hold.iter().map(|pair| pair.summary.failing_endpoints).sum()
+        self.hold
+            .iter()
+            .map(|pair| pair.summary.failing_endpoints)
+            .sum()
     }
 }
 
@@ -167,16 +179,18 @@ impl StaSession {
                     .find(|pair| (pair.launch, pair.capture) == (summary.launch, summary.capture))
                     .map(|pair| &pair.paths[..])
                     .expect("RustSTA reports every domain pair with setup checks");
-                let fmax_mhz = (summary.launch == summary.capture).then(|| {
-                    MHZ_NS / (clocks[summary.launch.index()].period_ns - summary.wns_ns)
-                });
+                let fmax_mhz = (summary.launch == summary.capture)
+                    .then(|| MHZ_NS / (clocks[summary.launch.index()].period_ns - summary.wns_ns));
                 DomainReport {
                     launch: clocks[summary.launch.index()].name.clone(),
                     capture: clocks[summary.capture.index()].name.clone(),
                     summary: *summary,
                     capture_period_ns: clocks[summary.capture.index()].period_ns,
                     fmax_mhz,
-                    worst_paths: paths.iter().map(|path| self.path_report(ctx, path)).collect(),
+                    worst_paths: paths
+                        .iter()
+                        .map(|path| self.path_report(ctx, path))
+                        .collect(),
                 }
             })
             .collect();

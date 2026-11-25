@@ -9,7 +9,7 @@ use super::helpers::connect_port;
 use super::PackerError;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
-use crate::netlist::{Cluster, CellId, PortType};
+use crate::netlist::{CellId, Cluster, PortType};
 
 /// Ensure GND/VCC constant-driver cells and nets exist.
 ///

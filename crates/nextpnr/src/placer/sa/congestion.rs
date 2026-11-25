@@ -213,18 +213,21 @@ mod tests {
         ctx.design.net_edit(net).set_driver(drv, out);
         ctx.design.cell_edit(sink).add_port(inp, PortType::In);
         let user = ctx.design.net_edit(net).add_user(sink, inp);
-        ctx.design.cell_edit(sink).set_port_net(inp, Some(net), Some(user));
+        ctx.design
+            .cell_edit(sink)
+            .set_port_net(inp, Some(net), Some(user));
         let far = ctx.chipdb().width() - 2;
         for (cell, xy) in [(drv, 1), (sink, far)] {
-            let bel = ctx.bucket_bel_at(lut, Loc::new(xy, xy, 0)).expect("LUT slot");
+            let bel = ctx
+                .bucket_bel_at(lut, Loc::new(xy, xy, 0))
+                .expect("LUT slot");
             assert!(ctx.bind_bel(bel, cell, PlaceStrength::Placer));
         }
 
         let mut cache = CongestionCache::new(&ctx);
         assert_eq!(cache.applied.len(), 1);
-        let total = |c: &CongestionCache| -> f64 {
-            c.h_demand.iter().chain(&c.v_demand).flatten().sum()
-        };
+        let total =
+            |c: &CongestionCache| -> f64 { c.h_demand.iter().chain(&c.v_demand).flatten().sum() };
         assert!(total(&cache) > 0.0);
 
         cache.add_net_demand(&ctx, net, -1.0);

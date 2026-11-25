@@ -5,8 +5,8 @@ use common::{add_cell, add_net, drive, sink};
 use std::collections::HashMap;
 
 use nextpnr::chipdb::{parse_constids_inc, BelId, ChipDb, PipId, WireId};
-use nextpnr::common::{ClockEdge, DelayT};
 use nextpnr::common::PlaceStrength;
+use nextpnr::common::{ClockEdge, DelayT};
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
 use nextpnr::netlist::{CellId, NetId, Property};
@@ -16,10 +16,10 @@ use nextpnr::router::common::{bind_route, unroute_net};
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
-    ArcTiming, ClasslessPips, ClockId, CritNorm, DelayBounds, InterconnectError, InterconnectModel,
-    InterconnectStage, NetSink, PairBudget, PlacedEstimate, Reach, SinkTiming, StaSession,
-    StaBuildError, StaSessionError, TableEntry, Untimed, register_clock_nets, routed_back_annotation, IopathDelay,
-    PinRef, TimingCheck,
+    register_clock_nets, routed_back_annotation, ArcTiming, ClasslessPips, ClockId, CritNorm,
+    DelayBounds, InterconnectError, InterconnectModel, InterconnectStage, IopathDelay, NetSink,
+    PairBudget, PinRef, PlacedEstimate, Reach, SinkTiming, StaBuildError, StaSession,
+    StaSessionError, TableEntry, TimingCheck, Untimed,
 };
 use rayon::prelude::*;
 use rstest::rstest;
@@ -280,7 +280,10 @@ fn assert_chain_timing(session: &StaSession, chain: &Chain, expected: &Expected)
         (1, usize::from(expected.setup_ps < 0))
     );
     let [hold] = session.hold_domains() else {
-        panic!("one clock gives one hold pair: {:?}", session.hold_domains());
+        panic!(
+            "one clock gives one hold pair: {:?}",
+            session.hold_domains()
+        );
     };
     assert_ns(hold.wns_ns, expected.hold_ps);
     assert_eq!(
@@ -323,12 +326,19 @@ fn aliased_register_times_as_its_bel_bucket(#[case] register: &str) {
     let mut ctx = common::make_example_context();
     let chain = placed_chain(&mut ctx, 0, 1000);
     ctx.add_cell_type_alias("DFF_ALT", "DFF");
-    let (cell, alias) = (ctx.design.cell_by_name(ctx.id(register)).unwrap(), ctx.id("DFF_ALT"));
+    let (cell, alias) = (
+        ctx.design.cell_by_name(ctx.id(register)).unwrap(),
+        ctx.id("DFF_ALT"),
+    );
     ctx.design.cell_edit(cell).set_type(alias);
     let session = session(&ctx, InterconnectStage::Placed);
 
     let (q_delay, d_delay) = (uniform(2 * SWINPUT_PIP_PS), uniform(NOTIONAL_PIP_PS));
-    assert_chain_timing(&session, &chain, &expected(1000, chain.lut_input, q_delay, d_delay));
+    assert_chain_timing(
+        &session,
+        &chain,
+        &expected(1000, chain.lut_input, q_delay, d_delay),
+    );
 }
 
 #[rstest]
@@ -378,7 +388,11 @@ fn nextpnr_report_types_a_net_back_into_its_own_cell_as_routing() {
         .collect();
     assert_eq!(
         hops,
-        vec![("clk-to-q", "CLK", "Q"), ("routing", "Q", "D"), ("setup", "D", "D")]
+        vec![
+            ("clk-to-q", "CLK", "Q"),
+            ("routing", "Q", "D"),
+            ("setup", "D", "D")
+        ]
     );
 }
 
@@ -404,7 +418,10 @@ fn nextpnr_report_segments_sum_to_the_critical_path_delay(
     let [path] = report["critical_paths"].as_array().unwrap().as_slice() else {
         panic!("one domain pair gives one critical path: {report}");
     };
-    assert_eq!((&path["from"], &path["to"]), (&"posedge clk".into(), &"posedge clk".into()));
+    assert_eq!(
+        (&path["from"], &path["to"]),
+        (&"posedge clk".into(), &"posedge clk".into())
+    );
     let segments = path["path"].as_array().unwrap();
     let hops: Vec<(&str, &str, &str, &str, &str)> = segments
         .iter()
@@ -429,9 +446,15 @@ fn nextpnr_report_segments_sum_to_the_critical_path_delay(
             ("setup", "capture", "D", "capture", "D"),
         ]
     );
-    assert_eq!((&segments[1]["net"], &segments[3]["net"]), (&"q".into(), &"d".into()));
+    assert_eq!(
+        (&segments[1]["net"], &segments[3]["net"]),
+        (&"q".into(), &"d".into())
+    );
     assert_ns(segments[4]["delay"].as_f64().unwrap(), SETUP_PS);
-    let total_ns: f64 = segments.iter().map(|segment| segment["delay"].as_f64().unwrap()).sum();
+    let total_ns: f64 = segments
+        .iter()
+        .map(|segment| segment["delay"].as_f64().unwrap())
+        .sum();
     assert_ns(total_ns, period_ps - expected.setup_ps);
 }
 
@@ -515,8 +538,9 @@ fn back_annotation_carries_routed_and_cell_delays(#[case] route: QRoute) {
     let mut ctx = common::make_example_context();
     let chain = routed_chain(&mut ctx, route, 1000);
 
-    let annotation = routed_back_annotation(&ctx, &model(&ctx, NOTIONAL, PlacedEstimate::DelayTable))
-        .expect("the routed chain annotates");
+    let annotation =
+        routed_back_annotation(&ctx, &model(&ctx, NOTIONAL, PlacedEstimate::DelayTable))
+            .expect("the routed chain annotates");
 
     let delay = |source: PinRef, load: PinRef| {
         annotation
@@ -527,8 +551,14 @@ fn back_annotation_carries_routed_and_cell_delays(#[case] route: QRoute) {
             .delay
     };
     let lut_input = format!("I[{}]", chain.lut_input);
-    assert_eq!(delay(pin("launch", "Q"), pin("lut", &lut_input)), uniform(route.delay_ps()));
-    assert_eq!(delay(pin("lut", "F"), pin("capture", "D")), uniform(NOTIONAL_PIP_PS));
+    assert_eq!(
+        delay(pin("launch", "Q"), pin("lut", &lut_input)),
+        uniform(route.delay_ps())
+    );
+    assert_eq!(
+        delay(pin("lut", "F"), pin("capture", "D")),
+        uniform(NOTIONAL_PIP_PS)
+    );
     let launch = annotation
         .cells
         .iter()
@@ -1417,7 +1447,11 @@ fn fabulous_lc_timing_variant_names_its_set_features(
 fn fabulous_lc_timing_feature_is_a_single_bit(#[case] value: &str) {
     let ctx = fabulous_lc_context(&[("FF", value)]);
     match register_clock_nets(&ctx) {
-        Err(StaBuildError::InvalidFeature { feature, value: got, .. }) => {
+        Err(StaBuildError::InvalidFeature {
+            feature,
+            value: got,
+            ..
+        }) => {
             assert_eq!((feature.as_str(), got.as_str()), ("FF", value))
         }
         other => panic!("expected an invalid FF value, got {other:?}"),

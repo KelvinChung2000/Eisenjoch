@@ -93,8 +93,14 @@ fn off_chip_nets(ctx: &Context) -> FxHashSet<NetId> {
                 .chain(info.users().iter().copied().filter(|pin| pin.is_valid()))
                 .map(|pin| io_kind(ctx, ctx.design.cell(pin.cell)))
                 .collect();
-            let buffers = kinds.iter().filter(|&&kind| kind == Some(IoKind::Buffer)).count();
-            let top_ports = kinds.iter().filter(|&&kind| kind == Some(IoKind::TopPort)).count();
+            let buffers = kinds
+                .iter()
+                .filter(|&&kind| kind == Some(IoKind::Buffer))
+                .count();
+            let top_ports = kinds
+                .iter()
+                .filter(|&&kind| kind == Some(IoKind::TopPort))
+                .count();
             buffers == 1 && buffers + top_ports == kinds.len()
         })
         .map(|(net, _)| net)

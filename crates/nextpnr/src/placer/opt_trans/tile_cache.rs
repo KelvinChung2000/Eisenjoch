@@ -54,7 +54,10 @@ impl SpanCostTable {
 
     pub fn reset_disabled(&mut self) {
         let epoch = self.epoch;
-        *self = Self { epoch, ..Self::disabled() };
+        *self = Self {
+            epoch,
+            ..Self::disabled()
+        };
     }
 }
 

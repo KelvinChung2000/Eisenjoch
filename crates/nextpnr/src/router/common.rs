@@ -239,8 +239,7 @@ pub fn find_local_const_pip(ctx: &Context, sink: WireId, const_value: i32) -> Op
     let chipdb = ctx.chipdb();
     let mut result: Option<PipId> = None;
     chipdb.pips_uphill_cb(sink, |pip| {
-        if result.is_none()
-            && chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value
+        if result.is_none() && chipdb.wire_info(chipdb.pip_src_wire(pip)).const_value == const_value
         {
             result = Some(pip);
         }

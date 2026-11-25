@@ -593,8 +593,7 @@ fn snap_and_bind_cells_to_bels(
             tile_bels[(by * grid_w + bx) as usize].push(i as u32);
         }
         let mut available: Vec<bool> = vec![true; pool.len()];
-        let mut tile_remaining: Vec<u32> =
-            tile_bels.iter().map(|t| t.len() as u32).collect();
+        let mut tile_remaining: Vec<u32> = tile_bels.iter().map(|t| t.len() as u32).collect();
 
         for &ci in &indices {
             let cid = idx_to_cell[ci];
@@ -1052,8 +1051,7 @@ pub fn init_positions_topological(
     // per SLICE = ~4.8 cells/tile mean). Without this, the natural layered
     // layout spans the full chip and ends up at ~1.2 cells/tile, leaving DCD
     // stuck in a low-density local minimum.
-    let target_density =
-        crate::env::var::<f64>("NPNR_OT_TOPO_DENSITY").unwrap_or(0.6);
+    let target_density = crate::env::var::<f64>("NPNR_OT_TOPO_DENSITY").unwrap_or(0.6);
     if target_density > 0.0 && target_density < 1.0 && n >= 2 {
         const CAP_PER_TILE: f64 = 8.0;
         let target_tiles = (n as f64 / (target_density * CAP_PER_TILE)).max(1.0);
@@ -1807,8 +1805,7 @@ impl CellValidityMask {
         };
         let min_set = (0..n_cells).map(counts).min().unwrap_or(0);
         let max_set = (0..n_cells).map(counts).max().unwrap_or(0);
-        let avg_set: f64 =
-            (0..n_cells).map(counts).sum::<usize>() as f64 / n_cells.max(1) as f64;
+        let avg_set: f64 = (0..n_cells).map(counts).sum::<usize>() as f64 / n_cells.max(1) as f64;
         eprintln!(
             "CellValidityMask: {} cells, {}x{} grid, {} bucket masks, per-cell valid positions: min={} avg={:.1} max={}, unmapped cells={}",
             n_cells, width, height, bucket_masks.len(), min_set, avg_set, max_set, n_unmapped_cells,
@@ -1865,7 +1862,10 @@ impl CellValidityMask {
 
     /// Heap bytes held by the bitset. Diagnostic only.
     pub fn heap_bytes(&self) -> usize {
-        self.bucket_masks.iter().map(|m| m.capacity() * 8).sum::<usize>()
+        self.bucket_masks
+            .iter()
+            .map(|m| m.capacity() * 8)
+            .sum::<usize>()
             + self.cell_bucket.capacity() * 4
     }
 

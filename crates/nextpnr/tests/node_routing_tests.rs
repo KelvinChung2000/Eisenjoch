@@ -203,19 +203,31 @@ fn router1_routes_placed_design_on_nodes() {
     let c = route_and_check(&Router1, &Router1Cfg::default(), "router1", false);
     // Router1 stops at the first unroutable net; this is what it connected
     // before node-canonical wires, and the change must not lose any of it.
-    assert!(c.sinks_connected >= 115, "router1 connected {}", c.sinks_connected);
+    assert!(
+        c.sinks_connected >= 115,
+        "router1 connected {}",
+        c.sinks_connected
+    );
 }
 
 #[test]
 fn router2_routes_placed_design_on_nodes() {
     let c = route_and_check(&Router2, &Router2Cfg::default(), "router2", false);
-    assert!(c.sinks_connected >= 163, "router2 connected {}", c.sinks_connected);
+    assert!(
+        c.sinks_connected >= 163,
+        "router2 connected {}",
+        c.sinks_connected
+    );
 }
 
 #[test]
 fn raster_routes_placed_design_on_nodes() {
     let c = route_and_check(&RasterRouter, &RasterRouterCfg::default(), "raster", true);
-    assert!(c.sinks_connected >= 323, "raster connected {}", c.sinks_connected);
+    assert!(
+        c.sinks_connected >= 323,
+        "raster connected {}",
+        c.sinks_connected
+    );
 }
 
 /// Binding any member of a node binds the node: the binding is visible

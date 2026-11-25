@@ -93,14 +93,16 @@ fn main() {
 
     // A doomed sink spends ~214k pops under the kernel default, over half the
     // router's total. NPNR_ROUTE_SINK_VISITS caps that; unset keeps the default.
-    let sink_visit_limit = env::var("NPNR_ROUTE_SINK_VISITS")
-        .ok()
-        .map(|v| v.parse().expect("NPNR_ROUTE_SINK_VISITS must be an integer"));
+    let sink_visit_limit = env::var("NPNR_ROUTE_SINK_VISITS").ok().map(|v| {
+        v.parse()
+            .expect("NPNR_ROUTE_SINK_VISITS must be an integer")
+    });
     eprintln!("sink_visit_limit: {sink_visit_limit:?}");
 
-    let cleanup_visit_limit = env::var("NPNR_ROUTE_CLEANUP_VISITS")
-        .ok()
-        .map(|v| v.parse().expect("NPNR_ROUTE_CLEANUP_VISITS must be an integer"));
+    let cleanup_visit_limit = env::var("NPNR_ROUTE_CLEANUP_VISITS").ok().map(|v| {
+        v.parse()
+            .expect("NPNR_ROUTE_CLEANUP_VISITS must be an integer")
+    });
     eprintln!("cleanup_visit_limit: {cleanup_visit_limit:?}");
 
     // The finisher shared the negotiation cap until this knob split them, so
@@ -109,7 +111,10 @@ fn main() {
     // distance from the tree instead of sitting flat.
     let finish_visit_limit = match env::var("NPNR_ROUTE_FINISH_VISITS").ok() {
         None => sink_visit_limit,
-        Some(v) => match v.parse().expect("NPNR_ROUTE_FINISH_VISITS must be an integer") {
+        Some(v) => match v
+            .parse()
+            .expect("NPNR_ROUTE_FINISH_VISITS must be an integer")
+        {
             0 => None,
             n => Some(n),
         },
@@ -121,7 +126,10 @@ fn main() {
     // abandon the sinks the budget was raised to reach.
     let finish_net_deadline = match env::var("NPNR_ROUTE_FINISH_DEADLINE_MS").ok() {
         None => Some(std::time::Duration::from_millis(2000)),
-        Some(v) => match v.parse().expect("NPNR_ROUTE_FINISH_DEADLINE_MS must be an integer") {
+        Some(v) => match v
+            .parse()
+            .expect("NPNR_ROUTE_FINISH_DEADLINE_MS must be an integer")
+        {
             0 => None,
             ms => Some(std::time::Duration::from_millis(ms)),
         },
@@ -148,7 +156,10 @@ fn main() {
     // for want of reachable capacity, not existing capacity.
     let bbox_margin: i32 = env::var("NPNR_ROUTE_BBOX_MARGIN")
         .ok()
-        .map(|v| v.parse().expect("NPNR_ROUTE_BBOX_MARGIN must be an integer"))
+        .map(|v| {
+            v.parse()
+                .expect("NPNR_ROUTE_BBOX_MARGIN must be an integer")
+        })
         .unwrap_or(8);
     eprintln!("bbox_margin: {bbox_margin}");
 

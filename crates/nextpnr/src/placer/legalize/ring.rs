@@ -228,22 +228,12 @@ pub fn legalize_ring(
                                 let legal = if let Some(cache) = cache {
                                     if sample {
                                         let t = std::time::Instant::now();
-                                        let r = cluster_is_legal_cached(
-                                            ctx,
-                                            &registry,
-                                            cache,
-                                            bid,
-                                        );
+                                        let r = cluster_is_legal_cached(ctx, &registry, cache, bid);
                                         probe_islegal_only_us += t.elapsed().as_nanos() as u128;
                                         probe_islegal_sample_count += 1;
                                         r
                                     } else {
-                                        cluster_is_legal_cached(
-                                            ctx,
-                                            &registry,
-                                            cache,
-                                            bid,
-                                        )
+                                        cluster_is_legal_cached(ctx, &registry, cache, bid)
                                     }
                                 } else {
                                     false

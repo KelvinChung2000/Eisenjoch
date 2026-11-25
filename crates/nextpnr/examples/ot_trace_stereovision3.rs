@@ -122,8 +122,7 @@ fn main() {
 
     let mut cfg = OptTransPlacerCfg::default();
     cfg.seed = 42;
-    cfg.timing_weight = nextpnr::env::var::<f64>("NPNR_OT_TRACE_TIMING_WEIGHT")
-        .unwrap_or(0.0);
+    cfg.timing_weight = nextpnr::env::var::<f64>("NPNR_OT_TRACE_TIMING_WEIGHT").unwrap_or(0.0);
     cfg.report_interval = nextpnr::env::var::<usize>("NPNR_OT_TRACE_REPORT_INTERVAL")
         .unwrap_or(1)
         .max(1);

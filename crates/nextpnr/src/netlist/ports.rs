@@ -1,5 +1,5 @@
-use crate::common::IdString;
 use crate::common::DelayT;
+use crate::common::IdString;
 
 use super::{CellId, NetId, PortType};
 

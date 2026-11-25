@@ -285,14 +285,21 @@ fn net_sinks_map_to_their_wire_arcs(#[case] design: fn(&mut Context)) {
 
 fn untimed_lut_in_chain(ctx: &mut Context) -> CellId {
     let capture = register_chain(ctx, &[0], 1000);
-    let lut = ctx.design.cell_by_name(ctx.id("lut0")).expect("chain has lut0");
+    let lut = ctx
+        .design
+        .cell_by_name(ctx.id("lut0"))
+        .expect("chain has lut0");
     let untimed = ctx.id("UNTIMED");
     ctx.design.cell_edit(lut).set_type(untimed);
     capture
 }
 
 fn register_without_clock_port(ctx: &mut Context) -> CellId {
-    let (lut, register, d) = (add_cell(ctx, "lut", "LUT6"), add_cell(ctx, "reg", "DFF"), add_net(ctx, "d"));
+    let (lut, register, d) = (
+        add_cell(ctx, "lut", "LUT6"),
+        add_cell(ctx, "reg", "DFF"),
+        add_net(ctx, "d"),
+    );
     drive(ctx, d, lut, "F");
     sink(ctx, d, register, "D");
     register
@@ -309,8 +316,10 @@ fn build_leaves_the_capture_input_unconstrained(
     let capture = design(&mut ctx);
 
     let sta = RustSta::build(&ctx).expect("adapter builds the design");
-    let expected: BTreeMap<String, usize> =
-        black_boxes.iter().map(|&(name, cells)| (name.to_owned(), cells)).collect();
+    let expected: BTreeMap<String, usize> = black_boxes
+        .iter()
+        .map(|&(name, cells)| (name.to_owned(), cells))
+        .collect();
     assert_eq!(sta.black_boxes(), &expected);
     let setup = sta
         .endpoint_slack(CellPin::new(capture, ctx.id("D")))

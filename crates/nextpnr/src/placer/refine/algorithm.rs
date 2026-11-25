@@ -20,7 +20,8 @@ use crate::netlist::CellId;
 use crate::netlist::NetId;
 use crate::placer::PlacerError;
 use crate::sta::{
-    InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError, NOTIONAL_CLASSLESS_PIPS,
+    InterconnectModel, InterconnectStage, PlacedEstimate, StaSession, StaSessionError,
+    NOTIONAL_CLASSLESS_PIPS,
 };
 
 use super::config::{RefineCfg, RefineStats};
@@ -30,10 +31,7 @@ use super::cost::CostModel;
 ///
 /// The placement must already be legal and bound at strength `STRONG` or
 /// below; anything stronger is treated as pinned and never moved.
-pub fn refine_placement(
-    ctx: &mut Context,
-    cfg: &RefineCfg,
-) -> Result<RefineStats, PlacerError> {
+pub fn refine_placement(ctx: &mut Context, cfg: &RefineCfg) -> Result<RefineStats, PlacerError> {
     let mut autoplaced: Vec<CellId> = Vec::new();
     let mut chain_basis: Vec<CellId> = Vec::new();
     for (cell_id, cell) in ctx.design.iter_alive_cells() {
@@ -66,8 +64,9 @@ pub fn refine_placement(
     let nets: Vec<NetId> = ctx.design.iter_alive_nets().map(|(net, _)| net).collect();
     let mut sta = match cfg.timing_driven {
         true => {
-            let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
-                .map_err(StaSessionError::from)?;
+            let model =
+                InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)
+                    .map_err(StaSessionError::from)?;
             Some(StaSession::build(ctx, model, InterconnectStage::Placed)?)
         }
         false => None,

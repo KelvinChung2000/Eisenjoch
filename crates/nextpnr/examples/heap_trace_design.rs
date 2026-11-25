@@ -15,9 +15,9 @@
 use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
+use nextpnr::metrics::{total_hpwl, total_line_estimate};
 use nextpnr::packer;
 use nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
-use nextpnr::metrics::{total_hpwl, total_line_estimate};
 use nextpnr::placer::place_common::{get_net_metric, MetricType, WirelenT};
 use nextpnr::placer::Placer;
 use std::env;
@@ -34,8 +34,7 @@ fn spawn_rss_sampler() {
     std::thread::spawn(|| {
         let t0 = Instant::now();
         loop {
-            let s = std::fs::read_to_string("/proc/self/status")
-                .expect("read /proc/self/status");
+            let s = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
             let field = |name: &str| -> usize {
                 for line in s.lines() {
                     if let Some(rest) = line.strip_prefix(name) {
@@ -167,7 +166,11 @@ fn main() {
     let mut placed = 0usize;
     let mut unplaced = 0usize;
     for (c, _) in ctx.design.iter_alive_cells() {
-        if ctx.cell(c).bel().is_some() { placed += 1 } else { unplaced += 1 }
+        if ctx.cell(c).bel().is_some() {
+            placed += 1
+        } else {
+            unplaced += 1
+        }
     }
     eprintln!("cells: placed={placed} unplaced={unplaced}");
     assert_eq!(unplaced, 0, "HeAP left {unplaced} cells unplaced");

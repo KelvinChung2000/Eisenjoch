@@ -385,7 +385,10 @@ impl PipeNetwork {
             }
         }
 
-        eprintln!("  BUILD_T tile_type_by_node: {:.1}s", t_build.elapsed().as_secs_f64());
+        eprintln!(
+            "  BUILD_T tile_type_by_node: {:.1}s",
+            t_build.elapsed().as_secs_f64()
+        );
         let total_nodes = nodes.len();
         let mut pipes = Vec::new();
 
@@ -414,7 +417,10 @@ impl PipeNetwork {
             }
         }
 
-        eprintln!("  BUILD_T coarse_aggregate: {:.1}s", t_build.elapsed().as_secs_f64());
+        eprintln!(
+            "  BUILD_T coarse_aggregate: {:.1}s",
+            t_build.elapsed().as_secs_f64()
+        );
         // Build span histograms first — one source of truth for both span-1
         // (inter-tile) and span-N (long-range) pipe capacities.
         // Only the gated pipe loop below consumes this, and it walks every pip
@@ -459,91 +465,88 @@ impl PipeNetwork {
         // Pure-analytic placement reads only node coordinates, so enumerating
         // 2.5 M pipes off the chipdb is 52.8 s of pure waste there.
         if !skip_pipes() {
-        for cy in 0..h {
-            for cx in 0..w {
-                let src_ci = idx(cx, cy);
-                if is_null_coarse(src_ci) {
-                    n_skipped_null_src += 1;
-                    continue;
-                }
-                let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
-                let mut fallback_east = 0usize;
-                let mut fallback_south = 0usize;
-                for fy in
-                    (cy as usize * coarsen)..((cy as usize + 1) * coarsen).min(full_h as usize)
-                {
-                    for fx in
-                        (cx as usize * coarsen)..((cx as usize + 1) * coarsen).min(full_w as usize)
+            for cy in 0..h {
+                for cx in 0..w {
+                    let src_ci = idx(cx, cy);
+                    if is_null_coarse(src_ci) {
+                        n_skipped_null_src += 1;
+                        continue;
+                    }
+                    let mut coarse_agg: FxHashMap<(i32, i32), usize> = FxHashMap::default();
+                    let mut fallback_east = 0usize;
+                    let mut fallback_south = 0usize;
+                    for fy in
+                        (cy as usize * coarsen)..((cy as usize + 1) * coarsen).min(full_h as usize)
                     {
-                        let tile = ctx.chipdb().tile_by_xy(fx as i32, fy as i32);
-                        let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
-                        if let Some(hist) = span_histograms.get(tt_idx) {
-                            for (&(raw_dx, raw_dy), &wire_count) in hist {
-                                let cdx = raw_dx / coarsen_i;
-                                let cdy = raw_dy / coarsen_i;
-                                if cdx == 0 && cdy == 0 {
-                                    continue;
+                        for fx in (cx as usize * coarsen)
+                            ..((cx as usize + 1) * coarsen).min(full_w as usize)
+                        {
+                            let tile = ctx.chipdb().tile_by_xy(fx as i32, fy as i32);
+                            let tt_idx = ctx.chipdb().tile_type_index(tile) as usize;
+                            if let Some(hist) = span_histograms.get(tt_idx) {
+                                for (&(raw_dx, raw_dy), &wire_count) in hist {
+                                    let cdx = raw_dx / coarsen_i;
+                                    let cdy = raw_dy / coarsen_i;
+                                    if cdx == 0 && cdy == 0 {
+                                        continue;
+                                    }
+                                    *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
                                 }
-                                *coarse_agg.entry((cdx, cdy)).or_insert(0) += wire_count;
+                            }
+                            // Span-1 fallback: accumulate only for fine tiles that
+                            // actually have an east/south neighbor (avoids OOB in
+                            // estimate_wire_count).
+                            if (fx as i32) + 1 < full_w {
+                                fallback_east +=
+                                    estimate_wire_count(ctx, fx as i32, fy as i32, Direction::East);
+                            }
+                            if (fy as i32) + 1 < full_h {
+                                fallback_south += estimate_wire_count(
+                                    ctx,
+                                    fx as i32,
+                                    fy as i32,
+                                    Direction::South,
+                                );
                             }
                         }
-                        // Span-1 fallback: accumulate only for fine tiles that
-                        // actually have an east/south neighbor (avoids OOB in
-                        // estimate_wire_count).
-                        if (fx as i32) + 1 < full_w {
-                            fallback_east +=
-                                estimate_wire_count(ctx, fx as i32, fy as i32, Direction::East);
-                        }
-                        if (fy as i32) + 1 < full_h {
-                            fallback_south +=
-                                estimate_wire_count(ctx, fx as i32, fy as i32, Direction::South);
-                        }
                     }
-                }
-                if cx + 1 < w && !coarse_agg.contains_key(&(1, 0)) && fallback_east > 0 {
-                    coarse_agg.insert((1, 0), fallback_east.max(1));
-                }
-                if cy + 1 < h && !coarse_agg.contains_key(&(0, 1)) && fallback_south > 0 {
-                    coarse_agg.insert((0, 1), fallback_south.max(1));
-                }
+                    if cx + 1 < w && !coarse_agg.contains_key(&(1, 0)) && fallback_east > 0 {
+                        coarse_agg.insert((1, 0), fallback_east.max(1));
+                    }
+                    if cy + 1 < h && !coarse_agg.contains_key(&(0, 1)) && fallback_south > 0 {
+                        coarse_agg.insert((0, 1), fallback_south.max(1));
+                    }
 
-                for ((cdx, cdy), wire_count) in coarse_agg {
-                    let nx = cx + cdx;
-                    let ny = cy + cdy;
-                    if nx < 0 || nx >= w || ny < 0 || ny >= h {
-                        continue;
-                    }
-                    let dst_ci = idx(nx, ny);
-                    if is_null_coarse(dst_ci) {
-                        n_skipped_null_dst += 1;
-                        continue;
-                    }
-                    let span = (cdx.abs() + cdy.abs()) as usize;
-                    let base = (span as f64).powf(pipe_cost_exp);
-                    let cap = (wire_count as f64).max(1.0);
-                    let pipe_type = if span == 1 {
-                        n_span1 += 1;
-                        let dir = if cdx.abs() >= cdy.abs() {
-                            Direction::East
+                    for ((cdx, cdy), wire_count) in coarse_agg {
+                        let nx = cx + cdx;
+                        let ny = cy + cdy;
+                        if nx < 0 || nx >= w || ny < 0 || ny >= h {
+                            continue;
+                        }
+                        let dst_ci = idx(nx, ny);
+                        if is_null_coarse(dst_ci) {
+                            n_skipped_null_dst += 1;
+                            continue;
+                        }
+                        let span = (cdx.abs() + cdy.abs()) as usize;
+                        let base = (span as f64).powf(pipe_cost_exp);
+                        let cap = (wire_count as f64).max(1.0);
+                        let pipe_type = if span == 1 {
+                            n_span1 += 1;
+                            let dir = if cdx.abs() >= cdy.abs() {
+                                Direction::East
+                            } else {
+                                Direction::South
+                            };
+                            PipeType::InterTile(dir)
                         } else {
-                            Direction::South
+                            n_long_range += 1;
+                            PipeType::LongRange { dx: cdx, dy: cdy }
                         };
-                        PipeType::InterTile(dir)
-                    } else {
-                        n_long_range += 1;
-                        PipeType::LongRange { dx: cdx, dy: cdy }
-                    };
-                    add_pipe(
-                        &mut pipes,
-                        src_ci,
-                        dst_ci,
-                        base,
-                        cap,
-                        pipe_type,
-                    );
+                        add_pipe(&mut pipes, src_ci, dst_ci, base, cap, pipe_type);
+                    }
                 }
             }
-        }
         }
         let _ = n_span1;
         eprintln!(
@@ -657,7 +660,10 @@ impl PipeNetwork {
             12.0 * 1.0_f64.powf(pipe_cost_exp),
         );
 
-        eprintln!("  BUILD_T pipe_loop: {:.1}s", t_build.elapsed().as_secs_f64());
+        eprintln!(
+            "  BUILD_T pipe_loop: {:.1}s",
+            t_build.elapsed().as_secs_f64()
+        );
         let pipe_costs: Vec<f64> = pipes
             .iter()
             .map(|pipe| 1.0 / pipe.eff_conductance.max(1e-12))
@@ -669,9 +675,15 @@ impl PipeNetwork {
         let span_cost_table = SpanCostTable::disabled();
         let tile_grid = TileGrid::build(&pipes, &nodes, w, h);
         let flat_adjacency = FlatAdjacency::build(nodes.len(), &pipes);
-        eprintln!("  BUILD_T grids_and_adjacency: {:.1}s", t_build.elapsed().as_secs_f64());
+        eprintln!(
+            "  BUILD_T grids_and_adjacency: {:.1}s",
+            t_build.elapsed().as_secs_f64()
+        );
         let tile_templates = Arc::new(build_tile_templates(ctx.chipdb()));
-        eprintln!("  BUILD_T tile_templates: {:.1}s", t_build.elapsed().as_secs_f64());
+        eprintln!(
+            "  BUILD_T tile_templates: {:.1}s",
+            t_build.elapsed().as_secs_f64()
+        );
 
         let mut net = Self {
             nodes,
@@ -1290,7 +1302,11 @@ mod flat_adjacency_tests {
 
     fn network(pipes: Vec<Pipe>, n: usize) -> PipeNetwork {
         let nodes: Vec<Node> = (0..n)
-            .map(|i| Node { tile_x: i as i32, tile_y: 0, pressure: 0.0 })
+            .map(|i| Node {
+                tile_x: i as i32,
+                tile_y: 0,
+                pressure: 0.0,
+            })
             .collect();
         let n_pipes = pipes.len();
         PipeNetwork {
@@ -1332,7 +1348,11 @@ mod flat_adjacency_tests {
     /// grid), so its size is the network's footprint. It was 88 B.
     #[test]
     fn pipe_stays_small() {
-        assert!(std::mem::size_of::<Pipe>() <= 56, "{}", std::mem::size_of::<Pipe>());
+        assert!(
+            std::mem::size_of::<Pipe>() <= 56,
+            "{}",
+            std::mem::size_of::<Pipe>()
+        );
     }
 
     /// Nothing reads the span table's per-pipe entries while it is disabled.

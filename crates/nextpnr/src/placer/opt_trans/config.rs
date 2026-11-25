@@ -305,9 +305,9 @@ pub struct OptTransPlacerCfg {
 fn solve_threads_default() -> usize {
     match std::env::var("NPNR_OT_THREADS") {
         Ok(v) => {
-            let n: usize = v
-                .parse()
-                .unwrap_or_else(|_| panic!("NPNR_OT_THREADS must be a positive integer, got {v:?}"));
+            let n: usize = v.parse().unwrap_or_else(|_| {
+                panic!("NPNR_OT_THREADS must be a positive integer, got {v:?}")
+            });
             assert!(n > 0, "NPNR_OT_THREADS must be > 0, got {n}");
             n
         }

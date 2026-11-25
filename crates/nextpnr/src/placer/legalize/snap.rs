@@ -12,8 +12,7 @@ use crate::context::Context;
 use crate::netlist::CellId;
 use crate::placer::common::TypeAwarePlacement;
 use crate::placer::legalize::common::{
-    cluster_is_legal, place_cluster_children, unbind_movable_cells,
-    DriverNodeRegistry,
+    cluster_is_legal, place_cluster_children, unbind_movable_cells, DriverNodeRegistry,
 };
 use crate::placer::PlacerError;
 
@@ -169,8 +168,7 @@ impl Legalizer for SnapLegalizer {
                                     continue;
                                 }
                                 if has_cluster_children {
-                                    if !cluster_is_legal(ctx, &registry, cell_id, bid)
-                                    {
+                                    if !cluster_is_legal(ctx, &registry, cell_id, bid) {
                                         rejected_for_shared_mux += 1;
                                         continue;
                                     }

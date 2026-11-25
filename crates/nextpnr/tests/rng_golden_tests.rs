@@ -106,7 +106,10 @@ fn rng_30bit_matches_nextpnr() {
         let want: i32 = want.parse().expect("golden value is an i32");
         let got = rng.rng();
         assert_eq!(got, want, "rng() diverged at draw {i}");
-        assert!((0..=0x3fff_ffff).contains(&got), "rng() left its 30-bit range");
+        assert!(
+            (0..=0x3fff_ffff).contains(&got),
+            "rng() left its 30-bit range"
+        );
     }
 }
 
@@ -123,7 +126,10 @@ fn rng_n_matches_nextpnr() {
             let want: i32 = want.parse().expect("golden value is an i32");
             let got = rng.rng_n(n);
             assert_eq!(got, want, "rng_n({n}) diverged at draw {i}");
-            assert!((0..n).contains(&got), "rng_n({n}) returned out-of-range {got}");
+            assert!(
+                (0..n).contains(&got),
+                "rng_n({n}) returned out-of-range {got}"
+            );
         }
     }
 }
@@ -278,5 +284,9 @@ fn parse_hex_f64(s: &str) -> f64 {
     }
 
     let out = value * 2f64.powi(exp);
-    if neg { -out } else { out }
+    if neg {
+        -out
+    } else {
+        out
+    }
 }

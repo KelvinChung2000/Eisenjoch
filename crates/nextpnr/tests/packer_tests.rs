@@ -130,7 +130,12 @@ fn wire_pseudo_iob(
     pseudo_type: &str,
     pseudo_port: &str,
     pseudo_drives: bool,
-) -> (nextpnr::netlist::CellId, nextpnr::netlist::CellId, nextpnr::netlist::NetId, Option<u32>) {
+) -> (
+    nextpnr::netlist::CellId,
+    nextpnr::netlist::CellId,
+    nextpnr::netlist::NetId,
+    Option<u32>,
+) {
     let (pt, pp) = (ctx.id(pseudo_type), ctx.id(pseudo_port));
     let (rt, rp) = (ctx.id("INBUF"), ctx.id("PAD"));
     let net = ctx.design.add_net(ctx.id("pad_net"));
@@ -139,16 +144,28 @@ fn wire_pseudo_iob(
     let real = ctx.design.add_cell(ctx.id("real_buf"), rt);
 
     if pseudo_drives {
-        ctx.design.cell_edit(pseudo).add_port(pp, PortType::Out).set_port_net(pp, Some(net), None);
+        ctx.design
+            .cell_edit(pseudo)
+            .add_port(pp, PortType::Out)
+            .set_port_net(pp, Some(net), None);
         ctx.design.net_edit(net).set_driver(pseudo, pp);
         let u = ctx.design.net_edit(net).add_user(real, rp);
-        ctx.design.cell_edit(real).add_port(rp, PortType::In).set_port_net(rp, Some(net), Some(u));
+        ctx.design
+            .cell_edit(real)
+            .add_port(rp, PortType::In)
+            .set_port_net(rp, Some(net), Some(u));
         (pseudo, real, net, None)
     } else {
-        ctx.design.cell_edit(real).add_port(rp, PortType::Out).set_port_net(rp, Some(net), None);
+        ctx.design
+            .cell_edit(real)
+            .add_port(rp, PortType::Out)
+            .set_port_net(rp, Some(net), None);
         ctx.design.net_edit(net).set_driver(real, rp);
         let u = ctx.design.net_edit(net).add_user(pseudo, pp);
-        ctx.design.cell_edit(pseudo).add_port(pp, PortType::In).set_port_net(pp, Some(net), Some(u));
+        ctx.design
+            .cell_edit(pseudo)
+            .add_port(pp, PortType::In)
+            .set_port_net(pp, Some(net), Some(u));
         (pseudo, real, net, Some(u))
     }
 }
@@ -166,13 +183,23 @@ fn remove_nextpnr_iobs_trims_every_pseudo_type() {
         let mut ctx = common::make_context();
         let (pseudo, real, net, user) = wire_pseudo_iob(&mut ctx, ty, port, drives);
 
-        assert_eq!(remove_nextpnr_iobs(&mut ctx).unwrap(), 1, "{ty} should be trimmed");
+        assert_eq!(
+            remove_nextpnr_iobs(&mut ctx).unwrap(),
+            1,
+            "{ty} should be trimmed"
+        );
         assert!(!ctx.design.cell(pseudo).alive, "{ty} cell must be dead");
-        assert!(ctx.design.cell(real).alive, "{ty}: the real buffer must survive");
+        assert!(
+            ctx.design.cell(real).alive,
+            "{ty}: the real buffer must survive"
+        );
 
         if drives {
             assert!(
-                ctx.design.net(net).driver().is_none_or(|d| d.cell != pseudo),
+                ctx.design
+                    .net(net)
+                    .driver()
+                    .is_none_or(|d| d.cell != pseudo),
                 "{ty}: the pad net must no longer be driven by the pseudo-cell"
             );
         } else {

@@ -1,6 +1,6 @@
 use crate::chipdb::{PipId, WireId};
-use crate::common::{IdString, PlaceStrength};
 use crate::common::DelayT;
+use crate::common::{IdString, PlaceStrength};
 use rustc_hash::FxHashMap;
 
 use super::{CellPin, Property};

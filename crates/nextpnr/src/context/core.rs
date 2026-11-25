@@ -208,11 +208,10 @@ impl Context {
         let bel_info = self.chipdb.bel_info(bel);
         bel_info.pins.get().iter().find_map(|pin| {
             let (name_constid, wire_idx, _dir) = self.chipdb.bel_pin_fields(pin);
-            (self.chipdb.constid_canon(name_constid) == want)
-                .then(|| {
-                    let wire = crate::chipdb::WireId::new(bel.tile(), wire_idx);
-                    Wire::new(self, self.chipdb.canonical_wire(wire))
-                })
+            (self.chipdb.constid_canon(name_constid) == want).then(|| {
+                let wire = crate::chipdb::WireId::new(bel.tile(), wire_idx);
+                Wire::new(self, self.chipdb.canonical_wire(wire))
+            })
         })
     }
 }

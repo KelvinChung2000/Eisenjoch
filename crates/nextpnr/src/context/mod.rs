@@ -18,11 +18,11 @@ mod storage;
 mod timing;
 mod views;
 
+pub use crate::metrics::{ResourceRow, UtilizationReport};
 pub use arch_api::BoundingBox;
-pub use buckets::BucketGrid;
 #[cfg(test)]
 pub(crate) use buckets::example_context;
-pub use crate::metrics::{ResourceRow, UtilizationReport};
+pub use buckets::BucketGrid;
 pub use definition::{ArchValidityCheck, Context};
 pub use rng::DeterministicRng;
 pub use views::{

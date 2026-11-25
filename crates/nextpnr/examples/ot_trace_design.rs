@@ -34,8 +34,7 @@ fn spawn_rss_sampler() {
     std::thread::spawn(|| {
         let t0 = std::time::Instant::now();
         loop {
-            let s = std::fs::read_to_string("/proc/self/status")
-                .expect("read /proc/self/status");
+            let s = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
             let field = |name: &str| -> usize {
                 for line in s.lines() {
                     if let Some(rest) = line.strip_prefix(name) {

@@ -8,10 +8,10 @@
 //! Iterates with congestion feedback. Intended for fast wirelength estimation.
 
 use crate::chipdb::{PipId, WireId};
+use crate::common::DelayT;
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::NetId;
-use crate::common::DelayT;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::astar::AStarExit;
@@ -20,8 +20,8 @@ use super::astar::{
 };
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
-    is_global_net, resolve_source_wire, source_wire_const_value, unroute_net,
-    validate_all_routed, RoutePlan, SinkRoute,
+    is_global_net, resolve_source_wire, source_wire_const_value, unroute_net, validate_all_routed,
+    RoutePlan, SinkRoute,
 };
 use super::maze::{
     astar_route, astar_route_explore, astar_route_explore_exit, astar_route_multihop,
@@ -157,7 +157,6 @@ fn snapshot_net(ctx: &Context, net: NetId) -> NetSnapshot {
         .collect();
     NetSnapshot { net, wires }
 }
-
 
 /// Re-apply a snapshot after a failed rip-up attempt. Returns false if any
 /// wire re-bind fails (which would indicate external state corruption — the
@@ -546,7 +545,9 @@ fn inloop_ripup_net(
 
     let tight_bbox = crate::metrics::compute_bbox(ctx, net, cfg.bbox_margin.max(1));
     let bel_bbox = crate::metrics::compute_bbox(ctx, net, 0);
-    let span = (bel_bbox.x1 - bel_bbox.x0).max(bel_bbox.y1 - bel_bbox.y0).max(0);
+    let span = (bel_bbox.x1 - bel_bbox.x0)
+        .max(bel_bbox.y1 - bel_bbox.y0)
+        .max(0);
     let wide_margin = EXPLORE_BBOX_MARGIN_MIN.max(span * EXPLORE_BBOX_SPAN_MULT);
     let wide_bbox = crate::metrics::compute_bbox(ctx, net, wide_margin);
 
@@ -1145,9 +1146,17 @@ mod astar_probe {
     /// One line summarising mean pops per sink by exit reason.
     pub fn summary() -> String {
         let mut out = String::new();
-        for (name, b) in [("reached", &REACHED), ("drained", &DRAINED), ("limited", &LIMITED)] {
+        for (name, b) in [
+            ("reached", &REACHED),
+            ("drained", &DRAINED),
+            ("limited", &LIMITED),
+        ] {
             let (calls, pops, at_limit) = b.take();
-            let mean = if calls > 0 { pops as f64 / calls as f64 } else { 0.0 };
+            let mean = if calls > 0 {
+                pops as f64 / calls as f64
+            } else {
+                0.0
+            };
             out.push_str(&format!(
                 " {name}={calls} pops/sink={mean:.0} at_limit={at_limit}"
             ));
@@ -1853,7 +1862,9 @@ fn route_net_raster(
     // so it makes a net's outcome depend on machine load; `None` drops it and
     // leaves the per-sink pop budget as the only bound.
     let net_deadline = cfg.finish_net_deadline.map(|base| {
-        std::time::Instant::now() + base + std::time::Duration::from_millis(remaining_sinks.len() as u64 * 10)
+        std::time::Instant::now()
+            + base
+            + std::time::Duration::from_millis(remaining_sinks.len() as u64 * 10)
     });
 
     let mut sink_routes = Vec::new();
@@ -1913,7 +1924,13 @@ fn route_net_raster(
                     })
                     .min()
                     .unwrap_or(dist);
-                partial_census::note_astar_fail(dist, tree_wires.len(), tree_dist, sink_exit, sink_approach);
+                partial_census::note_astar_fail(
+                    dist,
+                    tree_wires.len(),
+                    tree_dist,
+                    sink_exit,
+                    sink_approach,
+                );
                 if n < 100 {
                     let net_name = ctx.net(net).name_id();
                     eprintln!(
@@ -2167,8 +2184,8 @@ fn plan_net_overuse(
     remaining_sinks.sort_by_key(|&(_, sx, sy)| (sx - src_x).abs() + (sy - src_y).abs());
 
     let n_sinks = remaining_sinks.len();
-    let net_deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(2000 + n_sinks as u64 * 10);
+    let net_deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(2000 + n_sinks as u64 * 10);
 
     let mut sink_routes = Vec::new();
     let mut missing: Vec<WireId> = Vec::new();
@@ -2202,8 +2219,7 @@ fn plan_net_overuse(
             }
             (
                 wide_bbox.as_ref(),
-                cfg.sink_visit_limit
-                    .map(|v| v << level.min(3)),
+                cfg.sink_visit_limit.map(|v| v << level.min(3)),
             )
         } else {
             (bbox.as_ref(), cfg.sink_visit_limit)
@@ -2256,7 +2272,10 @@ fn route_nets_overuse(
     let env_f32 = |name: &str, default: f32| -> f32 {
         std::env::var(name)
             .ok()
-            .map(|v| v.parse().unwrap_or_else(|_| panic!("{name} must be a float")))
+            .map(|v| {
+                v.parse()
+                    .unwrap_or_else(|_| panic!("{name} must be a float"))
+            })
             .unwrap_or(default)
     };
     let present0 = env_f32("NPNR_ROUTE_PRESENT", 0.5);
@@ -2450,9 +2469,7 @@ fn route_nets_overuse(
                 .iter()
                 .copied()
                 .filter(|n| match plans.get(n) {
-                    Some(e) => {
-                        e.missing > 0 || e.idxs.iter().any(|&i| occ[i as usize] > 1)
-                    }
+                    Some(e) => e.missing > 0 || e.idxs.iter().any(|&i| occ[i as usize] > 1),
                     None => true,
                 })
                 .collect()
@@ -2585,86 +2602,100 @@ fn route_nets_overuse(
                         *e = (*e + 1).min(8);
                     }
                     let missing = missing_list.len();
-                    plans.insert(net, PlanEntry { plan, idxs, missing });
+                    plans.insert(
+                        net,
+                        PlanEntry {
+                            plan,
+                            idxs,
+                            missing,
+                        },
+                    );
                 }
             }
         } else {
-        let mut last_progress = t_pass;
-        for (i, &net) in to_route.iter().enumerate() {
-            if let Some(e) = plans.get(&net) {
-                for &wi in &e.idxs {
-                    occ[wi as usize] = occ[wi as usize].saturating_sub(1);
-                }
-            }
-            let source_wire = match resolve_source_wire(ctx, net) {
-                Ok(Some(w)) => w,
-                _ => continue,
-            };
-            let PlanOutcome {
-                plan,
-                missing: missing_list,
-                deadline_missing,
-            } = plan_net_overuse(
-                ctx,
-                net,
-                source_wire,
-                &nt,
-                &occ,
-                &hist,
-                &reserved,
-                present,
-                &missed,
-                escalate,
-                h_scale,
-                cfg,
-            );
-            deadline_missing_total += deadline_missing;
-            let idxs = plan_wire_indices(ctx, &mut nt, &mut occ, &mut hist, &plan);
-            if plans.get(&net).is_some_and(|e| e.idxs == idxs) {
-                plan_unchanged += 1;
-            }
-            for &wi in &idxs {
-                occ[wi as usize] = occ[wi as usize].saturating_add(1);
-            }
-            // Decay, not clear: a sink that recovered at an escalated budget
-            // reverts to the cheap cap next replan if its entry vanishes, and
-            // re-strands under the now-higher prices — the pass-4→5 sawtooth
-            // (26415→45325 missing) was exactly the recovered population.
-            for sr in &plan.sink_routes {
-                if let std::collections::hash_map::Entry::Occupied(mut e) =
-                    missed.entry((net, sr.sink_wire))
-                {
-                    let l = *e.get();
-                    if l <= 1 {
-                        e.remove();
-                    } else {
-                        e.insert(l - 1);
+            let mut last_progress = t_pass;
+            for (i, &net) in to_route.iter().enumerate() {
+                if let Some(e) = plans.get(&net) {
+                    for &wi in &e.idxs {
+                        occ[wi as usize] = occ[wi as usize].saturating_sub(1);
                     }
                 }
-            }
-            for &s in &missing_list {
-                let e = missed.entry((net, s)).or_insert(0);
-                *e = (*e + 1).min(8);
-            }
-            let missing = missing_list.len();
-            plans.insert(net, PlanEntry { plan, idxs, missing });
-            if cfg.verbose
-                && ((i + 1) % 5000 == 0
-                    || last_progress.elapsed() >= std::time::Duration::from_secs(60))
-            {
-                last_progress = std::time::Instant::now();
-                let secs = t_pass.elapsed().as_secs_f64();
-                eprintln!(
-                    "  neg pass {} progress: {}/{} nets, {:.1}s, {:.2} nets/s  astar:{}",
-                    iter,
-                    i + 1,
-                    to_route.len(),
-                    secs,
-                    (i + 1) as f64 / secs,
-                    astar_probe::summary(),
+                let source_wire = match resolve_source_wire(ctx, net) {
+                    Ok(Some(w)) => w,
+                    _ => continue,
+                };
+                let PlanOutcome {
+                    plan,
+                    missing: missing_list,
+                    deadline_missing,
+                } = plan_net_overuse(
+                    ctx,
+                    net,
+                    source_wire,
+                    &nt,
+                    &occ,
+                    &hist,
+                    &reserved,
+                    present,
+                    &missed,
+                    escalate,
+                    h_scale,
+                    cfg,
                 );
+                deadline_missing_total += deadline_missing;
+                let idxs = plan_wire_indices(ctx, &mut nt, &mut occ, &mut hist, &plan);
+                if plans.get(&net).is_some_and(|e| e.idxs == idxs) {
+                    plan_unchanged += 1;
+                }
+                for &wi in &idxs {
+                    occ[wi as usize] = occ[wi as usize].saturating_add(1);
+                }
+                // Decay, not clear: a sink that recovered at an escalated budget
+                // reverts to the cheap cap next replan if its entry vanishes, and
+                // re-strands under the now-higher prices — the pass-4→5 sawtooth
+                // (26415→45325 missing) was exactly the recovered population.
+                for sr in &plan.sink_routes {
+                    if let std::collections::hash_map::Entry::Occupied(mut e) =
+                        missed.entry((net, sr.sink_wire))
+                    {
+                        let l = *e.get();
+                        if l <= 1 {
+                            e.remove();
+                        } else {
+                            e.insert(l - 1);
+                        }
+                    }
+                }
+                for &s in &missing_list {
+                    let e = missed.entry((net, s)).or_insert(0);
+                    *e = (*e + 1).min(8);
+                }
+                let missing = missing_list.len();
+                plans.insert(
+                    net,
+                    PlanEntry {
+                        plan,
+                        idxs,
+                        missing,
+                    },
+                );
+                if cfg.verbose
+                    && ((i + 1) % 5000 == 0
+                        || last_progress.elapsed() >= std::time::Duration::from_secs(60))
+                {
+                    last_progress = std::time::Instant::now();
+                    let secs = t_pass.elapsed().as_secs_f64();
+                    eprintln!(
+                        "  neg pass {} progress: {}/{} nets, {:.1}s, {:.2} nets/s  astar:{}",
+                        iter,
+                        i + 1,
+                        to_route.len(),
+                        secs,
+                        (i + 1) as f64 / secs,
+                        astar_probe::summary(),
+                    );
+                }
             }
-        }
         }
 
         let mut overused = 0usize;
@@ -2714,8 +2745,11 @@ fn route_nets_overuse(
         tile_counts.sort_unstable_by(|a, b| b.cmp(a));
         let top1 = (tile_counts.len() / 100).max(1);
         let top_share = if overused > 0 {
-            tile_counts[..top1.min(tile_counts.len())].iter().map(|&c| c as usize).sum::<usize>()
-                as f64 / overused as f64
+            tile_counts[..top1.min(tile_counts.len())]
+                .iter()
+                .map(|&c| c as usize)
+                .sum::<usize>() as f64
+                / overused as f64
         } else {
             0.0
         };
@@ -2757,7 +2791,10 @@ fn route_nets_overuse(
                 let i = i as usize;
                 // Plans made this pass can name nodes interned after the
                 // claim sweep sized the bitset; those are unclaimed.
-                if claimed.get(i >> 6).is_some_and(|word| word & (1u64 << (i & 63)) != 0) {
+                if claimed
+                    .get(i >> 6)
+                    .is_some_and(|word| word & (1u64 << (i & 63)) != 0)
+                {
                     mover_on_claimed += 1;
                 } else if occ[i] > 1 {
                     mover_on_shared += 1;
@@ -2798,7 +2835,13 @@ fn route_nets_overuse(
                 }
             }
         }
-        let pct = |a: usize, b: usize| if b > 0 { 100.0 * a as f64 / b as f64 } else { 0.0 };
+        let pct = |a: usize, b: usize| {
+            if b > 0 {
+                100.0 * a as f64 / b as f64
+            } else {
+                0.0
+            }
+        };
         eprintln!(
             "RasterRouter[overuse] diag pass {}: movers[contested={} missing={} noplan={}] overlap_prev={:.1}% unchanged={:.1}% mover_wires[claimed={} shared={}] streak[1={} 2-4={} 5-14={} 15+={}] occ4_fanout[1={} 2-4={} 5-16={} 17-64={} 65+={}] deadline_miss={}",
             iter,
@@ -2825,7 +2868,10 @@ fn route_nets_overuse(
         present = (present * growth).min(present_max);
 
         if overused == 0 && missing_total == 0 {
-            eprintln!("RasterRouter[overuse]: negotiation converged at pass {}", iter);
+            eprintln!(
+                "RasterRouter[overuse]: negotiation converged at pass {}",
+                iter
+            );
             break;
         }
     }
@@ -2875,10 +2921,7 @@ fn route_nets_overuse(
         .copied()
         .filter(|&n| {
             let net = ctx.net(n);
-            net.is_alive()
-                && net.has_driver()
-                && net.num_users() > 0
-                && !net_fully_routed(ctx, n)
+            net.is_alive() && net.has_driver() && net.num_users() > 0 && !net_fully_routed(ctx, n)
         })
         .collect();
     if finish.is_empty() {
@@ -3101,7 +3144,11 @@ fn route_nets_exclusive(
                     to_retry.push(idx);
                 }
                 if cfg.skip_cleanup {
-                    eprintln!("  pass {} gate: {} partials ripped up", iter, partials_to_rip.len());
+                    eprintln!(
+                        "  pass {} gate: {} partials ripped up",
+                        iter,
+                        partials_to_rip.len()
+                    );
                 }
                 eprintln!(
                     "  pass {} gate: bumped={} sticky_skipped={} (threshold={})",
@@ -3285,7 +3332,10 @@ fn route_nets_exclusive(
             eprintln!("  pass {} astar: {}", iter, astar_probe::summary());
             eprintln!(
                 "  pass {} failmode: apply_conflicts={} empty_plans={}  astar:{}",
-                iter, apply_conflicts, empty_plans, astar_probe::summary(),
+                iter,
+                apply_conflicts,
+                empty_plans,
+                astar_probe::summary(),
             );
             eprintln!("  pass {} partials: {}", iter, partial_census::summary());
 
@@ -3329,8 +3379,7 @@ fn route_nets_exclusive(
                     .map(|(&w, &h)| {
                         (
                             w,
-                            (h * neg_state.cfg.history_cost_multiplier)
-                                as crate::common::DelayT,
+                            (h * neg_state.cfg.history_cost_multiplier) as crate::common::DelayT,
                         )
                     })
                     .collect();

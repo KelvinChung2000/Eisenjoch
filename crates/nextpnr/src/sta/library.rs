@@ -190,12 +190,8 @@ fn delay_arcs(ctx: &Context, speed_grade: &SpeedGradePod, cell_type: &CellType) 
             .values()
             .filter(|port| port.dir == PortType::In)
         {
-            let timing = chipdb.cell_comb_timing(
-                speed_grade,
-                type_idx,
-                input.id.index(),
-                output.id.index(),
-            );
+            let timing =
+                chipdb.cell_comb_timing(speed_grade, type_idx, input.id.index(), output.id.index());
             if let Some(timing) = timing {
                 arcs.push(DelayArc {
                     from: *input,

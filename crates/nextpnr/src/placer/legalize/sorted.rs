@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use super::{leg_timers, Legalizer};
 
-
 /// Nearest-BEL legalization with region support.
 ///
 /// Phase A: one BEL pool per bucket, borrowed from the context.
@@ -362,7 +361,10 @@ pub fn sorted_legalize(
     // so they don't contribute.
     let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
     if leg_timers() {
-        eprintln!("  LEG_T registry_seed: {:.3}s", t_leg.elapsed().as_secs_f64());
+        eprintln!(
+            "  LEG_T registry_seed: {:.3}s",
+            t_leg.elapsed().as_secs_f64()
+        );
     }
     let mut shared_mux_rejects: u64 = 0;
     let mut arch_validity_rejects: u64 = 0;
@@ -443,7 +445,10 @@ pub fn sorted_legalize(
     }
 
     if leg_timers() {
-        eprintln!("  LEG_T phase_b_done: {:.3}s", t_leg.elapsed().as_secs_f64());
+        eprintln!(
+            "  LEG_T phase_b_done: {:.3}s",
+            t_leg.elapsed().as_secs_f64()
+        );
     }
     eprintln!(
         "  SortedLegalizer: cluster_rejects={} shared_mux_rejects={} arch_validity_rejects={}",

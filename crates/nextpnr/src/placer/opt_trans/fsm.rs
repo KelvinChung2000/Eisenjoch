@@ -434,10 +434,12 @@ fn collect_settle_order(network: &PipeNetwork, ws: &mut PathSolverWorkspace, use
     let dist_int = &ws.dist_int;
     if use_corridor && !ws.corridor_marked.is_empty() {
         let reached = ws.corridor_marked.iter().copied();
-        ws.settle_order.extend(reached.filter(|&n| dist_int[n] != u32::MAX));
+        ws.settle_order
+            .extend(reached.filter(|&n| dist_int[n] != u32::MAX));
     } else {
         let total = (network.width * network.height) as usize;
-        ws.settle_order.extend((0..total).filter(|&n| dist_int[n] != u32::MAX));
+        ws.settle_order
+            .extend((0..total).filter(|&n| dist_int[n] != u32::MAX));
     }
     ws.settle_order.sort_by_key(|&n| dist_int[n]);
 }
@@ -581,7 +583,10 @@ mod tests {
             fsm_dist_and_forward(&network, 0, &mut ws, false);
             let dij = dijkstra_single_source_for_test(&network, 0);
             let order: Vec<u32> = ws.settle_order.iter().map(|&n| ws.dist_int[n]).collect();
-            assert!(order.windows(2).all(|w| w[0] <= w[1]), "not ascending: {order:?}");
+            assert!(
+                order.windows(2).all(|w| w[0] <= w[1]),
+                "not ascending: {order:?}"
+            );
             assert_eq!(ws.settle_order.len(), network.num_nodes());
             for n in 0..network.num_nodes() {
                 assert_eq!(ws.dist_int[n], dij[n], "mismatch at node {}", n);

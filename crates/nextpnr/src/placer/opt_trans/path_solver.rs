@@ -961,9 +961,9 @@ pub(crate) fn dial_logit_load(
             corridor_fallback: false,
             cap_armed: false,
             settle_above_sink: 0,
-        load_nonzero: 0,
-        load_material: 0,
-        heuristic_prunable: 0,
+            load_nonzero: 0,
+            load_material: 0,
+            heuristic_prunable: 0,
         };
     };
     ws.mark_corridor(network, &corridor);
@@ -1115,20 +1115,16 @@ fn dial_logit_load_inner(
             corridor_fallback: false,
             cap_armed,
             settle_above_sink,
-        load_nonzero: 0,
-        load_material: 0,
-        heuristic_prunable: 0,
+            load_nonzero: 0,
+            load_material: 0,
+            heuristic_prunable: 0,
         };
     }
 
     // Backward pass: distribute loaded demand back along predecessor edges.
     // Operates in integer-slack domain so the likelihood is a single LUT hit
     // per edge — no libm exp on this critical path either.
-    let material_cut = LOAD_MATERIAL_FRAC
-        * sink_demands
-            .iter()
-            .map(|&(_, d)| d.abs())
-            .sum::<f64>();
+    let material_cut = LOAD_MATERIAL_FRAC * sink_demands.iter().map(|&(_, d)| d.abs()).sum::<f64>();
     let mut load_nonzero = 0usize;
     let mut load_material = 0usize;
 
@@ -1340,9 +1336,9 @@ fn dial_logit_displacement(
         cap_armed: true,
         // Displacement fast path never runs Dijkstra, so there is no tail.
         settle_above_sink: 0,
-    load_nonzero: 0,
-    load_material: 0,
-    heuristic_prunable: 0,
+        load_nonzero: 0,
+        load_material: 0,
+        heuristic_prunable: 0,
     })
 }
 
@@ -1461,7 +1457,6 @@ mod tests {
     use super::*;
     use crate::placer::opt_trans::network::{Direction, Node, PipeType};
 
-
     /// Y-shaped net: driver at 0, trunk 0->1, then branches 1->2 and 1->3.
     /// Pipe indices are the edge order below: 0=trunk, 1=left, 2=right.
     fn y_network() -> PipeNetwork {
@@ -1491,9 +1486,21 @@ mod tests {
         let union = solve_y(true);
 
         // Conserved flow: trunk carries the whole net, each branch half of it.
-        assert!((flow[0] - 1.0).abs() < 1e-9, "trunk under flow = {}", flow[0]);
-        assert!((flow[1] - 0.5).abs() < 1e-9, "branch under flow = {}", flow[1]);
-        assert!((flow[2] - 0.5).abs() < 1e-9, "branch under flow = {}", flow[2]);
+        assert!(
+            (flow[0] - 1.0).abs() < 1e-9,
+            "trunk under flow = {}",
+            flow[0]
+        );
+        assert!(
+            (flow[1] - 0.5).abs() < 1e-9,
+            "branch under flow = {}",
+            flow[1]
+        );
+        assert!(
+            (flow[2] - 0.5).abs() < 1e-9,
+            "branch under flow = {}",
+            flow[2]
+        );
 
         // Union: every edge of the tree is one physical wire.
         for (pipe, u) in union.iter().enumerate() {
@@ -1549,7 +1556,15 @@ mod tests {
         for union_usage in [false, true] {
             let mut ws = PathSolverWorkspace::new(network.num_nodes());
             ws.begin_net();
-            dial_logit_load_inner(&network, 0, &[(2usize, 1.0f64)], &mut ws, true, false, union_usage);
+            dial_logit_load_inner(
+                &network,
+                0,
+                &[(2usize, 1.0f64)],
+                &mut ws,
+                true,
+                false,
+                union_usage,
+            );
             let mut usage = vec![0.0; network.num_pipes()];
             for &(pipe, load) in ws.edge_flows() {
                 usage[pipe as usize] += load;

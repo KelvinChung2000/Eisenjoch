@@ -1,12 +1,12 @@
 //! Placer trait and implementations.
 
 pub mod common;
-pub mod place_common;
 pub mod electro_place;
 pub mod heap;
 pub mod legalize;
 pub mod opt_trans;
 pub mod pipeline;
+pub mod place_common;
 pub mod refine;
 pub mod report;
 pub mod routability;
