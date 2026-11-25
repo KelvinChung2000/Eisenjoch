@@ -120,3 +120,48 @@ fn unplaced_cell_is_rejected() {
         })
     );
 }
+
+#[rstest]
+#[case::pip_is_src_dot_dst("LC_O.N1BEG0")]
+#[case::bel_prefix_is_bel_name("C.FF")]
+fn fabulous_features_follow_the_bitstream_spec_names(#[case] feature: &str) {
+    let (src, dst) = ("LC_O", "N1BEG0");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fabulous.bin");
+    let mut ctx =
+        Context::new(nextpnr::chipdb::ChipDb::load(&path).expect("FABulous chipdb loads"));
+    let lc = add_cell(&mut ctx, "lc", "FABULOUS_LC");
+    let ff = ctx.id("FF");
+    ctx.design
+        .cell_edit(lc)
+        .set_param(ff, Property::bit_vector("1"));
+    let chipdb = ctx.chipdb();
+    let tile = chipdb.tile_by_xy(1, 1);
+    let bel = chipdb
+        .bels()
+        .find(|&bel| bel.tile() == tile && chipdb.bel_name(bel) == "C")
+        .expect("X1Y1 has LC C");
+    let pip = chipdb
+        .pips()
+        .find(|&pip| {
+            pip.tile() == tile
+                && chipdb.wire_name(chipdb.pip_src_tile_wire(pip)) == src
+                && chipdb.wire_name(chipdb.pip_dst_tile_wire(pip)) == dst
+        })
+        .expect("X1Y1 has the pip");
+    assert!(ctx.bind_bel(bel, lc, PlaceStrength::Placer));
+    let net = add_net(&mut ctx, "o");
+    drive(&mut ctx, net, lc, "O");
+    let source = ctx.chipdb().pip_src_wire(pip);
+    ctx.bind_wire(source, net, PlaceStrength::Strong);
+    ctx.design
+        .net_edit(net)
+        .add_wire(source, None, PlaceStrength::Strong);
+    bind_route(&mut ctx, net, &[pip]);
+    let features = fasm_features(&ctx).expect("features");
+    assert!(
+        features
+            .iter()
+            .any(|f| f.tile == "X1Y1" && f.feature == feature),
+        "{feature} in {features:?}"
+    );
+}

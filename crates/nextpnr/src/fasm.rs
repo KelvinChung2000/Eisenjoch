@@ -1,8 +1,8 @@
-//! FASM features of a routed design, named by the chipdb's pip and BEL `extra_data`.
+//! FASM features of a routed design, named by the chipdb's pip and BEL naming rule.
 
 use thiserror::Error;
 
-use crate::chipdb::{BelId, PipFasmFeature, PipId};
+use crate::chipdb::{BelId, PipId};
 use crate::context::Context;
 use crate::netlist::{CellInfo, Property};
 
@@ -63,12 +63,9 @@ fn pip_features(ctx: &Context) -> Result<Vec<FasmFeature>, FasmError> {
                         pip: pip_name(ctx, pip),
                         net: ctx.name_of(net.name).to_owned(),
                     })?;
-            let PipFasmFeature::Named(feature) = feature else {
-                continue;
-            };
             features.push(FasmFeature {
                 tile: chipdb.tile_name(pip.tile()),
-                feature: feature.to_owned(),
+                feature: feature.into_owned(),
                 setting: FeatureSetting::Enabled,
             });
         }

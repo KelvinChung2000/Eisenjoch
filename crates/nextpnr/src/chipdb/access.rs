@@ -3,12 +3,16 @@ use super::*;
 use crate::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
 use crate::netlist::PortType;
 use crate::read_packed;
+use std::borrow::Cow;
 use std::ffi::CStr;
 
+/// Where a chipdb keeps the FASM names of its pips and BELs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PipFasmFeature<'a> {
-    Named(&'a str),
-    Fixed,
+enum FasmNaming {
+    /// A `FasmFeaturePod` in each pip's and BEL's `extra_data`.
+    ExtraData,
+    /// FABulous's bitstream spec: pip `{src}.{dst}` and BEL prefix `{bel}`, both within the tile.
+    FabulousNames,
 }
 
 impl ChipDb {
@@ -465,18 +469,33 @@ impl ChipDb {
         self.constid_str(type_name_id).unwrap_or("<unknown>")
     }
 
-    pub fn pip_fasm_feature(&self, pip: PipId) -> Option<PipFasmFeature<'_>> {
-        let feature = Self::fasm_feature_id(&self.pip_info(pip).extra_data)?;
-        Some(if feature == FIXED_PIP_FEATURE {
-            PipFasmFeature::Fixed
-        } else {
-            PipFasmFeature::Named(self.fasm_feature_name(feature))
-        })
+    fn fasm_naming(&self) -> FasmNaming {
+        match self.uarch() {
+            "FABulous" => FasmNaming::FabulousNames,
+            _ => FasmNaming::ExtraData,
+        }
     }
 
+    /// The pip's FASM feature relative to its tile, or `None` when the chipdb carries none.
+    pub fn pip_fasm_feature(&self, pip: PipId) -> Option<Cow<'_, str>> {
+        match self.fasm_naming() {
+            FasmNaming::FabulousNames => Some(Cow::Owned(format!(
+                "{}.{}",
+                self.wire_name(self.pip_src_tile_wire(pip)),
+                self.wire_name(self.pip_dst_tile_wire(pip)),
+            ))),
+            FasmNaming::ExtraData => Self::fasm_feature_id(&self.pip_info(pip).extra_data)
+                .map(|feature| Cow::Borrowed(self.fasm_feature_name(feature))),
+        }
+    }
+
+    /// The prefix of the BEL's parameter features relative to its tile, or `None` when the chipdb carries none.
     pub fn bel_fasm_prefix(&self, bel: BelId) -> Option<&str> {
-        Self::fasm_feature_id(&self.bel_info(bel).extra_data)
-            .map(|feature| self.fasm_feature_name(feature))
+        match self.fasm_naming() {
+            FasmNaming::FabulousNames => Some(self.bel_name(bel)),
+            FasmNaming::ExtraData => Self::fasm_feature_id(&self.bel_info(bel).extra_data)
+                .map(|feature| self.fasm_feature_name(feature)),
+        }
     }
 
     fn fasm_feature_id(extra_data: &RelPtr<u8>) -> Option<i32> {

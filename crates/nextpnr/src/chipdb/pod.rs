@@ -567,9 +567,6 @@ pub struct ChipExtraDataPod {
     pub packing_rules: RelSlice<PackingRulePod>,
 }
 
-/// Feature index of a pip with no configuration bits, such as a pseudo-pip or a hard-wired clock spine.
-pub const FIXED_PIP_FEATURE: i32 = -1;
-
 /// The FASM name of a pip feature or BEL feature prefix, held in its `extra_data`.
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
