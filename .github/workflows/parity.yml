@@ -1,0 +1,54 @@
+name: Upstream parity
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - third_party/nextpnr
+      - crates/nextpnr-upstream/**
+      - crates/nextpnr/tests/fixtures/npnr_baseline/**
+      - .github/workflows/parity.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  himbaechel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          submodules: true
+      - name: Install nextpnr build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libboost-filesystem-dev libboost-thread-dev \
+            libboost-program-options-dev libboost-iostreams-dev libeigen3-dev
+      - name: Record the nextpnr revision
+        id: nextpnr
+        run: echo "rev=$(git rev-parse HEAD:third_party/nextpnr)" >> "$GITHUB_OUTPUT"
+      - uses: hendrikmuhs/ccache-action@v1.2.26
+        with:
+          key: nextpnr-${{ steps.nextpnr.outputs.rev }}-${{ hashFiles('crates/nextpnr-upstream/native/**') }}
+          restore-keys: nextpnr-${{ steps.nextpnr.outputs.rev }}-
+      - name: Build the bridge and the upstream executable
+        run: |
+          cmake -S third_party/nextpnr -B build/nextpnr -DARCH=himbaechel \
+            -DHIMBAECHEL_UARCH=example -DBUILD_PYTHON=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_PROJECT_INCLUDE="$PWD/crates/nextpnr-upstream/native/nextpnr.cmake" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/nextpnr --parallel --target eisenjoch-nextpnr nextpnr-himbaechel
+      - uses: dtolnay/rust-toolchain@1.100.0
+      - run: cargo test -p nextpnr-upstream --test himbaechel --locked -- --ignored
+        env:
+          NEXTPNR_BUILD: ${{ github.workspace }}/build/nextpnr

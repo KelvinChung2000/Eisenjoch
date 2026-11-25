@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.100.0
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  rust-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: Point PyO3 at Python ${{ env.PYTHON_VERSION }}
+        run: |
+          uv python install "$PYTHON_VERSION"
+          echo "PYO3_PYTHON=$(uv python find --managed-python "$PYTHON_VERSION")" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: rust-test
+      - run: cargo test --workspace --release --no-fail-fast --features test-utils --locked
+
+  python-extension:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: python-extension
+      - run: uv sync --locked --extra cli
+      - run: uv run --locked python -c "import nextpnr.nextpnr"
+      - run: uv run --locked eisenjoch --help
+      - run: uv run --locked nextpnr-himbaechel-rust --help
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: Point PyO3 at Python ${{ env.PYTHON_VERSION }}
+        run: |
+          uv python install "$PYTHON_VERSION"
+          echo "PYO3_PYTHON=$(uv python find --managed-python "$PYTHON_VERSION")" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          shared-key: lint
+      - run: cargo clippy --workspace --all-targets --features test-utils --locked -- -D warnings
