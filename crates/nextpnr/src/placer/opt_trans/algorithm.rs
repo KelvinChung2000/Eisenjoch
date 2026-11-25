@@ -15,6 +15,7 @@ use rayon::{prelude::*, ThreadPoolBuilder};
 use crate::placer::common::TypeAwarePlacement;
 
 use super::config::OptTransPlacerCfg;
+use super::coord_descent::DcdInputs;
 use super::network::PipeNetwork;
 use super::resistance::ResistanceModel;
 
@@ -98,6 +99,20 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         .collect();
 
     let resistance_model = ResistanceModel;
+    let dcd_inputs = DcdInputs {
+        cell_to_idx: &cell_to_idx,
+        idx_to_cell: &idx_to_cell,
+        alive_net_ids: &alive_net_ids,
+        solve_pool: &solve_pool,
+        resistance_model: &resistance_model,
+        type_aware: &type_aware,
+        cell_buckets: &cell_buckets,
+        cell_pin_weights: &cell_pin_weights,
+        phys_max_x,
+        phys_max_y,
+        phys_grid_w,
+        phys_grid_h,
+    };
 
     eprintln!(
         "Coordinate descent mode: {} cells, scale {:.2}",
@@ -158,19 +173,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
                 &mut wx,
                 &mut wy,
                 &mut network,
-                &cell_to_idx,
-                &idx_to_cell,
-                &alive_net_ids,
                 &warmup_cfg,
-                &solve_pool,
-                &resistance_model,
-                &type_aware,
-                &cell_buckets,
-                &cell_pin_weights,
-                phys_max_x,
-                phys_max_y,
-                phys_grid_w,
-                phys_grid_h,
+                &dcd_inputs,
             );
             eprintln!(
                 "  Warmup {}/{}: seed=0x{:x} energy={:.1}",
@@ -200,19 +204,8 @@ pub fn place_opt_trans(ctx: &mut Context, cfg: &OptTransPlacerCfg) -> Result<(),
         &mut cell_x,
         &mut cell_y,
         &mut network,
-        &cell_to_idx,
-        &idx_to_cell,
-        &alive_net_ids,
         &cfg,
-        &solve_pool,
-        &resistance_model,
-        &type_aware,
-        &cell_buckets,
-        &cell_pin_weights,
-        phys_max_x,
-        phys_max_y,
-        phys_grid_w,
-        phys_grid_h,
+        &dcd_inputs,
     );
     eprintln!("  ALG_T dcd_done: {:.2}s", t_alg.elapsed().as_secs_f64());
     super::coord_descent::report_collect_time();

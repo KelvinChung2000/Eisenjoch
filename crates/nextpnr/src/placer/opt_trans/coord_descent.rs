@@ -4563,25 +4563,44 @@ struct ObjState {
     overflow_excess: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct DcdInputs<'a> {
+    pub(super) cell_to_idx: &'a FxHashMap<CellId, usize>,
+    pub(super) idx_to_cell: &'a [CellId],
+    pub(super) alive_net_ids: &'a [NetId],
+    pub(super) solve_pool: &'a rayon::ThreadPool,
+    pub(super) resistance_model: &'a ResistanceModel,
+    pub(super) type_aware: &'a TypeAwarePlacement,
+    pub(super) cell_buckets: &'a [IdString],
+    pub(super) cell_pin_weights: &'a [f64],
+    pub(super) phys_max_x: f64,
+    pub(super) phys_max_y: f64,
+    pub(super) phys_grid_w: usize,
+    pub(super) phys_grid_h: usize,
+}
+
 pub fn run_inner_outer(
     ctx: &mut Context,
     cell_x: &mut [f64],
     cell_y: &mut [f64],
     network: &mut PipeNetwork,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    _idx_to_cell: &[CellId],
-    alive_net_ids: &[NetId],
     cfg: &OptTransPlacerCfg,
-    solve_pool: &rayon::ThreadPool,
-    resistance_model: &ResistanceModel,
-    type_aware: &TypeAwarePlacement,
-    cell_buckets: &[IdString],
-    cell_pin_weights: &[f64],
-    phys_max_x: f64,
-    phys_max_y: f64,
-    phys_grid_w: usize,
-    phys_grid_h: usize,
+    inputs: &DcdInputs<'_>,
 ) -> f64 {
+    let DcdInputs {
+        cell_to_idx,
+        idx_to_cell,
+        alive_net_ids,
+        solve_pool,
+        resistance_model,
+        type_aware,
+        cell_buckets,
+        cell_pin_weights,
+        phys_max_x,
+        phys_max_y,
+        phys_grid_w,
+        phys_grid_h,
+    } = *inputs;
     let t_dcd_entry = std::time::Instant::now();
     let n = cell_x.len();
     let n_nodes = network.num_nodes();
@@ -4596,14 +4615,14 @@ pub fn run_inner_outer(
     // bucket has no compatible BEL, propagating through every helper via
     // `evaluate_cell_at` returning f64::INFINITY.
     let validity =
-        CellValidityMask::build(ctx, _idx_to_cell, type_aware, network.width, network.height);
+        CellValidityMask::build(ctx, idx_to_cell, type_aware, network.width, network.height);
     let validity = &validity;
 
     // Runtime mux-slot tracker: hard commit-time gate that rejects moves into
     // tiles whose output-mux slots are full. Capacity is derived from the
     // chipdb (count of distinct output-node roots per tile). Seeded from the
     // current grid positions of every external-fanout cell.
-    let mut mux_tracker = MuxSlotTracker::build(ctx, _idx_to_cell, network.x0, network.y0);
+    let mut mux_tracker = MuxSlotTracker::build(ctx, idx_to_cell, network.x0, network.y0);
     {
         let init_gx: Vec<i32> = cell_x
             .iter()
@@ -5529,10 +5548,10 @@ pub fn run_inner_outer(
         }
 
         if outer == 0 && diag_ctx.enabled {
-            let rows = collect_cell_metadata(ctx, &cell_net_map, &net_infos, _idx_to_cell);
+            let rows = collect_cell_metadata(ctx, &cell_net_map, &net_infos, idx_to_cell);
             diag_ctx.dump_cell_metadata(&rows);
             let (summary_lines, fixed_rows) =
-                collect_design_summary(ctx, network, _idx_to_cell, cell_buckets, type_aware);
+                collect_design_summary(ctx, network, idx_to_cell, cell_buckets, type_aware);
             diag_ctx.dump_design_summary(&summary_lines);
             diag_ctx.dump_fixed_cells(&fixed_rows);
         }
