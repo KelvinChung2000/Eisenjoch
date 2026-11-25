@@ -2921,19 +2921,41 @@ fn fullscan_sweep_probe(
     (acc, stats)
 }
 
+#[derive(Clone, Copy)]
+struct SweepInputs<'a> {
+    cell_net_map: &'a CellNetMap,
+    network: &'a PipeNetwork,
+    cfg: &'a OptTransPlacerCfg,
+    validity: &'a CellValidityMask,
+    mux_tracker: &'a MuxSlotTracker,
+}
+
+struct SweepState<'a> {
+    net_infos: &'a mut [NetInfo],
+    cell_x: &'a mut [f64],
+    cell_y: &'a mut [f64],
+    diag: &'a mut DiagCtx,
+}
+
 fn place_dcd_sweep(
-    net_infos: &mut [NetInfo],
-    cell_net_map: &CellNetMap,
+    inputs: &SweepInputs<'_>,
+    state: SweepState<'_>,
     dist_cache: &DistCache,
-    cell_x: &mut [f64],
-    cell_y: &mut [f64],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
-    mux_tracker: &MuxSlotTracker,
-    diag: &mut DiagCtx,
     theta: f64,
 ) -> usize {
+    let SweepInputs {
+        cell_net_map,
+        network,
+        cfg,
+        validity,
+        mux_tracker,
+    } = *inputs;
+    let SweepState {
+        net_infos,
+        cell_x,
+        cell_y,
+        diag,
+    } = state;
     let n = cell_x.len();
     let alpha = cfg.jacobi_alpha.clamp(0.0, 1.0);
     if alpha <= 0.0 {
@@ -3445,16 +3467,20 @@ fn measure_cell_coloring(net_infos: &[NetInfo], cell_net_map: &CellNetMap, n: us
 /// entirely. Compare its HPWL trajectory against the star sweeps: if median wins
 /// big, objective fidelity is the cap; if it ties, the convergence/local-CD
 /// paradigm is the cap.
-fn place_dcd_sweep_median(
-    net_infos: &mut [NetInfo],
-    cell_net_map: &CellNetMap,
-    cell_x: &mut [f64],
-    cell_y: &mut [f64],
-    network: &PipeNetwork,
-    validity: &CellValidityMask,
-    mux_tracker: &MuxSlotTracker,
-    diag: &mut DiagCtx,
-) -> usize {
+fn place_dcd_sweep_median(inputs: &SweepInputs<'_>, state: SweepState<'_>) -> usize {
+    let SweepInputs {
+        cell_net_map,
+        network,
+        validity,
+        mux_tracker,
+        ..
+    } = *inputs;
+    let SweepState {
+        net_infos,
+        cell_x,
+        cell_y,
+        diag,
+    } = state;
     let n = cell_x.len();
     let width = network.width as usize;
 
@@ -3595,8 +3621,12 @@ fn place_dcd_sweep_colored_gs(
         }
         // Phase 1: parallel argmin against the CURRENT (fresh) dist_cache.
         let best: Vec<(usize, i32, i32)> = {
-            let ni: &[NetInfo] = net_infos;
-            let dc: &DistCache = dist_cache;
+            let model = NetCostModel {
+                net_infos,
+                dist_cache,
+                network,
+                cfg,
+            };
             let cx: &[f64] = cell_x;
             let cy: &[f64] = cell_y;
             color_cells
@@ -3608,33 +3638,9 @@ fn place_dcd_sweep_colored_gs(
                     if cell_nets.is_empty() {
                         return (ci, ogx, ogy);
                     }
-                    let cur = evaluate_cell_at(
-                        ci,
-                        ogx,
-                        ogy,
-                        cell_nets,
-                        &NetCostModel {
-                            net_infos: ni,
-                            dist_cache: dc,
-                            network,
-                            cfg,
-                        },
-                        validity,
-                    );
-                    let (bx, by, _bc, _a, _b, _c) = bisect_2d(
-                        ci,
-                        cell_nets,
-                        &NetCostModel {
-                            net_infos: ni,
-                            dist_cache: dc,
-                            network,
-                            cfg,
-                        },
-                        validity,
-                        ogx,
-                        ogy,
-                        cur,
-                    );
+                    let cur = evaluate_cell_at(ci, ogx, ogy, cell_nets, &model, validity);
+                    let (bx, by, _bc, _a, _b, _c) =
+                        bisect_2d(ci, cell_nets, &model, validity, ogx, ogy, cur);
                     if move_cap != i32::MAX {
                         let cbx = bx.clamp(ogx - move_cap, ogx + move_cap);
                         let cby = by.clamp(ogy - move_cap, ogy + move_cap);
@@ -3707,21 +3713,33 @@ fn place_dcd_sweep_colored_gs(
 /// The whole sweep evaluates against a frozen `dist_cache` snapshot — no
 /// in-sweep refresh. The outer loop updates the field between sweeps.
 fn place_dcd_sweep_jacobi_bisection(
-    net_infos: &mut [NetInfo],
-    cell_net_map: &CellNetMap,
+    inputs: &SweepInputs<'_>,
+    state: SweepState<'_>,
     dist_cache: &DistCache,
-    cell_x: &mut [f64],
-    cell_y: &mut [f64],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
-    mux_tracker: &MuxSlotTracker,
-    diag: &mut DiagCtx,
 ) -> usize {
+    let SweepInputs {
+        cell_net_map,
+        network,
+        cfg,
+        validity,
+        mux_tracker,
+    } = *inputs;
+    let SweepState {
+        net_infos,
+        cell_x,
+        cell_y,
+        diag,
+    } = state;
     let n = cell_x.len();
 
     // Phase 1: parallel evaluation. Each cell finds its best position against
     // the frozen dist_cache. No commits, no shared mutation.
+    let model = NetCostModel {
+        net_infos,
+        dist_cache,
+        network,
+        cfg,
+    };
     let best: Vec<(i32, i32)> = (0..n)
         .into_par_iter()
         .map(|ci| {
@@ -3733,33 +3751,9 @@ fn place_dcd_sweep_jacobi_bisection(
             }
             let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
             let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
-            let cur_cost = evaluate_cell_at(
-                ci,
-                old_gx,
-                old_gy,
-                cell_nets,
-                &NetCostModel {
-                    net_infos,
-                    dist_cache,
-                    network,
-                    cfg,
-                },
-                validity,
-            );
-            let (bx, by, _bc, _np, _ni, _im) = bisect_2d(
-                ci,
-                cell_nets,
-                &NetCostModel {
-                    net_infos,
-                    dist_cache,
-                    network,
-                    cfg,
-                },
-                validity,
-                old_gx,
-                old_gy,
-                cur_cost,
-            );
+            let cur_cost = evaluate_cell_at(ci, old_gx, old_gy, cell_nets, &model, validity);
+            let (bx, by, _bc, _np, _ni, _im) =
+                bisect_2d(ci, cell_nets, &model, validity, old_gx, old_gy, cur_cost);
             (bx, by)
         })
         .collect();
@@ -4097,25 +4091,37 @@ fn bb_2d_multi(
 /// 2. Prefer the current position when it is tied; otherwise use lexicographic order.
 /// 3. Commit cell to the winner.
 fn place_dcd_sweep_jacobi_bb(
-    net_infos: &mut [NetInfo],
-    cell_net_map: &CellNetMap,
+    inputs: &SweepInputs<'_>,
+    state: SweepState<'_>,
     dist_cache: &DistCache,
     pyramids: &[RegionMinPyramid],
-    cell_x: &mut [f64],
-    cell_y: &mut [f64],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
-    mux_tracker: &MuxSlotTracker,
-    diag: &mut DiagCtx,
     iter_order: &[usize],
 ) -> usize {
+    let SweepInputs {
+        cell_net_map,
+        network,
+        cfg,
+        validity,
+        mux_tracker,
+    } = *inputs;
+    let SweepState {
+        net_infos,
+        cell_x,
+        cell_y,
+        diag,
+    } = state;
     let want_perf = std::env::var("NPNR_OT_BB_PERF").ok().as_deref() == Some("1");
 
     // Phase A (parallel): compute each cell's tied-cost candidate list against
     // the frozen dist_cache. This is the expensive step and is embarrassingly
     // parallel — all cells read the same frozen caches and write only into
     // their own Vec slot.
+    let model = NetCostModel {
+        net_infos,
+        dist_cache,
+        network,
+        cfg,
+    };
     let tied_per_cell: Vec<(Vec<(i32, i32)>, usize)> = iter_order
         .par_iter()
         .map(|&ci| {
@@ -4127,32 +4133,9 @@ fn place_dcd_sweep_jacobi_bb(
             }
             let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
             let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
-            let cur_cost = evaluate_cell_at(
-                ci,
-                old_gx,
-                old_gy,
-                cell_nets,
-                &NetCostModel {
-                    net_infos,
-                    dist_cache,
-                    network,
-                    cfg,
-                },
-                validity,
-            );
-            let (tied, _best_cost, n_evals) = bb_2d_multi(
-                cell_nets,
-                &NetCostModel {
-                    net_infos,
-                    dist_cache,
-                    network,
-                    cfg,
-                },
-                pyramids,
-                old_gx,
-                old_gy,
-                cur_cost,
-            );
+            let cur_cost = evaluate_cell_at(ci, old_gx, old_gy, cell_nets, &model, validity);
+            let (tied, _best_cost, n_evals) =
+                bb_2d_multi(cell_nets, &model, pyramids, old_gx, old_gy, cur_cost);
             (tied, n_evals)
         })
         .collect();
@@ -4435,18 +4418,24 @@ fn place_dcd_sweep_jacobi_bb(
 /// usage / R_eff stay frozen within the sweep; the outer loop refreshes them
 /// between sweeps.
 fn place_dcd_sweep_sequential_bisection(
-    net_infos: &mut [NetInfo],
-    cell_net_map: &CellNetMap,
+    inputs: &SweepInputs<'_>,
+    state: SweepState<'_>,
     dist_cache: &mut DistCache,
-    cell_x: &mut [f64],
-    cell_y: &mut [f64],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
-    validity: &CellValidityMask,
-    mux_tracker: &MuxSlotTracker,
-    diag: &mut DiagCtx,
     ws_pool: &WorkspacePool,
 ) -> usize {
+    let SweepInputs {
+        cell_net_map,
+        network,
+        cfg,
+        validity,
+        mux_tracker,
+    } = *inputs;
+    let SweepState {
+        net_infos,
+        cell_x,
+        cell_y,
+        diag,
+    } = state;
     let mut ws = ws_pool.checkout();
     let mut moved = 0usize;
     let max_iters = cfg.dcd_iters_per_cell.max(1);
@@ -5573,44 +5562,45 @@ pub fn run_inner_outer(
             process_rss_kb() as f64 / 1024.0
         );
         let t_dcd = std::time::Instant::now();
+        let sweep_inputs = SweepInputs {
+            cell_net_map: &cell_net_map,
+            network,
+            cfg,
+            validity,
+            mux_tracker: &mux_tracker,
+        };
         let moved = match cfg.sweep_mode {
             super::config::SweepMode::JacobiFullscan => place_dcd_sweep(
-                &mut net_infos,
-                &cell_net_map,
+                &sweep_inputs,
+                SweepState {
+                    net_infos: &mut net_infos,
+                    cell_x,
+                    cell_y,
+                    diag: &mut diag_ctx,
+                },
                 &dist_cache,
-                cell_x,
-                cell_y,
-                network,
-                cfg,
-                validity,
-                &mux_tracker,
-                &mut diag_ctx,
                 theta_iter,
             ),
             super::config::SweepMode::SequentialBisection => place_dcd_sweep_sequential_bisection(
-                &mut net_infos,
-                &cell_net_map,
+                &sweep_inputs,
+                SweepState {
+                    net_infos: &mut net_infos,
+                    cell_x,
+                    cell_y,
+                    diag: &mut diag_ctx,
+                },
                 &mut dist_cache,
-                cell_x,
-                cell_y,
-                network,
-                cfg,
-                validity,
-                &mux_tracker,
-                &mut diag_ctx,
                 &ws_pool,
             ),
             super::config::SweepMode::JacobiBisection => place_dcd_sweep_jacobi_bisection(
-                &mut net_infos,
-                &cell_net_map,
+                &sweep_inputs,
+                SweepState {
+                    net_infos: &mut net_infos,
+                    cell_x,
+                    cell_y,
+                    diag: &mut diag_ctx,
+                },
                 &dist_cache,
-                cell_x,
-                cell_y,
-                network,
-                cfg,
-                validity,
-                &mux_tracker,
-                &mut diag_ctx,
             ),
             super::config::SweepMode::JacobiBB => {
                 let want_perf = std::env::var("NPNR_OT_BB_PERF").ok().as_deref() == Some("1");
@@ -5716,17 +5706,15 @@ pub fn run_inner_outer(
                     );
                 }
                 place_dcd_sweep_jacobi_bb(
-                    &mut net_infos,
-                    &cell_net_map,
+                    &sweep_inputs,
+                    SweepState {
+                        net_infos: &mut net_infos,
+                        cell_x,
+                        cell_y,
+                        diag: &mut diag_ctx,
+                    },
                     &dist_cache,
                     &pyramids,
-                    cell_x,
-                    cell_y,
-                    network,
-                    cfg,
-                    validity,
-                    &mux_tracker,
-                    &mut diag_ctx,
                     cell_net_map
                         .topo_order
                         .as_ref()
@@ -5734,14 +5722,13 @@ pub fn run_inner_outer(
                 )
             }
             super::config::SweepMode::MedianDiag => place_dcd_sweep_median(
-                &mut net_infos,
-                &cell_net_map,
-                cell_x,
-                cell_y,
-                network,
-                validity,
-                &mux_tracker,
-                &mut diag_ctx,
+                &sweep_inputs,
+                SweepState {
+                    net_infos: &mut net_infos,
+                    cell_x,
+                    cell_y,
+                    diag: &mut diag_ctx,
+                },
             ),
             super::config::SweepMode::ColoredGs => {
                 let threshold = crate::env::var::<usize>("NPNR_OT_COLOR_FANOUT").unwrap_or(16);
