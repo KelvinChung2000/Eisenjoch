@@ -653,10 +653,7 @@ pub fn reconstruct_path_to(
     }
     let mut pips: Vec<PipId> = Vec::new();
     let mut cursor = end;
-    loop {
-        let Some(&(_, _, pip, from)) = visited.get(&cursor) else {
-            break;
-        };
+    while let Some(&(_, _, pip, from)) = visited.get(&cursor) {
         match pip {
             Some(p) => {
                 pips.push(p);
@@ -684,10 +681,7 @@ fn reconstruct_path_from_parents(
     }
     let mut pips = Vec::new();
     let mut cursor = end;
-    loop {
-        let Some(&(pip, from)) = parents.get(&cursor) else {
-            break;
-        };
+    while let Some(&(pip, from)) = parents.get(&cursor) {
         match pip {
             Some(p) => {
                 pips.push(p);

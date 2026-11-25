@@ -9,7 +9,8 @@ use nextpnr::router::common::{
     RoutePlan, SinkRoute,
 };
 use nextpnr::router::maze::{
-    astar_route, compute_route_r1, find_congested_nets, route_net, Router1Cfg, Router1State,
+    astar_route, compute_route_r1, find_congested_nets, route_net, MazeQuery, Router1Cfg,
+    Router1State,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -29,14 +30,15 @@ fn astar_same_wire_returns_empty_path() {
     let penalty = FxHashMap::default();
     let path = astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[wire]),
-        wire,
-        &penalty,
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[wire]),
+            dst_wire: wire,
+            wire_penalty: &penalty,
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     );
     assert!(path.is_some());
     assert!(path.unwrap().is_empty());
@@ -50,14 +52,15 @@ fn astar_single_pip_path() {
     let penalty = FxHashMap::default();
     let path = astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[src]),
-        dst,
-        &penalty,
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[src]),
+            dst_wire: dst,
+            wire_penalty: &penalty,
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
@@ -71,14 +74,15 @@ fn astar_verifies_pip_connectivity() {
     let penalty = FxHashMap::default();
     let path = astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[src]),
-        dst,
-        &penalty,
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[src]),
+            dst_wire: dst,
+            wire_penalty: &penalty,
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .unwrap();
     let pip = path[0];
@@ -91,14 +95,15 @@ fn astar_no_path_returns_none() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[WireId::new(0, 1)]),
-        WireId::new(0, 0),
-        &FxHashMap::default(),
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[WireId::new(0, 1)]),
+            dst_wire: WireId::new(0, 0),
+            wire_penalty: &FxHashMap::default(),
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .is_none());
 }
@@ -108,14 +113,15 @@ fn astar_cross_tile_no_path() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[WireId::new(0, 0)]),
-        WireId::new(1, 0),
-        &FxHashMap::default(),
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[WireId::new(0, 0)]),
+            dst_wire: WireId::new(1, 0),
+            wire_penalty: &FxHashMap::default(),
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .is_none());
 }
@@ -130,14 +136,15 @@ fn astar_with_penalty_still_finds_path() {
     assert_eq!(
         astar_route(
             &ctx,
-            NetId::NONE,
-            &wire_set(&[src]),
-            dst,
-            &penalty,
-            None,
-            50,
-            None,
-            None
+            &MazeQuery {
+                net: NetId::NONE,
+                src_wires: &wire_set(&[src]),
+                dst_wire: dst,
+                wire_penalty: &penalty,
+                bbox: None,
+                lookahead: None,
+                visit_limit: None,
+            },
         )
         .unwrap()
         .len(),
@@ -150,14 +157,15 @@ fn astar_multi_source_picks_closest() {
     let ctx = common::make_context();
     let path = astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[WireId::new(0, 0), WireId::new(1, 0)]),
-        WireId::new(0, 1),
-        &FxHashMap::default(),
-        None,
-        50,
-        None,
-        None,
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[WireId::new(0, 0), WireId::new(1, 0)]),
+            dst_wire: WireId::new(0, 1),
+            wire_penalty: &FxHashMap::default(),
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .unwrap();
     assert_eq!(path, vec![PipId::new(0, 0)]);
@@ -168,14 +176,15 @@ fn astar_empty_sources_returns_none() {
     let ctx = common::make_context();
     assert!(astar_route(
         &ctx,
-        NetId::NONE,
-        &wire_set(&[]),
-        WireId::new(0, 1),
-        &FxHashMap::default(),
-        None,
-        50,
-        None,
-        None
+        &MazeQuery {
+            net: NetId::NONE,
+            src_wires: &wire_set(&[]),
+            dst_wire: WireId::new(0, 1),
+            wire_penalty: &FxHashMap::default(),
+            bbox: None,
+            lookahead: None,
+            visit_limit: None,
+        },
     )
     .is_none());
 }

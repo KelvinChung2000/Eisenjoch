@@ -643,7 +643,7 @@ pub fn diagnose_unroutable_net(
     net_idx: NetId,
     visit_budget: Option<usize>,
 ) -> usize {
-    use super::maze::{astar_route_with_trace, AStarExit};
+    use super::maze::{astar_route_with_trace, AStarExit, MazeQuery};
 
     let net = ctx.net(net_idx);
     let net_name = ctx.name_of(net.name_id()).to_owned();
@@ -733,15 +733,15 @@ pub fn diagnose_unroutable_net(
 
         let (path, trace) = astar_route_with_trace(
             ctx,
-            net_idx,
-            &src_set,
-            dst_wire,
-            &empty_penalty,
-            None,
-            50,
-            None,
-            visit_budget,
-            false,
+            &MazeQuery {
+                net: net_idx,
+                src_wires: &src_set,
+                dst_wire,
+                wire_penalty: &empty_penalty,
+                bbox: None,
+                lookahead: None,
+                visit_limit: visit_budget,
+            },
         );
         let outcome = match (path.as_ref(), trace.exit) {
             (Some(p), AStarExit::Reached) => format!(

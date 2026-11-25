@@ -282,7 +282,7 @@ pub fn compute_route_r1(
     net: NetId,
     wire_penalty: &FxHashMap<WireId, DelayT>,
     bb_margin: i32,
-    estimate_precision: DelayT,
+    _estimate_precision: DelayT,
     lookahead: Option<&super::lookahead::Lookahead>,
 ) -> Result<RoutePlan, RouterError> {
     let source_wire = match resolve_source_wire(ctx, net)? {
@@ -331,17 +331,16 @@ pub fn compute_route_r1(
             });
             continue;
         }
-        match astar_route(
-            ctx,
+        let query = MazeQuery {
             net,
-            &tree_wires,
-            sink_wire,
+            src_wires: &tree_wires,
+            dst_wire: sink_wire,
             wire_penalty,
-            bbox.as_ref(),
-            estimate_precision,
+            bbox: bbox.as_ref(),
             lookahead,
-            None,
-        ) {
+            visit_limit: None,
+        };
+        match astar_route(ctx, &query) {
             Some(pips) => {
                 for &pip in &pips {
                     tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
@@ -501,52 +500,59 @@ impl<'a> PathCostModel for MazeCostModel<'a> {
     }
 }
 
-pub fn astar_route(
-    ctx: &Context,
-    net: NetId,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&crate::metrics::BoundingBox>,
-    _estimate_precision: DelayT,
-    lookahead: Option<&super::lookahead::Lookahead>,
-    visit_limit: Option<usize>,
-) -> Option<Vec<PipId>> {
-    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, false);
-    let opts = AStarOptions {
-        visit_limit,
-        exhaustive: false,
-        retain_trace: false,
-        stop_on_first_touch: false,
-    };
-    astar_search(ctx, &model, src_wires, dst_wire, &opts).path
+/// One A* routing request: grow `net` from `src_wires` to `dst_wire` under
+/// `wire_penalty`, pruned to `bbox` and guided by `lookahead` when present.
+/// `visit_limit` caps heap pops; `None` searches until the heap drains.
+pub struct MazeQuery<'a> {
+    pub net: NetId,
+    pub src_wires: &'a FxHashSet<WireId>,
+    pub dst_wire: WireId,
+    pub wire_penalty: &'a FxHashMap<WireId, DelayT>,
+    pub bbox: Option<&'a BoundingBox>,
+    pub lookahead: Option<&'a Lookahead>,
+    pub visit_limit: Option<usize>,
+}
+
+impl MazeQuery<'_> {
+    fn options(&self, retain_trace: bool) -> AStarOptions {
+        AStarOptions {
+            visit_limit: self.visit_limit,
+            exhaustive: false,
+            retain_trace,
+            stop_on_first_touch: false,
+        }
+    }
+
+    fn cost_model<'q>(&'q self, ctx: &Context, ignore_bindings: bool) -> MazeCostModel<'q> {
+        MazeCostModel::new(
+            ctx,
+            self.net,
+            self.wire_penalty,
+            self.bbox,
+            self.lookahead,
+            ignore_bindings,
+        )
+    }
+}
+
+pub fn astar_route(ctx: &Context, query: &MazeQuery) -> Option<Vec<PipId>> {
+    let model = query.cost_model(ctx, false);
+    astar_search(
+        ctx,
+        &model,
+        query.src_wires,
+        query.dst_wire,
+        &query.options(false),
+    )
+    .path
 }
 
 /// Exploration A*: same as [`astar_route`] but ignores `wire_binding`, so the
 /// returned path follows the theoretical shortest corridor regardless of which
 /// wires are currently claimed by other nets. Used exclusively by the scoped
 /// rip-up logic to identify the minimal set of blocker nets.
-pub fn astar_route_explore(
-    ctx: &Context,
-    net: NetId,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&crate::metrics::BoundingBox>,
-    lookahead: Option<&super::lookahead::Lookahead>,
-    visit_limit: Option<usize>,
-) -> Option<Vec<PipId>> {
-    astar_route_explore_exit(
-        ctx,
-        net,
-        src_wires,
-        dst_wire,
-        wire_penalty,
-        bbox,
-        lookahead,
-        visit_limit,
-    )
-    .0
+pub fn astar_route_explore(ctx: &Context, query: &MazeQuery) -> Option<Vec<PipId>> {
+    astar_route_explore_exit(ctx, query).0
 }
 
 /// [`astar_route_explore`] with the search's exit reason. A `HeapDrained`
@@ -555,81 +561,40 @@ pub fn astar_route_explore(
 /// out, so callers cache the former and may retry the latter.
 pub fn astar_route_explore_exit(
     ctx: &Context,
-    net: NetId,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&crate::metrics::BoundingBox>,
-    lookahead: Option<&super::lookahead::Lookahead>,
-    visit_limit: Option<usize>,
+    query: &MazeQuery,
 ) -> (Option<Vec<PipId>>, super::astar::AStarExit) {
-    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, true);
-    let opts = AStarOptions {
-        visit_limit,
-        exhaustive: false,
-        retain_trace: false,
-        stop_on_first_touch: false,
-    };
-    let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+    let model = query.cost_model(ctx, true);
+    let result = astar_search(
+        ctx,
+        &model,
+        query.src_wires,
+        query.dst_wire,
+        &query.options(false),
+    );
     (result.path, result.trace.exit)
 }
 
-/// Same semantics as [`astar_route`]. The `multi_hop` flag was historically
-/// used to eagerly enqueue 2-hop destinations so the heuristic could see
-/// past weak intermediate wires (IOB→interior); the node-as-vertex
-/// expansion in [`super::astar::astar_search`] already fans out
-/// `pips_downhill` from every node peer in one step, which covers the same
-/// case without a special mode. The wrapper is retained for backwards
-/// compatibility but is now identical to [`astar_route`].
-pub fn astar_route_multihop(
-    ctx: &Context,
-    net: NetId,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&crate::metrics::BoundingBox>,
-    _estimate_precision: DelayT,
-    lookahead: Option<&super::lookahead::Lookahead>,
-    visit_limit: Option<usize>,
-) -> Option<Vec<PipId>> {
-    astar_route(
-        ctx,
-        net,
-        src_wires,
-        dst_wire,
-        wire_penalty,
-        bbox,
-        _estimate_precision,
-        lookahead,
-        visit_limit,
-    )
+/// Same semantics as [`astar_route`]. The node-as-vertex expansion in
+/// [`super::astar::astar_search`] fans out `pips_downhill` from every node
+/// peer in one step, which covers the 2-hop lookahead this wrapper once
+/// enabled for weak intermediate wires (IOB→interior).
+pub fn astar_route_multihop(ctx: &Context, query: &MazeQuery) -> Option<Vec<PipId>> {
+    astar_route(ctx, query)
 }
 
 /// Like [`astar_route`] but always returns an [`AStarTrace`] alongside the
 /// (optional) path. Used by router diagnostics to answer questions like
 /// "how far did A* get before giving up?". Delegates to the shared
-/// [`super::astar::astar_search`] kernel; `multi_hop` is retained for API
-/// stability but no longer changes behavior (see [`astar_route_multihop`]).
-pub fn astar_route_with_trace(
-    ctx: &Context,
-    net: NetId,
-    src_wires: &FxHashSet<WireId>,
-    dst_wire: WireId,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    bbox: Option<&crate::metrics::BoundingBox>,
-    _estimate_precision: DelayT,
-    lookahead: Option<&super::lookahead::Lookahead>,
-    visit_limit: Option<usize>,
-    _multi_hop: bool,
-) -> (Option<Vec<PipId>>, CoreTrace) {
-    let model = MazeCostModel::new(ctx, net, wire_penalty, bbox, lookahead, false);
-    let opts = AStarOptions {
-        visit_limit,
-        exhaustive: false,
-        retain_trace: true,
-        stop_on_first_touch: false,
-    };
-    let result = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+/// [`super::astar::astar_search`] kernel.
+pub fn astar_route_with_trace(ctx: &Context, query: &MazeQuery) -> (Option<Vec<PipId>>, CoreTrace) {
+    let model = query.cost_model(ctx, false);
+    let result = astar_search(
+        ctx,
+        &model,
+        query.src_wires,
+        query.dst_wire,
+        &query.options(true),
+    );
     (result.path, result.trace)
 }
 

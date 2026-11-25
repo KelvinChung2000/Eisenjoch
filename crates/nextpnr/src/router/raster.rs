@@ -25,7 +25,7 @@ use super::common::{
 };
 use super::maze::{
     astar_route, astar_route_explore, astar_route_explore_exit, astar_route_multihop,
-    astar_route_with_trace,
+    astar_route_with_trace, MazeQuery,
 };
 use super::RouterError;
 
@@ -213,17 +213,16 @@ fn reroute_from_scratch(
             });
             continue;
         }
-        match astar_route(
-            ctx,
+        let query = MazeQuery {
             net,
-            &tree_wires,
-            sink_wire,
+            src_wires: &tree_wires,
+            dst_wire: sink_wire,
             wire_penalty,
             bbox,
-            50,
-            Some(lookahead),
-            Some(visit_limit),
-        ) {
+            lookahead: Some(lookahead),
+            visit_limit: Some(visit_limit),
+        };
+        match astar_route(ctx, &query) {
             Some(pips) => {
                 for &pip in &pips {
                     tree_wires.insert(ctx.chipdb().pip_dst_wire(pip));
@@ -299,16 +298,16 @@ fn scoped_ripup_route(
         .max(0);
     let explore_margin = EXPLORE_BBOX_MARGIN_MIN.max(span * EXPLORE_BBOX_SPAN_MULT);
     let explore_bbox = crate::metrics::compute_bbox(ctx, net, explore_margin);
-    let explore_path = match astar_route_explore(
-        ctx,
+    let explore_query = MazeQuery {
         net,
-        &src_set,
-        first_sink,
+        src_wires: &src_set,
+        dst_wire: first_sink,
         wire_penalty,
-        Some(&explore_bbox),
-        Some(lookahead),
-        Some(EXPLORE_VISIT_LIMIT),
-    ) {
+        bbox: Some(&explore_bbox),
+        lookahead: Some(lookahead),
+        visit_limit: Some(EXPLORE_VISIT_LIMIT),
+    };
+    let explore_path = match astar_route_explore(ctx, &explore_query) {
         Some(p) => p,
         None => return false,
     };
@@ -336,17 +335,12 @@ fn scoped_ripup_route(
     // Step 2: try a binding-aware A* on the same first_sink with extended
     // visit budget. If it returns a path, every wire is unbound (binding
     // hard-block ensures that), so this is a true zero-blocker detour.
-    let detour_path = astar_route(
-        ctx,
-        net,
-        &src_set,
-        first_sink,
-        wire_penalty,
-        None,
-        0,
-        Some(lookahead),
-        Some(SCOPED_RIPUP_RETRY_LIMIT),
-    );
+    let detour_query = MazeQuery {
+        bbox: None,
+        visit_limit: Some(SCOPED_RIPUP_RETRY_LIMIT),
+        ..explore_query
+    };
+    let detour_path = astar_route(ctx, &detour_query);
 
     // Step 3: if any binding-aware detour exists, accept it regardless of cost.
     // A slow routed net beats an unrouted one — timing-driven rejection only
@@ -494,6 +488,13 @@ struct InloopStats {
     victim_fail: usize,
 }
 
+struct InloopSweep<'a> {
+    cfg: &'a RasterRouterCfg,
+    wire_penalty: &'a FxHashMap<WireId, DelayT>,
+    lookahead: &'a super::lookahead::Lookahead,
+    reroute_limit: usize,
+}
+
 /// One in-loop recovery pass over a net's missing sinks.
 ///
 /// Sinks recover independently: each attempt explores unbound for a corridor,
@@ -512,15 +513,18 @@ struct InloopStats {
 fn inloop_ripup_net(
     ctx: &mut Context,
     net: NetId,
-    cfg: &RasterRouterCfg,
-    wire_penalty: &FxHashMap<WireId, DelayT>,
-    lookahead: &super::lookahead::Lookahead,
+    sweep: &InloopSweep,
     neg_state: &mut super::common::NegotiationState,
     victim_ledger: &mut FxHashMap<NetId, u32>,
     dead_ends: &mut FxHashSet<(NetId, WireId)>,
-    reroute_limit: usize,
     stats: &mut InloopStats,
 ) -> bool {
+    let &InloopSweep {
+        cfg,
+        wire_penalty,
+        lookahead,
+        reroute_limit,
+    } = sweep;
     if ctx.net(net).num_users() > INLOOP_MAX_FANOUT {
         stats.skip_fanout += 1;
         return false;
@@ -561,16 +565,16 @@ fn inloop_ripup_net(
         // Tight explore first: cheap, and its corridor is one the extension
         // can actually use. Escalate only on a drain, which proves the tight
         // bbox empty rather than the budget short.
-        let (mut explore_path, exit) = astar_route_explore_exit(
-            ctx,
+        let tight_query = MazeQuery {
             net,
-            &tree_wires,
-            sink,
+            src_wires: &tree_wires,
+            dst_wire: sink,
             wire_penalty,
-            Some(&tight_bbox),
-            Some(lookahead),
-            Some(INLOOP_EXPLORE_LIMIT),
-        );
+            bbox: Some(&tight_bbox),
+            lookahead: Some(lookahead),
+            visit_limit: Some(INLOOP_EXPLORE_LIMIT),
+        };
+        let (mut explore_path, exit) = astar_route_explore_exit(ctx, &tight_query);
         let mut attempt_bbox = &tight_bbox;
         if explore_path.is_none() {
             match exit {
@@ -579,16 +583,12 @@ fn inloop_ripup_net(
                     continue;
                 }
                 AStarExit::HeapDrained => {
-                    let (wide_path, wide_exit) = astar_route_explore_exit(
-                        ctx,
-                        net,
-                        &tree_wires,
-                        sink,
-                        wire_penalty,
-                        Some(&wide_bbox),
-                        Some(lookahead),
-                        Some(INLOOP_WIDE_EXPLORE_LIMIT),
-                    );
+                    let wide_query = MazeQuery {
+                        bbox: Some(&wide_bbox),
+                        visit_limit: Some(INLOOP_WIDE_EXPLORE_LIMIT),
+                        ..tight_query
+                    };
+                    let (wide_path, wide_exit) = astar_route_explore_exit(ctx, &wide_query);
                     match (wide_path, wide_exit) {
                         (Some(p), _) => {
                             stats.wide_found += 1;
@@ -664,18 +664,12 @@ fn inloop_ripup_net(
 
         // Extension binds nothing until apply_route_plan, and that call is
         // atomic, so the only state to restore on failure is the victims'.
-        let extension = astar_route(
-            ctx,
-            net,
-            &tree_wires,
-            sink,
-            wire_penalty,
-            Some(attempt_bbox),
-            50,
-            Some(lookahead),
-            Some(reroute_limit),
-        )
-        .and_then(|pips| {
+        let extension_query = MazeQuery {
+            bbox: Some(attempt_bbox),
+            visit_limit: Some(reroute_limit),
+            ..tight_query
+        };
+        let extension = astar_route(ctx, &extension_query).and_then(|pips| {
             let plan = RoutePlan {
                 net,
                 source_wire,
@@ -858,9 +852,7 @@ impl Default for RasterRouterCfg {
 struct CongestionMap {
     usage: Vec<f32>,
     history: Vec<f32>,
-    #[allow(dead_code)]
     width: i32,
-    #[allow(dead_code)]
     height: i32,
 }
 
@@ -925,9 +917,9 @@ fn raster_corridor(
     cong: &CongestionMap,
     cong_weight: f32,
     filter_radius: f32,
-    chip_width: i32,
-    chip_height: i32,
 ) -> (Vec<(i32, i32)>, FxHashSet<i32>) {
+    let chip_width = cong.width;
+    let chip_height = cong.height;
     let mut path = Vec::new();
     let mut corridor = FxHashSet::default();
 
@@ -1167,27 +1159,18 @@ mod astar_probe {
 
 fn route_sink_astar(
     ctx: &Context,
-    net: NetId,
+    model: &RasterCostModel,
     src_wires: &FxHashSet<WireId>,
     dst_wire: WireId,
-    bbox: Option<&BoundingBox>,
-    cong: &CongestionMap,
-    cong_weight: f32,
     sink_visit_limit: Option<usize>,
 ) -> (Option<Vec<PipId>>, AStarExit, usize) {
-    let model = RasterCostModel {
-        net,
-        bbox,
-        cong,
-        cong_weight,
-    };
     let opts = AStarOptions {
         visit_limit: sink_visit_limit,
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: true,
     };
-    let res = astar_search(ctx, &model, src_wires, dst_wire, &opts);
+    let res = astar_search(ctx, model, src_wires, dst_wire, &opts);
     astar_probe::record(res.trace.exit, res.trace.visit_count, res.trace.max_visits);
     (res.path, res.trace.exit, res.trace.min_approach)
 }
@@ -1264,8 +1247,7 @@ fn corridor_bboxes(
     let w = chipdb.width();
     let h = chipdb.height();
     let mut out: Vec<BoundingBox> = Vec::with_capacity(end - start + 1);
-    for i in start..=end {
-        let (x, y) = path[i];
+    for &(x, y) in &path[start..=end] {
         let x0 = (x - margin).max(0);
         let y0 = (y - margin).max(0);
         let x1 = (x + margin).min(w - 1);
@@ -1301,6 +1283,11 @@ fn node_touches_tile(chipdb: &crate::chipdb::ChipDb, wire: WireId, tile: i32) ->
     hit
 }
 
+struct SegmentGoal {
+    tile: i32,
+    sink: Option<WireId>,
+}
+
 /// Confined A* search within a segment's tile region.
 ///
 /// Thin wrapper over [`astar_search`] that expresses the corridor as a union
@@ -1316,13 +1303,16 @@ fn node_touches_tile(chipdb: &crate::chipdb::ChipDb, wire: WireId, tile: i32) ->
 fn segment_astar(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
-    target_tile: i32,
-    final_dst: Option<WireId>,
+    goal: &SegmentGoal,
     bboxes: &[BoundingBox],
     cong: &CongestionMap,
     cong_weight: f32,
     max_expansions: usize,
 ) -> Option<(Vec<PipId>, WireId)> {
+    let &SegmentGoal {
+        tile: target_tile,
+        sink: final_dst,
+    } = goal;
     let chipdb = ctx.chipdb();
     let (target_x, target_y) = chipdb.tile_xy(target_tile);
 
@@ -1448,19 +1438,20 @@ fn segment_route(
         let bboxes = corridor_bboxes(chipdb, path, start, end, margin);
 
         let (tx, ty) = path[end];
-        let target_tile = chipdb.tile_by_xy(tx, ty);
         // For the final segment the real sink wire is the goal. For
-        // intermediate segments we only need to *reach* target_tile; the
+        // intermediate segments we only need to *reach* the target tile; the
         // wrapper picks a representative wire with the most pips_uphill.
-        let final_dst = if is_last { Some(dst_wire) } else { None };
+        let goal = SegmentGoal {
+            tile: chipdb.tile_by_xy(tx, ty),
+            sink: if is_last { Some(dst_wire) } else { None },
+        };
 
         // Confined A* within this segment's tiles.
         let budget = (seg_len * 3000).max(5000);
         match segment_astar(
             ctx,
             &current_wires,
-            target_tile,
-            final_dst,
+            &goal,
             &bboxes,
             cong,
             cong_weight,
@@ -1526,8 +1517,6 @@ fn route_net_greedy(
     };
 
     let chipdb = ctx.chipdb();
-    let chip_w = chipdb.width();
-    let chip_h = chipdb.height();
 
     let const_val = source_wire_const_value(ctx, source_wire);
     if const_val != 0 {
@@ -1606,8 +1595,6 @@ fn route_net_greedy(
                 cong,
                 cong_weight,
                 cfg.filter_radius,
-                chip_w,
-                chip_h,
             );
             segment_route(ctx, &tree_wires, sink_wire, &path, cong, cong_weight)
         };
@@ -1886,16 +1873,14 @@ fn route_net_raster(
             continue;
         }
 
-        let (sink_path, sink_exit, sink_approach) = route_sink_astar(
-            ctx,
+        let model = RasterCostModel {
             net,
-            &tree_wires,
-            sink_wire,
-            bbox.as_ref(),
+            bbox: bbox.as_ref(),
             cong,
             cong_weight,
-            cfg.finish_visit_limit,
-        );
+        };
+        let (sink_path, sink_exit, sink_approach) =
+            route_sink_astar(ctx, &model, &tree_wires, sink_wire, cfg.finish_visit_limit);
         match sink_path {
             Some(pips) => {
                 for &pip in &pips {
@@ -2050,6 +2035,10 @@ fn plan_wire_indices(
 struct OveruseCostModel<'a> {
     net: NetId,
     bbox: Option<&'a BoundingBox>,
+    prices: &'a OverusePrices<'a>,
+}
+
+struct OverusePrices<'a> {
     nt: &'a NodeTable,
     occ: &'a [u16],
     hist: &'a [f32],
@@ -2068,15 +2057,16 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
     }
 
     fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
-        if let Some(&owner) = self.reserved.get(&wire) {
+        let prices = self.prices;
+        if let Some(&owner) = prices.reserved.get(&wire) {
             if owner != self.net {
                 return DelayT::MAX / 4;
             }
         }
-        let Some(i) = self.nt.get(wire) else {
+        let Some(i) = prices.nt.get(wire) else {
             return 0;
         };
-        let price = self.present * self.occ[i] as f32 + self.hist[i];
+        let price = prices.present * prices.occ[i] as f32 + prices.hist[i];
         (price * OVERUSE_COST_SCALE as f32).round() as DelayT
     }
 
@@ -2085,7 +2075,7 @@ impl<'a> PathCostModel for OveruseCostModel<'a> {
         let (wx, wy) = chipdb.tile_xy(wire.tile());
         let (dx, dy) = chipdb.tile_xy(dst.tile());
         let m = ((wx - dx).abs() + (wy - dy).abs()) as f32;
-        (m * H_WEIGHT as f32 * self.h_scale * OVERUSE_COST_SCALE as f32) as DelayT
+        (m * H_WEIGHT as f32 * self.prices.h_scale * OVERUSE_COST_SCALE as f32) as DelayT
     }
 
     fn bboxes(&self) -> &[BoundingBox] {
@@ -2137,14 +2127,9 @@ fn plan_net_overuse(
     ctx: &Context,
     net: NetId,
     source_wire: WireId,
-    nt: &NodeTable,
-    occ: &[u16],
-    hist: &[f32],
-    reserved: &FxHashMap<WireId, NetId>,
-    present: f32,
+    prices: &OverusePrices,
     missed: &FxHashMap<(NetId, WireId), u8>,
     escalate: bool,
-    h_scale: f32,
     cfg: &RasterRouterCfg,
 ) -> PlanOutcome {
     let chipdb = ctx.chipdb();
@@ -2227,12 +2212,7 @@ fn plan_net_overuse(
         let model = OveruseCostModel {
             net,
             bbox: sink_bbox,
-            nt,
-            occ,
-            hist,
-            reserved,
-            present,
-            h_scale,
+            prices,
         };
         match route_sink_overuse(ctx, &model, &tree_wires, sink_wire, sink_limit) {
             Some(pips) => {
@@ -2544,10 +2524,15 @@ fn route_nets_overuse(
                     }
                 }
                 let ctx_ref: &Context = ctx;
-                let occ_ref: &[u16] = &occ;
                 let missed_ref = &missed;
-                let nt_ref: &NodeTable = &nt;
-                let hist_ref: &[f32] = &hist;
+                let prices = OverusePrices {
+                    nt: &nt,
+                    occ: &occ,
+                    hist: &hist,
+                    reserved: &reserved,
+                    present,
+                    h_scale,
+                };
                 let results: Vec<(NetId, PlanOutcome)> = chunk_nets
                     .par_iter()
                     .filter_map(|&net| {
@@ -2556,14 +2541,9 @@ fn route_nets_overuse(
                             ctx_ref,
                             net,
                             source_wire,
-                            nt_ref,
-                            occ_ref,
-                            hist_ref,
-                            &reserved,
-                            present,
+                            &prices,
                             missed_ref,
                             escalate,
-                            h_scale,
                             cfg,
                         );
                         Some((net, outcome))
@@ -2632,14 +2612,16 @@ fn route_nets_overuse(
                     ctx,
                     net,
                     source_wire,
-                    &nt,
-                    &occ,
-                    &hist,
-                    &reserved,
-                    present,
+                    &OverusePrices {
+                        nt: &nt,
+                        occ: &occ,
+                        hist: &hist,
+                        reserved: &reserved,
+                        present,
+                        h_scale,
+                    },
                     &missed,
                     escalate,
-                    h_scale,
                     cfg,
                 );
                 deadline_missing_total += deadline_missing;
@@ -3383,11 +3365,16 @@ fn route_nets_exclusive(
                         )
                     })
                     .collect();
-                // Twice the per-sink cap: the corridor was just emptied for
-                // this net, so a success should land well under the pass
-                // budget and anything beyond it is the doomed-search shape
-                // the cap exists to stop.
-                let reroute_limit = cfg.sink_visit_limit.map(|v| v * 2).unwrap_or(100_000);
+                let sweep = InloopSweep {
+                    cfg,
+                    wire_penalty: &wire_penalty,
+                    lookahead: &lookahead,
+                    // Twice the per-sink cap: the corridor was just emptied for
+                    // this net, so a success should land well under the pass
+                    // budget and anything beyond it is the doomed-search shape
+                    // the cap exists to stop.
+                    reroute_limit: cfg.sink_visit_limit.map(|v| v * 2).unwrap_or(100_000),
+                };
                 let mut victim_ledger: FxHashMap<NetId, u32> = FxHashMap::default();
                 let mut stats = InloopStats::default();
                 let t_sweep = std::time::Instant::now();
@@ -3426,13 +3413,10 @@ fn route_nets_exclusive(
                     inloop_ripup_net(
                         ctx,
                         net,
-                        cfg,
-                        &wire_penalty,
-                        &lookahead,
+                        &sweep,
                         &mut neg_state,
                         &mut victim_ledger,
                         &mut inloop_dead,
-                        reroute_limit,
                         &mut stats,
                     );
                 }
@@ -3676,19 +3660,17 @@ fn route_nets_exclusive(
                             };
 
                             let trace_cleanup = std::env::var("RASTER_CLEANUP_TRACE").is_ok();
+                            let query = MazeQuery {
+                                net,
+                                src_wires: &tree_wires,
+                                dst_wire: sink_wire,
+                                wire_penalty: &wire_penalty,
+                                bbox: Some(&cleanup_bbox),
+                                lookahead: Some(&lookahead),
+                                visit_limit: per_sink_limit,
+                            };
                             let pips_opt = if trace_cleanup {
-                                let (pips, trace) = astar_route_with_trace(
-                                    ctx,
-                                    net,
-                                    &tree_wires,
-                                    sink_wire,
-                                    &wire_penalty,
-                                    Some(&cleanup_bbox),
-                                    50,
-                                    Some(&lookahead),
-                                    per_sink_limit,
-                                    manhattan > 50,
-                                );
+                                let (pips, trace) = astar_route_with_trace(ctx, &query);
                                 if pips.is_none() {
                                     let net_name = ctx.name_of(ctx.net(net).name_id()).to_owned();
                                     let (sxt, syt) = ctx.chipdb().tile_xy(sink_wire.tile());
@@ -3711,17 +3693,7 @@ fn route_nets_exclusive(
                                 }
                                 pips
                             } else {
-                                route_fn(
-                                    ctx,
-                                    net,
-                                    &tree_wires,
-                                    sink_wire,
-                                    &wire_penalty,
-                                    Some(&cleanup_bbox),
-                                    50,
-                                    Some(&lookahead),
-                                    per_sink_limit,
-                                )
+                                route_fn(ctx, &query)
                             };
 
                             match pips_opt {
@@ -3745,8 +3717,6 @@ fn route_nets_exclusive(
                                         &cong,
                                         cong_weight,
                                         cfg.filter_radius,
-                                        chip_w,
-                                        chip_h,
                                     );
                                     // Once per node: history is keyed by node, and a
                                     // node crossing several corridor tiles is still
@@ -3930,7 +3900,13 @@ mod tests {
         let cong = CongestionMap::new(ctx.chipdb().width(), ctx.chipdb().height());
         let mut src = FxHashSet::default();
         src.insert(W0);
-        route_sink_astar(ctx, net, &src, W1, None, &cong, 0.0, Some(10_000)).0
+        let model = RasterCostModel {
+            net,
+            bbox: None,
+            cong: &cong,
+            cong_weight: 0.0,
+        };
+        route_sink_astar(ctx, &model, &src, W1, Some(10_000)).0
     }
 
     #[test]

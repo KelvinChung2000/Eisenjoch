@@ -174,8 +174,8 @@ impl Lookahead {
         // pip_idx) the (orig_cost, span, src_wire) needed to score a pip.
         // src_wire = -1 marks "skip" (invalid pip).
         let mut pip_raw: Vec<Vec<(i64, i64, i32)>> = Vec::with_capacity(num_tile_types);
-        for tt in 0..num_tile_types {
-            let Some(rep_tile) = rep_of_type[tt] else {
+        for (tt, &rep) in rep_of_type.iter().enumerate() {
+            let Some(rep_tile) = rep else {
                 pip_raw.push(Vec::new());
                 continue;
             };
@@ -214,8 +214,8 @@ impl Lookahead {
         // router and lookahead read these costs (via `pip_cost`), so g
         // and h stay in the same units and h remains admissible.
         let mut base_1span_cost: i64 = i64::MAX;
-        for tt in 0..num_tile_types {
-            for &(cost, span, src) in &pip_raw[tt] {
+        for raw in &pip_raw {
+            for &(cost, span, src) in raw {
                 if src < 0 || span != 1 {
                     continue;
                 }
@@ -234,8 +234,7 @@ impl Lookahead {
 
         let mut pip_costs: Vec<Vec<i64>> = Vec::with_capacity(num_tile_types);
         let mut pip_rate_data: Vec<Vec<(i64, i64, i32)>> = Vec::with_capacity(num_tile_types);
-        for tt in 0..num_tile_types {
-            let raw = &pip_raw[tt];
+        for raw in &pip_raw {
             let mut costs: Vec<i64> = Vec::with_capacity(raw.len());
             let mut rated: Vec<(i64, i64, i32)> = Vec::with_capacity(raw.len());
             for &(orig_cost, span, src) in raw {
