@@ -111,8 +111,7 @@ impl Legalizer for SnapLegalizer {
         let order: Vec<usize> = {
             let mut roots: Vec<usize> = Vec::new();
             let mut leaves: Vec<usize> = Vec::new();
-            for i in 0..n {
-                let cid = idx_to_cell[i];
+            for (i, &cid) in idx_to_cell[..n].iter().enumerate() {
                 let cell = ctx.design.cell(cid);
                 // Cluster child: bound later by `place_cluster_children`
                 // when its root is processed. Skip here.
