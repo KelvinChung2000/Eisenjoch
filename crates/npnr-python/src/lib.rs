@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 
 use ::nextpnr::checkpoint;
 use ::nextpnr::fasm;
+use ::nextpnr::routed_json::routed_json;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::Context;
 use ::nextpnr::frontend::parse_json;
@@ -550,6 +551,14 @@ impl PyContext {
         fasm::fasm_features(&self.ctx)
             .map(|features| features.into_iter().map(PyFasmFeature::from).collect())
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    }
+
+    /// The routed design as nextpnr `write_json` text, with NEXTPNR_BEL on cells and ROUTING on nets.
+    ///
+    /// Raises RuntimeError when a property is an integer wider than 32 bits.
+    fn routed_json(&self) -> PyResult<String> {
+        let json = routed_json(&self.ctx).map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(serde_json::to_string_pretty(&json).expect("a JSON value serialises"))
     }
 
     /// Generate a resource utilization report.

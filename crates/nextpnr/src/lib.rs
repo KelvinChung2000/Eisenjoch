@@ -10,6 +10,7 @@ pub mod netlist;
 pub mod packer;
 pub mod placer;
 pub mod plugin;
+pub mod routed_json;
 pub mod router;
 pub mod solver;
 pub mod sta;

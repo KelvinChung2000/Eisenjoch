@@ -12,3 +12,4 @@ nextpnr = { workspace = true }
 nextpnr-upstream = { workspace = true }
 pyo3 = { workspace = true }
 rustc-hash = { workspace = true }
+serde_json = { workspace = true }

@@ -43,6 +43,9 @@ def main(
     report: Optional[Path] = typer.Option(
         None, help="Timing/utilization report (JSON)"
     ),
+    write: Optional[Path] = typer.Option(
+        None, help="Write the routed design as nextpnr JSON"
+    ),
     sdf: Optional[Path] = typer.Option(None, help="Write routed delays as SDF 3.0"),
     fasm: Optional[Path] = typer.Option(
         None, help="Write the configured features as FASM, named by the chipdb"
@@ -276,6 +279,15 @@ def main(
             "num_hold_endpoints": timing.num_hold_endpoints,
         }
         report.write_text(json_mod.dumps(report_data, indent=2))
+
+    if write is not None:
+        try:
+            write.write_text(ctx.routed_json())
+        except Exception as e:
+            typer.echo(f"Error writing routed JSON: {e}", err=True)
+            raise typer.Exit(1)
+        if verbose:
+            typer.echo(f"Wrote routed JSON to {write}")
 
     if sdf is not None:
         from nextpnr.sdf_export import write_sdf
