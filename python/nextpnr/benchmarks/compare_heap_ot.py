@@ -22,7 +22,7 @@ def run_placer(chipdb, design, placer, router="raster", seed=42, **place_kwargs)
 
     # Place
     t0 = time.time()
-    ctx.place(placer=placer, seed=seed, **place_kwargs)
+    ctx.place(nextpnr.PlaceOptions(placer=placer, seed=seed, **place_kwargs))
     place_time = time.time() - t0
 
     hpwl = ctx.total_hpwl()

@@ -48,6 +48,18 @@ pub struct PyContext {
     ctx: Context,
 }
 
+#[derive(FromPyObject)]
+struct PlaceOptions {
+    placer: String,
+    seed: u64,
+    max_iters: Option<usize>,
+    congestion_weight: f64,
+    timing_weight: f64,
+    init_strategy: String,
+    num_threads: usize,
+    legalization: String,
+}
+
 #[pymethods]
 impl PyContext {
     /// Create a new context.
@@ -222,51 +234,45 @@ impl PyContext {
         Ok(())
     }
 
-    /// Run a placer on the design.
+    /// Run the placer that `options.placer` names on the design.
     ///
     /// Args:
-    ///     placer: Placer algorithm name ("heap", "sa", "opt_trans", or "electro"). Default "heap".
-    ///     seed: RNG seed for reproducibility. Default 1.
-    ///     max_iters: Maximum iterations (default varies by placer).
-    ///     congestion_weight: Weight for congestion cost (HeAP/SA). Default 1.0.
-    ///     timing_weight: Timing-driven weight, opt_trans only; criticality from RustSTA on ideal wires. Default 0.0.
-    ///     init_strategy: Cell init strategy for opt_trans ("random_bel", "centroid", "uniform", "topological"). Default "topological" — centroid is degenerate on designs with few/colocated fixed cells.
-    ///     num_threads: Rayon worker thread count for opt_trans solves. Default 8.
-    #[pyo3(signature = (*, placer="heap", seed=1, max_iters=None, congestion_weight=1.0, timing_weight=0.0, init_strategy="topological", num_threads=8, legalization="ring"))]
-    fn place(
-        &mut self,
-        placer: &str,
-        seed: u64,
-        max_iters: Option<usize>,
-        congestion_weight: f64,
-        timing_weight: f64,
-        init_strategy: &str,
-        num_threads: usize,
-        legalization: &str,
-    ) -> PyResult<()> {
-        match placer {
+    ///     options: A `nextpnr.PlaceOptions`. Raises ValueError for an unknown placer or
+    ///         init_strategy and RuntimeError when the placer fails.
+    fn place(&mut self, options: PlaceOptions) -> PyResult<()> {
+        let PlaceOptions {
+            placer,
+            seed,
+            max_iters,
+            congestion_weight,
+            timing_weight,
+            init_strategy,
+            num_threads,
+            legalization,
+        } = options;
+        match placer.as_str() {
             "heap" => {
-                let mut cfg = PlacerHeapCfg::default();
-                cfg.seed = seed;
-                cfg.congestion_weight = congestion_weight;
+                let cfg = PlacerHeapCfg {
+                    seed,
+                    congestion_weight,
+                    ..PlacerHeapCfg::default()
+                };
                 PlacerHeap
                     .place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("HeAP placer error: {}", e)))
             }
             "sa" => {
-                let mut cfg = PlacerSaCfg::default();
-                cfg.seed = seed;
-                cfg.congestion_weight = congestion_weight;
+                let cfg = PlacerSaCfg {
+                    seed,
+                    congestion_weight,
+                    ..PlacerSaCfg::default()
+                };
                 PlacerSa
                     .place(&mut self.ctx, &cfg)
                     .map_err(|e| PyRuntimeError::new_err(format!("SA placer error: {}", e)))
             }
             "opt_trans" | "hydraulic" => {
-                let mut cfg = OptTransPlacerCfg::default();
-                cfg.seed = seed;
-                cfg.timing_weight = timing_weight;
-                cfg.num_threads = num_threads.max(1);
-                cfg.init_strategy = match init_strategy {
+                let init_strategy = match init_strategy.as_str() {
                     "centroid" => InitStrategy::Centroid,
                     "uniform" => InitStrategy::Uniform,
                     "random_bel" => InitStrategy::RandomBel,
@@ -278,7 +284,14 @@ impl PyContext {
                         )))
                     }
                 };
-                cfg.legalization = legalization.to_string();
+                let mut cfg = OptTransPlacerCfg {
+                    seed,
+                    timing_weight,
+                    num_threads: num_threads.max(1),
+                    init_strategy,
+                    legalization,
+                    ..OptTransPlacerCfg::default()
+                };
                 if cfg.timing_weight > 0.0 {
                     cfg.timing_criticality = ideal_net_criticality(&self.ctx).map_err(sta_error)?;
                 }
@@ -290,8 +303,10 @@ impl PyContext {
                     .map_err(|e| PyRuntimeError::new_err(format!("OptTrans placer error: {}", e)))
             }
             "electro" => {
-                let mut cfg = ElectroPlaceCfg::default();
-                cfg.seed = seed;
+                let mut cfg = ElectroPlaceCfg {
+                    seed,
+                    ..ElectroPlaceCfg::default()
+                };
                 if let Some(iters) = max_iters {
                     cfg.max_iters = iters;
                 }

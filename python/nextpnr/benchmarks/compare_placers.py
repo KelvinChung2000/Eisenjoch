@@ -42,7 +42,7 @@ def run_comparison(chipdb_path, json_path, placers, seed=1):
             ctx.pack()
 
             start = time.time()
-            ctx.place(placer=placer_name, seed=seed)
+            ctx.place(nextpnr.PlaceOptions(placer=placer_name, seed=seed))
             elapsed = time.time() - start
 
             # Collect metrics

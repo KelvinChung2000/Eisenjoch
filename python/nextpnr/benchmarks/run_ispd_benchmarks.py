@@ -513,7 +513,7 @@ def run_flow(
     ctx.load_design(str(json_path))
     ctx.pack()
     preplace_fixed_ios(ctx, fixed_port_names)
-    ctx.place(placer=placer, seed=42)
+    ctx.place(nextpnr.PlaceOptions(placer=placer, seed=42))
     ctx.route(router=router, bb_margin=max(3, ctx.width // 10))
     timing = ctx.timing_report(stage="routed")
     print(

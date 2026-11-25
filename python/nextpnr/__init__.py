@@ -7,3 +7,5 @@ except ImportError:
     # Pure-Python helpers under nextpnr/ should remain importable even when the
     # native extension has not been built in the current environment.
     pass
+
+from .place_options import PlaceOptions as PlaceOptions

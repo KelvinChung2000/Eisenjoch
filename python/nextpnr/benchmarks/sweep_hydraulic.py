@@ -108,7 +108,7 @@ def run_single(
     place_kwargs["enable_expanding_box"] = expanding_box
 
     t0 = time.perf_counter()
-    ctx.place(**place_kwargs)
+    ctx.place(nextpnr.PlaceOptions(**place_kwargs))
     place_time = time.perf_counter() - t0
 
     hpwl = ctx.total_hpwl()

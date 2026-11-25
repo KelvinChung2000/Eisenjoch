@@ -14,7 +14,7 @@ ctx.pack()
 t0 = time.time()
 
 if mode == "heap":
-    ctx.place(placer='heap', seed=42)
+    ctx.place(nextpnr.PlaceOptions(placer='heap', seed=42))
     elapsed = time.time() - t0
     print(f"HeAP: HPWL={ctx.total_hpwl():.0f} line={ctx.total_line_estimate():.0f} {elapsed:.1f}s")
 else:
@@ -24,13 +24,13 @@ else:
     iters = int(parts[-1].replace("it", ""))
     lr = float(parts[-2].replace("lr", ""))
     init = "_".join(parts[:-2]).replace("-", "_")
-    ctx.place(
+    ctx.place(nextpnr.PlaceOptions(
         placer='hydraulic', seed=42,
         
         max_iters=iters,
         adam_lr_gain=lr,
         init_strategy=init,
-    )
+    ))
     elapsed = time.time() - t0
     hpwl = ctx.total_hpwl()
     line = ctx.total_line_estimate()

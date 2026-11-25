@@ -55,7 +55,7 @@ def run_comparison(benchmark, chipdb_path, placer, congestion_weight):
 
     # Place with given congestion weight
     t0 = time.time()
-    ctx.place(placer=placer, seed=42, congestion_weight=congestion_weight)
+    ctx.place(nextpnr.PlaceOptions(placer=placer, seed=42, congestion_weight=congestion_weight))
     place_time = time.time() - t0
 
     # Compute metrics

@@ -97,10 +97,10 @@ def run(label: str, env_extra: dict, place_call: str) -> dict:
 def main() -> None:
     rows = []
 
-    heap_call = "ctx.place(placer='heap', max_iters=15)"
+    heap_call = "ctx.place(nextpnr.PlaceOptions(placer='heap', max_iters=15))"
     rows.append(run("heap", {}, heap_call))
 
-    ot_call = "ctx.place(placer='opt_trans', max_iters=15, num_threads=8)"
+    ot_call = "ctx.place(nextpnr.PlaceOptions(placer='opt_trans', max_iters=15, num_threads=8))"
     for v in OT_VARIANTS:
         env = {"NPNR_OT_GRAPH_MODEL": v}
         if v.startswith("corridor"):

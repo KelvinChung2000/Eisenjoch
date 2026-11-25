@@ -11,7 +11,7 @@ def run_place_route(name, placer, **place_kwargs):
     ctx.load_design(DESIGN)
     ctx.pack()
     t0 = time.time()
-    ctx.place(placer=placer, seed=42, **place_kwargs)
+    ctx.place(nextpnr.PlaceOptions(placer=placer, seed=42, **place_kwargs))
     t_place = time.time() - t0
     hpwl = ctx.total_hpwl()
     line_est = ctx.total_line_estimate()

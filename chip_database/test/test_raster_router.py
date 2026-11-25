@@ -86,7 +86,7 @@ def run_one(chipdb_path, json_path, placer_name, router_name, seed=1):
 
     # Place
     t0 = time.time()
-    ctx.place(placer=placer_name, seed=seed)
+    ctx.place(nextpnr.PlaceOptions(placer=placer_name, seed=seed))
     place_time = time.time() - t0
 
     hpwl = ctx.total_hpwl()

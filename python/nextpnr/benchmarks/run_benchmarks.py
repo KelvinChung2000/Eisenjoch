@@ -354,7 +354,7 @@ def run_pnr(benchmark_name, json_path, chipdb_path, placer, router, results):
 
     # Place
     t0 = time.time()
-    ctx.place(placer=placer, seed=42)
+    ctx.place(nextpnr.PlaceOptions(placer=placer, seed=42))
     results["place_time"] = time.time() - t0
 
     # Spatial placement density report (sliding window)

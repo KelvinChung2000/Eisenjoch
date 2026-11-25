@@ -10,7 +10,7 @@ ctx_h = nextpnr.Context(chipdb=chipdb)
 ctx_h.load_design(design)
 ctx_h.pack()
 t0 = time.time()
-ctx_h.place(placer='heap', seed=42)
+ctx_h.place(nextpnr.PlaceOptions(placer='heap', seed=42))
 heap_t = time.time() - t0
 heap_hpwl = ctx_h.total_hpwl()
 heap_line = ctx_h.total_line_estimate()
@@ -22,13 +22,13 @@ ctx = nextpnr.Context(chipdb=chipdb)
 ctx.load_design(design)
 ctx.pack()
 t0 = time.time()
-ctx.place(
+ctx.place(nextpnr.PlaceOptions(
     placer='hydraulic', seed=42,
     
     max_iters=30,
     adam_lr_gain=0.5,
     init_strategy="centroid",
-)
+))
 ot_t = time.time() - t0
 ot_hpwl = ctx.total_hpwl()
 ot_line = ctx.total_line_estimate()

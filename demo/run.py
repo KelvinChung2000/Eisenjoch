@@ -40,7 +40,7 @@ print()
 
 # Place (HeAP)
 print("--- Placing (HeAP) ---")
-ctx.place(placer="heap", seed=42)
+ctx.place(nextpnr.PlaceOptions(placer="heap", seed=42))
 print("Placement complete.")
 print()
 

@@ -53,7 +53,7 @@ def run_one(chipdb_path, json_path, placer_name, seed=1, max_iters=None):
     if max_iters is not None:
         place_kwargs["max_iters"] = max_iters
     t0 = time.time()
-    ctx.place(**place_kwargs)
+    ctx.place(nextpnr.PlaceOptions(**place_kwargs))
     place_time = time.time() - t0
 
     # Metrics after placement

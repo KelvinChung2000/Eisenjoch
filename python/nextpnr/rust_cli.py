@@ -234,7 +234,7 @@ def main(
     try:
         if verbose:
             typer.echo(f"Running placer ({placer})...")
-        ctx.place(placer=placer, seed=seed)
+        ctx.place(nextpnr.PlaceOptions(placer=placer, seed=seed))
 
         if verbose:
             typer.echo(f"Running refinement (timing-driven: {timing_driven})...")

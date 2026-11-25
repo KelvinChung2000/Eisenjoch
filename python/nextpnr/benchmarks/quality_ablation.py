@@ -55,7 +55,7 @@ except Exception as exc:
     print(f'pack: {{exc}}')
 
 t0 = time.time()
-ctx.place(placer='opt_trans', max_iters=15, num_threads=8)
+ctx.place(nextpnr.PlaceOptions(placer='opt_trans', max_iters=15, num_threads=8))
 elapsed = time.time() - t0
 print(f'=== Placement total: {{elapsed:.1f}}s ({{int(elapsed * 1000 / 15)}} ms/iter avg) ===')
 print(f'=== Total HPWL: {{ctx.total_hpwl():.0f}} ===')
