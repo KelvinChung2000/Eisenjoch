@@ -59,7 +59,7 @@ NEXTPNR_BUILD="$PWD/build/nextpnr" cargo test -p nextpnr-upstream -- --ignored
 
 These tests check two things. The bridge must route like `nextpnr-himbaechel`.
 Upstream and `nextpnr-db` must read the same BEL, wire and pip counts from
-each chip database fixture.
+`npnr_baseline/shared_chipdb.bin`.
 
 ## Update the nextpnr revision
 

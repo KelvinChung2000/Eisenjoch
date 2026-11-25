@@ -171,12 +171,11 @@ impl Nextpnr {
         Ok(())
     }
 
-    /// Loads `chipdb` through upstream's `Arch` and counts its BELs, root wires and pips.
-    /// Fails if the bridge predates the summary entry point or upstream rejects the database.
+    /// Counts BELs, root wires and pips of `chipdb` as upstream's `Arch` loads it.
+    /// Fails if the bridge predates this entry point or upstream rejects the database.
     ///
     /// # Safety
-    /// Upstream reads the chip database without bounds checks, so it must be valid for the
-    /// loaded nextpnr revision and stay immutable for the duration of the call.
+    /// Upstream checks no bounds, so `chipdb` must be valid and immutable during the call.
     pub unsafe fn chipdb_summary(
         &self,
         device: &str,
