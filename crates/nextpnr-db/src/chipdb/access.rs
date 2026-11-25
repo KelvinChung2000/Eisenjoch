@@ -68,7 +68,7 @@ impl ChipDb {
     /// The table is the arch's `constids.inc` followed by the strings the
     /// database embeds itself, and its indices are the ids that appear
     /// throughout the database -- cell timing `type_variant`, pin names, and so
-    /// on. [`crate::context::Context`] seeds its `IdStringPool` from this so
+    /// on. The place-and-route `Context` seeds its `IdStringPool` from this so
     /// the two share one index space, as nextpnr's single global pool does.
     #[inline]
     pub fn num_constids(&self) -> usize {
@@ -791,23 +791,6 @@ impl ChipDb {
                 f(nw);
             }
         }
-    }
-
-    /// Like `node_wires_cb` but only invokes `f` for wires whose tile falls
-    /// within the given bounding box. Avoids expanding distant node members
-    /// during bounded A* routing.
-    pub fn node_wires_in_bbox_cb<F: FnMut(WireId)>(
-        &self,
-        wire: WireId,
-        bbox: &crate::metrics::BoundingBox,
-        mut f: F,
-    ) {
-        self.node_wires_cb(wire, |nw| {
-            let (wx, wy) = self.tile_xy(nw.tile());
-            if bbox.contains(wx, wy) {
-                f(nw);
-            }
-        });
     }
 
     /// Get all wires that belong to the same routing node as the given wire.

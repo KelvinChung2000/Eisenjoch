@@ -1,5 +1,6 @@
 //! ChipDb struct and associated validation/construction functions.
 
+#[cfg(feature = "mmap")]
 use memmap2::Mmap;
 
 use super::pod::ChipInfoPod;
@@ -25,6 +26,7 @@ pub(super) enum ConstIdStr {
 }
 
 pub struct ChipDb {
+    #[cfg(feature = "mmap")]
     pub(super) _mmap: Mmap,
     pub(super) chip_info: *const ChipInfoPod,
     pub(super) constid_strs: Vec<ConstIdStr>,

@@ -63,16 +63,16 @@ impl Context {
     /// Estimate delay for a net based on placed driver/user BEL locations.
     pub fn estimate_delay_for_net(&self, net_idx: NetId) -> DelayT {
         let net = self.design.net(net_idx);
-        if !net.driver.is_valid() {
+        let Some(driver) = net.driver() else {
             return 0;
-        }
-        let driver_cell = net.driver.cell;
+        };
+        let driver_cell = driver.cell;
         let Some(driver_bel) = self.design.cell(driver_cell).bel else {
             return 0;
         };
         let driver_loc = self.chipdb.tile_xy(driver_bel.tile());
         let mut max_delay: DelayT = 0;
-        for user in &net.users {
+        for user in net.users() {
             if !user.is_valid() {
                 continue;
             }

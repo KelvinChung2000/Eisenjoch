@@ -888,6 +888,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nextpnr-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lasso",
+ "memmap2",
+ "rstest",
+ "rustc-hash",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nextpnr-rust"
 version = "0.1.0"
 dependencies = [
@@ -897,8 +910,8 @@ dependencies = [
  "lapjv",
  "lasso",
  "log",
- "memmap2",
  "ndarray",
+ "nextpnr-db",
  "petgraph",
  "rayon",
  "rstest",

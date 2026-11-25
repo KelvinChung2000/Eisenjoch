@@ -223,7 +223,7 @@ fn cell_pin_view_exposes_port_properties() {
         .set_port_net(port_name, Some(net_idx), Some(3));
 
     let pin = ctx.cell(cell_idx).port(port_name).unwrap();
-    let pin_view = pin.view(&ctx);
+    let pin_view = ctx.cell_pin(pin);
 
     assert_eq!(pin.cell, cell_idx);
     assert_eq!(pin.port, port_name);

@@ -194,7 +194,7 @@ fn buffer_role(
     cell: &CellInfo,
 ) -> Result<CellRole, StaBuildError> {
     let (pad_side, fabric_side): (Vec<_>, Vec<_>) = cell
-        .ports
+        .ports()
         .iter()
         .filter_map(|(&port, data)| Some((port, data.port_type(), data.net()?)))
         .partition(|&(_, _, net)| off_chip_nets.contains(&net));
@@ -222,10 +222,10 @@ fn pad(ctx: &Context, cell: &CellInfo) -> Result<Pad, StaBuildError> {
             cell: cell_name.to_owned(),
         }
     })?;
-    let [(&port, data)] = cell.ports.iter().collect::<Vec<_>>()[..] else {
+    let [(&port, data)] = cell.ports().iter().collect::<Vec<_>>()[..] else {
         return Err(StaBuildError::PadPortCount {
             cell: cell_name.to_owned(),
-            ports: cell.ports.len(),
+            ports: cell.ports().len(),
         });
     };
     Ok(Pad {

@@ -106,10 +106,10 @@ fn routed_cell(ctx: &Context, cell: &CellInfo) -> Result<Cell, RoutedJsonError> 
     }
     let mut port_directions = BTreeMap::new();
     let mut connections = BTreeMap::new();
-    for (&port, data) in &cell.ports {
+    for (&port, data) in cell.ports() {
         let port = ctx.name_of(port).to_owned();
-        port_directions.insert(port.clone(), direction(data.port_type));
-        connections.insert(port, data.net.map(net_bit).into_iter().collect());
+        port_directions.insert(port.clone(), direction(data.port_type()));
+        connections.insert(port, data.net().map(net_bit).into_iter().collect());
     }
     Ok(Cell {
         hide_name: hide_name(name),

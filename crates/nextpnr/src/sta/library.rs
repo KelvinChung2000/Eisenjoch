@@ -58,7 +58,7 @@ pub(super) fn cell_types(
             ports: BTreeMap::new(),
             delay_arcs: Vec::new(),
         });
-        for (&port, data) in &cell.ports {
+        for (&port, data) in cell.ports() {
             let port_name = ctx.name_of(port);
             let declared = *cell_type
                 .ports
@@ -97,7 +97,7 @@ pub(super) fn register_clock_nets(
             continue;
         };
         let cell = ctx.design.cell(cell_id);
-        for (&id, port) in &cell.ports {
+        for (&id, port) in cell.ports() {
             let port = TypePort {
                 id,
                 dir: port.port_type(),

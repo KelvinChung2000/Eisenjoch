@@ -26,7 +26,7 @@ impl CellId {
     }
 
     #[inline]
-    pub(crate) const fn slot(self) -> u32 {
+    pub const fn slot(self) -> u32 {
         self.0 & 0x00FF_FFFF
     }
 
@@ -68,7 +68,7 @@ impl NetId {
     }
 
     #[inline]
-    pub(crate) const fn slot(self) -> u32 {
+    pub const fn slot(self) -> u32 {
         self.0 & 0x00FF_FFFF
     }
 

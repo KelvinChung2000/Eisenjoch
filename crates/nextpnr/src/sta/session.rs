@@ -277,7 +277,7 @@ impl StaSession {
         let mut seen = FxHashSet::default();
         let nets: Vec<NetId> = cells
             .iter()
-            .flat_map(|&cell| ctx.design.cell(cell).ports.values())
+            .flat_map(|&cell| ctx.design.cell(cell).ports().values())
             .filter_map(|port| port.net())
             .filter(|&net| seen.insert(net))
             .collect();

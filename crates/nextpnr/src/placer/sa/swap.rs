@@ -13,7 +13,7 @@ fn nets_for_cell(ctx: &Context, cell_idx: CellId) -> Vec<NetId> {
     let cell = ctx.cell(cell_idx);
     let mut nets = Vec::new();
     for pin in cell.ports() {
-        if let Some(net_idx) = pin.view(ctx).net_id() {
+        if let Some(net_idx) = ctx.cell_pin(pin).net_id() {
             nets.push(net_idx);
         }
     }

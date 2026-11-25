@@ -1,7 +1,7 @@
-use nextpnr::chipdb::{BelId, Loc, PipId, WireId};
-use nextpnr::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
-use nextpnr::common::{IdString, IdStringPool, IntoIdString, PlaceStrength};
-use nextpnr::netlist::{PortType, Property};
+use nextpnr_db::chipdb::{BelId, Loc, PipId, WireId};
+use nextpnr_db::common::{ClockEdge, DelayPair, DelayQuad, DelayT, TimingPortClass};
+use nextpnr_db::common::{IdString, IdStringPool, IntoIdString, PlaceStrength};
+use nextpnr_db::netlist::{PortType, Property};
 
 #[test]
 fn reorg_public_modules_expose_shared_types() {

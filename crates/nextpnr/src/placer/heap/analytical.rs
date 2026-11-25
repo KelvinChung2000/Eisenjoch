@@ -27,7 +27,10 @@ impl HeapState {
 
         // Process each net.
         for (net_id, net) in ctx.design.iter_alive_nets() {
-            if !net.driver.is_connected() || net.users.is_empty() {
+            let Some(driver) = net.driver() else {
+                continue;
+            };
+            if net.users().is_empty() {
                 continue;
             }
             // Skip GND/VCC (and optionally clocks) — they don't route through
@@ -42,7 +45,7 @@ impl HeapState {
             let mut fixed_positions: Vec<(f64, f64)> = Vec::new();
 
             // Driver cell.
-            let drv_cell_idx = net.driver.cell;
+            let drv_cell_idx = driver.cell;
             if let Some(&idx) = self.cell_to_idx.get(&drv_cell_idx) {
                 if movable_seen.insert(idx) {
                     movable_on_net.push(idx);
@@ -57,7 +60,7 @@ impl HeapState {
             }
 
             // User cells.
-            for user in &net.users {
+            for user in net.users() {
                 if !user.is_connected() {
                     continue;
                 }

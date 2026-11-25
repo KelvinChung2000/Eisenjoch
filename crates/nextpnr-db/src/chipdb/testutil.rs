@@ -1,6 +1,6 @@
 //! Test utilities for creating synthetic chip databases.
 //!
-//! This module is only available when `feature = "test-utils"` or in `#[cfg(test)]`.
+//! This module is only available with `feature = "test-utils"`.
 //! It provides helpers for building minimal in-memory chipdb binaries that can be
 //! used in unit and integration tests without needing real FPGA chip database files.
 //!

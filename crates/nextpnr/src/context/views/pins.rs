@@ -128,13 +128,6 @@ impl<'a> CellPinView<'a> {
     }
 }
 
-impl CellPin {
-    #[inline]
-    pub fn view<'a>(self, ctx: &'a Context) -> CellPinView<'a> {
-        CellPinView::new(ctx, self)
-    }
-}
-
 impl BelPin {
     #[inline]
     pub fn view<'a>(self, ctx: &'a Context) -> BelPinView<'a> {
