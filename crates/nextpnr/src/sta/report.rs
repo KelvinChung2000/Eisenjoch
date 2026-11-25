@@ -1,24 +1,35 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use ruststa::engine::incr::ReportedPath;
-use ruststa::engine::types::An;
+use ruststa::engine::incr::{PathPin, PathStart, ReportedPath};
+use ruststa::engine::types::{An, NodeId, Tr};
 
 use super::session::{DomainSummary, StaSession, StaSessionError};
+use crate::common::ClockEdge;
 use crate::context::Context;
+use crate::netlist::CellPin;
 
 const MHZ_NS: f64 = 1000.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathPinReport {
+    pub cell_pin: CellPin,
     pub pin: String,
     pub arrival_ns: f64,
+    /// Delay of the arc into this pin. On the first pin, its seeded arrival or launch delay.
+    pub delay_ns: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathReport {
     pub slack_ns: f64,
+    pub launch_edge: ClockEdge,
+    pub capture_edge: ClockEdge,
+    /// The launching register's clock pin. `None` when an input delay or a clock source seeds the path.
+    pub launch_clock_pin: Option<CellPin>,
     pub pins: Vec<PathPinReport>,
+    /// Check relation less required time: the capture setup time plus clock uncertainty.
+    pub setup_ns: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +37,7 @@ pub struct DomainReport {
     pub launch: String,
     pub capture: String,
     pub summary: DomainSummary,
+    pub capture_period_ns: f64,
     pub fmax_mhz: Option<f64>,
     pub worst_paths: Vec<PathReport>,
 }
@@ -162,6 +174,7 @@ impl StaSession {
                     launch: clocks[summary.launch.index()].name.clone(),
                     capture: clocks[summary.capture.index()].name.clone(),
                     summary: *summary,
+                    capture_period_ns: clocks[summary.capture.index()].period_ns,
                     fmax_mhz,
                     worst_paths: paths.iter().map(|path| self.path_report(ctx, path)).collect(),
                 }
@@ -184,25 +197,51 @@ impl StaSession {
     }
 
     fn path_report(&self, ctx: &Context, path: &ReportedPath) -> PathReport {
-        let node_pins = &self.sta().ids().node_pins;
-        let pins = std::iter::once(&path.start)
-            .chain(path.steps.iter().map(|step| &step.pin))
-            .map(|pin| {
-                let cell_pin = node_pins[pin.node.index()]
-                    .expect("every timing graph node is a design pin or port");
-                PathPinReport {
-                    pin: format!(
-                        "{}/{}",
-                        ctx.name_of(ctx.design.cell(cell_pin.cell).name),
-                        ctx.name_of(cell_pin.port),
-                    ),
-                    arrival_ns: pin.arrival_ns,
-                }
-            })
+        let (launch_clock_pin, start_delay_ns) = match path.launch {
+            PathStart::Seed => (None, path.start.arrival_ns),
+            PathStart::Launch {
+                clock_pin,
+                delay_ns,
+                ..
+            } => (Some(self.cell_pin(clock_pin)), delay_ns),
+        };
+        let pins = std::iter::once((&path.start, start_delay_ns))
+            .chain(path.steps.iter().map(|step| (&step.pin, step.delay_ns)))
+            .map(|(pin, delay_ns)| self.pin_report(ctx, pin, delay_ns))
             .collect();
         PathReport {
             slack_ns: path.record.slack,
+            launch_edge: clock_edge(path.record.launch_edge),
+            capture_edge: clock_edge(path.record.capture_edge),
+            launch_clock_pin,
             pins,
+            setup_ns: path.record.relation - path.record.required,
         }
+    }
+
+    fn pin_report(&self, ctx: &Context, pin: &PathPin, delay_ns: f64) -> PathPinReport {
+        let cell_pin = self.cell_pin(pin.node);
+        PathPinReport {
+            cell_pin,
+            pin: format!(
+                "{}/{}",
+                ctx.name_of(ctx.design.cell(cell_pin.cell).name),
+                ctx.name_of(cell_pin.port),
+            ),
+            arrival_ns: pin.arrival_ns,
+            delay_ns,
+        }
+    }
+
+    fn cell_pin(&self, node: NodeId) -> CellPin {
+        self.sta().ids().node_pins[node.index()]
+            .expect("every timing graph node is a design pin or port")
+    }
+}
+
+fn clock_edge(tr: Tr) -> ClockEdge {
+    match tr {
+        Tr::Rise => ClockEdge::Rising,
+        Tr::Fall => ClockEdge::Falling,
     }
 }

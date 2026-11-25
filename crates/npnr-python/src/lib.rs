@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 
 use ::nextpnr::checkpoint;
 use ::nextpnr::fasm;
+use ::nextpnr::report_json::report_json;
 use ::nextpnr::routed_json::routed_json;
 use ::nextpnr::chipdb::ChipDb;
 use ::nextpnr::context::Context;
@@ -461,8 +462,6 @@ impl PyContext {
     }
 
     /// Constrain every unconstrained net that drives a register clock pin; returns their names.
-    ///
-    /// Raises ValueError when the packed netlist has no unconstrained register clock net.
     #[pyo3(signature = (*, freq_mhz))]
     fn constrain_clocks(&mut self, freq_mhz: f64) -> PyResult<Vec<String>> {
         let period_ps = clock_period_ps(freq_mhz)?;
@@ -471,11 +470,6 @@ impl PyContext {
             .into_iter()
             .filter(|&net| self.ctx.design.net(net).clock_constraint == 0)
             .collect();
-        if nets.is_empty() {
-            return Err(PyValueError::new_err(
-                "No unconstrained net drives a register clock pin; nothing to constrain",
-            ));
-        }
         for &net in &nets {
             self.ctx.design.net_edit(net).set_clock_constraint(period_ps);
         }
@@ -529,6 +523,8 @@ impl PyContext {
             hold_tns_ns: report.hold_tns_ns(),
             num_hold_failing: report.hold_failing_endpoints(),
             num_hold_endpoints: report.hold_endpoints(),
+            nextpnr_json: serde_json::to_string_pretty(&report_json(&self.ctx, &report))
+                .expect("a JSON value serialises"),
             text: report.to_string(),
         })
     }
@@ -734,6 +730,9 @@ pub struct PyTimingReport {
     /// Hold-checked endpoints, summed over domain pairs.
     #[pyo3(get)]
     pub num_hold_endpoints: usize,
+    /// Utilization, Fmax and critical paths in the JSON schema of nextpnr's --report.
+    #[pyo3(get)]
+    pub nextpnr_json: String,
     text: String,
 }
 

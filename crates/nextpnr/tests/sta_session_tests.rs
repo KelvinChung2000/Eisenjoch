@@ -11,6 +11,7 @@ use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
 use nextpnr::netlist::{CellId, NetId};
 use nextpnr::packer::passes::remove_nextpnr_iobs;
+use nextpnr::report_json::report_json;
 use nextpnr::router::common::{bind_route, unroute_net};
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::{Router, Router1};
@@ -340,6 +341,102 @@ fn register_clock_nets_are_the_nets_on_register_clock_pins(#[case] period_ps: De
     let nets = register_clock_nets(&ctx).expect("the example chipdb has a speed grade");
 
     assert_eq!(nets, std::collections::BTreeSet::from([chain.clk]));
+}
+
+#[test]
+fn nextpnr_report_types_a_net_back_into_its_own_cell_as_routing() {
+    let mut ctx = common::make_example_context();
+    let clk = add_net(&mut ctx, "clk");
+    ctx.design.net_edit(clk).set_clock_constraint(1000);
+    let pad = add_cell(&mut ctx, "$io$clk", "IOB");
+    drive(&mut ctx, clk, pad, "O");
+    place(&mut ctx, pad, CLOCK_PAD_TILE, "IO0");
+    let toggle = add_cell(&mut ctx, "toggle", "DFF");
+    sink(&mut ctx, clk, toggle, "CLK");
+    let q = add_net(&mut ctx, "q");
+    drive(&mut ctx, q, toggle, "Q");
+    sink(&mut ctx, q, toggle, "D");
+    place(&mut ctx, toggle, LOGIC_TILE, "L0_FF");
+    let session = session(&ctx, InterconnectStage::Placed);
+
+    let report = report_json(&ctx, &session.report(&ctx, 1).expect("the loop reports"));
+
+    let [path] = report["critical_paths"].as_array().unwrap().as_slice() else {
+        panic!("one domain pair gives one critical path: {report}");
+    };
+    let hops: Vec<(&str, &str, &str)> = path["path"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|segment| {
+            (
+                json_str(&segment["type"]),
+                json_str(&segment["from"]["port"]),
+                json_str(&segment["to"]["port"]),
+            )
+        })
+        .collect();
+    assert_eq!(
+        hops,
+        vec![("clk-to-q", "CLK", "Q"), ("routing", "Q", "D"), ("setup", "D", "D")]
+    );
+}
+
+#[rstest]
+#[case::met(0, 1000)]
+#[case::violating(2, 600)]
+fn nextpnr_report_segments_sum_to_the_critical_path_delay(
+    #[case] launch_slice: usize,
+    #[case] period_ps: DelayT,
+) {
+    let mut ctx = common::make_example_context();
+    let chain = placed_chain(&mut ctx, launch_slice, period_ps);
+    let session = session(&ctx, InterconnectStage::Placed);
+    let (q_delay, d_delay) = (uniform(2 * SWINPUT_PIP_PS), uniform(NOTIONAL_PIP_PS));
+    let expected = expected(period_ps, chain.lut_input, q_delay, d_delay);
+
+    let report = report_json(&ctx, &session.report(&ctx, 1).expect("the chain reports"));
+
+    let fmax = &report["fmax"]["clk"];
+    let mhz = |key: &str| fmax[key].as_f64().unwrap();
+    assert!((mhz("achieved") - expected.fmax_mhz).abs() < 1e-6 * expected.fmax_mhz);
+    assert!((mhz("constraint") - 1e6 / f64::from(period_ps)).abs() < 1e-9);
+    let [path] = report["critical_paths"].as_array().unwrap().as_slice() else {
+        panic!("one domain pair gives one critical path: {report}");
+    };
+    assert_eq!((&path["from"], &path["to"]), (&"posedge clk".into(), &"posedge clk".into()));
+    let segments = path["path"].as_array().unwrap();
+    let hops: Vec<(&str, &str, &str, &str, &str)> = segments
+        .iter()
+        .map(|segment| {
+            (
+                json_str(&segment["type"]),
+                json_str(&segment["from"]["cell"]),
+                json_str(&segment["from"]["port"]),
+                json_str(&segment["to"]["cell"]),
+                json_str(&segment["to"]["port"]),
+            )
+        })
+        .collect();
+    let lut_input = format!("I[{}]", chain.lut_input);
+    assert_eq!(
+        hops,
+        vec![
+            ("clk-to-q", "launch", "CLK", "launch", "Q"),
+            ("routing", "launch", "Q", "lut", lut_input.as_str()),
+            ("logic", "lut", lut_input.as_str(), "lut", "F"),
+            ("routing", "lut", "F", "capture", "D"),
+            ("setup", "capture", "D", "capture", "D"),
+        ]
+    );
+    assert_eq!((&segments[1]["net"], &segments[3]["net"]), (&"q".into(), &"d".into()));
+    assert_ns(segments[4]["delay"].as_f64().unwrap(), SETUP_PS);
+    let total_ns: f64 = segments.iter().map(|segment| segment["delay"].as_f64().unwrap()).sum();
+    assert_ns(total_ns, period_ps - expected.setup_ps);
+}
+
+fn json_str(value: &serde_json::Value) -> &str {
+    value.as_str().expect("a JSON string")
 }
 
 fn assert_chain_report(ctx: &Context, session: &StaSession, expected: &Expected) {

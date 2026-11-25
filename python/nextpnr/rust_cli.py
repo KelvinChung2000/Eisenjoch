@@ -17,6 +17,8 @@ from pathlib import Path
 if TYPE_CHECKING:
     from nextpnr import TimingReport
 
+NEXTPNR_DEFAULT_TARGET_MHZ = 12.0
+
 app = typer.Typer(
     name="nextpnr-himbaechel-rust",
     help="FPGA place-and-route tool (Rust implementation)",
@@ -35,7 +37,9 @@ def main(
     router: str = typer.Option("router2", help="Router algorithm [router1|router2]"),
     seed: int = typer.Option(1, help="Random seed"),
     freq: Optional[float] = typer.Option(
-        None, help="Clock frequency (MHz) for every register clock net"
+        None,
+        help="Clock frequency (MHz) for every register clock net; without it and "
+        "without --sdc, nextpnr's default target of 12 MHz",
     ),
     package: Optional[str] = typer.Option(None, help="Package name"),
     speed: Optional[str] = typer.Option(None, help="Speed grade"),
@@ -134,14 +138,6 @@ def main(
             err=True,
         )
         raise typer.Exit(1)
-    timed = freq is not None or sdc is not None
-    if timing_driven and not timed:
-        typer.echo(
-            "Error: timing-driven P&R needs a clock; pass --freq or an --sdc "
-            "with create_clock, or pass --no-timing-driven",
-            err=True,
-        )
-        raise typer.Exit(1)
     if timing_driven and router != "router2":
         typer.echo(
             f"Error: router {router} is not timing-driven; pass --router router2 "
@@ -149,12 +145,7 @@ def main(
             err=True,
         )
         raise typer.Exit(1)
-    if report is not None and not timed:
-        typer.echo(
-            "Error: --report needs a clock; pass --freq or an --sdc with create_clock",
-            err=True,
-        )
-        raise typer.Exit(1)
+    timed = timing_driven or report is not None or freq is not None or sdc is not None
 
     # Load design
     if json is not None:
@@ -211,14 +202,25 @@ def main(
         typer.echo(f"Packer error: {e}", err=True)
         raise typer.Exit(1)
 
-    if freq is not None:
+    if timed and sdc is None:
+        target_mhz = freq if freq is not None else NEXTPNR_DEFAULT_TARGET_MHZ
         try:
-            clocks = ctx.constrain_clocks(freq_mhz=freq)
+            clocks = ctx.constrain_clocks(freq_mhz=target_mhz)
         except Exception as e:
             typer.echo(f"Error constraining clocks: {e}", err=True)
             raise typer.Exit(1)
+        if timing_driven and not clocks:
+            typer.echo(
+                "Error: no net drives a register clock pin, so timing-driven P&R "
+                "has no clock; check that the chipdb has cell timing, or pass "
+                "--no-timing-driven",
+                err=True,
+            )
+            raise typer.Exit(1)
         if verbose:
-            typer.echo(f"Constrained {', '.join(clocks)} to {freq} MHz")
+            typer.echo(
+                f"Constrained {', '.join(clocks) or 'no net'} to {target_mhz} MHz"
+            )
 
     if sdc is not None:
         try:
@@ -265,20 +267,7 @@ def main(
         typer.echo(str(timing))
 
     if report is not None and timing is not None:
-        import json as json_mod
-
-        report_data = {
-            "fmax_mhz": timing.fmax_mhz,
-            "wns_ns": timing.wns_ns,
-            "tns_ns": timing.tns_ns,
-            "num_failing": timing.num_failing,
-            "num_endpoints": timing.num_endpoints,
-            "hold_wns_ns": timing.hold_wns_ns,
-            "hold_tns_ns": timing.hold_tns_ns,
-            "num_hold_failing": timing.num_hold_failing,
-            "num_hold_endpoints": timing.num_hold_endpoints,
-        }
-        report.write_text(json_mod.dumps(report_data, indent=2))
+        report.write_text(timing.nextpnr_json)
 
     if write is not None:
         try:
@@ -311,16 +300,15 @@ def main(
         if verbose:
             typer.echo(f"Wrote FASM to {fasm}")
 
-    if timing is not None:
-        failures = timing_failures(timing)
-        for failure in failures:
-            typer.echo(f"Timing check failed: {failure}", err=True)
-        if failures and not timing_allow_fail:
-            typer.echo(
-                "Error: timing constraints not met; pass --timing-allow-fail to accept",
-                err=True,
-            )
-            raise typer.Exit(1)
+    failures = [] if timing is None else timing_failures(timing)
+    for failure in failures:
+        typer.echo(f"Timing check failed: {failure}", err=True)
+    if failures and not timing_allow_fail:
+        typer.echo(
+            "Error: timing constraints not met; pass --timing-allow-fail to accept",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     if verbose:
         typer.echo("Done.")
