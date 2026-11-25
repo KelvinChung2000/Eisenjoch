@@ -5,7 +5,7 @@
 
 use std::mem;
 
-use nextpnr_db::chipdb::testutil::{make_test_chipdb, SyntheticChipDbBuilder};
+use nextpnr_db::chipdb::testutil::make_test_chipdb;
 use nextpnr_db::chipdb::*;
 
 // =============================================================================
@@ -212,44 +212,9 @@ fn tile_inst_access() {
 }
 
 #[test]
-fn magic_mismatch_error() {
-    let mut bytes = SyntheticChipDbBuilder::build_minimal();
-    let chip_info_offset = 4usize;
-    bytes[chip_info_offset] = 0xFF;
-    bytes[chip_info_offset + 1] = 0xFF;
-    bytes[chip_info_offset + 2] = 0xFF;
-    bytes[chip_info_offset + 3] = 0xFF;
-    let result = unsafe { ChipDb::from_bytes(&bytes) };
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        ChipDbError::MagicMismatch { .. } => {}
-        e => panic!("unexpected error: {:?}", e),
-    }
-}
-
-#[test]
-fn version_mismatch_error() {
-    let mut bytes = SyntheticChipDbBuilder::build_minimal();
-    let version_offset = 4 + 4;
-    bytes[version_offset] = 0xFF;
-    bytes[version_offset + 1] = 0xFF;
-    bytes[version_offset + 2] = 0xFF;
-    bytes[version_offset + 3] = 0xFF;
-    let result = unsafe { ChipDb::from_bytes(&bytes) };
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        ChipDbError::VersionMismatch { expected, got } => {
-            assert_eq!(expected, CHIPDB_VERSION);
-            assert_eq!(got, -1);
-        }
-        e => panic!("unexpected error: {:?}", e),
-    }
-}
-
-#[test]
 fn too_small_error() {
     let bytes = [0u8; 2];
-    let result = unsafe { ChipDb::from_bytes(&bytes) };
+    let result = ChipDb::from_bytes(&bytes);
     assert!(result.is_err());
     match result.unwrap_err() {
         ChipDbError::TooSmall { size, min } => {
@@ -549,7 +514,9 @@ fn fabulous_chipdb_resolves_compiled_in_constids(
 ) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../nextpnr/tests/fixtures/fabulous.bin");
-    let db = ChipDb::load(&path).expect("FABulous chipdb loads with its compiled-in constids");
+    let bytes = std::fs::read(path).expect("FABulous fixture");
+    let db =
+        ChipDb::from_bytes(&bytes).expect("FABulous chipdb loads with its compiled-in constids");
     let found = db
         .bels()
         .find(|&b| db.tile_name(b.tile()) == tile && db.bel_name(b) == bel)

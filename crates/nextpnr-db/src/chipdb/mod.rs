@@ -9,6 +9,7 @@ mod load;
 mod pod;
 mod relptr;
 pub mod tile_template;
+mod validate;
 
 pub use access::RegArcInfo;
 pub use chip::{parse_constids_inc, ChipDb};
@@ -19,6 +20,7 @@ pub use relptr::{RelPtr, RelSlice};
 pub use tile_template::{
     port_key, span_bucket_of, Side, TileLocalWs, TileTypeTemplate, PIP_BASE_COST_INT,
 };
+pub use validate::{Fault, FieldPath, PathSegment};
 
 pub const CHIPDB_MAGIC: i32 = 0x00ca7ca7u32 as i32;
 pub const CHIPDB_VERSION: i32 = 6;
@@ -33,10 +35,12 @@ pub enum ChipDbError {
     MagicMismatch { expected: u32, got: u32 },
     #[error("chip database version mismatch: expected {expected}, got {got}")]
     VersionMismatch { expected: i32, got: i32 },
-    #[error("chip database root pointer out of bounds (offset {offset}, size {size})")]
-    InvalidRootPointer { offset: i32, size: usize },
-    #[error("chip database contains null required string pointer: {field}")]
-    NullRequiredStringPointer { field: &'static str },
+    #[error("chip database malformed at {field} (byte offset {offset}): {fault:?}")]
+    Malformed {
+        field: FieldPath,
+        offset: usize,
+        fault: Fault,
+    },
     #[error(
         "chip database expects {db_count} compiled-in constids but {supplied} were supplied; \
          load with the uarch's constids.inc (or none, for a database built with known_id_count=0)"

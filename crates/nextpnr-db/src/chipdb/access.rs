@@ -8,11 +8,20 @@ use std::ffi::CStr;
 
 /// Where a chipdb keeps the FASM names of its pips and BELs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FasmNaming {
+pub(super) enum FasmNaming {
     /// A `FasmFeaturePod` in each pip's and BEL's `extra_data`.
     ExtraData,
     /// FABulous's bitstream spec: pip `{src}.{dst}` and BEL prefix `{bel}`, both within the tile.
     FabulousNames,
+}
+
+impl FasmNaming {
+    pub(super) fn of(uarch: &[u8]) -> Self {
+        match uarch {
+            b"FABulous" => FasmNaming::FabulousNames,
+            _ => FasmNaming::ExtraData,
+        }
+    }
 }
 
 impl ChipDb {
@@ -470,10 +479,7 @@ impl ChipDb {
     }
 
     fn fasm_naming(&self) -> FasmNaming {
-        match self.uarch() {
-            "FABulous" => FasmNaming::FabulousNames,
-            _ => FasmNaming::ExtraData,
-        }
+        FasmNaming::of(self.uarch().as_bytes())
     }
 
     /// The pip's FASM feature relative to its tile, or `None` when the chipdb carries none.
@@ -644,7 +650,7 @@ impl ChipDb {
     /// Compute the node shape index from a root node ref.
     ///
     /// Matches C++: `uint16_t(dy) | (uint32_t(wire) << 16)`
-    fn node_shape_idx(node_ref: &RelNodeRefPod) -> u32 {
+    pub(super) fn node_shape_idx(node_ref: &RelNodeRefPod) -> u32 {
         let dy: i16 = unsafe { read_packed!(*node_ref, dy) };
         let wire: u16 = unsafe { read_packed!(*node_ref, wire) };
         (dy as u16 as u32) | ((wire as u32) << 16)
