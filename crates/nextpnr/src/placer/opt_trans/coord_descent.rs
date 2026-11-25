@@ -36,7 +36,9 @@ use crate::placer::common::{CellValidityMask, MuxSlotTracker, TypeAwarePlacement
 
 use super::config::{GraphModel, OptTransPlacerCfg, PathModel};
 use super::demand;
-use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat, SweepSummary};
+use super::diag::{
+    self, BoundingBoxes, DiagCtx, FixedCellRow, MoveRecord, PlateauStat, SweepSummary,
+};
 use super::network::PipeNetwork;
 use super::path_solver::{self, PathSolverWorkspace, PathStats, WorkspacePool};
 use super::region_min::{self, RegionMinPyramid};
@@ -703,8 +705,8 @@ impl CellNetMap {
             }
         }
 
-        for ci in 0..n_cells {
-            if !placed[ci] {
+        for (ci, &is_placed) in placed.iter().enumerate() {
+            if !is_placed {
                 order.push(ci);
             }
         }
@@ -2332,7 +2334,7 @@ fn collect_design_summary(
     idx_to_cell: &[CellId],
     cell_buckets: &[IdString],
     type_aware: &TypeAwarePlacement,
-) -> (Vec<String>, Vec<(String, String, i32, i32, u32)>) {
+) -> (Vec<String>, Vec<FixedCellRow>) {
     use std::collections::BTreeMap;
 
     let mut summary = Vec::new();
@@ -2426,7 +2428,7 @@ fn collect_design_summary(
     }
 
     // IO / fixed cells positions.
-    let mut fixed_rows: Vec<(String, String, i32, i32, u32)> = Vec::new();
+    let mut fixed_rows: Vec<FixedCellRow> = Vec::new();
     let mut io_xs = Vec::<i32>::new();
     let mut io_ys = Vec::<i32>::new();
     for (cell_id, cell_raw) in ctx.design.iter_alive_cells() {
@@ -3597,8 +3599,8 @@ fn place_dcd_sweep_colored_gs(
     let move_cap = crate::env::var::<i32>("NPNR_OT_COLOR_MOVE_CAP").unwrap_or(i32::MAX);
 
     let mut by_color: Vec<Vec<usize>> = vec![Vec::new(); coloring.num_colors as usize];
-    for ci in 0..n {
-        let c = coloring.colors[ci] as usize;
+    for (ci, &color) in coloring.colors[..n].iter().enumerate() {
+        let c = color as usize;
         if c < by_color.len() {
             by_color[c].push(ci);
         }
@@ -4904,7 +4906,7 @@ pub fn run_inner_outer(
                 *by_tt.entry(name).or_insert(0) += 1;
             }
             let mut items: Vec<_> = by_tt.into_iter().collect();
-            items.sort_by(|a, b| b.1.cmp(&a.1));
+            items.sort_by_key(|item| std::cmp::Reverse(item.1));
             eprintln!("  Cell placement by tile type (iter 0, {} cells):", n);
             for (name, cnt) in items.iter().take(15) {
                 eprintln!("    {}: {}", name, cnt);
@@ -6776,9 +6778,11 @@ mod driver_hole_tests {
         for node in 0..network.num_nodes() {
             dist_cache.row_mut(0).insert(node as u32, node as f32);
         }
-        let mut cfg = OptTransPlacerCfg::default();
-        cfg.mst_edge_weight = mst_w;
-        cfg.locked_pin_weight = 1.0;
+        let cfg = OptTransPlacerCfg {
+            mst_edge_weight: mst_w,
+            locked_pin_weight: 1.0,
+            ..Default::default()
+        };
         if mst_w > 0.0 {
             compute_mst_neighbors(&mut dist_cache, &net_infos, &network);
         }
@@ -6892,9 +6896,11 @@ mod proximal_tests {
         for node in 0..network.num_nodes() {
             dist_cache.row_mut(0).insert(node as u32, node as f32);
         }
-        let mut cfg = OptTransPlacerCfg::default();
-        cfg.locked_pin_weight = 1.0;
-        cfg.proximal_weight = prox_w;
+        let cfg = OptTransPlacerCfg {
+            locked_pin_weight: 1.0,
+            proximal_weight: prox_w,
+            ..Default::default()
+        };
         let validity = CellValidityMask::all_valid(1, GRID_W, 1);
         let cell_nets = [(0usize, 0usize)];
         (0..GRID_W)

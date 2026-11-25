@@ -30,6 +30,8 @@ pub struct BoundingBoxes {
     pub all_h: i32,
 }
 
+pub type FixedCellRow = (String, String, i32, i32, u32);
+
 /// Accumulated plateau statistics from a single fullscan.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlateauStat {
@@ -151,7 +153,7 @@ impl DiagCtx {
     }
 
     /// One-shot CSV of fixed (IO or locked) cell positions for spatial analysis.
-    pub fn dump_fixed_cells(&self, rows: &[(String, String, i32, i32, u32)]) {
+    pub fn dump_fixed_cells(&self, rows: &[FixedCellRow]) {
         if !self.enabled {
             return;
         }
