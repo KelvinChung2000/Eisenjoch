@@ -1,0 +1,15 @@
+X(INBUF)
+X(OUTBUF)
+X(I)
+X(O)
+X(PAD)
+
+X(CLK_DRV)
+X(CLK_O)
+
+X(GND_DRV)
+X(GND)
+X(VCC_DRV)
+X(VCC)
+
+X(BEL)

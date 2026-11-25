@@ -537,3 +537,21 @@ fn relslice_debug() {
     let debug = format!("{:?}", slice);
     assert_eq!(debug, "RelSlice(offset=10, length=5)");
 }
+
+#[rstest::rstest]
+#[case::lc("X1Y1", "A", "FABULOUS_LC")]
+#[case::io("X0Y1", "B", "IO_1_bidirectional_frame_config_pass")]
+#[case::compiled_in_type("X0Y1", "CLK_DRV", "CLK_DRV")]
+fn fabulous_chipdb_resolves_compiled_in_constids(
+    #[case] tile: &str,
+    #[case] bel: &str,
+    #[case] bel_type: &str,
+) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fabulous.bin");
+    let db = ChipDb::load(&path).expect("FABulous chipdb loads with its compiled-in constids");
+    let found = db
+        .bels()
+        .find(|&b| db.tile_name(b.tile()) == tile && db.bel_name(b) == bel)
+        .unwrap_or_else(|| panic!("{tile}/{bel} exists"));
+    assert_eq!(db.bel_type(found), bel_type);
+}

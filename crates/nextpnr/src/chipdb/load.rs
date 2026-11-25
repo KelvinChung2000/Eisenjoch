@@ -4,18 +4,37 @@ use crate::read_packed;
 use memmap2::Mmap;
 use std::path::Path;
 
+fn compiled_constids(uarch: &str) -> Option<&'static str> {
+    match uarch {
+        "FABulous" => Some(include_str!("fabulous_constids.inc")),
+        _ => None,
+    }
+}
+
 impl ChipDb {
-    /// Load a database that embeds every constid string (`known_id_count = 0`).
+    /// Load a database, splicing in the `constids.inc` nextpnr compiles in for
+    /// its uarch. A uarch Eisenjoch has no copy for must embed every string.
     pub fn load(path: &Path) -> Result<Self, ChipDbError> {
-        Self::load_with_known_constids(path, &[])
+        Self::load_resolving(path, |uarch| {
+            compiled_constids(uarch)
+                .map(parse_constids_inc)
+                .unwrap_or_default()
+        })
     }
 
     /// Load a database generated for an arch whose `constids.inc` is compiled
     /// in, which is how every stock himbaechel chipdb is built.
     ///
     /// `known` must be the uarch's `constids.inc` in file order -- see
-    /// [`parse_constids_inc`]. Passing an empty slice is the `load` case.
+    /// [`parse_constids_inc`].
     pub fn load_with_known_constids(path: &Path, known: &[String]) -> Result<Self, ChipDbError> {
+        Self::load_resolving(path, |_| known.to_vec())
+    }
+
+    fn load_resolving(
+        path: &Path,
+        known_for_uarch: impl FnOnce(&str) -> Vec<String>,
+    ) -> Result<Self, ChipDbError> {
         let file = std::fs::File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
@@ -52,7 +71,11 @@ impl ChipDb {
             return Err(ChipDbError::NullRequiredStringPointer { field: "uarch" });
         }
 
-        let constid_strs = unsafe { build_constid_table(chip_info, known)? };
+        let uarch = unsafe {
+            std::ffi::CStr::from_ptr((*chip_info).uarch.get() as *const std::ffi::c_char)
+        };
+        let known = known_for_uarch(&uarch.to_string_lossy());
+        let constid_strs = unsafe { build_constid_table(chip_info, &known)? };
 
         Ok(Self {
             _mmap: mmap,
