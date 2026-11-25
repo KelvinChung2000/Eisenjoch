@@ -33,9 +33,6 @@ norecursedirs = ["python/nextpnr/benchmarks", "chip_database", "target", ".venv"
 
 [dependency-groups]
 chipdb = ["sdf-toolkit"]
-fabulous = [
-    "yowasp-yosys>=0.71.0.0.post1285",
-]
 
 [tool.uv]
 cache-keys = [

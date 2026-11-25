@@ -1,8 +1,10 @@
-//! Maps `synth_fabulous` LUTn and LUTFF cells onto FABULOUS_LC BELs.
+//! Maps `synth_fabulous` LUTn and LUTFF cells onto the FABULOUS_LC BELs of a
+//! chipdb from FABulous's `himbaechel_db` plugin.
 //!
 //! A flop merges into the LUT that alone drives its D input, else into a
-//! pass-through LC. Unused EN and SR tie to VCC and GND. A constant pin with
-//! no GND0 or VCC0 pip into it gets its own constant LC.
+//! pass-through LC, and sets FF so the LC's O is registered. Unused EN and SR
+//! tie to VCC and GND. A constant pin with no GND0 or VCC0 pip into it gets
+//! its own constant LC.
 
 use super::helpers::{connect_port, disconnect_port};
 use super::PackerError;
@@ -11,7 +13,7 @@ use crate::common::{IdString, PlaceStrength};
 use crate::context::{BelPin, Context};
 use crate::netlist::{CellId, NetId, PortType, Property};
 
-pub const UARCH: &str = "fabulous";
+pub const UARCH: &str = "FABulous";
 const LC_TYPE: &str = "FABULOUS_LC";
 const LC_INIT_BITS: usize = 16;
 const PASS_THROUGH_I0_INIT: &str = "1010101010101010";
@@ -82,21 +84,18 @@ pub fn pack_fabulous(ctx: &mut Context) -> Result<(), PackerError> {
     for (flop, variant) in flops {
         merge_flop(ctx, flop, variant)?;
     }
-    drive_far_constants(ctx, GND_NET, "GND", '0')?;
-    drive_far_constants(ctx, VCC_NET, "VCC", '1')?;
+    drive_far_constants(ctx, GND_NET, '0')?;
+    drive_far_constants(ctx, VCC_NET, '1')?;
     Ok(())
 }
 
 fn drive_far_constants(
     ctx: &mut Context,
     net_name: &str,
-    const_value: &str,
     init_bit: char,
 ) -> Result<(), PackerError> {
     let net = constant_net(ctx, net_name)?;
-    let const_id = ctx.chipdb().constid_for_name(const_value).ok_or_else(|| {
-        PackerError::Generic(format!("The chipdb has no {const_value} constant wires."))
-    })?;
+    let const_id = driven_const_value(ctx, net)?;
     let far: Vec<(CellId, IdString)> = ctx
         .design
         .net(net)
@@ -128,6 +127,34 @@ fn drive_far_constants(
         connect_port(ctx, cell, port, driven);
     }
     Ok(())
+}
+
+fn driven_const_value(ctx: &Context, net: NetId) -> Result<i32, PackerError> {
+    let net_name = ctx.name_of(ctx.design.net(net).name).to_owned();
+    let driver =
+        ctx.design.net(net).driver().ok_or_else(|| {
+            PackerError::Generic(format!("Constant net {net_name} has no driver."))
+        })?;
+    let bel = ctx.design.cell(driver.cell).bel.ok_or_else(|| {
+        PackerError::Generic(format!(
+            "The driver of constant net {net_name} is unplaced. The chipdb needs GND_DRV and VCC_DRV BELs."
+        ))
+    })?;
+    let wire = ctx
+        .bel_pin_wire(BelPin::new(bel, driver.port))
+        .ok_or_else(|| {
+            PackerError::Generic(format!(
+                "The driver of constant net {net_name} has no output wire."
+            ))
+        })?;
+    let chipdb = ctx.chipdb();
+    match chipdb.wire_info(wire.id()).const_value {
+        0 => Err(PackerError::Generic(format!(
+            "Constant net {net_name} is driven onto wire {}, which has no const_value.",
+            chipdb.wire_name(wire.id())
+        ))),
+        value => Ok(chipdb.constid_canon(value)),
+    }
 }
 
 fn reaches_constant_locally(ctx: &Context, cell: CellId, port: IdString, const_id: i32) -> bool {
@@ -193,8 +220,8 @@ fn pin_bel_attributes(ctx: &mut Context) -> Result<(), PackerError> {
 }
 
 fn merge_flop(ctx: &mut Context, flop: CellId, variant: FlopVariant) -> Result<(), PackerError> {
-    let [d, o, q, clk, en, sr, e, r, s, i0] =
-        ["D", "O", "Q", "CLK", "EN", "SR", "E", "R", "S", "I0"].map(|name| ctx.id(name));
+    let [d, o, clk, en, sr, e, r, s, i0] =
+        ["D", "O", "CLK", "EN", "SR", "E", "R", "S", "I0"].map(|name| ctx.id(name));
     let flop_name = ctx.design.cell(flop).name;
     let d_net = ctx.design.cell(flop).port_net(d).ok_or_else(|| {
         PackerError::Generic(format!(
@@ -227,7 +254,7 @@ fn merge_flop(ctx: &mut Context, flop: CellId, variant: FlopVariant) -> Result<(
         .cell_edit(lc)
         .set_param(ff, Property::bit_vector("1"));
     move_port(ctx, flop, clk, lc, clk, PortType::In);
-    move_port(ctx, flop, o, lc, q, PortType::Out);
+    move_port(ctx, flop, o, lc, o, PortType::Out);
     if variant.enable {
         move_port(ctx, flop, e, lc, en, PortType::In);
     } else {
