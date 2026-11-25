@@ -12,7 +12,6 @@ ctx.pack()
 t0 = time.time()
 ctx.place(nextpnr.PlaceOptions(
     placer='hydraulic', seed=42, max_iters=3,
-    adam_lr_gain=0.5,
     init_strategy="centroid",
 ))
 elapsed = time.time() - t0

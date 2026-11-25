@@ -30,7 +30,6 @@ ctx.place(nextpnr.PlaceOptions(
     placer='hydraulic', seed=42,
     
     max_iters=5,
-    adam_lr_gain=0.5,
     init_strategy="centroid",
 ))
 ot_t = time.time() - t0

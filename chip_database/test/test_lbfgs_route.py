@@ -36,7 +36,7 @@ def run_place_route(name, placer, **place_kwargs):
 
 results = []
 results.append(run_place_route('HeAP', 'heap'))
-results.append(run_place_route('Dijkstra OT', 'hydraulic', adam_lr_gain=0.5))
+results.append(run_place_route('Dijkstra OT', 'hydraulic'))
 
 print(f'\n{"Name":<12} {"HPWL":>8} {"LineEst":>8} {"RoutedWL":>10} {"PlaceT":>7} {"RouteT":>7} OK')
 print('-' * 70)
