@@ -70,10 +70,10 @@ pub fn get_net_metric(
     tns: &mut f32,
 ) -> WirelenT {
     let net_info = ctx.design.net(net);
-    if !net_info.driver.is_valid() {
+    let Some(driver) = net_info.driver() else {
         return 0;
-    }
-    let driver_cell = net_info.driver.cell;
+    };
+    let driver_cell = driver.cell;
     let Some(driver_bel) = ctx.design.cell(driver_cell).bel else {
         return 0;
     };
@@ -83,7 +83,7 @@ pub fn get_net_metric(
 
     let timing_driven = ctx.timing_driven()
         && metric_type == MetricType::Cost
-        && ctx.port_timing_class(driver_cell, net_info.driver.port) != TimingPortClass::Ignore;
+        && ctx.port_timing_class(driver_cell, driver.port) != TimingPortClass::Ignore;
 
     let mut negative_slack = 0;
     let mut worst_slack = i32::MAX;
@@ -92,7 +92,7 @@ pub fn get_net_metric(
     let (mut xmin, mut xmax) = (driver_loc.x, driver_loc.x);
     let (mut ymin, mut ymax) = (driver_loc.y, driver_loc.y);
 
-    for &load in net_info.users.iter() {
+    for &load in net_info.users().iter() {
         if !load.is_valid() {
             continue;
         }
@@ -143,7 +143,7 @@ pub fn get_cell_metric(ctx: &Context, cell: CellId, metric_type: MetricType) -> 
     let info = ctx.design.cell(cell);
     let mut nets: Vec<NetId> = Vec::new();
     let mut seen: FxHashSet<NetId> = FxHashSet::default();
-    for port in info.ports.values() {
+    for port in info.ports().values() {
         if let Some(net) = port.net() {
             if seen.insert(net) {
                 nets.push(net);

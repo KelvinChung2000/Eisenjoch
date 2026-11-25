@@ -130,7 +130,7 @@ impl Design {
     }
 
     #[inline]
-    pub(crate) fn cell_mut(&mut self, idx: CellId) -> &mut CellInfo {
+    pub fn cell_mut(&mut self, idx: CellId) -> &mut CellInfo {
         let slot = idx.slot() as usize;
         assert_eq!(
             self.cell_generation[slot],

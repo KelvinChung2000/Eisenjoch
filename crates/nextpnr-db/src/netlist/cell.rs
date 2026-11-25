@@ -114,7 +114,12 @@ impl CellInfo {
     }
 
     #[inline]
-    pub(crate) fn port_data(&self, name: IdString) -> Option<&PortData> {
+    pub fn ports(&self) -> &FxHashMap<IdString, PortData> {
+        &self.ports
+    }
+
+    #[inline]
+    pub fn port_data(&self, name: IdString) -> Option<&PortData> {
         self.ports.get(&name)
     }
 

@@ -5,8 +5,8 @@
 
 use std::mem;
 
-use nextpnr::chipdb::testutil::{make_test_chipdb, SyntheticChipDbBuilder};
-use nextpnr::chipdb::*;
+use nextpnr_db::chipdb::testutil::{make_test_chipdb, SyntheticChipDbBuilder};
+use nextpnr_db::chipdb::*;
 
 // =============================================================================
 // Struct size tests
@@ -349,7 +349,7 @@ fn speed_grade_accessible() {
 
 #[test]
 fn pip_timing_class_accessible() {
-    use nextpnr::read_packed;
+    use nextpnr_db::read_packed;
     let db = make_test_chipdb();
     let sg = db.speed_grade(0).unwrap();
     let pip = PipId::new(0, 0);
@@ -363,7 +363,7 @@ fn pip_timing_class_accessible() {
 
 #[test]
 fn node_timing_class_accessible() {
-    use nextpnr::read_packed;
+    use nextpnr_db::read_packed;
     let db = make_test_chipdb();
     let sg = db.speed_grade(0).unwrap();
     let wire = WireId::new(0, 0);
@@ -377,7 +377,7 @@ fn node_timing_class_accessible() {
 
 #[test]
 fn cell_timing_has_lut6_comb_arc() {
-    use nextpnr::read_packed;
+    use nextpnr_db::read_packed;
     let db = make_test_chipdb();
     let sg = db.speed_grade(0).unwrap();
     // LUT6 type variant index
@@ -547,7 +547,8 @@ fn fabulous_chipdb_resolves_compiled_in_constids(
     #[case] bel: &str,
     #[case] bel_type: &str,
 ) {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fabulous.bin");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../nextpnr/tests/fixtures/fabulous.bin");
     let db = ChipDb::load(&path).expect("FABulous chipdb loads with its compiled-in constids");
     let found = db
         .bels()

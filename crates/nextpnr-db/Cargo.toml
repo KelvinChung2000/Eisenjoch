@@ -1,0 +1,29 @@
+[package]
+name = "nextpnr-db"
+version = "0.1.0"
+edition = "2021"
+description = "Himbaechel chip database reader, netlist model and Yosys JSON frontend"
+
+[lib]
+name = "nextpnr_db"
+
+[features]
+default = []
+mmap = ["dep:memmap2"]
+test-utils = ["mmap"]
+
+[dependencies]
+rustc-hash = { workspace = true }
+memmap2 = { workspace = true, optional = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+lasso = { workspace = true }
+
+[dev-dependencies]
+rstest = "0.28"
+
+[[test]]
+name = "chipdb"
+path = "tests/chipdb.rs"
+required-features = ["test-utils"]

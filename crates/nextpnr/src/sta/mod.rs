@@ -243,7 +243,7 @@ fn gate_design(
                     &instance_name(cell_id),
                     cell_types[ctx.name_of(cell.cell_type)],
                 )?;
-                for (&port, data) in &cell.ports {
+                for (&port, data) in cell.ports() {
                     let Some(net) = data.net() else { continue };
                     let pin = netlist.connect(inst, ctx.name_of(port), Conn::Net(nets[&net]))?;
                     pins.insert(CellPin::new(cell_id, port), SessionNodeKey::Pin(pin));
@@ -266,7 +266,7 @@ fn gate_design(
                 );
             }
             CellRole::Constant(level) => {
-                for data in cell.ports.values() {
+                for data in cell.ports().values() {
                     let Some(net) = data.net() else { continue };
                     netlist.add_assign(nets[&net], Conn::Const(level.is_high()))?;
                 }

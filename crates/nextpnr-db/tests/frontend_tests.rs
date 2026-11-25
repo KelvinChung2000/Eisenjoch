@@ -1,6 +1,6 @@
-use nextpnr::common::IdStringPool;
-use nextpnr::frontend::*;
-use nextpnr::netlist::{PortType, Property};
+use nextpnr_db::common::IdStringPool;
+use nextpnr_db::frontend::*;
+use nextpnr_db::netlist::{PortType, Property};
 
 fn make_pool() -> IdStringPool {
     IdStringPool::new()

@@ -4,18 +4,18 @@
 //! construction and mutation, Design arena operations (add/remove/lookup),
 //! wiring, hierarchy, clustering, and edge cases.
 
-use nextpnr::chipdb::{BelId, PipId, WireId};
-use nextpnr::common::{IdStringPool, PlaceStrength};
-use nextpnr::netlist::*;
+use nextpnr_db::chipdb::{BelId, PipId, WireId};
+use nextpnr_db::common::{IdStringPool, PlaceStrength};
+use nextpnr_db::netlist::*;
 
 #[allow(non_snake_case)]
-fn CellIdx(raw: u32) -> nextpnr::netlist::CellId {
-    nextpnr::netlist::CellId::from_raw(raw)
+fn CellIdx(raw: u32) -> nextpnr_db::netlist::CellId {
+    nextpnr_db::netlist::CellId::from_raw(raw)
 }
 
 #[allow(non_snake_case)]
-fn NetIdx(raw: u32) -> nextpnr::netlist::NetId {
-    nextpnr::netlist::NetId::from_raw(raw)
+fn NetIdx(raw: u32) -> nextpnr_db::netlist::NetId {
+    nextpnr_db::netlist::NetId::from_raw(raw)
 }
 
 /// Helper: create a pool and intern some names.
@@ -758,7 +758,7 @@ fn design_cluster_aggregate() {
     let cluster = d
         .clusters
         .entry(root_idx)
-        .or_insert_with(|| nextpnr::netlist::Cluster::new(root_idx));
+        .or_insert_with(|| nextpnr_db::netlist::Cluster::new(root_idx));
     cluster.add_member(child1_idx);
     cluster.add_member(child2_idx);
 

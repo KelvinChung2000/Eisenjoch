@@ -8,11 +8,11 @@ description = "Rust reimplementation of nextpnr FPGA place-and-route"
 name = "nextpnr"
 
 [features]
-test-utils = []
+test-utils = ["nextpnr-db/test-utils"]
 
 [dependencies]
+nextpnr-db = { workspace = true, features = ["mmap"] }
 rustc-hash = { workspace = true }
-memmap2 = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -30,13 +30,9 @@ ruststa = { git = "https://github.com/KelvinChung2000/RustSTA.git", rev = "d5b3a
 rusteda-core = { git = "https://github.com/lab-emi/RustEDA-Common.git", rev = "ed0a8e6ecd3cf4b56586a26ab845e29e6e58ca56" }
 
 [dev-dependencies]
+nextpnr-db = { workspace = true, features = ["mmap", "test-utils"] }
 petgraph = "0.6"
 rstest = "0.28"
-
-[[test]]
-name = "chipdb"
-path = "tests/chipdb.rs"
-required-features = ["test-utils"]
 
 [[test]]
 name = "context"
@@ -72,18 +68,6 @@ required-features = ["test-utils"]
 name = "plugin_tests"
 path = "tests/plugin_tests.rs"
 required-features = ["test-utils"]
-
-[[test]]
-name = "netlist_tests"
-path = "tests/netlist_tests.rs"
-
-[[test]]
-name = "types_tests"
-path = "tests/types_tests.rs"
-
-[[test]]
-name = "frontend_tests"
-path = "tests/frontend_tests.rs"
 
 [[test]]
 name = "region_tests"

@@ -59,7 +59,7 @@ impl<'a> Net<'a> {
 
     #[inline]
     pub fn driver_view(&self) -> Option<CellPinView<'a>> {
-        self.driver().map(|pin| pin.view(self.ctx))
+        self.driver().map(|pin| self.ctx.cell_pin(pin))
     }
 
     #[inline]
@@ -167,7 +167,7 @@ impl<'a> Cell<'a> {
     #[inline]
     pub fn ports(&self) -> impl Iterator<Item = crate::netlist::CellPin> + '_ {
         self.info()
-            .ports
+            .ports()
             .keys()
             .copied()
             .map(move |port| crate::netlist::CellPin::new(self.id, port))
@@ -182,7 +182,7 @@ impl<'a> Cell<'a> {
 
     #[inline]
     pub fn port_view(&self, name: IdString) -> Option<CellPinView<'a>> {
-        self.port(name).map(|pin| pin.view(self.ctx))
+        self.port(name).map(|pin| self.ctx.cell_pin(pin))
     }
 
     #[inline]

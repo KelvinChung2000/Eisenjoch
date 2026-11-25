@@ -4,6 +4,7 @@ mod access;
 mod chip;
 mod grid;
 mod ids;
+#[cfg(feature = "mmap")]
 mod load;
 mod pod;
 mod relptr;
@@ -50,4 +51,5 @@ macro_rules! read_packed {
     };
 }
 
+#[cfg(feature = "test-utils")]
 pub mod testutil;

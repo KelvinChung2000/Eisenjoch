@@ -158,7 +158,7 @@ impl Context {
 
     #[inline]
     pub fn cell_pin(&self, pin: CellPin) -> CellPinView<'_> {
-        pin.view(self)
+        CellPinView::new(self, pin)
     }
 
     #[inline]

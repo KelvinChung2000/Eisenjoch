@@ -36,7 +36,7 @@ impl CellPin {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PortData {
+pub struct PortData {
     pub(crate) port_type: PortType,
     pub(crate) net: Option<NetId>,
     pub(crate) user_idx: Option<u32>,
@@ -54,27 +54,27 @@ impl PortData {
     }
 
     #[inline]
-    pub(crate) fn is_connected(&self) -> bool {
+    pub fn is_connected(&self) -> bool {
         self.net.is_some()
     }
 
     #[inline]
-    pub(crate) fn net(&self) -> Option<NetId> {
+    pub fn net(&self) -> Option<NetId> {
         self.net
     }
 
     #[inline]
-    pub(crate) fn port_type(&self) -> PortType {
+    pub fn port_type(&self) -> PortType {
         self.port_type
     }
 
     #[inline]
-    pub(crate) fn user_idx(&self) -> Option<u32> {
+    pub fn user_idx(&self) -> Option<u32> {
         self.user_idx
     }
 
     #[inline]
-    pub(crate) fn budget(&self) -> DelayT {
+    pub fn budget(&self) -> DelayT {
         self.budget
     }
 

@@ -92,10 +92,10 @@ impl CostModel {
     /// a global buffer is left out of the cost entirely.
     fn is_ignored(ctx: &Context, net: NetId) -> bool {
         let info = ctx.design.net(net);
-        if !info.driver.is_valid() {
+        let Some(driver) = info.driver() else {
             return true;
-        }
-        match ctx.design.cell(info.driver.cell).bel {
+        };
+        match ctx.design.cell(driver.cell).bel {
             None => true,
             Some(bel) => ctx.bel_global_buf(bel),
         }
@@ -104,9 +104,12 @@ impl CostModel {
     /// `get_net_bounds`.
     fn net_bounds(ctx: &Context, net: NetId) -> BoundingBox {
         let info = ctx.design.net(net);
+        let driver = info
+            .driver()
+            .expect("ignored nets are filtered before bounds are taken");
         let driver_bel = ctx
             .design
-            .cell(info.driver.cell)
+            .cell(driver.cell)
             .bel
             .expect("ignored nets are filtered before bounds are taken");
         let dloc = ctx.chipdb().bel_loc(driver_bel);
@@ -116,7 +119,7 @@ impl CostModel {
             y0: dloc.y,
             y1: dloc.y,
         };
-        for &user in info.users.iter() {
+        for &user in info.users().iter() {
             if !user.is_valid() {
                 continue;
             }
@@ -139,10 +142,10 @@ impl CostModel {
         let Some(sta) = sta else {
             return Vec::new();
         };
-        if info.users.len() >= cfg.timing_fanout_thresh {
+        if info.users().len() >= cfg.timing_fanout_thresh {
             return Vec::new();
         }
-        info.users
+        info.users()
             .iter()
             .enumerate()
             .map(|(user, &pin)| {

@@ -125,7 +125,7 @@ pub(crate) fn cell_driver_wires(
 ) -> Vec<(WireId, NetId)> {
     let cell = ctx.design.cell(cell_id);
     let ports: Vec<(IdString, PortType, Option<NetId>)> = cell
-        .ports
+        .ports()
         .iter()
         .map(|(name, data)| (*name, data.port_type(), data.net()))
         .collect();
@@ -159,7 +159,7 @@ pub(crate) fn cell_driver_wires(
 pub(crate) fn cell_user_wires(ctx: &Context, cell_id: CellId, bel: BelId) -> Vec<(WireId, NetId)> {
     let cell = ctx.design.cell(cell_id);
     let ports: Vec<(IdString, PortType, Option<NetId>)> = cell
-        .ports
+        .ports()
         .iter()
         .map(|(name, data)| (*name, data.port_type(), data.net()))
         .collect();
@@ -312,7 +312,7 @@ pub(crate) fn build_cell_pin_template(ctx: &Context, cell_id: CellId) -> CellPin
     // A port whose name the chipdb does not know cannot match any BEL pin, so
     // it is dropped here rather than failing to match on every candidate.
     let canon = |name: IdString| ctx.chipdb().constid_for_name(ctx.name_of(name));
-    for (name, data) in cell.ports.iter() {
+    for (name, data) in cell.ports().iter() {
         let port_type = data.port_type();
         let Some(net_id) = data.net() else { continue };
         let net = ctx.net(net_id);

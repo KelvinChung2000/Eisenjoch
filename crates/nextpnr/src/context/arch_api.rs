@@ -149,10 +149,10 @@ impl Context {
     /// treating an unplaced arc as costless rather than infinite.
     pub fn predict_arc_delay(&self, net: NetId, user: CellPin) -> DelayT {
         let net_info = self.design.net(net);
-        if !net_info.driver.is_valid() {
+        let Some(driver) = net_info.driver() else {
             return 0;
-        }
-        let Some(driver_bel) = self.design.cell(net_info.driver.cell).bel else {
+        };
+        let Some(driver_bel) = self.design.cell(driver.cell).bel else {
             return 0;
         };
         let Some(user_bel) = self.design.cell(user.cell).bel else {
@@ -184,7 +184,7 @@ impl Context {
             return TimingPortClass::Ignore;
         };
         let info = self.design.cell(cell);
-        let Some(port_info) = info.ports.get(&port) else {
+        let Some(port_info) = info.ports().get(&port) else {
             return TimingPortClass::Ignore;
         };
         let type_idx = info.timing_index.map(|ti| ti.0 as usize).or_else(|| {
@@ -195,7 +195,7 @@ impl Context {
             return TimingPortClass::Ignore;
         };
         self.chipdb()
-            .port_timing_class(speed_grade, type_idx, port.index(), port_info.port_type)
+            .port_timing_class(speed_grade, type_idx, port.index(), port_info.port_type())
     }
 
     /// `setting<bool>` -- read a boolean run setting, defaulting to false.
