@@ -171,11 +171,9 @@ impl HeapState {
 
             // Split cells proportionally to BEL counts.
             let total_bels_here = lo_bels + hi_bels;
-            let lo_capacity = if total_bels_here > 0 {
-                (sorted_cells.len() * lo_bels) / total_bels_here
-            } else {
-                sorted_cells.len() / 2
-            };
+            let lo_capacity = (sorted_cells.len() * lo_bels)
+                .checked_div(total_bels_here)
+                .unwrap_or(sorted_cells.len() / 2);
             let lo_capacity = lo_capacity.min(sorted_cells.len());
 
             let hi_cells = sorted_cells.split_off(lo_capacity);

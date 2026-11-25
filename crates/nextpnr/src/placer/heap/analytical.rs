@@ -126,8 +126,7 @@ impl HeapState {
 
         // Add congestion-aware forces.
         if let Some(ref targets) = self.congestion_targets {
-            for i in 0..n {
-                let (tx, ty, w) = targets[i];
+            for (i, &(tx, ty, w)) in targets[..n].iter().enumerate() {
                 if w > 0.0 {
                     sys_x.add_anchor(i, tx, w);
                     sys_y.add_anchor(i, ty, w);
