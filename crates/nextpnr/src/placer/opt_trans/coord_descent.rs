@@ -1010,17 +1010,29 @@ fn source_node(info: &NetInfo) -> Option<usize> {
         .map(|pin| pin.node)
 }
 
+#[derive(Clone, Copy)]
+struct SolveInputs<'a> {
+    network: &'a PipeNetwork,
+    net_infos: &'a [NetInfo],
+    cfg: &'a OptTransPlacerCfg,
+    solve_pool: &'a rayon::ThreadPool,
+    ws_pool: &'a WorkspacePool,
+}
+
 fn solve_all_nets_with_displacement(
-    network: &PipeNetwork,
-    net_infos: &[NetInfo],
-    cfg: &OptTransPlacerCfg,
-    solve_pool: &rayon::ThreadPool,
-    ws_pool: &WorkspacePool,
+    inputs: &SolveInputs<'_>,
     dist_cache: &mut DistCache,
     collect_usage: bool,
     skip_mask: Option<&[bool]>,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
+    let SolveInputs {
+        network,
+        net_infos,
+        cfg,
+        solve_pool,
+        ws_pool,
+    } = *inputs;
     if cfg.path_model == PathModel::BresenhamLogit {
         return solve_all_nets_bresenham_logit(
             network,
@@ -1960,26 +1972,16 @@ fn update_net_count_from_usage(
 }
 
 fn solve_distance_cache(
-    network: &PipeNetwork,
-    net_infos: &[NetInfo],
-    cfg: &OptTransPlacerCfg,
-    solve_pool: &rayon::ThreadPool,
-    ws_pool: &WorkspacePool,
+    inputs: &SolveInputs<'_>,
     dist_cache: &mut DistCache,
     skip_mask: Option<&[bool]>,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    let accum = solve_all_nets_with_displacement(
-        network,
-        net_infos,
-        cfg,
-        solve_pool,
-        ws_pool,
-        dist_cache,
-        false,
-        skip_mask,
-        displacement,
-    );
+    let SolveInputs {
+        network, net_infos, ..
+    } = *inputs;
+    let accum =
+        solve_all_nets_with_displacement(inputs, dist_cache, false, skip_mask, displacement);
     if ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed) {
         dist_cache.seed_analytic(net_infos, network.width as usize, analytic_k_seed());
     } else if analytic_dist() {
@@ -1989,25 +1991,14 @@ fn solve_distance_cache(
 }
 
 fn solve_usage_and_energy(
-    network: &PipeNetwork,
-    net_infos: &[NetInfo],
-    cfg: &OptTransPlacerCfg,
-    solve_pool: &rayon::ThreadPool,
-    ws_pool: &WorkspacePool,
+    inputs: &SolveInputs<'_>,
     dist_cache: &mut DistCache,
     displacement: Option<&super::displacement::DisplacementTable>,
 ) -> SolveAccum {
-    let accum = solve_all_nets_with_displacement(
-        network,
-        net_infos,
-        cfg,
-        solve_pool,
-        ws_pool,
-        dist_cache,
-        true,
-        None,
-        displacement,
-    );
+    let SolveInputs {
+        network, net_infos, ..
+    } = *inputs;
+    let accum = solve_all_nets_with_displacement(inputs, dist_cache, true, None, displacement);
     if ANALYTIC_PHASE.load(std::sync::atomic::Ordering::Relaxed) {
         dist_cache.seed_analytic(net_infos, network.width as usize, analytic_k_seed());
     } else if analytic_dist() {
@@ -4811,11 +4802,13 @@ pub fn run_inner_outer(
         );
         let rss_before_pre_solve = process_rss_kb();
         let pre_solve = solve_distance_cache(
-            network,
-            &net_infos,
-            cfg,
-            solve_pool,
-            &ws_pool,
+            &SolveInputs {
+                network,
+                net_infos: &net_infos,
+                cfg,
+                solve_pool,
+                ws_pool: &ws_pool,
+            },
             &mut dist_cache,
             skip_mask.as_deref(),
             displacement_table.as_ref(),
@@ -5815,11 +5808,13 @@ pub fn run_inner_outer(
             dist_cache.ensure_shape(post_net_infos.len(), n_nodes);
             let rss_before_post = process_rss_kb();
             let post_solve = solve_usage_and_energy(
-                network,
-                &post_net_infos,
-                cfg,
-                solve_pool,
-                &ws_pool,
+                &SolveInputs {
+                    network,
+                    net_infos: &post_net_infos,
+                    cfg,
+                    solve_pool,
+                    ws_pool: &ws_pool,
+                },
                 &mut dist_cache,
                 displacement_table.as_ref(),
             );
