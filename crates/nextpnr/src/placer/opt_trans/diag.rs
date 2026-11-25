@@ -42,6 +42,22 @@ pub struct PlateauStat {
     pub n_scanned: u32,
 }
 
+/// Scalar outcome of one sweep, written as the sweep summary row.
+#[derive(Clone, Copy, Debug)]
+pub struct SweepSummary {
+    pub n_cells: usize,
+    pub line: f64,
+    pub friction: f64,
+    pub max_overflow: f64,
+    pub n_overflow: usize,
+    pub overflow_excess: f64,
+    pub moves_committed: usize,
+    /// Revert decision for the sweep.
+    pub accepted: bool,
+    /// Friction delta vs best-so-far (negative = improvement).
+    pub d_friction: f64,
+}
+
 /// A single committed move (old grid -> new grid position).
 #[derive(Clone, Copy, Debug)]
 pub struct MoveRecord {
@@ -239,24 +255,25 @@ impl DiagCtx {
     }
 
     /// Finish a sweep: write per-sweep CSVs and summary row.
-    /// `accepted` is the revert decision; `d_friction` is the delta vs best-so-far
-    /// (negative = improvement).
     pub fn sweep_end(
         &mut self,
-        n_cells: usize,
-        line: f64,
-        friction: f64,
-        max_overflow: f64,
-        n_overflow: usize,
-        overflow_excess: f64,
-        moves_committed: usize,
-        accepted: bool,
-        d_friction: f64,
+        summary: &SweepSummary,
         net_names: &[String],
         net_fanout: &[u32],
         net_hpwl: &[f64],
         bb: &BoundingBoxes,
     ) {
+        let SweepSummary {
+            n_cells,
+            line,
+            friction,
+            max_overflow,
+            n_overflow,
+            overflow_excess,
+            moves_committed,
+            accepted,
+            d_friction,
+        } = *summary;
         if !self.enabled {
             return;
         }
@@ -469,8 +486,7 @@ impl DiagCtx {
         let mut w = BufWriter::new(f);
         let _ = writeln!(w, "rank_kind,rank,net_idx,name,fanout,hpwl,delta_hpwl");
         let k = TOP_K.min(n);
-        for r in 0..k {
-            let idx = by_hpwl[r];
+        for (r, &idx) in by_hpwl.iter().take(k).enumerate() {
             let name = net_names.get(idx).map(|s| s.as_str()).unwrap_or("");
             let fanout = net_fanout.get(idx).copied().unwrap_or(0);
             let d = if self.prev_net_hpwl.len() == n {
@@ -484,8 +500,7 @@ impl DiagCtx {
                 r, idx, name, fanout, net_hpwl[idx], d
             );
         }
-        for r in 0..k.min(by_churn.len()) {
-            let (idx, delta) = by_churn[r];
+        for (r, &(idx, delta)) in by_churn.iter().take(k).enumerate() {
             let name = net_names.get(idx).map(|s| s.as_str()).unwrap_or("");
             let fanout = net_fanout.get(idx).copied().unwrap_or(0);
             let _ = writeln!(
@@ -503,7 +518,8 @@ impl DiagCtx {
         }
 
         // Histogram buckets.
-        let buckets: [(&str, Box<dyn Fn(f64) -> bool>); 6] = [
+        type UsageBucket = (&'static str, Box<dyn Fn(f64) -> bool>);
+        let buckets: [UsageBucket; 6] = [
             ("0", Box::new(|n| n == 0.0)),
             ("0.5+", Box::new(|n| n >= 0.5)),
             ("1+", Box::new(|n| n >= 1.0)),

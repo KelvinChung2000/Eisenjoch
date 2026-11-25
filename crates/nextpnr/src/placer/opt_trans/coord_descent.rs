@@ -36,7 +36,7 @@ use crate::placer::common::{CellValidityMask, MuxSlotTracker, TypeAwarePlacement
 
 use super::config::{GraphModel, OptTransPlacerCfg, PathModel};
 use super::demand;
-use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat};
+use super::diag::{self, BoundingBoxes, DiagCtx, MoveRecord, PlateauStat, SweepSummary};
 use super::network::PipeNetwork;
 use super::path_solver::{self, PathSolverWorkspace, PathStats, WorkspacePool};
 use super::region_min::{self, RegionMinPyramid};
@@ -5914,15 +5914,17 @@ pub fn run_inner_outer(
             let (net_names, net_fanout, net_hpwl) = per_net_hpwl(&post_net_infos, network);
             let bb = compute_bounding_boxes(cell_x, cell_y, &post_net_infos, network);
             diag_ctx.sweep_end(
-                n,
-                line,
-                friction,
-                max_overflow,
-                n_overflow,
-                overflow_excess,
-                moved,
-                accepted,
-                d_friction,
+                &SweepSummary {
+                    n_cells: n,
+                    line,
+                    friction,
+                    max_overflow,
+                    n_overflow,
+                    overflow_excess,
+                    moves_committed: moved,
+                    accepted,
+                    d_friction,
+                },
                 &net_names,
                 &net_fanout,
                 &net_hpwl,
