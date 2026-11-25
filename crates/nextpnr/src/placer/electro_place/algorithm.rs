@@ -99,10 +99,12 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
         density::compute_density_gradient(
             &cell_x,
             &cell_y,
-            &field_x,
-            &field_y,
-            grid_w,
-            grid_h,
+            density::DensityField {
+                x: &field_x,
+                y: &field_y,
+                grid_w,
+                grid_h,
+            },
             &mut density_grad_x,
             &mut density_grad_y,
         );

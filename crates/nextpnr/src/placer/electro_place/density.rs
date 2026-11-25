@@ -162,19 +162,29 @@ pub fn compute_density_field(
     (ex, ey)
 }
 
+pub struct DensityField<'a> {
+    pub x: &'a [f64],
+    pub y: &'a [f64],
+    pub grid_w: usize,
+    pub grid_h: usize,
+}
+
 /// Compute density gradient for each cell by interpolating the field at cell positions.
 ///
 /// Uses slither weights (fractional bin overlap) for interpolation.
 pub fn compute_density_gradient(
     cell_x: &[f64],
     cell_y: &[f64],
-    field_x: &[f64],
-    field_y: &[f64],
-    grid_w: usize,
-    grid_h: usize,
+    field: DensityField<'_>,
     grad_x: &mut [f64],
     grad_y: &mut [f64],
 ) {
+    let DensityField {
+        x: field_x,
+        y: field_y,
+        grid_w,
+        grid_h,
+    } = field;
     for i in 0..cell_x.len() {
         let (x_lo, x_hi, y_lo, y_hi, bx_lo, bx_hi, by_lo, by_hi) =
             cell_bin_overlap(cell_x[i], cell_y[i], grid_w, grid_h);
@@ -339,7 +349,18 @@ mod tests {
 
         let mut gx = vec![0.0; 3];
         let mut gy = vec![0.0; 3];
-        compute_density_gradient(&x, &y, &fx, &fy, 8, 8, &mut gx, &mut gy);
+        compute_density_gradient(
+            &x,
+            &y,
+            DensityField {
+                x: &fx,
+                y: &fy,
+                grid_w: 8,
+                grid_h: 8,
+            },
+            &mut gx,
+            &mut gy,
+        );
 
         for g in gx.iter().chain(gy.iter()) {
             assert!(g.is_finite(), "Gradient should be finite: {}", g);

@@ -1386,6 +1386,11 @@ where
 // Type-aware tile placement
 // ---------------------------------------------------------------------------
 
+pub struct PinDemand<'a> {
+    pub buckets: &'a [IdString],
+    pub weights: &'a [f64],
+}
+
 /// Pre-computed per-cell-type valid tile positions and BEL capacities.
 ///
 /// Shared across placers. Enables type-aware snapping (cells move only to tiles
@@ -1627,14 +1632,17 @@ impl TypeAwarePlacement {
     /// This preserves local hotspots instead of averaging them away.
     pub fn compute_overflow_map_coarse(
         &self,
-        cell_buckets: &[IdString],
-        cell_weights: &[f64],
+        demand: PinDemand<'_>,
         cell_x: &[f64],
         cell_y: &[f64],
         coarsen: usize,
         grid_w: usize,
         grid_h: usize,
     ) -> FxHashMap<(i32, i32), f64> {
+        let PinDemand {
+            buckets: cell_buckets,
+            weights: cell_weights,
+        } = demand;
         let coarsen = coarsen.max(1);
         let coarse_w = grid_w.div_ceil(coarsen) as i32;
         let coarse_h = grid_h.div_ceil(coarsen) as i32;
