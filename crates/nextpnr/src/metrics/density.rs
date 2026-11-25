@@ -30,9 +30,9 @@ pub fn placement_density(ctx: &Context, window: i32) -> DensityReport {
     let mut tile_placed = vec![0u32; n_tiles];
     let mut tile_capacity = vec![0u32; n_tiles];
 
-    for tile_idx in 0..n_tiles {
+    for (tile_idx, capacity) in tile_capacity.iter_mut().enumerate() {
         let tt = chipdb.tile_type(tile_idx as i32);
-        tile_capacity[tile_idx] = tt.bels.get().len() as u32;
+        *capacity = tt.bels.get().len() as u32;
     }
 
     for cell in ctx.cells() {
