@@ -2050,17 +2050,28 @@ fn apply_usage_for_next_iter(
     update_net_count_from_usage(network, usage, cfg.blend_alpha, solve_pool);
 }
 
+#[derive(Clone, Copy)]
+struct NetCostModel<'a> {
+    net_infos: &'a [NetInfo],
+    dist_cache: &'a DistCache,
+    network: &'a PipeNetwork,
+    cfg: &'a OptTransPlacerCfg,
+}
+
 fn evaluate_cell_at(
     cell_idx: usize,
     gx: i32,
     gy: i32,
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
+    model: &NetCostModel<'_>,
     validity: &CellValidityMask,
 ) -> f64 {
+    let NetCostModel {
+        net_infos,
+        dist_cache,
+        network,
+        cfg,
+    } = *model;
     // Refuse tiles that can't host this cell type. This propagates
     // through every caller (BB, fullscan, bisection) via their
     // existing "pick min finite cost" logic — no per-caller edit needed.
@@ -2187,7 +2198,16 @@ fn fullscan_find_best_position(
     validity: &CellValidityMask,
 ) -> (i32, i32) {
     let (pos, _) = fullscan_find_best_position_with_stats(
-        cell_idx, cell_nets, net_infos, dist_cache, network, cfg, validity, false,
+        cell_idx,
+        cell_nets,
+        &NetCostModel {
+            net_infos,
+            dist_cache,
+            network,
+            cfg,
+        },
+        validity,
+        false,
     );
     pos
 }
@@ -2195,19 +2215,17 @@ fn fullscan_find_best_position(
 fn fullscan_find_best_position_with_stats(
     cell_idx: usize,
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
+    model: &NetCostModel<'_>,
     validity: &CellValidityMask,
     collect_stats: bool,
 ) -> ((i32, i32), Option<PlateauStat>) {
+    let NetCostModel {
+        net_infos, network, ..
+    } = *model;
     let cur_node = current_cell_node(cell_idx, cell_nets, net_infos);
     let mut best_x = network.nodes[cur_node].tile_x;
     let mut best_y = network.nodes[cur_node].tile_y;
-    let mut best_cost = evaluate_cell_at(
-        cell_idx, best_x, best_y, cell_nets, net_infos, dist_cache, network, cfg, validity,
-    );
+    let mut best_cost = evaluate_cell_at(cell_idx, best_x, best_y, cell_nets, model, validity);
 
     // Buffer of all scanned finite costs (only when collecting stats).
     let mut cost_buf: Vec<f64> = if collect_stats {
@@ -2223,9 +2241,7 @@ fn fullscan_find_best_position_with_stats(
 
     for gy in 0..network.height {
         for gx in 0..network.width {
-            let cost = evaluate_cell_at(
-                cell_idx, gx, gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
-            );
+            let cost = evaluate_cell_at(cell_idx, gx, gy, cell_nets, model, validity);
             if collect_stats {
                 diag::update_plateau(&mut stat, cost);
                 if cost.is_finite() {
@@ -2844,15 +2860,15 @@ impl SoftminAccumulator {
 fn fullscan_sweep_probe(
     cell_idx: usize,
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
+    model: &NetCostModel<'_>,
     validity: &CellValidityMask,
     mux_tracker: &MuxSlotTracker,
     theta: f64,
     collect_stats: bool,
 ) -> (SoftminAccumulator, Option<PlateauStat>) {
+    let NetCostModel {
+        net_infos, network, ..
+    } = *model;
     let cur_node = current_cell_node(cell_idx, cell_nets, net_infos);
     let cur_x = network.nodes[cur_node].tile_x;
     let cur_y = network.nodes[cur_node].tile_y;
@@ -2883,9 +2899,7 @@ fn fullscan_sweep_probe(
             if !mux_tracker.would_fit(cell_idx, cur_x, cur_y, gx, gy) {
                 continue;
             }
-            let cost = evaluate_cell_at(
-                cell_idx, gx, gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
-            );
+            let cost = evaluate_cell_at(cell_idx, gx, gy, cell_nets, model, validity);
             if collect_stats {
                 diag::update_plateau(&mut stat, cost);
                 if cost.is_finite() {
@@ -2960,10 +2974,12 @@ fn place_dcd_sweep(
             let (acc, stats) = fullscan_sweep_probe(
                 ci,
                 cell_nets,
-                net_infos,
-                dist_cache,
-                network,
-                cfg,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
                 validity,
                 mux_tracker,
                 if use_softmin { theta } else { 0.0 },
@@ -3109,15 +3125,13 @@ fn place_dcd_sweep(
 fn bisect_2d(
     cell_idx: usize,
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
+    model: &NetCostModel<'_>,
     validity: &CellValidityMask,
     start_x: i32,
     start_y: i32,
     start_cost: f64,
 ) -> (i32, i32, f64, usize, usize, usize) {
+    let NetCostModel { network, cfg, .. } = *model;
     let w = network.width;
     let h = network.height;
     if w <= 0 || h <= 0 {
@@ -3130,9 +3144,7 @@ fn bisect_2d(
     let step_y = (max_y as f64 / (k - 1).max(1) as f64).max(1.0);
 
     let eval = |gx: i32, gy: i32| -> f64 {
-        evaluate_cell_at(
-            cell_idx, gx, gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
-        )
+        evaluate_cell_at(cell_idx, gx, gy, cell_nets, model, validity)
     };
 
     let mut best_x = start_x;
@@ -3596,10 +3608,33 @@ fn place_dcd_sweep_colored_gs(
                     if cell_nets.is_empty() {
                         return (ci, ogx, ogy);
                     }
-                    let cur =
-                        evaluate_cell_at(ci, ogx, ogy, cell_nets, ni, dc, network, cfg, validity);
-                    let (bx, by, _bc, _a, _b, _c) =
-                        bisect_2d(ci, cell_nets, ni, dc, network, cfg, validity, ogx, ogy, cur);
+                    let cur = evaluate_cell_at(
+                        ci,
+                        ogx,
+                        ogy,
+                        cell_nets,
+                        &NetCostModel {
+                            net_infos: ni,
+                            dist_cache: dc,
+                            network,
+                            cfg,
+                        },
+                        validity,
+                    );
+                    let (bx, by, _bc, _a, _b, _c) = bisect_2d(
+                        ci,
+                        cell_nets,
+                        &NetCostModel {
+                            net_infos: ni,
+                            dist_cache: dc,
+                            network,
+                            cfg,
+                        },
+                        validity,
+                        ogx,
+                        ogy,
+                        cur,
+                    );
                     if move_cap != i32::MAX {
                         let cbx = bx.clamp(ogx - move_cap, ogx + move_cap);
                         let cby = by.clamp(ogy - move_cap, ogy + move_cap);
@@ -3699,10 +3734,30 @@ fn place_dcd_sweep_jacobi_bisection(
             let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
             let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
             let cur_cost = evaluate_cell_at(
-                ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
+                ci,
+                old_gx,
+                old_gy,
+                cell_nets,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                validity,
             );
             let (bx, by, _bc, _np, _ni, _im) = bisect_2d(
-                ci, cell_nets, net_infos, dist_cache, network, cfg, validity, old_gx, old_gy,
+                ci,
+                cell_nets,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                validity,
+                old_gx,
+                old_gy,
                 cur_cost,
             );
             (bx, by)
@@ -3844,15 +3899,18 @@ fn bb_child_dims(pyramids: &[RegionMinPyramid], w: i32, h: i32, child_level: i32
 
 fn bb_2d(
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
+    model: &NetCostModel<'_>,
     pyramids: &[RegionMinPyramid],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
     start_x: i32,
     start_y: i32,
     start_cost: f64,
 ) -> (i32, i32, f64, usize) {
+    let NetCostModel {
+        net_infos,
+        dist_cache,
+        network,
+        cfg,
+    } = *model;
     use std::collections::BinaryHeap;
 
     let w = network.width;
@@ -3935,15 +3993,18 @@ fn bb_2d(
 /// Variant of `bb_2d` that returns ALL positions tied at the minimum cost.
 fn bb_2d_multi(
     cell_nets: &[(usize, usize)],
-    net_infos: &[NetInfo],
-    dist_cache: &DistCache,
+    model: &NetCostModel<'_>,
     pyramids: &[RegionMinPyramid],
-    network: &PipeNetwork,
-    cfg: &OptTransPlacerCfg,
     start_x: i32,
     start_y: i32,
     start_cost: f64,
 ) -> (Vec<(i32, i32)>, f64, usize) {
+    let NetCostModel {
+        net_infos,
+        dist_cache,
+        network,
+        cfg,
+    } = *model;
     use std::collections::BinaryHeap;
 
     let w = network.width;
@@ -4067,10 +4128,30 @@ fn place_dcd_sweep_jacobi_bb(
             let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
             let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
             let cur_cost = evaluate_cell_at(
-                ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
+                ci,
+                old_gx,
+                old_gy,
+                cell_nets,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                validity,
             );
             let (tied, _best_cost, n_evals) = bb_2d_multi(
-                cell_nets, net_infos, dist_cache, pyramids, network, cfg, old_gx, old_gy, cur_cost,
+                cell_nets,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                pyramids,
+                old_gx,
+                old_gy,
+                cur_cost,
             );
             (tied, n_evals)
         })
@@ -4207,10 +4288,30 @@ fn place_dcd_sweep_jacobi_bb(
                 continue;
             }
             let cur_i = evaluate_cell_at(
-                ci, old_gx, old_gy, nets_i, net_infos, dist_cache, network, cfg, validity,
+                ci,
+                old_gx,
+                old_gy,
+                nets_i,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                validity,
             );
             let want_i = evaluate_cell_at(
-                ci, tx, ty, nets_i, net_infos, dist_cache, network, cfg, validity,
+                ci,
+                tx,
+                ty,
+                nets_i,
+                &NetCostModel {
+                    net_infos,
+                    dist_cache,
+                    network,
+                    cfg,
+                },
+                validity,
             );
             if !cur_i.is_finite() || !want_i.is_finite() {
                 continue;
@@ -4246,10 +4347,30 @@ fn place_dcd_sweep_jacobi_bb(
                     continue;
                 }
                 let cur_j = evaluate_cell_at(
-                    j, tx, ty, nets_j, net_infos, dist_cache, network, cfg, validity,
+                    j,
+                    tx,
+                    ty,
+                    nets_j,
+                    &NetCostModel {
+                        net_infos,
+                        dist_cache,
+                        network,
+                        cfg,
+                    },
+                    validity,
                 );
                 let want_j = evaluate_cell_at(
-                    j, old_gx, old_gy, nets_j, net_infos, dist_cache, network, cfg, validity,
+                    j,
+                    old_gx,
+                    old_gy,
+                    nets_j,
+                    &NetCostModel {
+                        net_infos,
+                        dist_cache,
+                        network,
+                        cfg,
+                    },
+                    validity,
                 );
                 if !cur_j.is_finite() || !want_j.is_finite() {
                     continue;
@@ -4348,13 +4469,34 @@ fn place_dcd_sweep_sequential_bisection(
         let old_gx = network.tile_to_net(cell_x[ci]).round() as i32;
         let old_gy = network.tile_to_net(cell_y[ci]).round() as i32;
         let cur_cost = evaluate_cell_at(
-            ci, old_gx, old_gy, cell_nets, net_infos, dist_cache, network, cfg, validity,
+            ci,
+            old_gx,
+            old_gy,
+            cell_nets,
+            &NetCostModel {
+                net_infos,
+                dist_cache,
+                network,
+                cfg,
+            },
+            validity,
         );
         let _ = max_iters;
 
         let t0 = std::time::Instant::now();
         let (new_gx, new_gy, _best_cost, _np, _ni, _im) = bisect_2d(
-            ci, cell_nets, net_infos, dist_cache, network, cfg, validity, old_gx, old_gy, cur_cost,
+            ci,
+            cell_nets,
+            &NetCostModel {
+                net_infos,
+                dist_cache,
+                network,
+                cfg,
+            },
+            validity,
+            old_gx,
+            old_gy,
+            cur_cost,
         );
         if want_perf {
             t_search_ns += t0.elapsed().as_nanos();
@@ -5060,19 +5202,23 @@ pub fn run_inner_outer(
                     cur_gx_tmp,
                     cur_gy_tmp,
                     cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    network,
-                    cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network,
+                        cfg,
+                    },
                     validity,
                 );
                 let (bis_x, bis_y, _bis_c, n_probes, n_probes_inf, n_improve_steps) = bisect_2d(
                     ci,
                     cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    network,
-                    cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network,
+                        cfg,
+                    },
                     validity,
                     cur_gx_tmp,
                     cur_gy_tmp,
@@ -5092,10 +5238,12 @@ pub fn run_inner_outer(
                     bis_x,
                     bis_y,
                     cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    network,
-                    cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network,
+                        cfg,
+                    },
                     validity,
                 );
                 let fs_cost = evaluate_cell_at(
@@ -5103,10 +5251,12 @@ pub fn run_inner_outer(
                     fs_x,
                     fs_y,
                     cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    network,
-                    cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network,
+                        cfg,
+                    },
                     validity,
                 );
                 let cur_gx = network.tile_to_net(cell_x[ci]).round() as i32;
@@ -5116,10 +5266,12 @@ pub fn run_inner_outer(
                     cur_gx,
                     cur_gy,
                     cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    network,
-                    cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network,
+                        cfg,
+                    },
                     validity,
                 );
                 let d_bis_fs = (bis_x - fs_x).abs() + (bis_y - fs_y).abs();
@@ -5500,19 +5652,23 @@ pub fn run_inner_outer(
                             ogx,
                             ogy,
                             cell_nets,
-                            &net_infos,
-                            &dist_cache,
-                            network,
-                            cfg,
+                            &NetCostModel {
+                                net_infos: &net_infos,
+                                dist_cache: &dist_cache,
+                                network,
+                                cfg,
+                            },
                             validity,
                         );
                         let (bx, by, bc, _ne) = bb_2d(
                             cell_nets,
-                            &net_infos,
-                            &dist_cache,
+                            &NetCostModel {
+                                net_infos: &net_infos,
+                                dist_cache: &dist_cache,
+                                network,
+                                cfg,
+                            },
                             &pyramids,
-                            network,
-                            cfg,
                             ogx,
                             ogy,
                             cur,
@@ -5531,10 +5687,12 @@ pub fn run_inner_outer(
                             fx,
                             fy,
                             cell_nets,
-                            &net_infos,
-                            &dist_cache,
-                            network,
-                            cfg,
+                            &NetCostModel {
+                                net_infos: &net_infos,
+                                dist_cache: &dist_cache,
+                                network,
+                                cfg,
+                            },
                             validity,
                         );
                         if bx != fx || by != fy {
@@ -6072,10 +6230,12 @@ pub fn run_inner_outer(
                         xi,
                         yi,
                         nets_i,
-                        &post_net_infos,
-                        &dist_cache,
-                        network,
-                        cfg,
+                        &NetCostModel {
+                            net_infos: &post_net_infos,
+                            dist_cache: &dist_cache,
+                            network,
+                            cfg,
+                        },
                         validity,
                     );
                     let pre_j = evaluate_cell_at(
@@ -6083,10 +6243,12 @@ pub fn run_inner_outer(
                         xj,
                         yj,
                         nets_j,
-                        &post_net_infos,
-                        &dist_cache,
-                        network,
-                        cfg,
+                        &NetCostModel {
+                            net_infos: &post_net_infos,
+                            dist_cache: &dist_cache,
+                            network,
+                            cfg,
+                        },
                         validity,
                     );
                     let post_i = evaluate_cell_at(
@@ -6094,10 +6256,12 @@ pub fn run_inner_outer(
                         xj,
                         yj,
                         nets_i,
-                        &post_net_infos,
-                        &dist_cache,
-                        network,
-                        cfg,
+                        &NetCostModel {
+                            net_infos: &post_net_infos,
+                            dist_cache: &dist_cache,
+                            network,
+                            cfg,
+                        },
                         validity,
                     );
                     let post_j = evaluate_cell_at(
@@ -6105,10 +6269,12 @@ pub fn run_inner_outer(
                         xi,
                         yi,
                         nets_j,
-                        &post_net_infos,
-                        &dist_cache,
-                        network,
-                        cfg,
+                        &NetCostModel {
+                            net_infos: &post_net_infos,
+                            dist_cache: &dist_cache,
+                            network,
+                            cfg,
+                        },
                         validity,
                     );
                     if !(pre_i.is_finite()
@@ -6624,10 +6790,12 @@ mod driver_hole_tests {
                     gx,
                     0,
                     &cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    &network,
-                    &cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network: &network,
+                        cfg: &cfg,
+                    },
                     &validity,
                 )
             })
@@ -6735,10 +6903,12 @@ mod proximal_tests {
                     gx,
                     0,
                     &cell_nets,
-                    &net_infos,
-                    &dist_cache,
-                    &network,
-                    &cfg,
+                    &NetCostModel {
+                        net_infos: &net_infos,
+                        dist_cache: &dist_cache,
+                        network: &network,
+                        cfg: &cfg,
+                    },
                     &validity,
                 )
             })
