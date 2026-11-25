@@ -73,6 +73,14 @@ pub enum StaBuildError {
         pad_side: usize,
         fabric_side: usize,
     },
+    #[error("chipdb has no cell timing variant '{variant}' for cell '{cell}'. Regenerate the chipdb with the himbaechel_db plugin's FABULOUS_LC timing variants.")]
+    MissingTimingVariant { cell: String, variant: String },
+    #[error("cell '{cell}' sets {feature} to '{value}'. A timing feature is 0 or 1.")]
+    InvalidFeature {
+        cell: String,
+        feature: String,
+        value: String,
+    },
     #[error("clock net '{net}' has no driver")]
     ClockNetWithoutDriver { net: String },
     #[error("clock net '{net}' is driven by a constant")]

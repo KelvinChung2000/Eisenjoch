@@ -10,6 +10,8 @@ use crate::netlist::{CellId, CellInfo, NetId, PortType};
 
 const TOP_PORT_TYPES: [&str; 3] = ["$nextpnr_IBUF", "$nextpnr_OBUF", "$nextpnr_IOBUF"];
 const IO_BUFFER_TYPES: [&str; 5] = ["IOB", "INBUF", "OUTBUF", "IBUF", "OBUF"];
+const FABULOUS_LC: &str = "FABULOUS_LC";
+const FABULOUS_LC_TIMING_FEATURES: [&str; 2] = ["FF", "I0MUX"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Level {
@@ -111,6 +113,7 @@ fn cell_role(
         None => match ctx.name_of(cell.cell_type) {
             "GND" | "GND_DRV" => Ok(CellRole::Constant(Level::Low)),
             "VCC" | "VCC_DRV" => Ok(CellRole::Constant(Level::High)),
+            FABULOUS_LC => fabulous_lc_role(ctx, speed_grade, cell),
             _ => Ok(CellRole::Instance(
                 match ctx
                     .chipdb()
@@ -121,6 +124,49 @@ fn cell_role(
                 },
             )),
         },
+    }
+}
+
+fn fabulous_lc_role(
+    ctx: &Context,
+    speed_grade: &SpeedGradePod,
+    cell: &CellInfo,
+) -> Result<CellRole, StaBuildError> {
+    let variant = fabulous_lc_timing_variant(ctx, cell)?;
+    let chipdb = ctx.chipdb();
+    let type_idx = chipdb
+        .constid_for_name(&variant)
+        .and_then(|type_variant| chipdb.cell_timing_index(speed_grade, type_variant))
+        .ok_or_else(|| StaBuildError::MissingTimingVariant {
+            cell: ctx.name_of(cell.name).to_owned(),
+            variant: variant.clone(),
+        })?;
+    Ok(CellRole::Instance(CellTiming::SpeedGrade { type_idx }))
+}
+
+fn fabulous_lc_timing_variant(ctx: &Context, cell: &CellInfo) -> Result<String, StaBuildError> {
+    let mut variant = FABULOUS_LC.to_owned();
+    for feature in FABULOUS_LC_TIMING_FEATURES {
+        if feature_enabled(ctx, cell, feature)? {
+            variant.push('_');
+            variant.push_str(feature);
+        }
+    }
+    Ok(variant)
+}
+
+fn feature_enabled(ctx: &Context, cell: &CellInfo, feature: &str) -> Result<bool, StaBuildError> {
+    let Some(value) = cell.params.get(&ctx.id(feature)) else {
+        return Ok(false);
+    };
+    match value.as_int() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(StaBuildError::InvalidFeature {
+            cell: ctx.name_of(cell.name).to_owned(),
+            feature: feature.to_owned(),
+            value: value.as_str(),
+        }),
     }
 }
 

@@ -9,7 +9,7 @@ use nextpnr::common::{ClockEdge, DelayT};
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
-use nextpnr::netlist::{CellId, NetId};
+use nextpnr::netlist::{CellId, NetId, Property};
 use nextpnr::packer::passes::remove_nextpnr_iobs;
 use nextpnr::report_json::report_json;
 use nextpnr::router::common::{bind_route, unroute_net};
@@ -18,7 +18,7 @@ use nextpnr::router::{Router, Router1};
 use nextpnr::sta::{
     ArcTiming, ClasslessPips, ClockId, CritNorm, DelayBounds, InterconnectError, InterconnectModel,
     InterconnectStage, NetSink, PairBudget, PlacedEstimate, Reach, SinkTiming, StaSession,
-    StaSessionError, TableEntry, Untimed, register_clock_nets, routed_back_annotation, IopathDelay,
+    StaBuildError, StaSessionError, TableEntry, Untimed, register_clock_nets, routed_back_annotation, IopathDelay,
     PinRef, TimingCheck,
 };
 use rayon::prelude::*;
@@ -1377,4 +1377,49 @@ fn wns_relaxed_norm_desaturates_only_a_failing_pair(#[case] period_ps: DelayT, #
         saturated(&relaxed),
         saturated(&required)
     );
+}
+
+fn fabulous_lc_context(features: &[(&str, &str)]) -> Context {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fabulous.bin");
+    let mut ctx = Context::new(ChipDb::load(&path).expect("FABulous chipdb loads"));
+    let lc = add_cell(&mut ctx, "lc", "FABULOUS_LC");
+    for &(feature, value) in features {
+        let key = ctx.id(feature);
+        ctx.design
+            .cell_edit(lc)
+            .set_param(key, Property::bit_vector(value));
+    }
+    ctx
+}
+
+#[rstest]
+#[case::combinational(&[], "FABULOUS_LC")]
+#[case::cleared_ff(&[("FF", "0")], "FABULOUS_LC")]
+#[case::registered(&[("FF", "1")], "FABULOUS_LC_FF")]
+#[case::i0mux(&[("I0MUX", "1")], "FABULOUS_LC_I0MUX")]
+#[case::registered_i0mux(&[("I0MUX", "1"), ("FF", "1")], "FABULOUS_LC_FF_I0MUX")]
+fn fabulous_lc_timing_variant_names_its_set_features(
+    #[case] features: &[(&str, &str)],
+    #[case] expected: &str,
+) {
+    let ctx = fabulous_lc_context(features);
+    match register_clock_nets(&ctx) {
+        Err(StaBuildError::MissingTimingVariant { cell, variant }) => {
+            assert_eq!((cell.as_str(), variant.as_str()), ("lc", expected))
+        }
+        other => panic!("expected a missing {expected} variant, got {other:?}"),
+    }
+}
+
+#[rstest]
+#[case::not_a_bit("x")]
+#[case::wider_than_a_bit("10")]
+fn fabulous_lc_timing_feature_is_a_single_bit(#[case] value: &str) {
+    let ctx = fabulous_lc_context(&[("FF", value)]);
+    match register_clock_nets(&ctx) {
+        Err(StaBuildError::InvalidFeature { feature, value: got, .. }) => {
+            assert_eq!((feature.as_str(), got.as_str()), ("FF", value))
+        }
+        other => panic!("expected an invalid FF value, got {other:?}"),
+    }
 }
