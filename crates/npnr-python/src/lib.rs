@@ -431,9 +431,11 @@ impl PyContext {
                     .map_err(|e| PyRuntimeError::new_err(format!("RasterRouter error: {}", e)))
             }
             "greedy" => {
-                let mut cfg = RasterRouterCfg::default();
-                cfg.use_greedy = true;
-                cfg.max_iterations = 1;
+                let mut cfg = RasterRouterCfg {
+                    use_greedy: true,
+                    max_iterations: 1,
+                    ..RasterRouterCfg::default()
+                };
                 if let Some(iters) = max_iterations {
                     cfg.max_iterations = iters;
                 }
@@ -881,9 +883,9 @@ impl From<fasm::FasmFeature> for PyFasmFeature {
     }
 }
 
-fn record<T: pyo3::PyClass>(py: Python<'_>, value: T) -> Py<T>
+fn record<T>(py: Python<'_>, value: T) -> Py<T>
 where
-    T: Into<pyo3::PyClassInitializer<T>>,
+    T: pyo3::PyClass + Into<pyo3::PyClassInitializer<T>>,
 {
     Py::new(py, value).expect("allocating a frozen record cannot fail")
 }
