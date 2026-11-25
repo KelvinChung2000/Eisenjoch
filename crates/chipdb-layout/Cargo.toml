@@ -1,0 +1,12 @@
+[package]
+name = "chipdb-layout"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Checks nextpnr-db chipdb PODs against upstream himbaechel/chipdb.h"
+
+[dev-dependencies]
+nextpnr-db = { workspace = true }
+
+[build-dependencies]
+cc = "1"

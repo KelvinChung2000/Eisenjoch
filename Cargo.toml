@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nextpnr", "crates/nextpnr-db", "crates/nextpnr-upstream", "crates/npnr-python"]
+members = ["crates/chipdb-layout", "crates/nextpnr", "crates/nextpnr-db", "crates/nextpnr-upstream", "crates/npnr-python"]
 
 [profile.release]
 debug = "line-tables-only"
