@@ -44,7 +44,6 @@ pub struct PlateauStat {
     pub n_scanned: u32,
 }
 
-/// Scalar outcome of one sweep, written as the sweep summary row.
 #[derive(Clone, Copy, Debug)]
 pub struct SweepSummary {
     pub n_cells: usize,
