@@ -6,6 +6,7 @@ use crate::context::Context;
 use crate::metrics::total_hpwl;
 use crate::placer::common::{
     add_wa_wirelength_gradient, clamp_positions, compute_pin_weights, NesterovLoopState,
+    SolverCellPositions,
 };
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
@@ -76,9 +77,11 @@ pub fn place_electro(ctx: &mut Context, cfg: &ElectroPlaceCfg) -> Result<(), Pla
         let mut grad_y = vec![0.0; n];
         add_wa_wirelength_gradient(
             ctx,
-            &cell_to_idx,
-            &cell_x,
-            &cell_y,
+            &SolverCellPositions {
+                cell_to_idx: &cell_to_idx,
+                cell_x: &cell_x,
+                cell_y: &cell_y,
+            },
             cfg.wl_coeff,
             &mut grad_x,
             &mut grad_y,

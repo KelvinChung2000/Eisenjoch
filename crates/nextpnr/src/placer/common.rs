@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// - `NPNR_INCLUDE_CONSTANTS=1`  → opt back in to GND/VCC in cost (debug / compat)
 /// - `NPNR_EXCLUDE_CLOCKS=1`     → drop clock-like nets from cost
 /// - `NPNR_OT_INCLUDE_CONSTANTS` and `NPNR_OT_EXCLUDE_GLOBALS` kept as legacy
-///    aliases to avoid breaking old invocations.
+///   aliases to avoid breaking old invocations.
 #[derive(Clone, Copy, Debug)]
 pub struct NetFilter {
     pub skip_constants: bool,
@@ -159,6 +159,8 @@ pub(crate) fn centroid_place_boundary_cells(ctx: &mut Context) {
     });
 }
 
+pub(crate) type CellPositionLookup<'a> = dyn Fn(&Context, CellId) -> Option<(f64, f64)> + 'a;
+
 /// Re-bind boundary cells (IOBs / clock buffers) to the BEL nearest the centroid
 /// of their connected non-boundary cells, where each non-boundary cell's
 /// position is supplied by `pos_lookup`.
@@ -168,7 +170,7 @@ pub(crate) fn centroid_place_boundary_cells(ctx: &mut Context) {
 /// [`centroid_place_boundary_cells`] uses each cell's current BEL location.
 pub(crate) fn centroid_place_boundary_cells_with_lookup(
     ctx: &mut Context,
-    pos_lookup: &dyn Fn(&Context, CellId) -> Option<(f64, f64)>,
+    pos_lookup: &CellPositionLookup<'_>,
 ) {
     use std::cmp::Ordering;
 
@@ -986,8 +988,8 @@ pub fn init_positions_topological(
 
     const SWEEPS: usize = 6;
     for _ in 0..SWEEPS {
-        for li in 1..=max_layer {
-            let mut new_y: Vec<(usize, f64)> = layers[li]
+        for layer_cells in &layers[1..] {
+            let mut new_y: Vec<(usize, f64)> = layer_cells
                 .iter()
                 .map(|&v| {
                     let mut s = anchor_sum_y[v];
@@ -1107,15 +1109,20 @@ pub fn init_positions_topological(
     );
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SolverCellPositions<'a> {
+    pub cell_to_idx: &'a FxHashMap<CellId, usize>,
+    pub cell_x: &'a [f64],
+    pub cell_y: &'a [f64],
+}
+
 /// Compute WA wirelength gradient for all nets, accumulating into grad_x/grad_y.
 ///
 /// Same pattern as `add_wirelength_gradient` but uses WA instead of LSE.
 /// Accepts optional net weights for timing-driven placement.
 pub(crate) fn add_wa_wirelength_gradient(
     ctx: &Context,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
+    positions: &SolverCellPositions<'_>,
     wl_coeff: f64,
     grad_x: &mut [f64],
     grad_y: &mut [f64],
@@ -1137,9 +1144,7 @@ pub(crate) fn add_wa_wirelength_gradient(
         if let Some(driver_pin) = net.driver() {
             collect_pin_position_xy(
                 ctx,
-                cell_to_idx,
-                cell_x,
-                cell_y,
+                positions,
                 driver_pin.cell,
                 &mut pin_xs,
                 &mut pin_ys,
@@ -1150,9 +1155,7 @@ pub(crate) fn add_wa_wirelength_gradient(
         for user in net.users().iter() {
             collect_pin_position_xy(
                 ctx,
-                cell_to_idx,
-                cell_x,
-                cell_y,
+                positions,
                 user.cell,
                 &mut pin_xs,
                 &mut pin_ys,
@@ -1188,14 +1191,17 @@ pub(crate) fn add_wa_wirelength_gradient(
 /// Collect position of a single pin for WA gradient computation (separate x/y arrays).
 fn collect_pin_position_xy(
     ctx: &Context,
-    cell_to_idx: &FxHashMap<CellId, usize>,
-    cell_x: &[f64],
-    cell_y: &[f64],
+    positions: &SolverCellPositions<'_>,
     cell_id: CellId,
     xs: &mut Vec<f64>,
     ys: &mut Vec<f64>,
     indices: &mut Vec<usize>,
 ) {
+    let SolverCellPositions {
+        cell_to_idx,
+        cell_x,
+        cell_y,
+    } = *positions;
     if let Some(&idx) = cell_to_idx.get(&cell_id) {
         xs.push(cell_x[idx]);
         ys.push(cell_y[idx]);
