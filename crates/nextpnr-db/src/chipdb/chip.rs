@@ -2,9 +2,10 @@
 
 #[cfg(feature = "mmap")]
 use memmap2::Mmap;
+use zerocopy::IntoBytes;
 
 use super::pod::ChipInfoPod;
-use super::relptr::RelPtr;
+use super::validate::validate;
 use super::ChipDbError;
 use super::WireId;
 use crate::read_packed;
@@ -14,10 +15,10 @@ use crate::read_packed;
 /// A himbaechel chipdb only embeds the strings the arch does *not* already
 /// know: `known_id_count` ids are compiled into the C++ binary from the uarch's
 /// `constids.inc`, and the file stores only what comes after them. So the table
-/// is genuinely mixed -- borrowed pointers into the mmap for embedded strings,
+/// is genuinely mixed -- borrowed pointers into the backing bytes for embedded strings,
 /// owned strings for the ones the caller had to supply.
 pub(super) enum ConstIdStr {
-    /// Points into the mmap; valid for as long as the `ChipDb` lives.
+    /// Points into the backing bytes; valid for as long as the `ChipDb` lives.
     Embedded(*const u8),
     /// Supplied by the caller from the arch's `constids.inc`.
     Known(String),
@@ -25,9 +26,37 @@ pub(super) enum ConstIdStr {
     Missing,
 }
 
-pub struct ChipDb {
+/// The bytes a `ChipDb` points into, 8-byte aligned so `RelSlice<i32>` can be.
+pub(super) enum Backing {
+    Owned {
+        words: Vec<u64>,
+        len: usize,
+    },
     #[cfg(feature = "mmap")]
-    pub(super) _mmap: Mmap,
+    Mapped(Mmap),
+}
+
+impl Backing {
+    fn copy_of(bytes: &[u8]) -> Self {
+        let mut words = vec![0u64; bytes.len().div_ceil(size_of::<u64>())];
+        words.as_mut_bytes()[..bytes.len()].copy_from_slice(bytes);
+        Self::Owned {
+            words,
+            len: bytes.len(),
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned { words, len } => &words.as_bytes()[..*len],
+            #[cfg(feature = "mmap")]
+            Self::Mapped(mmap) => mmap,
+        }
+    }
+}
+
+pub struct ChipDb {
+    pub(super) _backing: Backing,
     pub(super) chip_info: *const ChipInfoPod,
     pub(super) constid_strs: Vec<ConstIdStr>,
     /// Built on first use. See [`ChipDb::constid_canon`].
@@ -63,35 +92,46 @@ impl std::fmt::Debug for ChipDb {
 unsafe impl Send for ChipDb {}
 unsafe impl Sync for ChipDb {}
 
-pub(crate) fn validate_and_follow_root_relptr(
-    base: *const u8,
-    size: usize,
-) -> Result<*const ChipInfoPod, ChipDbError> {
-    let root_relptr = base as *const RelPtr<ChipInfoPod>;
-    let offset = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!((*root_relptr).offset)) };
-
-    let root_addr = root_relptr as usize;
-    let target_addr = if offset >= 0 {
-        root_addr.checked_add(offset as usize)
-    } else {
-        root_addr.checked_sub((-offset) as usize)
-    }
-    .ok_or(ChipDbError::InvalidRootPointer { offset, size })?;
-
-    let base_addr = base as usize;
-    let end_addr = base_addr
-        .checked_add(size)
-        .ok_or(ChipDbError::InvalidRootPointer { offset, size })?;
-    let chip_info_size = std::mem::size_of::<ChipInfoPod>();
-    let target_end = target_addr
-        .checked_add(chip_info_size)
-        .ok_or(ChipDbError::InvalidRootPointer { offset, size })?;
-
-    if target_addr < base_addr || target_end > end_addr {
-        return Err(ChipDbError::InvalidRootPointer { offset, size });
+impl ChipDb {
+    /// Load a database from bytes, splicing in the `constids.inc` nextpnr
+    /// compiles in for its uarch. A uarch Eisenjoch has no copy for must embed
+    /// every string.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ChipDbError> {
+        Self::open(Backing::copy_of(bytes), compiled_constids)
     }
 
-    Ok(target_addr as *const ChipInfoPod)
+    /// Load a database from bytes with the uarch's `constids.inc` in file order.
+    pub fn from_bytes_with_known_constids(
+        bytes: &[u8],
+        known: &[String],
+    ) -> Result<Self, ChipDbError> {
+        Self::open(Backing::copy_of(bytes), |_| known.to_vec())
+    }
+
+    pub(super) fn open(
+        backing: Backing,
+        known_for_uarch: impl FnOnce(&str) -> Vec<String>,
+    ) -> Result<Self, ChipDbError> {
+        let bytes = backing.bytes();
+        let validated = validate(bytes)?;
+        let known = known_for_uarch(&String::from_utf8_lossy(validated.uarch));
+        let chip_info = bytes.as_ptr().wrapping_add(validated.chip_info) as *const ChipInfoPod;
+        let constid_strs = unsafe { build_constid_table(chip_info, &known)? };
+        Ok(Self {
+            _backing: backing,
+            chip_info,
+            constid_strs,
+            constid_canon: std::sync::OnceLock::new(),
+            global_network: std::sync::OnceLock::new(),
+        })
+    }
+}
+
+pub(super) fn compiled_constids(uarch: &str) -> Vec<String> {
+    match uarch {
+        "FABulous" => parse_constids_inc(include_str!("fabulous_constids.inc")),
+        _ => Vec::new(),
+    }
 }
 
 /// Resolve the chipdb's id table, splicing in the arch's compiled-in constids.

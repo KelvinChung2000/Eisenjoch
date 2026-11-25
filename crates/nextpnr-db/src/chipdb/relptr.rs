@@ -7,12 +7,14 @@
 use std::fmt;
 use std::marker::PhantomData;
 
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
 /// A relative pointer to a single value of type `T`.
 ///
 /// The pointer is stored as an `i32` offset relative to the address of the
 /// `offset` field itself. This allows the binary format to be loaded at any
 /// base address without relocation.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct RelPtr<T> {
     pub offset: i32,
@@ -53,7 +55,7 @@ unsafe impl<T: Sync> Sync for RelPtr<T> {}
 ///
 /// Combines a relative offset (to the first element) with a length, providing
 /// access to a contiguous array of `T` values in the binary format.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct RelSlice<T> {
     pub offset: i32,
@@ -64,18 +66,17 @@ pub struct RelSlice<T> {
 impl<T> RelSlice<T> {
     /// Resolve this relative slice to a Rust slice reference.
     ///
-    /// # Safety
-    /// The caller must ensure the underlying data is valid and properly aligned
-    /// for type `T`. Since our POD types are `#[repr(C, packed)]`, alignment
-    /// is always 1 byte.
+    /// Sound for a `RelSlice` inside a `ChipDb`'s validated buffer, which holds
+    /// every non-empty range in bounds and aligned for `T`.
     #[inline]
     pub fn get(&self) -> &[T] {
         let self_addr = std::ptr::addr_of!(self.offset) as usize;
         let offset = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!(self.offset)) };
         let length = unsafe { std::ptr::read_unaligned(std::ptr::addr_of!(self.length)) };
+        if length == 0 {
+            return &[];
+        }
         let ptr = self_addr.wrapping_add(offset as isize as usize) as *const T;
-        // SAFETY: The binary format guarantees `length` contiguous elements at the
-        // resolved address. All our POD types have alignment 1 (packed).
         unsafe { std::slice::from_raw_parts(ptr, length as usize) }
     }
 

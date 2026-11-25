@@ -487,15 +487,10 @@ impl SyntheticChipDbBuilder {
 ///   - PIP delay: 100ps fast / 150ps slow
 ///   - Node delay: 50ps fast / 75ps slow
 ///   - LUT6 I0→O: 200ps fast / 300ps slow
-///
-/// # Safety
-/// This uses `from_bytes` internally which creates a temporary file for mmap.
 pub fn make_test_chipdb() -> super::ChipDb {
     let bytes = SyntheticChipDbBuilder::build_minimal();
-    unsafe {
-        match super::ChipDb::from_bytes(&bytes) {
-            Ok(chipdb) => chipdb,
-            Err(err) => panic!("failed to load synthetic chipdb: {err}"),
-        }
+    match super::ChipDb::from_bytes(&bytes) {
+        Ok(chipdb) => chipdb,
+        Err(err) => panic!("failed to load synthetic chipdb: {err}"),
     }
 }

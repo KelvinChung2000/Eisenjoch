@@ -898,6 +898,7 @@ dependencies = [
  "rustc-hash",
  "serde_json",
  "thiserror 2.0.18",
+ "zerocopy",
 ]
 
 [[package]]

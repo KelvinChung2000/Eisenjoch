@@ -31,7 +31,7 @@ fn clock_pad(db: &ChipDb) -> BelId {
 /// The example chipdb with `IO0` at (1, 0) flagged as a global buffer.
 fn chipdb_with_global_pad() -> ChipDb {
     let mut bytes = example_bytes();
-    let plain = unsafe { ChipDb::from_bytes(&bytes) }.unwrap();
+    let plain = ChipDb::from_bytes(&bytes).unwrap();
     // Locate the BEL's `flags` field in the file: the root pointer at offset 0
     // gives the chip info's file offset, and the mapped addresses are
     // relative to the same base.
@@ -42,12 +42,12 @@ fn chipdb_with_global_pad() -> ChipDb {
     let flags = u32::from_le_bytes(bytes[flags_at..flags_at + 4].try_into().unwrap());
     bytes[flags_at..flags_at + 4].copy_from_slice(&(flags | BelDataPod::FLAG_GLOBAL).to_le_bytes());
     drop(plain);
-    unsafe { ChipDb::from_bytes(&bytes) }.unwrap()
+    ChipDb::from_bytes(&bytes).unwrap()
 }
 
 #[test]
 fn unflagged_chipdb_has_no_global_network() {
-    let db = unsafe { ChipDb::from_bytes(&example_bytes()) }.unwrap();
+    let db = ChipDb::from_bytes(&example_bytes()).unwrap();
     assert!(db.bels().all(|b| !db.bel_is_global(b)));
     assert!(db.global_network().is_empty());
 }

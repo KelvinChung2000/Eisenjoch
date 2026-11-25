@@ -12,6 +12,8 @@
 //! String references in POD structs are `i32` constid indices, looked up via
 //! the `ConstIdDataPod` table, not inline `RelPtr<u8>` strings.
 
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
+
 use super::relptr::{RelPtr, RelSlice};
 
 // =============================================================================
@@ -19,7 +21,7 @@ use super::relptr::{RelPtr, RelSlice};
 // =============================================================================
 
 /// A pin on a BEL.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct BelPinPod {
     /// Pin name (constid index).
@@ -31,7 +33,7 @@ pub struct BelPinPod {
 }
 
 /// BEL definition within a tile type.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct BelDataPod {
     /// BEL name (constid index).
@@ -92,7 +94,7 @@ impl BelPinPod {
 }
 
 /// Reference to a BEL pin from a wire's perspective.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct BelPinRefPod {
     /// BEL index within the tile.
@@ -118,7 +120,7 @@ impl BelPinRefPod {
 // =============================================================================
 
 /// Wire definition within a tile type.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct TileWireDataPod {
     /// Wire name (constid index).
@@ -146,7 +148,7 @@ pub struct TileWireDataPod {
 // =============================================================================
 
 /// PIP definition within a tile type.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct PipDataPod {
     /// Source wire index in the tile's wire array.
@@ -168,7 +170,7 @@ pub struct PipDataPod {
 // =============================================================================
 
 /// A relative wire reference within a node shape, using tile deltas.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct RelTileWireRefPod {
     /// Delta X from the reference tile.
@@ -181,7 +183,7 @@ pub struct RelTileWireRefPod {
 
 /// A routing node shape: a set of wires across tiles that form a single
 /// logical routing node.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct NodeShapePod {
     /// Wire references that make up this node.
@@ -191,7 +193,7 @@ pub struct NodeShapePod {
 }
 
 /// Groups of related elements.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct GroupDataPod {
     /// Group name (constid index).
@@ -215,7 +217,7 @@ pub struct GroupDataPod {
 // =============================================================================
 
 /// Definition of a tile type.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct TileTypePod {
     /// Tile type name (constid index).
@@ -233,7 +235,7 @@ pub struct TileTypePod {
 }
 
 /// A wire reference within a tile routing shape, using relative node refs.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct RelNodeRefPod {
     /// Relative X-coord, or a special mode value.
@@ -258,7 +260,7 @@ impl RelNodeRefPod {
 }
 
 /// Per-tile routing shape, mapping wires to nodes.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct TileRoutingShapePod {
     /// Per-wire mapping to node references.
@@ -268,7 +270,7 @@ pub struct TileRoutingShapePod {
 }
 
 /// A tile instance in the grid.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct TileInstPod {
     /// Tile name prefix (constid index).
@@ -286,7 +288,7 @@ pub struct TileInstPod {
 // =============================================================================
 
 /// Pad/pin info within a package.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct PadInfoPod {
     /// Package pin name (constid index).
@@ -306,7 +308,7 @@ pub struct PadInfoPod {
 }
 
 /// Package definition.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct PackageInfoPod {
     /// Package name (constid index).
@@ -322,7 +324,7 @@ pub struct PackageInfoPod {
 // =============================================================================
 
 /// Four-corner timing value (fast/slow x min/max).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct TimingValue {
     pub fast_min: i32,
@@ -332,7 +334,7 @@ pub struct TimingValue {
 }
 
 /// PIP timing data.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct PipTimingPod {
     pub int_delay: TimingValue,
@@ -346,7 +348,7 @@ impl PipTimingPod {
 }
 
 /// Node timing data.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct NodeTimingPod {
     pub cap: TimingValue,
@@ -355,7 +357,7 @@ pub struct NodeTimingPod {
 }
 
 /// Combinational timing arc for a cell pin.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct CellPinCombArcPod {
     /// Input pin (constid index).
@@ -365,7 +367,7 @@ pub struct CellPinCombArcPod {
 }
 
 /// Register timing arc for a cell pin.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct CellPinRegArcPod {
     /// Clock pin (constid index).
@@ -381,7 +383,7 @@ pub struct CellPinRegArcPod {
 }
 
 /// Cell pin timing data.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct CellPinTimingPod {
     /// Pin name (constid index).
@@ -399,7 +401,7 @@ impl CellPinTimingPod {
 }
 
 /// Cell timing data for a particular cell type variant.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct CellTimingPod {
     /// Type variant (constid index).
@@ -409,7 +411,7 @@ pub struct CellTimingPod {
 }
 
 /// Speed grade definition with timing data.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct SpeedGradePod {
     /// Speed grade name (constid index).
@@ -436,7 +438,7 @@ pub struct SpeedGradePod {
 /// [`ChipDb::load_with_known_constids`](super::ChipDb::load_with_known_constids)
 /// to read a stock vendor database; `known_id_count == 0` means the generator
 /// embedded every string.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct ConstIdDataPod {
     /// Number of ids the arch compiles in ahead of `bba_ids`.
@@ -453,7 +455,7 @@ pub struct ConstIdDataPod {
 ///
 /// The binary file starts with a `RelPtr<ChipInfoPod>` at offset 0.
 /// Follow that pointer to reach this structure.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct ChipInfoPod {
     /// Magic number (must be 0x00ca7ca7).
@@ -493,7 +495,7 @@ pub struct ChipInfoPod {
 // =============================================================================
 
 /// Cell type + port pair in a packing rule (matches C++ Cell_port_POD).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct CellPortPod {
     /// Cell type (constid index).
@@ -503,7 +505,7 @@ pub struct CellPortPod {
 }
 
 /// A packing rule stored in chipdb extra_data (matches C++ Packing_rule_POD).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct PackingRulePod {
     pub driver: CellPortPod,
@@ -559,7 +561,7 @@ impl CellPortPod {
 }
 
 /// Chip-level extra data containing packing rules (matches C++ Chip_extra_data_POD).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct ChipExtraDataPod {
     pub context: i32,
@@ -568,7 +570,7 @@ pub struct ChipExtraDataPod {
 }
 
 /// The FASM name of a pip feature or BEL feature prefix, held in its `extra_data`.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, KnownLayout, Immutable, Unaligned)]
 #[repr(C, packed)]
 pub struct FasmFeaturePod {
     /// Feature name relative to the tile (constid index).

@@ -10,7 +10,7 @@ name = "nextpnr_db"
 [features]
 default = []
 mmap = ["dep:memmap2"]
-test-utils = ["mmap"]
+test-utils = []
 
 [dependencies]
 rustc-hash = { workspace = true }
@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 lasso = { workspace = true }
+zerocopy = { version = "0.8", features = ["derive"] }
 
 [dev-dependencies]
 rstest = "0.28"
@@ -26,4 +27,9 @@ rstest = "0.28"
 [[test]]
 name = "chipdb"
 path = "tests/chipdb.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "chipdb_validate"
+path = "tests/chipdb_validate.rs"
 required-features = ["test-utils"]
