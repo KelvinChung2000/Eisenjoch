@@ -86,6 +86,11 @@ impl ChipDb {
         })
     }
 
+    /// Loads a chipdb image from memory through a temporary file mapping.
+    ///
+    /// # Safety
+    /// Every relative pointer in `bytes` must resolve inside the image to a valid, aligned pod.
+    /// Only the root pointer, magic, version and the `name`/`uarch` null checks are verified.
     pub unsafe fn from_bytes(bytes: &[u8]) -> Result<Self, ChipDbError> {
         let min_size = std::mem::size_of::<RelPtr<ChipInfoPod>>();
         if bytes.len() < min_size {

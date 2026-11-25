@@ -139,7 +139,7 @@ pub(crate) unsafe fn build_constid_table(
         if relptr.is_null() {
             table.push(ConstIdStr::Missing);
         } else {
-            table.push(ConstIdStr::Embedded(relptr.get() as *const u8));
+            table.push(ConstIdStr::Embedded(relptr.get()));
         }
     }
 

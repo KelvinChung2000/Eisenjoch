@@ -97,14 +97,14 @@ impl ChipDb {
         self.constid_canon.get_or_init(|| {
             let mut by_name: rustc_hash::FxHashMap<String, i32> = rustc_hash::FxHashMap::default();
             let mut canon = vec![0i32; self.constid_strs.len()];
-            for i in 0..self.constid_strs.len() {
+            for (i, slot) in canon.iter_mut().enumerate() {
                 let idx = i as i32;
                 match self.constid_str(idx) {
                     Some(s) => {
                         let rep = *by_name.entry(s.to_owned()).or_insert(idx);
-                        canon[i] = rep;
+                        *slot = rep;
                     }
-                    None => canon[i] = idx,
+                    None => *slot = idx,
                 }
             }
             crate::chipdb::chip::ConstIdCanon { canon, by_name }
