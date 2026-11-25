@@ -53,8 +53,9 @@ impl Ic0Preconditioner {
         let mut row_cols = vec![Vec::new(); n];
         let mut row_positions = vec![Vec::new(); n];
         for col in 0..n {
-            for pos in col_ptrs[col] + 1..col_ptrs[col + 1] {
-                let row = row_indices[pos];
+            let start = col_ptrs[col] + 1;
+            for (offset, &row) in row_indices[start..col_ptrs[col + 1]].iter().enumerate() {
+                let pos = start + offset;
                 lower_pos.insert((col, row), pos);
                 row_cols[row].push(col);
                 row_positions[row].push(pos);

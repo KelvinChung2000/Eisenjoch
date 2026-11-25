@@ -304,9 +304,11 @@ pub fn solve_cg_with_par(
         };
     }
 
-    let mut params = CgParams::default();
-    params.rel_tolerance = tol;
-    params.max_iters = max_iters;
+    let params = CgParams {
+        rel_tolerance: tol,
+        max_iters,
+        ..Default::default()
+    };
 
     // Compute workspace requirement and allocate
     let scratch = conjugate_gradient_scratch(precond, mat, 1, par);
@@ -390,9 +392,11 @@ pub fn solve_cg_reuse(
         };
     }
 
-    let mut params = CgParams::default();
-    params.rel_tolerance = tol;
-    params.max_iters = max_iters;
+    let params = CgParams {
+        rel_tolerance: tol,
+        max_iters,
+        ..Default::default()
+    };
 
     let stack = MemStack::new(buf);
 
@@ -471,9 +475,11 @@ pub fn solve_cg_batched_with_par(
         };
     }
 
-    let mut params = CgParams::default();
-    params.rel_tolerance = tol;
-    params.max_iters = max_iters;
+    let params = CgParams {
+        rel_tolerance: tol,
+        max_iters,
+        ..Default::default()
+    };
 
     let scratch = conjugate_gradient_scratch(precond, mat, nrhs, par);
     let mut buf = MemBuffer::new(scratch);
@@ -528,13 +534,17 @@ pub fn solve_cg_batched_reuse(
     max_iters: usize,
     buf: &mut MemBuffer,
 ) -> CgResult {
+    let params = CgParams {
+        rel_tolerance: tol,
+        max_iters,
+        ..Default::default()
+    };
     solve_cg_batched_reuse_with_par(
         mat,
         precond,
         rhs_mat,
         x_mat,
-        tol,
-        max_iters,
+        &params,
         crate::solver::par(),
         buf,
     )
@@ -549,8 +559,7 @@ pub fn solve_cg_columnwise(
     precond: &(impl Precond<f64> + Sized),
     rhs_mat: faer::MatRef<'_, f64>,
     mut x_mat: faer::MatMut<'_, f64>,
-    tol: f64,
-    max_iters: usize,
+    params: &CgParams<f64>,
     par: faer::Par,
     buf: &mut MemBuffer,
 ) -> CgResult {
@@ -574,10 +583,6 @@ pub fn solve_cg_columnwise(
     let mut max_residual = 0.0f64;
     let mut all_converged = true;
 
-    let mut params = CgParams::default();
-    params.rel_tolerance = tol;
-    params.max_iters = max_iters;
-
     for col in 0..ncols {
         // Skip zero RHS columns — at coarse levels, some nets have all pins
         // in the same grid cell, producing zero RHS. CG can't proceed (r^T z = 0).
@@ -598,13 +603,13 @@ pub fn solve_cg_columnwise(
         let x_col = x_mat.as_mut().subcols_mut(col, 1);
         let stack = MemStack::new(buf);
 
-        match conjugate_gradient(x_col, precond, mat, rhs_col, params, |_| {}, par, stack) {
+        match conjugate_gradient(x_col, precond, mat, rhs_col, *params, |_| {}, par, stack) {
             Ok(info) => {
                 total_iters += info.iter_count;
                 max_residual = max_residual.max(info.rel_residual);
             }
             Err(CgError::NoConvergence { rel_residual, .. }) => {
-                total_iters += max_iters;
+                total_iters += params.max_iters;
                 max_residual = max_residual.max(rel_residual);
                 all_converged = false;
             }
@@ -617,7 +622,7 @@ pub fn solve_cg_columnwise(
     }
 
     CgResult {
-        iterations: if ncols > 0 { total_iters / ncols } else { 0 },
+        iterations: total_iters / ncols,
         converged: all_converged,
         residual: max_residual,
     }
@@ -628,8 +633,7 @@ pub fn solve_cg_batched_reuse_with_par(
     precond: &(impl Precond<f64> + Sized),
     rhs_mat: faer::MatRef<'_, f64>,
     mut x_mat: faer::MatMut<'_, f64>,
-    tol: f64,
-    max_iters: usize,
+    params: &CgParams<f64>,
     par: faer::Par,
     buf: &mut MemBuffer,
 ) -> CgResult {
@@ -643,10 +647,6 @@ pub fn solve_cg_batched_reuse_with_par(
         };
     }
 
-    let mut params = CgParams::default();
-    params.rel_tolerance = tol;
-    params.max_iters = max_iters;
-
     let stack = MemStack::new(buf);
 
     match conjugate_gradient(
@@ -654,7 +654,7 @@ pub fn solve_cg_batched_reuse_with_par(
         precond,
         mat,
         rhs_mat,
-        params,
+        *params,
         |_| {},
         par,
         stack,
@@ -665,7 +665,7 @@ pub fn solve_cg_batched_reuse_with_par(
             residual: info.rel_residual,
         },
         Err(CgError::NoConvergence { rel_residual, .. }) => CgResult {
-            iterations: max_iters,
+            iterations: params.max_iters,
             converged: false,
             residual: rel_residual,
         },
@@ -675,7 +675,7 @@ pub fn solve_cg_batched_reuse_with_par(
         {
             // faer's multi-RHS CG can give false positives on near-singular systems
             // with strong preconditioners. Fall back to column-by-column single-RHS CG.
-            solve_cg_columnwise(mat, precond, rhs_mat, x_mat, tol, max_iters, par, buf)
+            solve_cg_columnwise(mat, precond, rhs_mat, x_mat, params, par, buf)
         }
         Err(CgError::NonPositiveDefiniteOperator) => CgResult {
             iterations: 0,
@@ -1102,8 +1102,11 @@ mod tests {
             &spectral,
             rhs_mat,
             x_mat,
-            1e-6,
-            200,
+            &CgParams {
+                rel_tolerance: 1e-6,
+                max_iters: 200,
+                ..Default::default()
+            },
             faer::Par::Seq,
             &mut buf,
         );
@@ -1159,8 +1162,11 @@ mod tests {
             &ic0,
             rhs_mat,
             x_mat,
-            1e-6,
-            200,
+            &CgParams {
+                rel_tolerance: 1e-6,
+                max_iters: 200,
+                ..Default::default()
+            },
             faer::Par::Seq,
             &mut buf,
         );
@@ -1341,8 +1347,9 @@ mod tests {
             let mut row_cols = vec![Vec::new(); n];
             let mut row_positions = vec![Vec::new(); n];
             for col in 0..n {
-                for pos in col_ptrs[col] + 1..col_ptrs[col + 1] {
-                    let row = row_indices[pos];
+                let start = col_ptrs[col] + 1;
+                for (offset, &row) in row_indices[start..col_ptrs[col + 1]].iter().enumerate() {
+                    let pos = start + offset;
                     lower_pos.insert((col, row), pos);
                     row_cols[row].push(col);
                     row_positions[row].push(pos);
@@ -1435,9 +1442,11 @@ mod tests {
             let rhs_mat = faer::MatRef::from_column_major_slice(rhs_data, n, nrhs);
             let mut x_data = vec![0.0; n * nrhs];
             let x_mat = faer::MatMut::from_column_major_slice_mut(&mut x_data, n, nrhs);
-            let mut params = CgParams::default();
-            params.rel_tolerance = 1e-8;
-            params.max_iters = 500;
+            let params = CgParams {
+                rel_tolerance: 1e-8,
+                max_iters: 500,
+                ..Default::default()
+            };
 
             let scratch = conjugate_gradient_scratch(precond, op, nrhs, faer::Par::Seq);
             let mut buf = MemBuffer::new(scratch);

@@ -54,12 +54,19 @@ impl SpectralPreconditioner {
 
         // Thread-local cache for DST plans + workspace buffers.
         // Key: (nx, ny) → (row_dst, col_dst, row_buf, col_buf, row_scratch, col_scratch, field)
+        type DstCacheEntry = (
+            usize,
+            usize,
+            Arc<dyn Dst1<f64>>,
+            Arc<dyn Dst1<f64>>,
+            Vec<f64>,
+            Vec<f64>,
+            Vec<f64>,
+            Vec<f64>,
+            Vec<f64>,
+        );
         thread_local! {
-            static DST_CACHE: RefCell<Option<(
-                usize, usize,
-                Arc<dyn Dst1<f64>>, Arc<dyn Dst1<f64>>,
-                Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>,
-            )>> = const { RefCell::new(None) };
+            static DST_CACHE: RefCell<Option<DstCacheEntry>> = const { RefCell::new(None) };
         }
 
         let nx = self.nx;

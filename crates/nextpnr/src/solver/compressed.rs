@@ -15,9 +15,11 @@
 //! 4. Orthonormalize Q = orth(Y) via thin QR  (range_basis — stored)
 //! 5. Solve L Z = Q         → Z = L^{-1} Q    (block CG with m RHS; caller)
 //! 6. Reconstruction (exact algebra for SPD L):
-//!        p_k ≈ Q Q^T (L^{-1} d_k)
-//!            = Q (L^{-1} Q)^T d_k
-//!            = Q Z^T d_k
+//!    ```text
+//!    p_k ≈ Q Q^T (L^{-1} d_k)
+//!        = Q (L^{-1} Q)^T d_k
+//!        = Q Z^T d_k
+//!    ```
 //!    Stored as: range_basis = Q, coeff_basis = Z.
 //!
 //! Two block CG calls per basis. The caller performs the solves so that the

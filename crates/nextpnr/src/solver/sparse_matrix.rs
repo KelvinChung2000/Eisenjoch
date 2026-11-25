@@ -139,8 +139,8 @@ impl SparseMatrix {
     pub fn to_faer_symmetric(&mut self) -> &SparseColMat<usize, f64> {
         if self.cached_csc.is_none() {
             let mut triplets = Vec::with_capacity(self.n + 2 * self.off_diag.len());
-            for i in 0..self.n {
-                triplets.push(Triplet::new(i, i, self.diag[i]));
+            for (i, &d) in self.diag[..self.n].iter().enumerate() {
+                triplets.push(Triplet::new(i, i, d));
             }
             for &(lo, hi, val) in &self.off_diag {
                 triplets.push(Triplet::new(lo, hi, val));

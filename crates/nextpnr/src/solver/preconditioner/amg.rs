@@ -140,10 +140,10 @@ impl AmgPreconditioner {
             // Tentative prolongation: P_tent[i, agg(i)] = 1.
             // This preserves the constant near-null space: P_tent * 1 = 1.
             let mut p_tent_triplets = Vec::with_capacity(cur_n);
-            for i in 0..cur_n {
+            for (i, &agg_i) in agg[..cur_n].iter().enumerate() {
                 p_tent_triplets.push(Triplet {
                     row: i,
-                    col: agg[i],
+                    col: agg_i,
                     val: 1.0,
                 });
             }
@@ -543,11 +543,11 @@ fn build_symmetric_csc(
     off_diag_values: &[f64],
 ) -> SparseColMat<usize, f64> {
     let mut triplets = Vec::with_capacity(n + offdiag_pattern.len() * 2);
-    for i in 0..n {
+    for (i, &d) in diag[..n].iter().enumerate() {
         triplets.push(Triplet {
             row: i,
             col: i,
-            val: diag[i],
+            val: d,
         });
     }
     for (idx, &(i, j)) in offdiag_pattern.iter().enumerate() {
@@ -597,8 +597,7 @@ fn galerkin_coarse_operator(
         for k1 in 0..p_rows[i].len() {
             let (ci1, pi1) = p_rows[i][k1];
             coarse_diag[ci1] += pi1 * a_ii * pi1;
-            for k2 in (k1 + 1)..p_rows[i].len() {
-                let (ci2, pi2) = p_rows[i][k2];
+            for &(ci2, pi2) in &p_rows[i][k1 + 1..] {
                 let val = pi1 * a_ii * pi2;
                 let (lo, hi) = if ci1 < ci2 { (ci1, ci2) } else { (ci2, ci1) };
                 *coarse_offdiag_map.entry((lo, hi)).or_insert(0.0) += val;

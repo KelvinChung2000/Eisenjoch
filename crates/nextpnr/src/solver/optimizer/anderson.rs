@@ -116,13 +116,13 @@ impl AndersonAccelerator {
         }
 
         // Add alpha_i * g(x_{k-i})
-        for i in 0..mm {
+        for (i, &alpha_i) in alpha[..mm].iter().enumerate() {
             let idx =
                 ((self.count as isize - 1 - (i + 1) as isize).rem_euclid(k as isize)) as usize;
             let x_old = &self.iterates[idx];
             let r_old = &self.residuals[idx];
             for j in 0..self.n {
-                result[j] += alpha[i] * (x_old[j] + r_old[j]);
+                result[j] += alpha_i * (x_old[j] + r_old[j]);
             }
         }
 
