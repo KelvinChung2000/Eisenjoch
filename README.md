@@ -54,11 +54,17 @@ or `--stop-after place` to write an intermediate netlist. From Rust, call
 
 ```sh
 cmake --build build/nextpnr --target nextpnr-himbaechel
-NEXTPNR_BUILD="$PWD/build/nextpnr" cargo test -p nextpnr-upstream --test himbaechel -- --ignored
+NEXTPNR_BUILD="$PWD/build/nextpnr" cargo test -p nextpnr-upstream -- --ignored
 ```
+
+These tests check two things. The bridge must route like `nextpnr-himbaechel`.
+Upstream and `nextpnr-db` must read the same BEL, wire and pip counts from
+each chip database fixture.
 
 ## Update the nextpnr revision
 
-Fetch upstream and check out the new revision in the submodule. Rebuild the
-bridge and the upstream executable, then run the parity test above. Stage
-`third_party/nextpnr` to record the new revision in Eisenjoch.
+Fetch upstream and check out the new revision in the submodule. Run
+`cargo test -p chipdb-layout`, which compares the `nextpnr-db` chipdb structs
+with upstream's `himbaechel/chipdb.h`. Rebuild the bridge and the upstream
+executable, then run the tests above. Stage `third_party/nextpnr` to record the
+new revision in Eisenjoch.
