@@ -8,6 +8,7 @@ on:
     paths:
       - third_party/nextpnr
       - crates/nextpnr-upstream/**
+      - crates/nextpnr-db/**
       - crates/nextpnr/tests/fixtures/npnr_baseline/**
       - .github/workflows/parity.yml
 
@@ -49,6 +50,6 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/nextpnr --parallel --target eisenjoch-nextpnr nextpnr-himbaechel
       - uses: dtolnay/rust-toolchain@1.100.0
-      - run: cargo test -p nextpnr-upstream --test himbaechel --locked -- --ignored
+      - run: cargo test -p nextpnr-upstream --test himbaechel --test chipdb --locked -- --ignored
         env:
           NEXTPNR_BUILD: ${{ github.workspace }}/build/nextpnr

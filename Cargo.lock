@@ -939,6 +939,8 @@ name = "nextpnr-upstream"
 version = "0.1.0"
 dependencies = [
  "libloading",
+ "nextpnr-db",
+ "rstest",
  "tempfile",
  "thiserror 2.0.18",
 ]

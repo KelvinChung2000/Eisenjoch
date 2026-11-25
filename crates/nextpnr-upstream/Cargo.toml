@@ -8,3 +8,7 @@ description = "Rust bindings to upstream nextpnr's Himbächel flow"
 libloading = "0.8"
 tempfile = "3"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+nextpnr-db = { workspace = true }
+rstest = "0.28"

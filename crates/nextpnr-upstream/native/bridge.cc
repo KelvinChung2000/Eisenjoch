@@ -117,6 +117,60 @@ void run(const Request &request)
         log_error("Writing output JSON failed.\n");
 }
 
+struct ChipdbSummary
+{
+    int32_t version;
+    int32_t width;
+    int32_t height;
+    uint64_t bels;
+    uint64_t wires;
+    uint64_t pips;
+    uint64_t wire_checksum;
+};
+
+ChipdbSummary summarise(const char *device, const char *chipdb)
+{
+    ArchArgs args;
+    args.device = device;
+    args.chipdb_override = chipdb;
+    if (args.chipdb_override.empty())
+        log_error("A chipdb path is required.\n");
+
+    Context ctx(args);
+    ChipdbSummary summary{ctx.chip_info->version, ctx.chip_info->width, ctx.chip_info->height, 0, 0, 0, 0};
+    for (BelId bel : ctx.getBels()) {
+        static_cast<void>(bel);
+        ++summary.bels;
+    }
+    for (WireId wire : ctx.getWires()) {
+        ++summary.wires;
+        summary.wire_checksum += (uint64_t(uint32_t(wire.tile)) << 32) | uint32_t(wire.index);
+    }
+    for (PipId pip : ctx.getPips()) {
+        static_cast<void>(pip);
+        ++summary.pips;
+    }
+    return summary;
+}
+
+template <typename Body> int guarded(char *error, size_t capacity, Body body) noexcept
+{
+    try {
+        const std::lock_guard<std::mutex> lock(nextpnr_mutex);
+        Diagnostics diagnostics;
+        try {
+            body();
+        } catch (const log_execution_error_exception &) {
+            return fail(error, capacity, diagnostics.stream.str());
+        }
+        return 0;
+    } catch (const std::exception &exception) {
+        return fail(error, capacity, exception.what());
+    } catch (...) {
+        return fail(error, capacity, "Unknown nextpnr exception");
+    }
+}
+
 }
 
 #ifdef _WIN32
@@ -127,18 +181,12 @@ void run(const Request &request)
 
 extern "C" EISENJOCH_EXPORT int eisenjoch_nextpnr_run_v1(const Request *request, char *error, size_t capacity) noexcept
 {
-    try {
-        const std::lock_guard<std::mutex> lock(nextpnr_mutex);
-        Diagnostics diagnostics;
-        try {
-            run(*request);
-        } catch (const log_execution_error_exception &) {
-            return fail(error, capacity, diagnostics.stream.str());
-        }
-        return 0;
-    } catch (const std::exception &exception) {
-        return fail(error, capacity, exception.what());
-    } catch (...) {
-        return fail(error, capacity, "Unknown nextpnr exception");
-    }
+    return guarded(error, capacity, [&] { run(*request); });
+}
+
+extern "C" EISENJOCH_EXPORT int eisenjoch_nextpnr_chipdb_summary_v1(const char *device, const char *chipdb,
+                                                                    ChipdbSummary *summary, char *error,
+                                                                    size_t capacity) noexcept
+{
+    return guarded(error, capacity, [&] { *summary = summarise(device, chipdb); });
 }

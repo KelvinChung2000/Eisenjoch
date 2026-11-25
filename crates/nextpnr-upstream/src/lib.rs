@@ -49,6 +49,11 @@ pub enum Error {
         path: PathBuf,
         source: libloading::Error,
     },
+    #[error("nextpnr bridge has no entry point {symbol}: {source}")]
+    EntryPoint {
+        symbol: &'static str,
+        source: libloading::Error,
+    },
     #[error("{0} contains a NUL byte")]
     InvalidString(&'static str),
     #[error("upstream nextpnr failed: {0}")]
@@ -72,11 +77,32 @@ struct NativeRequest {
     stop_after: Stage,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct ChipdbSummary {
+    pub version: i32,
+    pub width: i32,
+    pub height: i32,
+    pub bels: u64,
+    pub wires: u64,
+    pub pips: u64,
+    pub wire_checksum: u64,
+}
+
 type Run = unsafe extern "C" fn(*const NativeRequest, *mut c_char, usize) -> c_int;
+type Summarise = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    *mut ChipdbSummary,
+    *mut c_char,
+    usize,
+) -> c_int;
+
+const SUMMARY_SYMBOL: &str = "eisenjoch_nextpnr_chipdb_summary_v1";
 
 pub struct Nextpnr {
     run: Run,
-    _library: Library,
+    library: Library,
 }
 
 impl Nextpnr {
@@ -94,10 +120,7 @@ impl Nextpnr {
         let library = unsafe { Library::new(&resolved) }.map_err(load_error)?;
         let run = *unsafe { library.get::<Run>(c"eisenjoch_nextpnr_run_v1".to_bytes_with_nul()) }
             .map_err(load_error)?;
-        Ok(Self {
-            run,
-            _library: library,
-        })
+        Ok(Self { run, library })
     }
 
     /// # Safety
@@ -140,15 +163,53 @@ impl Nextpnr {
         let mut error = [0u8; 4096];
         let status = unsafe { (self.run)(&native, error.as_mut_ptr().cast(), error.len()) };
         if status != 0 {
-            let message =
-                CStr::from_bytes_until_nul(&error).expect("bridge must terminate its diagnostic");
-            return Err(Error::Nextpnr(message.to_string_lossy().trim().to_owned()));
+            return Err(diagnostic(&error));
         }
         temporary
             .persist(request.output)
             .map_err(|failure| output_error(failure.error))?;
         Ok(())
     }
+
+    /// Loads `chipdb` through upstream's `Arch` and counts its BELs, root wires and pips.
+    /// Fails if the bridge predates the summary entry point or upstream rejects the database.
+    ///
+    /// # Safety
+    /// Upstream reads the chip database without bounds checks, so it must be valid for the
+    /// loaded nextpnr revision and stay immutable for the duration of the call.
+    pub unsafe fn chipdb_summary(
+        &self,
+        device: &str,
+        chipdb: &Path,
+    ) -> Result<ChipdbSummary, Error> {
+        let summarise = *unsafe { self.library.get::<Summarise>(SUMMARY_SYMBOL.as_bytes()) }
+            .map_err(|source| Error::EntryPoint {
+                symbol: SUMMARY_SYMBOL,
+                source,
+            })?;
+        let device = CString::new(device).map_err(|_| Error::InvalidString("device"))?;
+        let chipdb = path_to_c_string(chipdb, "chipdb path")?;
+        let mut summary = ChipdbSummary::default();
+        let mut error = [0u8; 4096];
+        let status = unsafe {
+            summarise(
+                device.as_ptr(),
+                chipdb.as_ptr(),
+                &mut summary,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            )
+        };
+        if status != 0 {
+            return Err(diagnostic(&error));
+        }
+        Ok(summary)
+    }
+}
+
+fn diagnostic(error: &[u8]) -> Error {
+    let message = CStr::from_bytes_until_nul(error).expect("bridge must terminate its diagnostic");
+    Error::Nextpnr(message.to_string_lossy().trim().to_owned())
 }
 
 fn path_to_c_string(path: &Path, field: &'static str) -> Result<CString, Error> {
