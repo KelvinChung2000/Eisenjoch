@@ -246,9 +246,9 @@ fn format_hex_f64(v: f64) -> String {
     // Only used to rebuild the section keys the C++ `%a` emitted, for the
     // handful of constants in the fixture.
     match v {
-        x if x == 1.0 => "0x1p+0".to_string(),
-        x if x == 2.5 => "0x1.4p+1".to_string(),
-        x if x == 100.0 => "0x1.9p+6".to_string(),
+        1.0 => "0x1p+0".to_string(),
+        2.5 => "0x1.4p+1".to_string(),
+        100.0 => "0x1.9p+6".to_string(),
         other => panic!("no known %a spelling for {other}"),
     }
 }
