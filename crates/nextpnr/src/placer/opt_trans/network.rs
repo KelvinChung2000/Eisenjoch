@@ -123,8 +123,7 @@ pub(crate) fn build_tile_templates(chipdb: &ChipDb) -> Vec<TileTypeTemplate> {
         }
     }
     let mut out = Vec::with_capacity(num_tt);
-    for tt_idx in 0..num_tt {
-        let rep = repr[tt_idx];
+    for (tt_idx, &rep) in repr.iter().enumerate() {
         if rep >= 0 {
             out.push(TileTypeTemplate::from_chipdb(chipdb, tt_idx as i32, rep));
         } else {
@@ -637,7 +636,7 @@ impl PipeNetwork {
                 *thin_by_tt.entry(key).or_insert(0) += 1;
             }
             let mut items: Vec<_> = thin_by_tt.into_iter().collect();
-            items.sort_by(|a, b| b.1.cmp(&a.1));
+            items.sort_by_key(|item| std::cmp::Reverse(item.1));
             eprintln!(
                 "  Thin span-1 pipes (cap<=2): {} total, by tile-type pair (top 20):",
                 n_thin
@@ -1284,12 +1283,12 @@ mod flat_adjacency_tests {
         assert_eq!(adj.offsets.len(), 5);
         assert_eq!(*adj.offsets.last().unwrap() as usize, adj.neighbors.len());
         assert_eq!(adj.neighbors.len(), adj.pipe_idx.len());
-        for node in 0..4 {
+        for (node, pipes_at_node) in node_pipes.iter().enumerate() {
             let flat: Vec<(u32, u32)> = adj
                 .range(node)
                 .map(|e| (adj.neighbors[e], adj.pipe_idx[e]))
                 .collect();
-            let reference: Vec<(u32, u32)> = node_pipes[node]
+            let reference: Vec<(u32, u32)> = pipes_at_node
                 .iter()
                 .map(|&pidx| {
                     let p = &pipes[pidx];
