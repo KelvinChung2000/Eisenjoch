@@ -57,3 +57,9 @@ impl CellTagger {
         self.tags.get(&cell)
     }
 }
+
+impl Default for CellTagger {
+    fn default() -> Self {
+        Self::new()
+    }
+}

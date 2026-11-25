@@ -163,7 +163,7 @@ fn legalizer_inputs(ctx: &Context) -> (Vec<CellId>, Vec<f64>, Vec<f64>) {
     let cells: Vec<CellId> = ctx
         .design
         .iter_alive_cells()
-        .filter(|(id, c)| c.cluster.map_or(true, |root| root == *id))
+        .filter(|(id, c)| c.cluster.is_none_or(|root| root == *id))
         .map(|(id, _)| id)
         .collect();
     let xs = (0..cells.len())

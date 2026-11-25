@@ -140,11 +140,11 @@ pub fn collect_bit_indices(
                         .context("Cell connection bits must be an array")?;
                     for bit in bits {
                         if let BitValue::Signal(idx) = parse_bit_value(bit)? {
-                            if !bit_to_net.contains_key(&idx) {
+                            bit_to_net.entry(idx).or_insert_with(|| {
                                 let net_name = format!("$signal${}", idx);
-                                let net_idx = design.add_net(pool.intern(&net_name));
-                                bit_to_net.insert(idx, net_idx);
-                            }
+
+                                design.add_net(pool.intern(&net_name))
+                            });
                         }
                     }
                 }
@@ -158,11 +158,11 @@ pub fn collect_bit_indices(
             if let Some(bits) = port_json.get("bits").and_then(|b| b.as_array()) {
                 for bit in bits {
                     if let BitValue::Signal(idx) = parse_bit_value(bit)? {
-                        if !bit_to_net.contains_key(&idx) {
+                        bit_to_net.entry(idx).or_insert_with(|| {
                             let net_name = format!("$signal${}", idx);
-                            let net_idx = design.add_net(pool.intern(&net_name));
-                            bit_to_net.insert(idx, net_idx);
-                        }
+
+                            design.add_net(pool.intern(&net_name))
+                        });
                     }
                 }
             }

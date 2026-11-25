@@ -234,7 +234,7 @@ mod tests {
 
         let mut x = vec![0.0, 0.0];
         for _ in 0..30 {
-            let gx = vec![0.3 * x[0] + 0.1 * x[1] + 1.0, 0.1 * x[0] + 0.4 * x[1] + 2.0];
+            let gx = [0.3 * x[0] + 0.1 * x[1] + 1.0, 0.1 * x[0] + 0.4 * x[1] + 2.0];
             let residual = vec![gx[0] - x[0], gx[1] - x[1]];
             x = aa.step(&x, &residual);
         }

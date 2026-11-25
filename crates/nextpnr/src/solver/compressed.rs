@@ -285,7 +285,7 @@ fn random_gaussian_matrix(n_rows: usize, n_cols: usize, seed: u64) -> Vec<f64> {
     let mut data = Vec::with_capacity(len);
 
     // Box-Muller transform for Gaussian samples
-    for _ in 0..(len + 1) / 2 {
+    for _ in 0..len.div_ceil(2) {
         let u1 = rng.next_f64().max(1e-300);
         let u2 = rng.next_f64();
         let r = (-2.0 * u1.ln()).sqrt();

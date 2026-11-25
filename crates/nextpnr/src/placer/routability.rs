@@ -371,7 +371,7 @@ fn check_net_perpair(
         pair_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let (tx, ty) = chipdb.tile_xy(sink_wire.tile());
-        let manhattan = ((sx - tx).abs() + (sy - ty).abs()) as i32;
+        let manhattan = (sx - tx).abs() + (sy - ty).abs();
         // Halo grows with manhattan so long routes get detour room without
         // bloating the search for short ones.
         let halo = PERPAIR_HALO_FLOOR.max(manhattan / 16);

@@ -410,7 +410,7 @@ fn try_swap_chain(
     }
 
     let rollback = |ctx: &mut Context, moved: &FxHashMap<CellId, BelId>| {
-        for (&cid, _) in moved.iter() {
+        for &cid in moved.keys() {
             if let Some(bel) = ctx.design.cell(cid).bel {
                 ctx.unbind_bel(bel);
             }
@@ -487,8 +487,8 @@ fn accept(ctx: &mut Context, delta: f64, temp: f64) -> bool {
 
 fn fabric_extent(ctx: &Context) -> (i32, i32) {
     (
-        (ctx.chipdb().width() as i32 - 1).max(1),
-        (ctx.chipdb().height() as i32 - 1).max(1),
+        (ctx.chipdb().width() - 1).max(1),
+        (ctx.chipdb().height() - 1).max(1),
     )
 }
 

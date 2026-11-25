@@ -418,7 +418,6 @@ fn process_rss_kb() -> usize {
     for line in s.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
             return rest
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|v| v.parse::<usize>().ok())
@@ -1235,7 +1234,7 @@ fn solve_windowed<T: Send, S: Default + Send, W>(
             for e in out.energies {
                 group_energy += e;
                 merged_nets += 1;
-                if merged_nets % batch_size == 0 || merged_nets == net_infos.len() {
+                if merged_nets.is_multiple_of(batch_size) || merged_nets == net_infos.len() {
                     energy += group_energy;
                     group_energy = 0.0;
                 }
@@ -2330,7 +2329,7 @@ fn collect_design_summary(
     use std::collections::BTreeMap;
 
     let mut summary = Vec::new();
-    summary.push(format!("=== Design summary ==="));
+    summary.push("=== Design summary ===".to_string());
     summary.push(format!(
         "chipdb: w={} h={} (tile grid)",
         ctx.chipdb().width(),
@@ -2374,8 +2373,8 @@ fn collect_design_summary(
         let _ = cell_id;
     }
 
-    summary.push(format!(""));
-    summary.push(format!("=== Design cell counts ==="));
+    summary.push(String::new());
+    summary.push("=== Design cell counts ===".to_string());
     summary.push(format!("total alive cells: {}", total_cells));
     summary.push(format!("cells with BEL assigned: {}", cells_with_bel));
     summary.push(format!("cells with LOCKED bel: {}", locked_cells));
@@ -2394,18 +2393,16 @@ fn collect_design_summary(
             .entry(ctx.name_of(b).to_string())
             .or_insert(0) += 1;
     }
-    summary.push(format!(""));
-    summary.push(format!("=== Movable cells (placer sees these) ==="));
+    summary.push(String::new());
+    summary.push("=== Movable cells (placer sees these) ===".to_string());
     summary.push(format!("n_movable: {}", idx_to_cell.len()));
     for (b, c) in &movable_by_bucket {
         summary.push(format!("{:<12} {:>6}", b, c));
     }
 
     // Chipdb BEL capacity per bucket (from type_aware).
-    summary.push(format!(""));
-    summary.push(format!(
-        "=== Chipdb BEL capacity (from TypeAwarePlacement) ==="
-    ));
+    summary.push(String::new());
+    summary.push("=== Chipdb BEL capacity (from TypeAwarePlacement) ===".to_string());
     for (bucket, cap_map) in &type_aware.tile_capacity {
         let bucket_name = ctx.name_of(*bucket).to_string();
         let n_tiles = cap_map.len();
@@ -2458,10 +2455,8 @@ fn collect_design_summary(
         let mxx = *io_xs.iter().max().unwrap();
         let mny = *io_ys.iter().min().unwrap();
         let mxy = *io_ys.iter().max().unwrap();
-        summary.push(format!(""));
-        summary.push(format!(
-            "=== Fixed/locked cell positions (IOs and locked cells) ==="
-        ));
+        summary.push(String::new());
+        summary.push("=== Fixed/locked cell positions (IOs and locked cells) ===".to_string());
         summary.push(format!("n_fixed: {}", io_xs.len()));
         summary.push(format!(
             "BB: x=[{},{}] w={}  y=[{},{}] h={}",
@@ -2548,15 +2543,15 @@ fn collect_design_summary(
             n_nets_with_fixed += 1;
         }
     }
-    summary.push(format!(""));
-    summary.push(format!("=== Net summary ==="));
+    summary.push(String::new());
+    summary.push("=== Net summary ===".to_string());
     summary.push(format!("total alive nets: {}", n_nets_total));
     summary.push(format!(
         "nets with fixed pin: {} ({:.1}%)",
         n_nets_with_fixed,
         100.0 * n_nets_with_fixed as f64 / n_nets_total.max(1) as f64
     ));
-    summary.push(format!("fanout histogram (upper bucket bound):"));
+    summary.push("fanout histogram (upper bucket bound):".to_string());
     for (b, c) in &fanout_hist {
         summary.push(format!("  <={:<5}  {:>5}", b, c));
     }
@@ -3028,10 +3023,7 @@ fn place_dcd_sweep(
             let mut start = 0usize;
             while start < n {
                 let end = (start + chunk).min(n);
-                let plans: Vec<CellPlan> = (start..end)
-                    .into_par_iter()
-                    .map(|ci| plan_cell(ci))
-                    .collect();
+                let plans: Vec<CellPlan> = (start..end).into_par_iter().map(&plan_cell).collect();
                 for (offset, plan) in plans.into_iter().enumerate() {
                     let ci = start + offset;
                     let (gx, gy, committed) = commit_cell(ci, &plan);
@@ -4829,7 +4821,7 @@ pub fn run_inner_outer(
                         }
                         let cost = adj.cost_f[k] as f64;
                         let rate = cost / prog as f64;
-                        if best.map_or(true, |(br, _, _)| rate < br) {
+                        if best.is_none_or(|(br, _, _)| rate < br) {
                             best = Some((rate, cost, nb));
                         }
                     }
@@ -5846,7 +5838,7 @@ pub fn run_inner_outer(
         // diag `accepted` flag is true when this iter's line dropped versus
         // the previous iter (placement quality improved); `d_friction` is the
         // step delta. These are display-only — they do not gate progress.
-        let accepted = prev_state.map_or(true, |prev| state.line < prev.line);
+        let accepted = prev_state.is_none_or(|prev| state.line < prev.line);
         let d_energy = prev_state.map_or(0.0, |prev| state.energy - prev.energy);
         let d_friction = prev_state.map_or(0.0, |prev| state.friction - prev.friction);
         if !mux_tracker.is_legal() {

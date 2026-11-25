@@ -195,7 +195,7 @@ pub fn legalize_ring(
         };
         sorted_cells.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-        let max_search_radius = 200;
+        let max_search_radius: i32 = 200;
         for &(solver_idx, _) in &sorted_cells {
             let tx = phys_x[solver_idx].round() as i32;
             let ty = phys_y[solver_idx].round() as i32;
@@ -205,8 +205,8 @@ pub fn legalize_ring(
             let mut best: Option<(BelId, usize, i32, i32, f64)> = None;
 
             'search: for radius in 0..=max_search_radius {
-                for dx in -(radius as i32)..=(radius as i32) {
-                    let dy_abs = radius as i32 - dx.abs();
+                for dx in -radius..=radius {
+                    let dy_abs = radius - dx.abs();
                     for &dy in &[dy_abs, -dy_abs] {
                         let px = tx + dx;
                         let py = ty + dy;
@@ -229,7 +229,7 @@ pub fn legalize_ring(
                                     if sample {
                                         let t = std::time::Instant::now();
                                         let r = cluster_is_legal_cached(ctx, &registry, cache, bid);
-                                        probe_islegal_only_us += t.elapsed().as_nanos() as u128;
+                                        probe_islegal_only_us += t.elapsed().as_nanos();
                                         probe_islegal_sample_count += 1;
                                         r
                                     } else {

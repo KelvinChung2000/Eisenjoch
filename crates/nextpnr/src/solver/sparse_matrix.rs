@@ -385,10 +385,10 @@ mod tests {
 
         let scratch = op.apply_scratch(1, crate::solver::par());
         let mut buf = MemBuffer::new(scratch);
-        let mut stack = MemStack::new(&mut buf);
+        let stack = MemStack::new(&mut buf);
 
         use faer::matrix_free::LinOp;
-        op.apply(out, x, crate::solver::par(), &mut stack);
+        op.apply(out, x, crate::solver::par(), stack);
 
         assert!((result[0] - 2.0).abs() < 1e-12);
         assert!((result[1] - 5.0).abs() < 1e-12);

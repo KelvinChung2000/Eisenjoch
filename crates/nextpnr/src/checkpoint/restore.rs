@@ -107,7 +107,7 @@ pub fn restore(
         let cell_is_restored =
             |cell_idx: CellId| restored_cell_ids.contains(&ctx.cell(cell_idx).name_id());
 
-        let driver_restored = net.driver().map_or(true, |pin| cell_is_restored(pin.cell));
+        let driver_restored = net.driver().is_none_or(|pin| cell_is_restored(pin.cell));
         let users_restored = net
             .users()
             .iter()

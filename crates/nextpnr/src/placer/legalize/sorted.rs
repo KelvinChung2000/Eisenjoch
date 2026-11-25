@@ -311,7 +311,7 @@ pub fn sorted_legalize(
         .map(|&idx| {
             let cell_idx = idx_to_cell[idx];
             let cell = ctx.cell(cell_idx);
-            let is_cluster_child = cell.cluster().map_or(false, |root_id| root_id != cell_idx);
+            let is_cluster_child = cell.cluster().is_some_and(|root_id| root_id != cell_idx);
             let cluster_children: Vec<(CellId, IdString, i32, i32, i32, bool)> = ctx
                 .design
                 .clusters

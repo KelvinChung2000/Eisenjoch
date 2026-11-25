@@ -20,9 +20,7 @@ const SCOPEINFO_CELL_TYPE: &str = "$scopeinfo";
 /// The top module is the one with attribute `"top"` set to a value that
 /// evaluates to 1. If no module has this attribute, the first (or only)
 /// module is selected.
-fn find_top_module<'a>(
-    modules: &'a serde_json::Map<String, Value>,
-) -> Result<(&'a str, &'a Value)> {
+fn find_top_module(modules: &serde_json::Map<String, Value>) -> Result<(&str, &Value)> {
     if modules.is_empty() {
         bail!("No modules found in JSON");
     }

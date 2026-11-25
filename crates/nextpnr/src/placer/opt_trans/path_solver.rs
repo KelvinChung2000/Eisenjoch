@@ -1715,7 +1715,7 @@ mod tests {
     fn workspace_does_not_scale_with_pipe_count() {
         let chain = [(0, 1, 1.0), (1, 2, 1.0), (2, 3, 1.0)];
         let mut crowded = chain.to_vec();
-        crowded.extend(std::iter::repeat((4, 5, 1.0)).take(20_000));
+        crowded.extend(std::iter::repeat_n((4, 5, 1.0), 20_000));
         let mut bytes = Vec::new();
         for edges in [&chain[..], &crowded[..]] {
             let network = test_network(6, edges);

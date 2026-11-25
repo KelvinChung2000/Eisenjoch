@@ -65,11 +65,8 @@ impl<'a> BucketGrid<'a> {
     /// they stay in bucket order.
     pub fn row_spans(self, rect: Rect) -> impl Iterator<Item = Range<usize>> + 'a {
         let (x0, x1) = (rect.x0.max(0), rect.x1.min(self.width - 1));
-        let rows = if x0 <= x1 {
-            rect.y0.max(0)..=rect.y1.min(self.height - 1)
-        } else {
-            1..=0
-        };
+        let (y0, y1) = (rect.y0.max(0), rect.y1.min(self.height - 1));
+        let rows = (x0 <= x1).then_some(y0..=y1).into_iter().flatten();
         rows.map(move |y| self.tiles_span(y * self.width + x0, y * self.width + x1))
     }
 

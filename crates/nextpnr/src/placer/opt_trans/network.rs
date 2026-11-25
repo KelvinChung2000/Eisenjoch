@@ -354,8 +354,8 @@ impl PipeNetwork {
             1
         };
 
-        let w = ((full_w as usize + coarsen - 1) / coarsen) as i32;
-        let h = ((full_h as usize + coarsen - 1) / coarsen) as i32;
+        let w = (full_w as usize).div_ceil(coarsen) as i32;
+        let h = (full_h as usize).div_ceil(coarsen) as i32;
         let n_coarse = (w * h) as usize;
 
         let x0 = 0;

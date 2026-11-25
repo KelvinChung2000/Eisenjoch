@@ -104,7 +104,7 @@ impl Ic0Preconditioner {
         for attempt in 0..8 {
             shifted.copy_from_slice(&base);
             if attempt > 0 {
-                let shift = base_shift * 10f64.powi((attempt - 1) as i32);
+                let shift = base_shift * 10f64.powi(attempt - 1);
                 for i in 0..self.n {
                     shifted[self.col_ptrs[i]] += shift;
                 }
@@ -417,8 +417,8 @@ mod tests {
         let mut out_two = vec![0.0; n * 2];
         let out_mut = faer::MatMut::from_column_major_slice_mut(&mut out_two, n, 2);
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        ic0.apply(out_mut, rhs_ref, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        ic0.apply(out_mut, rhs_ref, faer::Par::Seq, stack);
 
         let dot0: f64 = rhs_two[..n]
             .iter()
@@ -509,8 +509,8 @@ mod tests {
         let mut out_data = vec![0.0; n * 4];
         let out_mut = faer::MatMut::from_column_major_slice_mut(&mut out_data, n, 4);
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        mic0.apply(out_mut, rhs_ref, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        mic0.apply(out_mut, rhs_ref, faer::Par::Seq, stack);
 
         for col in 0..4 {
             let dot: f64 = (0..n)
@@ -598,8 +598,8 @@ mod tests {
         let mut out_data = vec![0.0; n * ncols];
         let out_mut = faer::MatMut::from_column_major_slice_mut(&mut out_data, n, ncols);
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        mic0.apply(out_mut, rhs_ref, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        mic0.apply(out_mut, rhs_ref, faer::Par::Seq, stack);
 
         let mut neg_count = 0;
         for col in 0..ncols {

@@ -46,10 +46,7 @@ fn is_dead_net(ctx: &Context, net_idx: NetId) -> bool {
     let name = ctx.name_of(net.name_id()).to_lowercase();
     // Match opt_trans default filter (skip_constants=true).
     // Constants are either named gnd/vcc/0/1 or have no user bel positions.
-    if name == "$false" || name == "$true" || name == "$undef" || name == "gnd" || name == "vcc" {
-        return true;
-    }
-    false
+    name == "$false" || name == "$true" || name == "$undef" || name == "gnd" || name == "vcc"
 }
 
 fn diag_net(ctx: &Context, net_idx: NetId) -> Option<NetDiag> {

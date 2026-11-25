@@ -1370,7 +1370,7 @@ fn segment_astar(
                     continue;
                 }
                 let score = cost + pen;
-                if best.map_or(true, |(_, b)| score < b) {
+                if best.is_none_or(|(_, b)| score < b) {
                     best = Some((w, score));
                 }
             }
@@ -1455,7 +1455,7 @@ fn segment_route(
         let final_dst = if is_last { Some(dst_wire) } else { None };
 
         // Confined A* within this segment's tiles.
-        let budget = (seg_len * 3000).max(5000) as usize;
+        let budget = (seg_len * 3000).max(5000);
         match segment_astar(
             ctx,
             &current_wires,
@@ -2438,7 +2438,7 @@ fn route_nets_overuse(
         } else if single_mover {
             // One sequential claim sweep in net order; a bitset over the
             // flat wire space keeps it O(total plan wires).
-            claimed = vec![0u64; (nt.len() + 63) / 64];
+            claimed = vec![0u64; nt.len().div_ceil(64)];
             let mut movers: Vec<NetId> = Vec::new();
             for &n in &ordinary {
                 let Some(e) = plans.get(&n) else {
@@ -3087,7 +3087,7 @@ fn route_nets_exclusive(
                         continue;
                     }
                     neg_state.remove_net_usage(&ctx.design, net);
-                    if ctx.net(net).wires().len() > 0 {
+                    if !ctx.net(net).wires().is_empty() {
                         unroute_net(ctx, net);
                     }
                     neg_state.bump_rip_up(net);
@@ -3754,7 +3754,7 @@ fn route_nets_exclusive(
                                     let mut corridor_nodes: FxHashSet<WireId> =
                                         FxHashSet::default();
                                     for &tile_idx in &corridor_tiles {
-                                        let tile = tile_idx as i32;
+                                        let tile = tile_idx;
                                         let num_wires =
                                             ctx.chipdb().tile_type(tile).wires.get().len();
                                         for wi in 0..num_wires {
@@ -3780,19 +3780,20 @@ fn route_nets_exclusive(
                         // need to move), then re-route both this net and each
                         // blocker. Full rollback on any cascade so the baseline
                         // is preserved.
-                        if sink_routes.is_empty() && ripup_budget > 0 {
-                            if scoped_ripup_route(
+                        if sink_routes.is_empty()
+                            && ripup_budget > 0
+                            && scoped_ripup_route(
                                 ctx,
                                 net,
                                 &wire_penalty,
                                 &lookahead,
                                 &mut ripup_budget,
                                 &mut neg_state,
-                            ) {
-                                cleanup_routed += 1;
-                                cleanup_ripups += 1;
-                                continue;
-                            }
+                            )
+                        {
+                            cleanup_routed += 1;
+                            cleanup_ripups += 1;
+                            continue;
                         }
 
                         // Apply the route if at least some sinks succeeded.

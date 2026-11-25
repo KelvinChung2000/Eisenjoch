@@ -59,7 +59,7 @@ impl PlacerPipeline {
         strategy.initial_placement(ctx)?;
         let do_pin = std::env::var("NPNR_PIN_BOUNDARY")
             .ok()
-            .map(|v| v != "0" && v.to_ascii_lowercase() != "false")
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
         if do_pin {
             common::lock_boundary_cells(ctx);

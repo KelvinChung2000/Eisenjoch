@@ -125,7 +125,7 @@ impl Legalizer for SnapLegalizer {
                     .design
                     .clusters
                     .get(&cid)
-                    .map_or(false, |c| !c.constr_children.is_empty())
+                    .is_some_and(|c| !c.constr_children.is_empty())
                 {
                     roots.push(i);
                 } else {
@@ -146,7 +146,7 @@ impl Legalizer for SnapLegalizer {
                 .design
                 .clusters
                 .get(&cell_id)
-                .map_or(false, |c| !c.constr_children.is_empty());
+                .is_some_and(|c| !c.constr_children.is_empty());
 
             // Pop the first available BEL on the smallest Manhattan ring,
             // honoring cluster-child slot reservation when applicable.

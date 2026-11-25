@@ -14,7 +14,7 @@ impl<'a> PlacementView<'a> {
         let tile = usize::try_from(bel.tile()).ok();
         let index = usize::try_from(bel.index()).ok();
         match (tile, index) {
-            (Some(t), Some(i)) => self.bel_to_cell.get(t, i).map_or(false, |v| v.is_some()),
+            (Some(t), Some(i)) => self.bel_to_cell.get(t, i).is_some_and(|v| v.is_some()),
             _ => false,
         }
     }

@@ -244,10 +244,10 @@ mod tests {
             for i in 0..n {
                 let mut ax_i = 4.0 * sol[i];
                 if i > 0 {
-                    ax_i += -1.0 * sol[i - 1];
+                    ax_i += -sol[i - 1];
                 }
                 if i + 1 < n {
-                    ax_i += -1.0 * sol[i + 1];
+                    ax_i += -sol[i + 1];
                 }
                 rhs[col * n + i] = ax_i;
             }

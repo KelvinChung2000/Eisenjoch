@@ -121,8 +121,8 @@ mod tests {
         let out = faer::MatMut::from_column_major_slice_mut(&mut out_data, 3, 1);
 
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        precond.apply(out, rhs, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        precond.apply(out, rhs, faer::Par::Seq, stack);
 
         assert!((out_data[0] - 3.0).abs() < 1e-12);
         assert!((out_data[1] - 2.0).abs() < 1e-12);

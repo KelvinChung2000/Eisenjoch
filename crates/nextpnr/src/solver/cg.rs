@@ -74,8 +74,8 @@ fn apply_linop(
 ) {
     let rhs = faer::MatRef::from_column_major_slice(input, input.len(), 1);
     let out = faer::MatMut::from_column_major_slice_mut(output, output.len(), 1);
-    let mut stack = MemStack::new(buf);
-    op.apply(out, rhs, par, &mut stack);
+    let stack = MemStack::new(buf);
+    op.apply(out, rhs, par, stack);
 }
 
 fn apply_precond(
@@ -87,8 +87,8 @@ fn apply_precond(
 ) {
     let rhs = faer::MatRef::from_column_major_slice(input, input.len(), 1);
     let out = faer::MatMut::from_column_major_slice_mut(output, output.len(), 1);
-    let mut stack = MemStack::new(buf);
-    precond.apply(out, rhs, par, &mut stack);
+    let stack = MemStack::new(buf);
+    precond.apply(out, rhs, par, stack);
 }
 
 fn solve_cg_deflated_single(
@@ -311,7 +311,7 @@ pub fn solve_cg_with_par(
     // Compute workspace requirement and allocate
     let scratch = conjugate_gradient_scratch(precond, mat, 1, par);
     let mut buf = MemBuffer::new(scratch);
-    let mut stack = MemStack::new(&mut buf);
+    let stack = MemStack::new(&mut buf);
 
     match conjugate_gradient(
         x_mat.as_mut(),
@@ -321,7 +321,7 @@ pub fn solve_cg_with_par(
         params,
         |_| {},
         par,
-        &mut stack,
+        stack,
     ) {
         Ok(info) => CgResult {
             iterations: info.iter_count,
@@ -394,7 +394,7 @@ pub fn solve_cg_reuse(
     params.rel_tolerance = tol;
     params.max_iters = max_iters;
 
-    let mut stack = MemStack::new(buf);
+    let stack = MemStack::new(buf);
 
     match conjugate_gradient(
         x_mat.as_mut(),
@@ -404,7 +404,7 @@ pub fn solve_cg_reuse(
         params,
         |_| {},
         crate::solver::par(),
-        &mut stack,
+        stack,
     ) {
         Ok(info) => CgResult {
             iterations: info.iter_count,
@@ -477,7 +477,7 @@ pub fn solve_cg_batched_with_par(
 
     let scratch = conjugate_gradient_scratch(precond, mat, nrhs, par);
     let mut buf = MemBuffer::new(scratch);
-    let mut stack = MemStack::new(&mut buf);
+    let stack = MemStack::new(&mut buf);
 
     match conjugate_gradient(
         x_mat.as_mut(),
@@ -487,7 +487,7 @@ pub fn solve_cg_batched_with_par(
         params,
         |_| {},
         par,
-        &mut stack,
+        stack,
     ) {
         Ok(info) => CgResult {
             iterations: info.iter_count,
@@ -596,18 +596,9 @@ pub fn solve_cg_columnwise(
 
         let rhs_col = rhs_mat.subcols(col, 1);
         let x_col = x_mat.as_mut().subcols_mut(col, 1);
-        let mut stack = MemStack::new(buf);
+        let stack = MemStack::new(buf);
 
-        match conjugate_gradient(
-            x_col,
-            precond,
-            mat,
-            rhs_col,
-            params,
-            |_| {},
-            par,
-            &mut stack,
-        ) {
+        match conjugate_gradient(x_col, precond, mat, rhs_col, params, |_| {}, par, stack) {
             Ok(info) => {
                 total_iters += info.iter_count;
                 max_residual = max_residual.max(info.rel_residual);
@@ -656,7 +647,7 @@ pub fn solve_cg_batched_reuse_with_par(
     params.rel_tolerance = tol;
     params.max_iters = max_iters;
 
-    let mut stack = MemStack::new(buf);
+    let stack = MemStack::new(buf);
 
     match conjugate_gradient(
         x_mat.as_mut(),
@@ -666,7 +657,7 @@ pub fn solve_cg_batched_reuse_with_par(
         params,
         |_| {},
         par,
-        &mut stack,
+        stack,
     ) {
         Ok(info) => CgResult {
             iterations: info.iter_count,
@@ -1450,7 +1441,7 @@ mod tests {
 
             let scratch = conjugate_gradient_scratch(precond, op, nrhs, faer::Par::Seq);
             let mut buf = MemBuffer::new(scratch);
-            let mut stack = MemStack::new(&mut buf);
+            let stack = MemStack::new(&mut buf);
 
             match conjugate_gradient(
                 x_mat,
@@ -1460,7 +1451,7 @@ mod tests {
                 params,
                 |_| {},
                 faer::Par::Seq,
-                &mut stack,
+                stack,
             ) {
                 Ok(info) => format!(
                     "Ok(iter={}, relres={:.3e})",

@@ -4,10 +4,11 @@ use crate::netlist::NetId;
 use rustc_hash::FxHashMap;
 
 /// Sweep strategy for the DCD optimizer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SweepMode {
     /// Jacobi: every cell scans the full grid against a frozen dist_cache, then
     /// all winning moves are applied simultaneously with damping `jacobi_alpha`.
+    #[default]
     JacobiFullscan,
     /// Sequential: cells processed in topo order, each uses log-depth bisection
     /// in x then y, commits immediately, and refreshes dist_cache for nets it
@@ -38,31 +39,21 @@ pub enum SweepMode {
     MedianDiag,
 }
 
-impl Default for SweepMode {
-    fn default() -> Self {
-        Self::JacobiFullscan
-    }
-}
-
 /// Path/load model used to build DCD costs and fractional pipe usage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PathModel {
     /// Shortest-label Dial-logit assignment over the pipe graph.
+    #[default]
     DialLogit,
     /// Sparse Bresenham/dogleg route-template logit assignment.
     BresenhamLogit,
 }
 
-impl Default for PathModel {
-    fn default() -> Self {
-        Self::DialLogit
-    }
-}
-
 /// Graph/cost representation used by the path solvers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphModel {
     /// Current flat per-pipe cost arrays.
+    #[default]
     FlatPipe,
     /// Cache costs by source tile type, span delta, usage, and capacity/base
     /// buckets, while retaining the existing pipe graph and usage accounting.
@@ -86,16 +77,11 @@ pub enum GraphModel {
     CorridorWarmstart,
 }
 
-impl Default for GraphModel {
-    fn default() -> Self {
-        Self::FlatPipe
-    }
-}
-
 /// Initialization strategy for cell positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InitStrategy {
     /// Random BEL assignment (default).
+    #[default]
     RandomBel,
     /// Centroid of connected fixed cells.
     Centroid,
@@ -104,12 +90,6 @@ pub enum InitStrategy {
     /// Sugiyama-style layered DAG layout: cycle-break, longest-path layering,
     /// barycenter sweep. Deterministic — no seed dependence.
     Topological,
-}
-
-impl Default for InitStrategy {
-    fn default() -> Self {
-        Self::RandomBel
-    }
 }
 
 impl InitStrategy {
@@ -405,7 +385,7 @@ impl OptTransPlacerCfg {
         if let Some(v) = crate::env::var::<usize>("NPNR_OT_MAX_ITERS") {
             self.max_outer_iters = v;
         }
-        if let Some(v) = env::var("NPNR_OT_SWEEP").ok() {
+        if let Ok(v) = env::var("NPNR_OT_SWEEP") {
             self.sweep_mode = match v.as_str() {
                 "jacobi" | "JacobiFullscan" => SweepMode::JacobiFullscan,
                 "seq" | "SequentialBisection" => SweepMode::SequentialBisection,
@@ -431,7 +411,7 @@ impl OptTransPlacerCfg {
             self.path_model = PathModel::BresenhamLogit;
         }
         self.init_strategy = InitStrategy::from_env_or(self.init_strategy);
-        if let Some(v) = env::var("NPNR_OT_GRAPH_MODEL").ok() {
+        if let Ok(v) = env::var("NPNR_OT_GRAPH_MODEL") {
             self.graph_model = match v.as_str() {
                 "flat" | "FlatPipe" | "FLAT" => GraphModel::FlatPipe,
                 "span" | "twolevel_span" | "TwoLevelSpan" | "TWOLEVEL_SPAN" => {
@@ -453,14 +433,14 @@ impl OptTransPlacerCfg {
                 _ => self.graph_model,
             };
         }
-        if let Some(v) = env::var("NPNR_OT_TWOLEVEL").ok() {
+        if let Ok(v) = env::var("NPNR_OT_TWOLEVEL") {
             self.graph_model = match v.as_str() {
                 "0" | "false" | "FALSE" => GraphModel::FlatPipe,
                 "1" | "true" | "TRUE" => GraphModel::TwoLevelSpan,
                 _ => self.graph_model,
             };
         }
-        if let Some(v) = env::var("NPNR_OT_SOFTMIN").ok() {
+        if let Ok(v) = env::var("NPNR_OT_SOFTMIN") {
             self.softmin_enabled = matches!(v.as_str(), "1" | "true" | "TRUE");
         }
         if let Some(v) = crate::env::var::<f64>("NPNR_OT_SOFTMIN_THETA_START") {

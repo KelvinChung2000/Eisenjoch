@@ -39,7 +39,6 @@ fn spawn_rss_sampler() {
                 for line in s.lines() {
                     if let Some(rest) = line.strip_prefix(name) {
                         return rest
-                            .trim()
                             .split_whitespace()
                             .next()
                             .and_then(|v| v.parse::<usize>().ok())

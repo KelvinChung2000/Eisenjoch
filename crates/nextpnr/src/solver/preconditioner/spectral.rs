@@ -361,14 +361,14 @@ mod tests {
         let mut out = vec![0.0; 2 * n];
         let out_mat = faer::MatMut::from_column_major_slice_mut(&mut out, n, 2);
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        precond.apply(out_mat, rhs, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        precond.apply(out_mat, rhs, faer::Par::Seq, stack);
 
         let mut inplace = vec![0.0; 2 * n];
         inplace[..n].copy_from_slice(&original);
         inplace[n..].copy_from_slice(&values);
         let inplace_mat = faer::MatMut::from_column_major_slice_mut(&mut inplace, n, 2);
-        precond.apply_in_place(inplace_mat, faer::Par::Seq, &mut stack);
+        precond.apply_in_place(inplace_mat, faer::Par::Seq, stack);
 
         for (lhs, rhs) in out.iter().zip(inplace.iter()) {
             assert!((lhs - rhs).abs() < 1e-12);
@@ -410,8 +410,8 @@ mod tests {
         let mut out = vec![0.0; n];
         let out_mat = faer::MatMut::from_column_major_slice_mut(&mut out, n, 1);
         let mut buf = dyn_stack::MemBuffer::new(StackReq::EMPTY);
-        let mut stack = MemStack::new(&mut buf);
-        precond.apply(out_mat, ax_mat, faer::Par::Seq, &mut stack);
+        let stack = MemStack::new(&mut buf);
+        precond.apply(out_mat, ax_mat, faer::Par::Seq, stack);
 
         for (i, (recovered, expected)) in out.iter().zip(x.iter()).enumerate() {
             assert!(

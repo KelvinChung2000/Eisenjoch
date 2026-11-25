@@ -216,7 +216,7 @@ pub(crate) fn centroid_place_boundary_cells_with_lookup(
                 count += 1;
             }
         };
-        for (_port, pdata) in cell.ports.iter() {
+        for pdata in cell.ports.values() {
             let Some(net_id) = pdata.net() else { continue };
             let net = ctx.design.net(net_id);
             if let Some(drv) = net.driver() {
@@ -2245,7 +2245,7 @@ impl MuxSlotTracker {
 /// True iff the cell has an Out/InOut port bound to a live net with ≥1 user.
 fn cell_drives_external(ctx: &Context, cell_id: CellId) -> bool {
     let cell = ctx.design.cell(cell_id);
-    for (_, port) in cell.ports.iter() {
+    for port in cell.ports.values() {
         let pt = port.port_type();
         if !matches!(pt, PortType::Out | PortType::InOut) {
             continue;

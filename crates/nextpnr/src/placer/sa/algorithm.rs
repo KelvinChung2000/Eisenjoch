@@ -213,7 +213,7 @@ pub fn place_sa(ctx: &mut Context, cfg: &PlacerSaCfg) -> Result<(), PlacerError>
         temperature *= cfg.cooling_rate;
         iteration += 1;
 
-        if iteration % 50 == 0 {
+        if iteration.is_multiple_of(50) {
             debug!(
                 "SA Placer: iter={}, temp={:.6}, cost={:.2}, congestion={:.2}, accept_rate={:.2}%",
                 iteration,
