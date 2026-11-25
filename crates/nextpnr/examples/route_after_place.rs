@@ -68,15 +68,19 @@ fn main() {
     let t_place = Instant::now();
     match arm.as_str() {
         "opt_trans" => {
-            let mut cfg = OptTransPlacerCfg::default();
-            cfg.seed = 42;
-            cfg.report_interval = 1;
+            let mut cfg = OptTransPlacerCfg {
+                seed: 42,
+                report_interval: 1,
+                ..OptTransPlacerCfg::default()
+            };
             cfg.apply_env_overrides();
             PlacerOptTrans.place(&mut ctx, &cfg).expect("place");
         }
         "heap" => {
-            let mut cfg = PlacerHeapCfg::default();
-            cfg.seed = 42;
+            let mut cfg = PlacerHeapCfg {
+                seed: 42,
+                ..PlacerHeapCfg::default()
+            };
             if let Ok(v) = env::var("NPNR_HEAP_MAX_ITERS") {
                 cfg.max_iterations = v.parse().expect("NPNR_HEAP_MAX_ITERS must be an integer");
             }

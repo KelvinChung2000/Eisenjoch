@@ -120,10 +120,12 @@ fn run_one(steiner: f64, chipdb_path: &str, design_path: &str) -> Report {
     let label = format!("lambda={:.2}", steiner);
     println!("\n========== {} ==========", label);
     let mut ctx = load_fresh(chipdb_path, design_path);
-    let mut cfg = OptTransPlacerCfg::default();
-    cfg.max_outer_iters = 50;
-    cfg.num_threads = 8;
-    cfg.steiner_weight = steiner;
+    let cfg = OptTransPlacerCfg {
+        max_outer_iters: 50,
+        num_threads: 8,
+        steiner_weight: steiner,
+        ..OptTransPlacerCfg::default()
+    };
 
     let t = Instant::now();
     let place_res = place_opt_trans(&mut ctx, &cfg);
@@ -149,9 +151,11 @@ fn run_one(steiner: f64, chipdb_path: &str, design_path: &str) -> Report {
     let hpwl = nextpnr::metrics::total_hpwl(&ctx);
     println!("{} placed in {:.1}s, hpwl={:.0}", label, place_secs, hpwl);
 
-    let mut rcfg = RasterRouterCfg::default();
-    rcfg.max_iterations = 5;
-    rcfg.verbose = false;
+    let rcfg = RasterRouterCfg {
+        max_iterations: 5,
+        verbose: false,
+        ..RasterRouterCfg::default()
+    };
     let t = Instant::now();
     let res = RasterRouter.route(&mut ctx, &rcfg);
     let route_secs = t.elapsed().as_secs_f64();

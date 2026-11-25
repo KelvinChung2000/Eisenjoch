@@ -120,12 +120,14 @@ fn main() {
         relocate_ios_to_edge(&mut ctx, &edge);
     }
 
-    let mut cfg = OptTransPlacerCfg::default();
-    cfg.seed = 42;
-    cfg.timing_weight = nextpnr::env::var::<f64>("NPNR_OT_TRACE_TIMING_WEIGHT").unwrap_or(0.0);
-    cfg.report_interval = nextpnr::env::var::<usize>("NPNR_OT_TRACE_REPORT_INTERVAL")
-        .unwrap_or(1)
-        .max(1);
+    let mut cfg = OptTransPlacerCfg {
+        seed: 42,
+        timing_weight: nextpnr::env::var::<f64>("NPNR_OT_TRACE_TIMING_WEIGHT").unwrap_or(0.0),
+        report_interval: nextpnr::env::var::<usize>("NPNR_OT_TRACE_REPORT_INTERVAL")
+            .unwrap_or(1)
+            .max(1),
+        ..OptTransPlacerCfg::default()
+    };
     if let Some(num_threads) = nextpnr::env::var::<usize>("NPNR_OT_TRACE_NUM_THREADS") {
         cfg.num_threads = num_threads.max(1);
     }

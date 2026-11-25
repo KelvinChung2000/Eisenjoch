@@ -106,9 +106,11 @@ fn main() {
     ctx.design = parse_json(&json, &ctx.id_pool).expect("parse design");
     packer::pack(&mut ctx, None).expect("pack");
 
-    let mut cfg = OptTransPlacerCfg::default();
-    cfg.seed = 42;
-    cfg.report_interval = 1;
+    let mut cfg = OptTransPlacerCfg {
+        seed: 42,
+        report_interval: 1,
+        ..OptTransPlacerCfg::default()
+    };
     // Everything else — iteration count, hardening step, BPR alpha, sweep
     // mode — comes from the placer's own env overrides so an arm is exactly
     // the set of vars named on the command line.

@@ -5,6 +5,7 @@
 //!   - whether the driver cell is a "pure driver" in the solve sense
 //!     (i.e. has no sink-role nets in the placer's filter set — every
 //!     fan-in is a skipped constant/clock/dead net)
+//!
 //! If the hypothesis holds, opt_trans should show much larger
 //! driver-to-centroid displacement than HeAP on these nets.
 
@@ -146,7 +147,7 @@ fn collect_top_fanout(ctx: &Context, top_n: usize) -> Vec<NetDiag> {
         .iter_net_indices()
         .filter_map(|net_idx| diag_net(ctx, net_idx))
         .collect();
-    diags.sort_by(|a, b| b.fanout.cmp(&a.fanout));
+    diags.sort_by_key(|d| std::cmp::Reverse(d.fanout));
     diags.truncate(top_n);
     diags
 }
@@ -157,9 +158,11 @@ fn place_heap(ctx: &mut Context) {
 }
 
 fn place_otb(ctx: &mut Context) {
-    let mut cfg = OptTransPlacerCfg::default();
-    cfg.max_outer_iters = 50;
-    cfg.num_threads = 8;
+    let cfg = OptTransPlacerCfg {
+        max_outer_iters: 50,
+        num_threads: 8,
+        ..OptTransPlacerCfg::default()
+    };
     place_opt_trans(ctx, &cfg).expect("opt_trans place");
 }
 

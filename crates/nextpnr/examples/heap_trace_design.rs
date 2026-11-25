@@ -125,8 +125,10 @@ fn main() {
     packer::pack(&mut ctx, None).expect("pack");
     eprintln!("load+pack: {:.1}s", t_load.elapsed().as_secs_f64());
 
-    let mut cfg = PlacerHeapCfg::default();
-    cfg.seed = 42;
+    let mut cfg = PlacerHeapCfg {
+        seed: 42,
+        ..PlacerHeapCfg::default()
+    };
     if let Ok(v) = env::var("NPNR_HEAP_MAX_ITERS") {
         cfg.max_iterations = v.parse().expect("NPNR_HEAP_MAX_ITERS must be an integer");
     }
