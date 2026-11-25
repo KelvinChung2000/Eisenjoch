@@ -9,7 +9,7 @@ mod pod;
 mod relptr;
 pub mod tile_template;
 
-pub use access::RegArcInfo;
+pub use access::{PipFasmFeature, RegArcInfo};
 pub use chip::{parse_constids_inc, ChipDb};
 pub use grid::Loc;
 pub use ids::{BelId, PipId, WireId};

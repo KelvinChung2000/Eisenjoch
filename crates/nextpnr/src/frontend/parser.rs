@@ -13,6 +13,7 @@ use super::helpers::{
 };
 
 pub const IO_CELL_PREFIX: &str = "$io$";
+const SCOPEINFO_CELL_TYPE: &str = "$scopeinfo";
 
 /// Find the top module in the JSON modules object.
 ///
@@ -151,6 +152,9 @@ fn parse_cell(
         .get("type")
         .and_then(|t| t.as_str())
         .context("Cell missing 'type' field")?;
+    if cell_type_str == SCOPEINFO_CELL_TYPE {
+        return Ok(());
+    }
 
     let name_id = pool.intern(cell_name);
     let type_id = pool.intern(cell_type_str);

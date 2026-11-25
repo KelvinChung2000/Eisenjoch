@@ -5,6 +5,12 @@ use crate::netlist::PortType;
 use crate::read_packed;
 use std::ffi::CStr;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipFasmFeature<'a> {
+    Named(&'a str),
+    Fixed,
+}
+
 impl ChipDb {
     fn tile_type_checked(&self, tile: i32) -> Option<&TileTypePod> {
         let ci = self.chip_info();
@@ -459,24 +465,31 @@ impl ChipDb {
         self.constid_str(type_name_id).unwrap_or("<unknown>")
     }
 
-    pub fn pip_fasm_feature(&self, pip: PipId) -> Option<&str> {
-        self.fasm_feature(&self.pip_info(pip).extra_data)
+    pub fn pip_fasm_feature(&self, pip: PipId) -> Option<PipFasmFeature<'_>> {
+        let feature = Self::fasm_feature_id(&self.pip_info(pip).extra_data)?;
+        Some(if feature == FIXED_PIP_FEATURE {
+            PipFasmFeature::Fixed
+        } else {
+            PipFasmFeature::Named(self.fasm_feature_name(feature))
+        })
     }
 
     pub fn bel_fasm_prefix(&self, bel: BelId) -> Option<&str> {
-        self.fasm_feature(&self.bel_info(bel).extra_data)
+        Self::fasm_feature_id(&self.bel_info(bel).extra_data)
+            .map(|feature| self.fasm_feature_name(feature))
     }
 
-    fn fasm_feature(&self, extra_data: &RelPtr<u8>) -> Option<&str> {
+    fn fasm_feature_id(extra_data: &RelPtr<u8>) -> Option<i32> {
         if extra_data.is_null() {
             return None;
         }
         let pod = unsafe { &*(extra_data.get() as *const FasmFeaturePod) };
-        let feature = unsafe { read_packed!(*pod, feature) };
-        Some(
-            self.constid_str(feature)
-                .expect("chipdb FASM feature names a valid constid"),
-        )
+        Some(unsafe { read_packed!(*pod, feature) })
+    }
+
+    fn fasm_feature_name(&self, feature: i32) -> &str {
+        self.constid_str(feature)
+            .expect("chipdb FASM feature names a valid constid")
     }
 
     /// Get the chip extra data (packing rules, etc.), if present.

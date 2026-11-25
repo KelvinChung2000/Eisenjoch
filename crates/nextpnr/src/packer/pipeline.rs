@@ -6,7 +6,7 @@ use crate::plugin::{PackerPlugin, PluginContext};
 
 use super::rules::{get_packing_rules, PackingRule};
 use super::tagger::CellTagger;
-use super::{passes, PackerError};
+use super::{fabulous, passes, PackerError};
 
 /// Run the packer on the design.
 ///
@@ -38,6 +38,9 @@ pub fn pack_default(ctx: &mut Context) -> Result<(), PackerError> {
     passes::pack_constants(ctx)?;
     passes::pack_io(ctx)?;
     passes::pack_bufg(ctx)?;
+    if ctx.chipdb().uarch() == fabulous::UARCH {
+        return fabulous::pack_fabulous(ctx);
+    }
 
     // Phase 1: Extract cell metadata
     let mut tagger = CellTagger::new();

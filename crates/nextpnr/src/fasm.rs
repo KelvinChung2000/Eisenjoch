@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::chipdb::{BelId, PipId};
+use crate::chipdb::{BelId, PipFasmFeature, PipId};
 use crate::context::Context;
 use crate::netlist::{CellInfo, Property};
 
@@ -63,6 +63,9 @@ fn pip_features(ctx: &Context) -> Result<Vec<FasmFeature>, FasmError> {
                         pip: pip_name(ctx, pip),
                         net: ctx.name_of(net.name).to_owned(),
                     })?;
+            let PipFasmFeature::Named(feature) = feature else {
+                continue;
+            };
             features.push(FasmFeature {
                 tile: chipdb.tile_name(pip.tile()),
                 feature: feature.to_owned(),

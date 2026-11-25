@@ -13,6 +13,7 @@
 //! 5. Passes through remaining cells
 
 pub mod extractor;
+pub mod fabulous;
 pub mod helpers;
 pub mod passes;
 pub mod pipeline;
