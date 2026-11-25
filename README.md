@@ -15,13 +15,17 @@ In Cargo, select the Rust implementation with `-p nextpnr-rust`.
 
 ## Build upstream nextpnr
 
-From the Eisenjoch repository root, initialize the `third_party/nextpnr`
+From the Eisenjoch repository root, check out the `third_party/nextpnr`
 submodule at the revision recorded by Git. The bridge uses the Himbächel core
 from upstream's CMake build. See [nextpnr build prerequisites](https://github.com/YosysHQ/nextpnr#prerequisites).
 
 ```sh
-git submodule update --init --recursive -- third_party/nextpnr
+git submodule update --init --checkout --recursive -- third_party/nextpnr
 ```
+
+`.gitmodules` sets `update = none` for this submodule, so a plain
+`git submodule update` and a Cargo git dependency on `nextpnr-db` skip it.
+`--checkout` overrides that setting.
 
 ```sh
 cmake -S third_party/nextpnr -B build/nextpnr -DARCH=himbaechel \

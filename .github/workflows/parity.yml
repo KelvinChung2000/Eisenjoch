@@ -27,8 +27,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
-        with:
-          submodules: true
+      - name: Check out third_party/nextpnr, which .gitmodules skips by default
+        run: git submodule update --init --checkout --depth 1 third_party/nextpnr
       - name: Install nextpnr build dependencies
         run: |
           sudo apt-get update
