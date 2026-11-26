@@ -7,7 +7,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::chipdb::{BelId, PipId, WireId};
-use crate::common::IdString;
+use crate::common::{IdString, PlaceStrength};
 use crate::context::Context;
 use crate::netlist::{CellInfo, NetId, NetInfo, PortType, Property};
 
@@ -128,24 +128,31 @@ fn routed_net(ctx: &Context, id: NetId, net: &NetInfo) -> Result<NetName, Routed
     let mut attributes = encode_properties(ctx, &net.attrs, |key| {
         format!("Attribute {key} of net {name}")
     })?;
-    let mut routing: Vec<String> = net
+    let wires = net
         .wires
         .iter()
-        .map(|(&wire, binding)| {
-            let pip = binding
-                .pip
-                .map(|pip| pip_name(ctx, pip))
-                .unwrap_or_default();
-            format!("{};{pip};{}", wire_name(ctx, wire), binding.strength as i32)
-        })
-        .collect();
-    routing.sort();
-    attributes.insert("ROUTING".to_owned(), yosys_string(&routing.join(";")));
+        .map(|(&wire, binding)| (wire, binding.pip, binding.strength));
+    attributes.insert("ROUTING".to_owned(), yosys_string(&routing(ctx, wires)));
     Ok(NetName {
         hide_name: hide_name(name),
         bits: vec![net_bit(id)],
         attributes,
     })
+}
+
+/// A net's wires in the `ROUTING` form, `wire;pip;strength` triples sorted and joined by `;`.
+pub(crate) fn routing(
+    ctx: &Context,
+    wires: impl Iterator<Item = (WireId, Option<PipId>, PlaceStrength)>,
+) -> String {
+    let mut routing: Vec<String> = wires
+        .map(|(wire, pip, strength)| {
+            let pip = pip.map(|pip| pip_name(ctx, pip)).unwrap_or_default();
+            format!("{};{pip};{}", wire_name(ctx, wire), strength as i32)
+        })
+        .collect();
+    routing.sort();
+    routing.join(";")
 }
 
 fn encode_properties(
@@ -212,7 +219,7 @@ fn net_bit(net: NetId) -> u32 {
     net.slot() + 2
 }
 
-fn bel_name(ctx: &Context, bel: BelId) -> String {
+pub(crate) fn bel_name(ctx: &Context, bel: BelId) -> String {
     let chipdb = ctx.chipdb();
     format!("{}/{}", chipdb.tile_name(bel.tile()), chipdb.bel_name(bel))
 }

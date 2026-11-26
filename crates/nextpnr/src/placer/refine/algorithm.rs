@@ -125,6 +125,7 @@ pub fn refine_placement(ctx: &mut Context, cfg: &RefineCfg) -> Result<RefineStat
         stats.moves_tried += n_move;
         stats.moves_accepted += n_accept;
         stats.iterations = iter;
+        ctx.offer_live(crate::live::LiveProgress::bound("refine", Some(iter)))?;
 
         if cost.wirelen < min_wirelen {
             min_wirelen = cost.wirelen;

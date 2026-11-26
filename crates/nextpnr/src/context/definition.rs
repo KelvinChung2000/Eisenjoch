@@ -64,6 +64,8 @@ pub struct Context {
     /// `BaseArch`'s default of always-valid -- see
     /// [`Context::is_bel_location_valid`].
     pub(super) validity_check: Option<ArchValidityCheck>,
+    /// The state shared with a viewer in the same process, once `attach_live` shares it.
+    pub(crate) live: Option<std::sync::Arc<crate::live::Live>>,
 }
 
 /// An architecture's `isBelLocationValid` rule.
@@ -131,6 +133,7 @@ impl Context {
             debug: false,
             force: false,
             validity_check: None,
+            live: None,
         }
     }
 }

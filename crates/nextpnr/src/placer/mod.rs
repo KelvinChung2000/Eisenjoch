@@ -35,6 +35,8 @@ pub enum PlacerError {
     InitialPlacementFailed(String),
     #[error("timing analysis: {0}")]
     Timing(#[from] crate::sta::StaSessionError),
+    #[error(transparent)]
+    Cancelled(#[from] crate::live::Cancelled),
 }
 
 /// Trait for placement algorithms.

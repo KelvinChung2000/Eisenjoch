@@ -7,6 +7,7 @@
 use crate::chipdb::{PipId, WireId};
 use crate::common::{DelayT, PlaceStrength};
 use crate::context::Context;
+use crate::live::{LiveProgress, LiveRouting, PlannedNet};
 use crate::metrics::{compute_bbox, BoundingBox};
 use crate::netlist::NetId;
 use crate::sta::{
@@ -275,6 +276,40 @@ impl Negotiation {
             .remove(&net)
             .expect("only planned nets are withdrawn");
         self.state.remove_wire_usage(net, &planned.wires);
+    }
+
+    fn offer_live(&self, ctx: &Context, iteration: usize) -> Result<(), RouterError> {
+        ctx.live_cancelled()?;
+        if !ctx.live_wanted() {
+            return Ok(());
+        }
+        let chipdb = ctx.chipdb();
+        let nets: Vec<PlannedNet> = self
+            .planned_nets()
+            .into_iter()
+            .map(|net| {
+                let planned = &self.plans[&net];
+                let pips = planned.plan.sink_routes.iter().flat_map(|route| {
+                    route
+                        .pips
+                        .iter()
+                        .map(|&pip| (chipdb.pip_dst_wire(pip), Some(pip)))
+                });
+                let wires: FxHashMap<WireId, Option<PipId>> =
+                    std::iter::once((planned.plan.source_wire, None))
+                        .chain(planned.constant_roots.iter().map(|&root| (root, None)))
+                        .chain(pips)
+                        .collect();
+                (net, wires.into_iter().collect())
+            })
+            .collect();
+        ctx.publish_live(LiveProgress {
+            phase: "route",
+            iteration: Some(iteration),
+            overused: Some(self.overused_wires()),
+            routing: LiveRouting::Planned(&nets),
+        });
+        Ok(())
     }
 
     fn overused_wires(&self) -> usize {
@@ -632,6 +667,7 @@ impl Router2 {
         for plan in initial {
             negotiation.insert(ctx, plan);
         }
+        negotiation.offer_live(ctx, 0)?;
         let timing_refresh = timing
             .as_mut()
             .map(|timing| timing.refresh(ctx, &negotiation.plans, &routed))
@@ -660,6 +696,7 @@ impl Router2 {
                     &weights,
                 )?;
                 negotiation.insert(ctx, plan);
+                negotiation.offer_live(ctx, iteration)?;
             }
             let timing_refresh = timing
                 .as_mut()

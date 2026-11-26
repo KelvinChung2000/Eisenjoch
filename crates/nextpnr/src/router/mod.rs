@@ -54,6 +54,9 @@ pub enum RouterError {
     /// The STA behind the timing-driven cost failed.
     #[error(transparent)]
     Timing(#[from] crate::sta::StaSessionError),
+    /// The viewer cancelled the flow.
+    #[error(transparent)]
+    Cancelled(#[from] crate::live::Cancelled),
     /// Generic router error.
     #[error("Router error: {0}")]
     Generic(String),

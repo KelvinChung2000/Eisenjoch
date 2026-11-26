@@ -1,4 +1,5 @@
 use crate::context::Context;
+use crate::live::LiveProgress;
 use crate::placer::PlacerError;
 use crate::placer::PlacerPipeline;
 use log::{debug, info};
@@ -52,6 +53,7 @@ pub fn place_heap(ctx: &mut Context, cfg: &PlacerHeapCfg) -> Result<(), PlacerEr
 
         let quality = state.spread(ctx)?;
         state.legalize(ctx)?;
+        ctx.offer_live(LiveProgress::bound("place", Some(iter)))?;
 
         // Compute congestion forces for the next iteration.
         if cfg.congestion_weight > 0.0 {

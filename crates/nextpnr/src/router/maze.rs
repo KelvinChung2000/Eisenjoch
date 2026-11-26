@@ -8,6 +8,7 @@
 use crate::chipdb::{PipId, WireId};
 use crate::common::DelayT;
 use crate::context::Context;
+use crate::live::{LiveProgress, LiveRouting};
 use crate::metrics::BoundingBox;
 use crate::netlist::NetId;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -196,6 +197,15 @@ impl super::Router for Router1 {
         // Phase 3: Rip-up-and-reroute loop.
         let net_set: FxHashSet<NetId> = nets.iter().copied().collect();
         for iter in 0..cfg.max_iterations {
+            ctx.live_cancelled()?;
+            if ctx.live_wanted() {
+                ctx.publish_live(LiveProgress {
+                    phase: "route",
+                    iteration: Some(iter),
+                    overused: Some(state.wire_usage.values().filter(|&&c| c > 1).count()),
+                    routing: LiveRouting::Bound,
+                });
+            }
             let congested = find_congested_nets_fast(&state, &net_set);
             if congested.is_empty() {
                 eprintln!("Router1: converged at iteration {}", iter);
