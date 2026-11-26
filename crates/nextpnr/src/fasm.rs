@@ -37,6 +37,43 @@ pub enum FasmError {
         param: String,
         bits: String,
     },
+    #[error("Feature {tile}.{feature} sets no bits, and FASM has no zero-width value.")]
+    EmptyValue { tile: String, feature: String },
+}
+
+/// `features` as FASM text, one feature per line, in the form `fasm_toolkit` writes.
+///
+/// An enabled feature is `tile.feature`; a value is `tile.feature[w-1:0] = w'b<bits>`, most
+/// significant set bit first. Fails on a value of no bits, which FASM cannot write.
+pub fn fasm_text(features: &[FasmFeature]) -> Result<String, FasmError> {
+    let mut text = String::new();
+    for feature in features {
+        text.push_str(&feature.tile);
+        text.push('.');
+        text.push_str(&feature.feature);
+        if let FeatureSetting::Bits { lsb_first } = &feature.setting {
+            let width = lsb_first.len();
+            if width == 0 {
+                return Err(FasmError::EmptyValue {
+                    tile: feature.tile.clone(),
+                    feature: feature.feature.clone(),
+                });
+            }
+            let value: String = lsb_first
+                .iter()
+                .rev()
+                .skip_while(|bit| !**bit)
+                .map(|&bit| if bit { '1' } else { '0' })
+                .collect();
+            let value = if value.is_empty() { "0" } else { &value };
+            text.push_str(&format!("[{}:0] = {width}'b{value}", width - 1));
+        }
+        text.push('\n');
+    }
+    if text.is_empty() {
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 /// Features of every bound pip and every placed cell parameter, sorted by tile then feature.

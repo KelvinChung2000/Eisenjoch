@@ -165,3 +165,43 @@ fn fabulous_features_follow_the_bitstream_spec_names(#[case] feature: &str) {
         "{feature} in {features:?}"
     );
 }
+
+fn feature(tile: &str, name: &str, bits: Option<&[bool]>) -> nextpnr::fasm::FasmFeature {
+    nextpnr::fasm::FasmFeature {
+        tile: tile.into(),
+        feature: name.into(),
+        setting: match bits {
+            None => nextpnr::fasm::FeatureSetting::Enabled,
+            Some(bits) => nextpnr::fasm::FeatureSetting::Bits {
+                lsb_first: bits.to_vec(),
+            },
+        },
+    }
+}
+
+// The expected text is what fasm_toolkit's FasmBuilder writes for the same features.
+#[rstest]
+#[case::enabled(feature("X1Y1", "LC_O.N1BEG0", None), "X1Y1.LC_O.N1BEG0\n")]
+#[case::value(feature("X1Y1", "C.INIT", Some(&[true, false, true, false])), "X1Y1.C.INIT[3:0] = 4'b101\n")]
+#[case::one_bit(feature("X2Y1", "C.FF", Some(&[true])), "X2Y1.C.FF[0:0] = 1'b1\n")]
+#[case::zero(feature("X2Y1", "C.ZERO", Some(&[false, false, false])), "X2Y1.C.ZERO[2:0] = 3'b0\n")]
+#[case::high_bit(feature("X3Y1", "C.HIGH", Some(&[false, false, false, true])), "X3Y1.C.HIGH[3:0] = 4'b1000\n")]
+fn fasm_text_matches_fasm_toolkit(#[case] feature: nextpnr::fasm::FasmFeature, #[case] text: &str) {
+    assert_eq!(nextpnr::fasm::fasm_text(&[feature]).unwrap(), text);
+}
+
+#[test]
+fn fasm_text_of_no_features_is_one_newline() {
+    assert_eq!(nextpnr::fasm::fasm_text(&[]).unwrap(), "\n");
+}
+
+#[test]
+fn fasm_text_rejects_a_value_of_no_bits() {
+    assert_eq!(
+        nextpnr::fasm::fasm_text(&[feature("X1Y1", "C.INIT", Some(&[]))]),
+        Err(FasmError::EmptyValue {
+            tile: "X1Y1".into(),
+            feature: "C.INIT".into()
+        })
+    );
+}
