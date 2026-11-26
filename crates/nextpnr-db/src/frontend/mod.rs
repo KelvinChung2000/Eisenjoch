@@ -6,6 +6,8 @@
 
 mod helpers;
 mod parser;
+mod routed;
 
 pub use helpers::{parse_bit_value, parse_port_direction, parse_property, port_bit_name, BitValue};
 pub use parser::{parse_json, IO_CELL_PREFIX};
+pub use routed::{parse_routed_json, AttributeFault, RoutedAttribute, RoutedJsonError};
