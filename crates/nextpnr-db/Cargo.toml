@@ -38,3 +38,8 @@ required-features = ["test-utils"]
 name = "chipdb_names"
 path = "tests/chipdb_names.rs"
 required-features = ["test-utils"]
+
+[[test]]
+name = "routed_json"
+path = "tests/routed_json.rs"
+required-features = ["test-utils"]

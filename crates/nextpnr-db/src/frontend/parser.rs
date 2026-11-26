@@ -60,6 +60,26 @@ fn find_top_module(modules: &serde_json::Map<String, Value>) -> Result<(&str, &V
 /// Returns an error if the JSON is malformed, missing required fields, or
 /// contains unsupported constructs.
 pub fn parse_json(json_str: &str, pool: &IdStringPool) -> Result<Design> {
+    parse_netlist(json_str, pool, ConstantDrivers::Synthesise)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConstantDrivers {
+    Synthesise,
+    InNetlist,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConstantNets {
+    gnd: NetId,
+    vcc: NetId,
+}
+
+pub(crate) fn parse_netlist(
+    json_str: &str,
+    pool: &IdStringPool,
+    constants: ConstantDrivers,
+) -> Result<Design> {
     let json: Value = serde_json::from_str(json_str).context("Failed to parse JSON")?;
 
     let modules = json
@@ -72,53 +92,48 @@ pub fn parse_json(json_str: &str, pool: &IdStringPool) -> Result<Design> {
     let mut design = Design::new();
     design.top_module = pool.intern(top_name);
 
-    parse_module(top_module, &mut design, pool)
+    parse_module(top_module, &mut design, pool, constants)
         .with_context(|| format!("Failed to parse module '{}'", top_name))?;
 
     Ok(design)
 }
 
 /// Parse a single Yosys JSON module into the design.
-fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Result<()> {
+fn parse_module(
+    module: &Value,
+    design: &mut Design,
+    pool: &IdStringPool,
+    constants: ConstantDrivers,
+) -> Result<()> {
     // Step 1: Scan all bit indices across cells and ports, create nets for each.
     let mut bit_to_net: FxHashMap<i64, NetId> = FxHashMap::default();
     collect_bit_indices(module, &mut bit_to_net, design, pool)?;
 
-    // Step 2: Create constant driver nets and cells.
-    let gnd_net = create_constant_net(design, pool, "$PACKER_GND_NET");
-    let vcc_net = create_constant_net(design, pool, "$PACKER_VCC_NET");
-    create_constant_driver(design, pool, "$PACKER_GND", "GND", "Y", gnd_net)?;
-    create_constant_driver(design, pool, "$PACKER_VCC", "VCC", "Y", vcc_net)?;
+    // Step 2: Create constant driver nets and cells, unless the netlist carries its own.
+    let constants = match constants {
+        ConstantDrivers::Synthesise => {
+            let gnd = create_constant_net(design, pool, "$PACKER_GND_NET");
+            let vcc = create_constant_net(design, pool, "$PACKER_VCC_NET");
+            create_constant_driver(design, pool, "$PACKER_GND", "GND", "Y", gnd)?;
+            create_constant_driver(design, pool, "$PACKER_VCC", "VCC", "Y", vcc)?;
+            Some(ConstantNets { gnd, vcc })
+        }
+        ConstantDrivers::InNetlist => None,
+    };
 
     // Step 3: Parse cells.
     if let Some(cells) = module.get("cells").and_then(|c| c.as_object()) {
         for (cell_name, cell_json) in cells {
-            parse_cell(
-                cell_name,
-                cell_json,
-                design,
-                pool,
-                &bit_to_net,
-                gnd_net,
-                vcc_net,
-            )
-            .with_context(|| format!("Failed to parse cell '{}'", cell_name))?;
+            parse_cell(cell_name, cell_json, design, pool, &bit_to_net, constants)
+                .with_context(|| format!("Failed to parse cell '{}'", cell_name))?;
         }
     }
 
     // Step 4: Parse top-level ports.
     if let Some(ports) = module.get("ports").and_then(|p| p.as_object()) {
         for (port_name, port_json) in ports {
-            parse_top_port(
-                port_name,
-                port_json,
-                design,
-                pool,
-                &bit_to_net,
-                gnd_net,
-                vcc_net,
-            )
-            .with_context(|| format!("Failed to parse top-level port '{}'", port_name))?;
+            parse_top_port(port_name, port_json, design, pool, &bit_to_net, constants)
+                .with_context(|| format!("Failed to parse top-level port '{}'", port_name))?;
         }
     }
 
@@ -136,6 +151,10 @@ fn parse_module(module: &Value, design: &mut Design, pool: &IdStringPool) -> Res
     Ok(())
 }
 
+fn constant_net(constants: Option<ConstantNets>) -> Result<ConstantNets> {
+    constants.context("Constant bit in a netlist that carries its own constant drivers")
+}
+
 /// Parse a single cell from the JSON into the design.
 fn parse_cell(
     cell_name: &str,
@@ -143,8 +162,7 @@ fn parse_cell(
     design: &mut Design,
     pool: &IdStringPool,
     bit_to_net: &FxHashMap<i64, NetId>,
-    gnd_net: NetId,
-    vcc_net: NetId,
+    constants: Option<ConstantNets>,
 ) -> Result<()> {
     let cell_type_str = cell_json
         .get("type")
@@ -202,8 +220,8 @@ fn parse_cell(
                             .get(idx)
                             .context("Signal bit index not found in net map")?,
                     ),
-                    BitValue::Zero => Some(gnd_net),
-                    BitValue::One => Some(vcc_net),
+                    BitValue::Zero => Some(constant_net(constants)?.gnd),
+                    BitValue::One => Some(constant_net(constants)?.vcc),
                     BitValue::Undef => None,
                 };
 
@@ -246,8 +264,7 @@ fn parse_top_port(
     design: &mut Design,
     pool: &IdStringPool,
     bit_to_net: &FxHashMap<i64, NetId>,
-    gnd_net: NetId,
-    vcc_net: NetId,
+    constants: Option<ConstantNets>,
 ) -> Result<()> {
     let dir_str = port_json
         .get("direction")
@@ -292,8 +309,8 @@ fn parse_top_port(
                     .get(idx)
                     .context("Signal bit index not found in net map")?,
             ),
-            BitValue::Zero => Some(gnd_net),
-            BitValue::One => Some(vcc_net),
+            BitValue::Zero => Some(constant_net(constants)?.gnd),
+            BitValue::One => Some(constant_net(constants)?.vcc),
             BitValue::Undef => None,
         };
 

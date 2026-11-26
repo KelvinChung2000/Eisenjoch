@@ -27,6 +27,29 @@ pub enum PlaceStrength {
     User = 6,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[error("{0} is not a placement strength")]
+pub struct UnknownPlaceStrength(pub i64);
+
+impl TryFrom<i64> for PlaceStrength {
+    type Error = UnknownPlaceStrength;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        [
+            Self::None,
+            Self::Weak,
+            Self::Strong,
+            Self::Placer,
+            Self::Fixed,
+            Self::Locked,
+            Self::User,
+        ]
+        .into_iter()
+        .find(|&strength| strength as i64 == value)
+        .ok_or(UnknownPlaceStrength(value))
+    }
+}
+
 impl PlaceStrength {
     /// Returns true if this placement strength prevents the placer from moving the cell.
     #[inline]

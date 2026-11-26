@@ -2,12 +2,17 @@ mod common;
 
 use common::{add_cell, add_net, drive, make_example_context};
 
-use nextpnr::common::PlaceStrength;
+use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::common::{IdStringPool, PlaceStrength};
 use nextpnr::context::Context;
-use nextpnr::netlist::Property;
+use nextpnr::frontend::parse_routed_json;
+use nextpnr::netlist::{Design, Property};
 use nextpnr::routed_json::{routed_json, RoutedJsonError};
-use nextpnr::router::common::bind_route;
+use nextpnr::router::common::{bind_route, collect_routable_nets, validate_all_routed};
+use nextpnr::router::router2::Router2Cfg;
+use nextpnr::router::Router2;
 use rstest::rstest;
+use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 
 const LOGIC_TILE: (i32, i32) = (3, 3);
@@ -115,5 +120,79 @@ fn integer_wider_than_32_bits_is_rejected() {
             owner: "Parameter P of cell c".to_owned(),
             value: 1 << 40,
         })
+    );
+}
+
+type Placements = FxHashMap<String, (Option<BelId>, PlaceStrength)>;
+type Routes = FxHashMap<String, FxHashMap<WireId, (Option<PipId>, PlaceStrength)>>;
+
+fn placements(design: &Design, name: impl Fn(nextpnr::common::IdString) -> String) -> Placements {
+    design
+        .iter_alive_cells()
+        .map(|(_, cell)| (name(cell.name), (cell.bel, cell.bel_strength)))
+        .collect()
+}
+
+fn routes(design: &Design, name: impl Fn(nextpnr::common::IdString) -> String) -> Routes {
+    design
+        .iter_alive_nets()
+        .map(|(_, net)| {
+            let wires = net
+                .wires
+                .iter()
+                .map(|(&wire, binding)| (wire, (binding.pip, binding.strength)))
+                .collect();
+            (name(net.name), wires)
+        })
+        .collect()
+}
+
+fn routed_baseline_with_varied_strengths() -> Context {
+    let mut ctx = common::placed_npnr_baseline();
+    let nets = collect_routable_nets(&ctx);
+    Router2
+        .route_nets_report(&mut ctx, &Router2Cfg::default(), &nets)
+        .expect("negotiation converges");
+    validate_all_routed(&ctx).expect("every net is routed");
+    let (cell, bel) = ctx
+        .design
+        .iter_alive_cells()
+        .find_map(|(id, cell)| Some((id, cell.bel?)))
+        .expect("baseline has a placed cell");
+    ctx.unbind_bel(bel);
+    assert!(ctx.bind_bel(bel, cell, PlaceStrength::Fixed));
+    let (net, source) = ctx
+        .design
+        .iter_alive_nets()
+        .find_map(|(id, net)| {
+            let source = net
+                .wires
+                .iter()
+                .find(|(_, binding)| binding.pip.is_none())?;
+            Some((id, *source.0))
+        })
+        .expect("baseline has a routed net");
+    ctx.bind_wire(source, net, PlaceStrength::Locked);
+    ctx.design
+        .net_edit(net)
+        .add_wire(source, None, PlaceStrength::Locked);
+    ctx
+}
+
+#[test]
+fn routed_json_decodes_to_the_placement_and_routing_it_was_written_from() {
+    let ctx = routed_baseline_with_varied_strengths();
+    let json = serde_json::to_string(&routed_json(&ctx).expect("routed JSON")).expect("serialises");
+    let pool = IdStringPool::new();
+    let decoded = parse_routed_json(&json, ctx.chipdb(), &pool).expect("routed JSON decodes");
+    let decoded_name = |id| pool.lookup(id).expect("interned").to_owned();
+    let written_name = |id| ctx.name_of(id).to_owned();
+    assert_eq!(
+        placements(&decoded, decoded_name),
+        placements(&ctx.design, written_name)
+    );
+    assert_eq!(
+        routes(&decoded, decoded_name),
+        routes(&ctx.design, written_name)
     );
 }
