@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Optional
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from nextpnr import TimingReport
+    from nextpnr import Context, TimingReport
 
 NEXTPNR_DEFAULT_TARGET_MHZ = 12.0
 
@@ -49,6 +49,11 @@ def main(
     ),
     write: Optional[Path] = typer.Option(
         None, help="Write the routed design as nextpnr JSON"
+    ),
+    snapshot_dir: Optional[Path] = typer.Option(
+        None,
+        "--snapshot-dir",
+        help="Write the design as nextpnr JSON after placement, refinement and routing",
     ),
     sdf: Optional[Path] = typer.Option(None, help="Write routed delays as SDF 3.0"),
     fasm: Optional[Path] = typer.Option(
@@ -231,18 +236,31 @@ def main(
         if verbose:
             typer.echo(f"Loaded SDC constraints from {sdc}")
 
+    if snapshot_dir is not None:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    def snapshot(stage: str) -> None:
+        if snapshot_dir is None:
+            return
+        target = write_snapshot(ctx, directory=snapshot_dir, stage=stage)
+        if verbose:
+            typer.echo(f"Wrote snapshot {target}")
+
     try:
         if verbose:
             typer.echo(f"Running placer ({placer})...")
         ctx.place(nextpnr.PlaceOptions(placer=placer, seed=seed))
+        snapshot("1-placed")
 
         if verbose:
             typer.echo(f"Running refinement (timing-driven: {timing_driven})...")
         ctx.refine(timing_driven=timing_driven, crit_norm="wns_relaxed")
+        snapshot("2-refined")
 
         if verbose:
             typer.echo(f"Running router ({router})...")
         ctx.route(router=router, timing_driven=timing_driven)
+        snapshot("3-routed")
     except Exception as e:
         typer.echo(f"P&R error: {e}", err=True)
         if not force:
@@ -312,6 +330,15 @@ def main(
 
     if verbose:
         typer.echo("Done.")
+
+
+def write_snapshot(ctx: "Context", *, directory: Path, stage: str) -> Path:
+    """Write `<stage>.json` by rename, so a reader never sees a partial file."""
+    target = directory / f"{stage}.json"
+    partial = directory / f".{stage}.json.partial"
+    partial.write_text(ctx.routed_json())
+    partial.replace(target)
+    return target
 
 
 def timing_failures(timing: "TimingReport") -> list[str]:
