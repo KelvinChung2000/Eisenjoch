@@ -63,6 +63,7 @@ pub struct ChipDb {
     pub(super) constid_canon: std::sync::OnceLock<ConstIdCanon>,
     /// Built on first use. See [`ChipDb::global_network`].
     pub(super) global_network: std::sync::OnceLock<rustc_hash::FxHashSet<WireId>>,
+    pub(super) names: std::sync::OnceLock<super::names::NameIndex>,
 }
 
 /// Constids that spell the same string collapsed to one representative, so a
@@ -123,6 +124,7 @@ impl ChipDb {
             constid_strs,
             constid_canon: std::sync::OnceLock::new(),
             global_network: std::sync::OnceLock::new(),
+            names: std::sync::OnceLock::new(),
         })
     }
 }

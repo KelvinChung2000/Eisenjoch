@@ -6,6 +6,7 @@ mod grid;
 mod ids;
 #[cfg(feature = "mmap")]
 mod load;
+mod names;
 mod pod;
 mod relptr;
 pub mod tile_template;
@@ -15,6 +16,7 @@ pub use access::RegArcInfo;
 pub use chip::{parse_constids_inc, ChipDb};
 pub use grid::Loc;
 pub use ids::{BelId, PipId, WireId};
+pub use names::{NameError, NameKind};
 pub use pod::*;
 pub use relptr::{RelPtr, RelSlice};
 pub use tile_template::{

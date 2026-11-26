@@ -33,3 +33,8 @@ required-features = ["test-utils"]
 name = "chipdb_validate"
 path = "tests/chipdb_validate.rs"
 required-features = ["test-utils"]
+
+[[test]]
+name = "chipdb_names"
+path = "tests/chipdb_names.rs"
+required-features = ["test-utils"]
