@@ -60,6 +60,11 @@ path = "tests/live_tests.rs"
 required-features = ["test-utils"]
 
 [[test]]
+name = "flow_tests"
+path = "tests/flow_tests.rs"
+required-features = ["test-utils"]
+
+[[test]]
 name = "router2_tests"
 path = "tests/router2_tests.rs"
 required-features = ["test-utils"]

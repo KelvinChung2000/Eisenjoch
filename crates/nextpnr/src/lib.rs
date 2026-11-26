@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod context;
 pub mod env;
 pub mod fasm;
+pub mod flow;
 pub mod live;
 pub mod metrics;
 pub mod packer;
