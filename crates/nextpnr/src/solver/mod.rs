@@ -43,6 +43,18 @@ pub fn par() -> faer::Par {
     if n <= 1 {
         faer::Par::Seq
     } else {
-        faer::Par::rayon(n)
+        rayon_par(n)
     }
+}
+
+/// faer's rayon backend on `threads` threads, 0 meaning every rayon thread.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn rayon_par(threads: usize) -> faer::Par {
+    faer::Par::rayon(threads)
+}
+
+/// Sequential: faer's rayon backend needs `atomic-wait`, which has no wasm implementation.
+#[cfg(target_family = "wasm")]
+pub(crate) fn rayon_par(_threads: usize) -> faer::Par {
+    faer::Par::Seq
 }

@@ -145,7 +145,7 @@ pub fn hmt_sketch_matrix(
         d_mat,
         omega,
         1.0,
-        faer::Par::rayon(0),
+        super::rayon_par(0),
     );
     s
 }
@@ -260,7 +260,7 @@ impl CompressedBasis {
             self.coeff_basis.as_ref().transpose(),
             d_mat,
             1.0,
-            faer::Par::rayon(0),
+            super::rayon_par(0),
         );
 
         // P = Q * C  (n_nodes × n_rhs)
@@ -272,7 +272,7 @@ impl CompressedBasis {
             self.range_basis.as_ref(),
             c_mat.as_ref(),
             1.0,
-            faer::Par::rayon(0),
+            super::rayon_par(0),
         );
 
         pressures
