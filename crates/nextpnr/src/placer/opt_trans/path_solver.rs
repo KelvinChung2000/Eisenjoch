@@ -795,6 +795,9 @@ fn dijkstra_and_forward(
         // - Every other settled node was initialised to 0.0 by `begin_net`;
         //   it accumulates from its upstream-settled predecessors below.
         let mut acc_weight = path_weight[node];
+        // Beyond the last sink only distance labels are needed for placement.
+        // Dial flow follows strictly decreasing labels on the way back.
+        let labels_only = sinks_settled == n_sinks && cur > max_sink_dist;
 
         let edge_start = adj_offsets[node] as usize;
         let edge_end = adj_offsets[node + 1] as usize;
@@ -807,6 +810,9 @@ fn dijkstra_and_forward(
 
             let neigh_dist_int = dist_int[neighbour];
             if neigh_dist_int < cur {
+                if labels_only {
+                    continue;
+                }
                 // Upstream settled predecessor: forward-pass contribution.
                 let neigh_weight = path_weight[neighbour];
                 if neigh_weight > 0.0 && neigh_weight.is_finite() {
@@ -1128,7 +1134,11 @@ fn dial_logit_load_inner(
     let mut load_nonzero = 0usize;
     let mut load_material = 0usize;
 
-    for i in (0..n_settled).rev() {
+    // Dijkstra settles in label order. Once every sink settled, the suffix
+    // above the farthest sink cannot carry any demand. Other solvers report
+    // a zero tail and retain their full traversal.
+    let load_end = if cap_armed { n_settled - settle_above_sink } else { n_settled };
+    for i in (0..load_end).rev() {
         let node = ws.settle_order[i];
         let load = ws.node_load[node];
         if load != 0.0 {

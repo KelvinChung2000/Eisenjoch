@@ -243,7 +243,7 @@ impl DriverNodeRegistry {
     }
 
     #[inline]
-    fn lookup(&self, ctx: &Context, wire: WireId) -> Option<NetId> {
+    pub(super) fn lookup(&self, ctx: &Context, wire: WireId) -> Option<NetId> {
         self.claimed
             .get(&ctx.chipdb().canonical_wire(wire))
             .copied()

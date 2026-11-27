@@ -1273,6 +1273,99 @@ fn sorted_legalize_honours_the_arch_validity_rule() {
     }
 }
 
+#[test]
+fn pin_access_legalization_uses_the_dedicated_lut_to_ff_pip() {
+    let mut ctx = common::make_example_context();
+    let design = r#"{"modules":{"top":{"ports":{},"cells":{
+        "driver":{"type":"LUT6","port_directions":{"F":"output"},"connections":{"F":[2]}},
+        "sink":{"type":"DFF","port_directions":{"D":"input"},"connections":{"D":[2]}}
+    },"netnames":{"link":{"bits":[2]}}}}}"#;
+    ctx.design = nextpnr::frontend::parse_json(design, &ctx.id_pool).unwrap();
+    ctx.populate_bel_buckets();
+    let driver = ctx.design.cell_by_name(ctx.id("driver")).unwrap();
+    let sink = ctx.design.cell_by_name(ctx.id("sink")).unwrap();
+    // Put the producer in a non-first slot so enumeration order alone would
+    // assign the FF in a different slice.
+    let lut = ctx
+        .bels_for_bucket(ctx.id("LUT6"))
+        .find(|b| b.loc().z == 4)
+        .unwrap();
+    let loc = lut.loc();
+    let bel = lut.id();
+    assert!(ctx.bind_bel(bel, driver, PlaceStrength::Fixed));
+    nextpnr::placer::legalize::legalize(
+        &mut ctx,
+        &[sink],
+        &[loc.x as f64],
+        &[loc.y as f64],
+        "pin_access",
+    )
+    .unwrap();
+    let ff = ctx.cell(sink).bel().unwrap();
+    assert_eq!(
+        (ff.loc().x, ff.loc().y, ff.loc().z),
+        (loc.x, loc.y, loc.z + 1)
+    );
+    let net = ctx.design.net_by_name(ctx.id("link")).unwrap();
+    Router1
+        .route_net(&mut ctx, &Router1Cfg::default(), net)
+        .unwrap();
+    nextpnr::router::common::validate_all_routed(&ctx).unwrap();
+    assert_eq!(
+        ctx.net(net)
+            .wires()
+            .values()
+            .filter(|wire| wire.pip.is_some())
+            .count(),
+        1
+    );
+}
+
+// LUT slots in the fixture expose different subsets of switchbox wires.
+#[test]
+fn pin_access_separates_launch_wires_of_independent_nets() {
+    let mut ctx = common::make_example_context();
+    let json = r#"{"modules":{"top":{"ports":{},"cells":{
+        "fixed":{"type":"LUT6","port_directions":{"F":"output"},"connections":{"F":[2]}},
+        "moving":{"type":"LUT6","port_directions":{"F":"output"},"connections":{"F":[3]}},
+        "users":{"type":"LUT6","port_directions":{"I[0]":"input","I[1]":"input"},"connections":{"I[0]":[2],"I[1]":[3]}}
+    },"netnames":{}}}}"#;
+    ctx.design = nextpnr::frontend::parse_json(json, &ctx.id_pool).unwrap();
+    ctx.populate_bel_buckets();
+    let fixed = ctx.design.cell_by_name(ctx.id("fixed")).unwrap();
+    let moving = ctx.design.cell_by_name(ctx.id("moving")).unwrap();
+    // Slot three shares its general routing exits with slot zero, which is
+    // first in chipdb order. Other slots on the same tile have disjoint exits.
+    let fixed_bel = ctx
+        .bels_for_bucket(ctx.id("LUT6"))
+        .find(|bel| bel.loc().z == 6)
+        .unwrap()
+        .id();
+    let loc = ctx.bel(fixed_bel).loc();
+    assert!(ctx.bind_bel(fixed_bel, fixed, PlaceStrength::Fixed));
+    nextpnr::placer::legalize::legalize(
+        &mut ctx,
+        &[moving],
+        &[f64::from(loc.x)],
+        &[f64::from(loc.y)],
+        "pin_access",
+    )
+    .unwrap();
+    let chosen = ctx.cell(moving).bel().unwrap();
+    assert_eq!(chosen.id().tile(), fixed_bel.tile());
+    let exits = |bel: BelId| {
+        let pin = ctx.bel(bel).pin_wire(ctx.id("F")).unwrap().id();
+        let mut wires = std::collections::HashSet::new();
+        ctx.chipdb().pips_downhill_cb(pin, |pip| {
+            wires.insert(ctx.chipdb().pip_dst_wire(pip));
+        });
+        wires
+    };
+    let chosen_exits = exits(chosen.id());
+    assert!(!chosen_exits.is_empty());
+    assert!(exits(fixed_bel).is_disjoint(&chosen_exits));
+}
+
 // =====================================================================
 // Placement refinement (placer1_refine)
 // =====================================================================

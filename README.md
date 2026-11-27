@@ -13,6 +13,24 @@ Use `nextpnr-himbaechel-rust` for Eisenjoch's Rust algorithms. In Python, use
 `nextpnr.RustContext` for this flow. The existing `nextpnr.Context` name also works.
 In Cargo, select the Rust implementation with `-p nextpnr-rust`.
 
+## Run opt_trans with native router2
+
+The Rust flow includes a native C++ router2 adapter for a Python-enabled
+`nextpnr-generic` executable. It exports the chipdb routing graph and fixed
+placement and validates the returned routes against the original chipdb.
+
+```sh
+uv run --extra cli nextpnr-himbaechel-rust \
+  --chipdb example.bin --json design.json --placer opt_trans \
+  --router native-router2 --native-router2 /path/to/nextpnr-generic \
+  --no-timing-driven --route-refine-passes 3
+```
+
+The optional refinement passes use modeled post-route delay on combinational
+LUT6/IOB designs. They shorten net routes while preserving every sink's
+connectivity and delay or improving it. Omit the refinement flag for other
+designs. Use the Rust router2 with clock constraints for timing-driven routing.
+
 ## Build upstream nextpnr
 
 From the Eisenjoch repository root, check out the `third_party/nextpnr`

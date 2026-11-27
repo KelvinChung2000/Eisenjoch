@@ -7,6 +7,7 @@ pub(crate) mod bel_grid;
 pub mod bipartite;
 pub mod common;
 pub mod greedy;
+mod pin_access;
 pub mod ring;
 pub mod snap;
 pub mod sorted;
@@ -47,6 +48,7 @@ pub trait Legalizer {
 /// - `"snap"` (default): type-aware snap + spread + BEL assignment in one pass
 /// - `"ring"`: Manhattan ring search (nearest available BEL)
 /// - `"sorted"`: distance-sorted greedy assignment
+/// - `"pin_access"`: nearest-site assignment with physical pin-path tie breaking
 /// - `"bipartite"`: optimal LAPJV bipartite matching
 /// - `"greedy"`: simple nearest-BEL greedy
 pub fn create_legalizer(name: &str) -> Box<dyn Legalizer> {
@@ -55,6 +57,7 @@ pub fn create_legalizer(name: &str) -> Box<dyn Legalizer> {
             x_offset: 0.0,
             y_offset: 0.0,
         }),
+        "pin_access" => Box::new(sorted::PinAccessLegalizer),
         "sorted" => Box::new(SortedLegalizer),
         "bipartite" => Box::new(BipartiteLegalizer {
             cost: Box::new(DistanceCost),

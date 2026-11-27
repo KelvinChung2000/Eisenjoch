@@ -400,10 +400,7 @@ struct MazeCostModel<'a> {
     wire_penalty: &'a FxHashMap<WireId, DelayT>,
     bbox: Option<&'a BoundingBox>,
     lookahead: Option<&'a Lookahead>,
-    /// Net being routed. Wires already bound to a different net are treated
-    /// as near-impassable (`DelayT::MAX / 4`) so A* plans around them rather
-    /// than through them. Without this, A* emits plans whose `apply_route_plan`
-    /// fails atomically on the first conflict, leaving the net empty.
+    /// Owner of the wires that binding-aware search may reuse.
     net: NetId,
     /// Driver-BEL class of the net being routed. Used together with
     /// `lookahead` to hard-gate A* expansion onto wires not reachable
@@ -454,14 +451,7 @@ impl<'a> PathCostModel for MazeCostModel<'a> {
             None => default_pip_cost(ctx, pip),
         }
     }
-    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
-        if !self.ignore_bindings {
-            if let Some((owner, _)) = ctx.wire_binding(wire) {
-                if owner != self.net {
-                    return DelayT::MAX / 4;
-                }
-            }
-        }
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
         self.wire_penalty.get(&wire).copied().unwrap_or(0)
     }
     fn is_blocked(&self, ctx: &Context, wire: WireId) -> bool {
@@ -481,7 +471,8 @@ impl<'a> PathCostModel for MazeCostModel<'a> {
                 return true;
             }
         }
-        false
+        ctx.wire_binding(wire)
+            .is_some_and(|(owner, _)| owner != self.net)
     }
     fn heuristic(&self, ctx: &Context, wire: WireId, dst: WireId) -> DelayT {
         // Explore mode = pure Dijkstra: complete and provably finds any

@@ -155,7 +155,7 @@ fn every_net_matches_nextpnrs_own_get_net_metric() {
     println!("matched {checked} nets, total wirelength {ours_total} (nextpnr: {golden_total})");
 }
 
-/// The default opt_trans flow (JacobiFullscan + DialLogit) must keep producing
+/// The default opt_trans flow (JacobiHub + DialLogit + pin-access legalization) must keep producing
 /// this exact placement. Memory work on the placer may change how labels and
 /// usage are stored, never what they are, so drift here is a numeric change
 /// that has to be justified on its own.
@@ -179,8 +179,13 @@ fn opt_trans_default_placement_is_pinned() {
         println!("opt_trans placement: cells={cells} hash={hash:#018x} hpwl={hpwl}");
     }
     for run in &runs {
-        assert_eq!(*run, (151, 0xc393_a8dd_d642_60bf, 531));
+        assert_eq!(*run, (151, 0x5852_5ae7_bf0b_9265, 431));
     }
+    let driver_rooted = place_fixture_opt_trans(|cfg| {
+        cfg.sweep_mode = nextpnr::placer::opt_trans::config::SweepMode::JacobiFullscan;
+        cfg.legalization = "sorted".into();
+    });
+    assert_eq!(driver_rooted, (151, 0xce77_1c32_db08_1605, 464));
 }
 
 /// Place the fixture's netlist from scratch with the default opt_trans config.

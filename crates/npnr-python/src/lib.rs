@@ -350,12 +350,14 @@ impl PyContext {
     /// Run a router on the design.
     ///
     /// Args:
-    ///     router: Router algorithm name ("router1", "router2", or "raster"). Default "router1".
+    ///     router: Router name ("router1", "router2", "raster", or "native-router2").
     ///     bb_margin: Bounding box margin in tiles for A* pruning. Default 3.
     ///     max_iterations: Max routing iterations. Router1 default 500, Router2 default 50.
     ///     skip_unplaced: If true, skip nets whose driver cell is not placed. Default false.
     ///     timing_driven: Weight each connection's delay by its STA criticality (router2 only). Default false.
-    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false, timing_driven=false))]
+    ///     native_binary: Path to Python-enabled nextpnr-generic for native-router2.
+    ///     seed: Native router2 seed.
+    #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false, timing_driven=false, native_binary=None, seed=1))]
     fn route(
         &mut self,
         router: &str,
@@ -363,11 +365,28 @@ impl PyContext {
         max_iterations: Option<usize>,
         skip_unplaced: bool,
         timing_driven: bool,
+        native_binary: Option<&str>,
+        seed: u64,
     ) -> PyResult<()> {
         if timing_driven && router != "router2" {
             return Err(PyValueError::new_err(format!(
                 "Router {router} is not timing-driven; only router2 is"
             )));
+        }
+        if router == "native-router2" {
+            let binary = native_binary
+                .ok_or_else(|| PyValueError::new_err("native-router2 requires native_binary"))?;
+            if skip_unplaced || bb_margin.is_some() || max_iterations.is_some() {
+                return Err(PyValueError::new_err(
+                    "native-router2 requires a fully placed design and uses upstream router settings",
+                ));
+            }
+            return ::nextpnr::router::native::route(
+                &mut self.ctx,
+                Path::new(binary).as_os_str(),
+                seed,
+            )
+            .map_err(|e| PyRuntimeError::new_err(format!("Native router2 error: {e:#}")));
         }
         use ::nextpnr::router::common::collect_routable_nets;
 
@@ -460,6 +479,14 @@ impl PyContext {
             }
             _ => Err(PyValueError::new_err(format!("Unknown router: {}", router))),
         }
+    }
+
+    /// Refine routing delay on a fully routed combinational LUT6/IOB design.
+    /// Returns modeled critical-path delays in ps, starting with the input route.
+    fn refine_routed_timing(&mut self, passes: usize) -> PyResult<Vec<i64>> {
+        ::nextpnr::router::timing_refine::refine(&mut self.ctx, passes)
+            .map(|reports| reports.into_iter().map(|p| p.total_ps()).collect())
+            .map_err(|e| PyRuntimeError::new_err(format!("Route timing refinement error: {e:#}")))
     }
 
     /// Constrain a clock net to a frequency; raises ValueError for an unknown net.

@@ -1,20 +1,20 @@
-//! Place FPGA01 with either placer, then route the result with the raster
-//! router, so the two placements meet the same router under the same cap.
-//!
-//! Placement is fast enough now (~1.3s on FPGA01) that no checkpoint is
-//! worth carrying: each arm places inline. The arm is one env var, and the
-//! placer's own env knobs configure it, so an arm is exactly the set of
-//! variables named on the command line.
+//! Compare opt_trans, HeAP, and ElectroPlace using the same place-and-route flow.
+//! All three arms use seed 42 and share the same packer and router settings.
 //!
 //!   NPNR_ROUTE_CHIPDB=chip_database/xc7_large.bin \
 //!   NPNR_ROUTE_DESIGN=benchmark/ispd/generated/2016/FPGA01/FPGA01.json \
 //!   NPNR_ROUTE_PLACER=opt_trans NPNR_ROUTE_ITERS=50 \
 //!   cargo run --release --example route_after_place
 
+//! Set NPNR_NATIVE_ROUTER2 to the path of a Python-enabled nextpnr-generic
+//! executable to route the fixed placement with upstream C++ router2.
+//! NPNR_ROUTE_CHECKPOINT saves a native run after physical route validation.
+
 use nextpnr::chipdb::ChipDb;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
 use nextpnr::packer;
+use nextpnr::placer::electro_place::{ElectroPlaceCfg, PlacerElectro};
 use nextpnr::placer::heap::{PlacerHeap, PlacerHeapCfg};
 use nextpnr::placer::opt_trans::{OptTransPlacerCfg, PlacerOptTrans};
 use nextpnr::placer::Placer;
@@ -73,6 +73,9 @@ fn main() {
                 report_interval: 1,
                 ..OptTransPlacerCfg::default()
             };
+            if let Ok(legalization) = env::var("NPNR_ROUTE_LEGALIZATION") {
+                cfg.legalization = legalization;
+            }
             cfg.apply_env_overrides();
             PlacerOptTrans.place(&mut ctx, &cfg).expect("place");
         }
@@ -86,7 +89,14 @@ fn main() {
             }
             PlacerHeap.place(&mut ctx, &cfg).expect("place");
         }
-        other => panic!("NPNR_ROUTE_PLACER must be opt_trans or heap, got {other}"),
+        "eplace" => {
+            let cfg = ElectroPlaceCfg {
+                seed: 42,
+                ..ElectroPlaceCfg::default()
+            };
+            PlacerElectro.place(&mut ctx, &cfg).expect("place");
+        }
+        other => panic!("NPNR_ROUTE_PLACER must be opt_trans, heap, or eplace, got {other}"),
     }
     let place_secs = t_place.elapsed().as_secs_f64();
     let hpwl = nextpnr::metrics::wirelength::total_hpwl(&ctx);
@@ -94,6 +104,18 @@ fn main() {
 
     let nets = collect_routable_nets(&ctx);
     eprintln!("routable nets: {}", nets.len());
+
+    if let Some(binary) = env::var_os("NPNR_NATIVE_ROUTER2") {
+        let start = Instant::now();
+        nextpnr::router::native::route(&mut ctx, &binary, 42).expect("native router2");
+        nextpnr::router::common::validate_all_routed(&ctx).expect("physical route validation");
+        if let Some(path) = env::var_os("NPNR_ROUTE_CHECKPOINT") {
+            nextpnr::checkpoint::save(&ctx, Path::new(&path)).expect("save routed checkpoint");
+        }
+        println!("ROUTE_RESULT placer={arm} router=native-router2 status=complete route_secs={:.2} routable={}", start.elapsed().as_secs_f64(), nets.len());
+        println!("ROUTE_CONNECTIVITY valid");
+        return;
+    }
 
     // A doomed sink spends ~214k pops under the kernel default, over half the
     // router's total. NPNR_ROUTE_SINK_VISITS caps that; unset keeps the default.
@@ -196,6 +218,14 @@ fn main() {
 nets_with_routing={routed} alive_nets={alive} routable={}",
         nets.len()
     );
+    // The raster pass limit can fire on tile usage even when every sink
+    // has a conflict-free path. Inspect the actual final bindings as well.
+    if let Err(err) = nextpnr::router::common::validate_all_routed(&ctx) {
+        println!("ROUTE_CONNECTIVITY invalid");
+        eprintln!("{err}");
+    } else {
+        println!("ROUTE_CONNECTIVITY valid");
+    }
     if !detail.is_empty() {
         eprintln!("ROUTE_ERROR {detail}");
     }
