@@ -95,14 +95,20 @@ fn drive_far_constants(
     init_bit: char,
 ) -> Result<(), PackerError> {
     let net = constant_net(ctx, net_name)?;
-    let const_id = driven_const_value(ctx, net)?;
-    let far: Vec<(CellId, IdString)> = ctx
+    let users: Vec<(CellId, IdString)> = ctx
         .design
         .net(net)
         .users()
         .iter()
         .filter(|user| user.is_connected())
         .map(|user| (user.cell, user.port))
+        .collect();
+    if users.is_empty() {
+        return Ok(());
+    }
+    let const_id = driven_const_value(ctx, net)?;
+    let far: Vec<(CellId, IdString)> = users
+        .into_iter()
         .filter(|&(cell, port)| !reaches_constant_locally(ctx, cell, port, const_id))
         .collect();
     let init = ctx.id("INIT");
