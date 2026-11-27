@@ -178,7 +178,7 @@ fn compute_route_r2(
     weights: &SinkWeights,
 ) -> Result<RoutePlan, RouterError> {
     let bbox = compute_bbox(ctx, net, bb_margin);
-    let mut tree_wires: FxHashSet<WireId> = FxHashSet::default();
+    let mut tree_wires: FxHashSet<WireId> = ctx.net(net).wire_ids().collect();
     tree_wires.insert(source_wire);
     let const_val = source_wire_const_value(ctx, source_wire);
     if const_val != 0 {
@@ -220,6 +220,7 @@ fn constant_roots(ctx: &Context, plan: &RoutePlan) -> Vec<WireId> {
         .filter_map(|route| route.pips.first())
         .map(|&pip| chipdb.pip_src_wire(pip))
         .filter(|&wire| wire != plan.source_wire && source_wire_const_value(ctx, wire) == const_val)
+        .filter(|&wire| ctx.wire_binding(wire).map(|(owner, _)| owner) != Some(plan.net))
         .collect();
     roots.into_iter().collect()
 }
@@ -524,12 +525,18 @@ impl TimingDriven {
         let mut delays = Vec::new();
         for &net in nets {
             let plan = &plans[&net].plan;
-            let parents: FxHashMap<WireId, PipId> = plan
+            let held = ctx
+                .design
+                .net(net)
+                .wires
+                .iter()
+                .filter_map(|(&wire, entry)| entry.pip.map(|pip| (wire, pip)));
+            let planned = plan
                 .sink_routes
                 .iter()
                 .flat_map(|route| &route.pips)
-                .map(|&pip| (ctx.chipdb().pip_dst_wire(pip), pip))
-                .collect();
+                .map(|&pip| (ctx.chipdb().pip_dst_wire(pip), pip));
+            let parents: FxHashMap<WireId, PipId> = held.chain(planned).collect();
             for pin in self.pins[&net].iter().filter(|pin| pin.timed) {
                 let delay = plan_delay(ctx, &self.model, plan, &parents, pin.wire)
                     .map_err(StaSessionError::from)?;
@@ -611,11 +618,6 @@ pub struct Router2Report {
 fn net_sources(ctx: &Context, nets: &[NetId]) -> Result<Vec<(NetId, WireId)>, RouterError> {
     let mut sources = Vec::with_capacity(nets.len());
     for &net in nets {
-        if ctx.net(net).wire_ids().next().is_some() {
-            return Err(RouterError::AlreadyRouted(
-                ctx.name_of(ctx.net(net).name_id()).to_owned(),
-            ));
-        }
         if let Some(source) = resolve_source_wire(ctx, net)? {
             sources.push((net, source));
         }
@@ -627,7 +629,8 @@ fn net_sources(ctx: &Context, nets: &[NetId]) -> Result<Vec<(NetId, WireId)>, Ro
 pub struct Router2;
 
 impl Router2 {
-    /// Route `nets` to convergence, bind them, and report each pass.
+    /// Route the unrouted sinks of `nets` to convergence, growing each net
+    /// from the wires it already holds, bind them, and report each pass.
     pub fn route_nets_report(
         &self,
         ctx: &mut Context,

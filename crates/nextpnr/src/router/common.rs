@@ -66,7 +66,8 @@ pub fn resolve_source_wire(
 /// Binds atomically: if any wire (including any of its node-equivalents) is
 /// already claimed by a different net, all bindings applied by this call are
 /// rolled back and `Err(conflicting_wire)` is returned. No partial state is
-/// left behind in the context or in the net's wire map.
+/// left behind in the context or in the net's wire map. A source node the net
+/// already holds keeps its binding, strength and wire-map entry.
 pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) -> Result<(), WireId> {
     // Track wires we've bound so we can unwind on conflict. Source wire is
     // first; PIP destinations follow in the order they were bound. PIPs get
@@ -79,18 +80,16 @@ pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) -> Result<(), WireI
     // We cannot easily capture &mut ctx in a closure here, so inline the
     // rollback at each failure site.
 
-    // Bind source wire via node-aware atomic bind.
-    match ctx.try_bind_wire_node(plan.source_wire, plan.net, PlaceStrength::Strong) {
-        Ok(()) => {
-            bound_wires.push(plan.source_wire);
-            ctx.design
-                .net_edit(plan.net)
-                .add_wire(plan.source_wire, None, PlaceStrength::Strong);
-            net_wire_entries.push(plan.source_wire);
-        }
-        Err(conflict) => {
-            return Err(conflict);
-        }
+    let holds_source = ctx
+        .wire_binding(plan.source_wire)
+        .is_some_and(|(owner, _)| owner == plan.net);
+    if !holds_source {
+        ctx.try_bind_wire_node(plan.source_wire, plan.net, PlaceStrength::Strong)?;
+        bound_wires.push(plan.source_wire);
+        ctx.design
+            .net_edit(plan.net)
+            .add_wire(plan.source_wire, None, PlaceStrength::Strong);
+        net_wire_entries.push(plan.source_wire);
     }
 
     // Bind each sink route's PIPs and destination wires.
