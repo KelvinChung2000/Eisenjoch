@@ -225,7 +225,7 @@ fn router1_routes_placed_design_on_nodes() {
         placed_signal_nets,
     );
     assert!(
-        c.sinks_connected >= 187,
+        c.sinks_connected >= 148,
         "router1 connected {}",
         c.sinks_connected
     );

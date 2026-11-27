@@ -408,7 +408,7 @@ struct QueueEntry {
 
 impl PartialEq for QueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.estimate == other.estimate
+        self.cmp(other) == Ordering::Equal
     }
 }
 impl Eq for QueueEntry {}
@@ -421,12 +421,16 @@ impl PartialOrd for QueueEntry {
 
 impl Ord for QueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Min-heap: lower estimate pops first, break ties by lower cost so
-        // paths closer to the source win when f-values are equal.
+        // Min-heap: lower estimate pops first, then lower cost so paths closer
+        // to the source win. The wire keys make the order total, so the pop
+        // order never depends on the hash order the sources were pushed in.
         other
             .estimate
             .cmp(&self.estimate)
             .then_with(|| other.cost.cmp(&self.cost))
+            .then_with(|| other.penalty.cmp(&self.penalty))
+            .then_with(|| other.wire.raw().cmp(&self.wire.raw()))
+            .then_with(|| other.at.raw().cmp(&self.at.raw()))
     }
 }
 

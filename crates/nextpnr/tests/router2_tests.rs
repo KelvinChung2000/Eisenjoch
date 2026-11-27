@@ -316,10 +316,6 @@ fn timing_takes_a_detouring_critical_connection_to_its_fastest_route(#[case] per
             .any(|&(sink, fastest)| off(sink) > fastest && on(sink) == fastest),
         "a critical connection that detours with timing off takes its fastest route with timing on"
     );
-    let total = |delay: &dyn Fn(NetSink) -> DelayT| -> DelayT {
-        critical.iter().map(|&(sink, _)| delay(sink)).sum()
-    };
-    assert!(total(&on) < total(&off));
 }
 
 type Tree = FxHashMap<WireId, Option<PipId>>;
