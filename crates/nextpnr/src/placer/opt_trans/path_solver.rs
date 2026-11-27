@@ -1137,7 +1137,11 @@ fn dial_logit_load_inner(
     // Dijkstra settles in label order. Once every sink settled, the suffix
     // above the farthest sink cannot carry any demand. Other solvers report
     // a zero tail and retain their full traversal.
-    let load_end = if cap_armed { n_settled - settle_above_sink } else { n_settled };
+    let load_end = if cap_armed {
+        n_settled - settle_above_sink
+    } else {
+        n_settled
+    };
     for i in (0..load_end).rev() {
         let node = ws.settle_order[i];
         let load = ws.node_load[node];

@@ -358,6 +358,7 @@ impl PyContext {
     ///     native_binary: Path to Python-enabled nextpnr-generic for native-router2.
     ///     seed: Native router2 seed.
     #[pyo3(signature = (*, router="router1", bb_margin=None, max_iterations=None, skip_unplaced=false, timing_driven=false, native_binary=None, seed=1))]
+    #[allow(clippy::too_many_arguments)]
     fn route(
         &mut self,
         router: &str,

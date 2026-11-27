@@ -1039,7 +1039,7 @@ struct SolveInputs<'a> {
 fn terminal_hub(info: &NetInfo, width: usize) -> usize {
     fn middle(axis: &mut [usize]) -> usize {
         let k = axis.len() / 2;
-        let even = axis.len() % 2 == 0;
+        let even = axis.len().is_multiple_of(2);
         let (lower, hi, _) = axis.select_nth_unstable(k);
         if even {
             let lo = *lower.iter().max().unwrap();
@@ -2931,6 +2931,7 @@ impl SoftminAccumulator {
 /// hard argmin and the softmin accumulator under a given `theta`. When
 /// `theta <= 0` the softmin result falls back to argmin so callers can use
 /// a single code path.
+#[allow(clippy::too_many_arguments)]
 fn fullscan_sweep_probe(
     cell_idx: usize,
     current_tile: (i32, i32),
