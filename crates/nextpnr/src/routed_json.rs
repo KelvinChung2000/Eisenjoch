@@ -224,7 +224,7 @@ pub(crate) fn bel_name(ctx: &Context, bel: BelId) -> String {
     format!("{}/{}", chipdb.tile_name(bel.tile()), chipdb.bel_name(bel))
 }
 
-fn wire_name(ctx: &Context, wire: WireId) -> String {
+pub(crate) fn wire_name(ctx: &Context, wire: WireId) -> String {
     let chipdb = ctx.chipdb();
     format!(
         "{}/{}",
@@ -233,7 +233,7 @@ fn wire_name(ctx: &Context, wire: WireId) -> String {
     )
 }
 
-fn pip_name(ctx: &Context, pip: PipId) -> String {
+pub(crate) fn pip_name(ctx: &Context, pip: PipId) -> String {
     let chipdb = ctx.chipdb();
     format!(
         "{}/{}/{}",

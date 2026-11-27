@@ -2,6 +2,7 @@
 
 pub mod astar;
 pub mod common;
+pub mod edit;
 pub mod lookahead;
 pub mod maze;
 pub mod raster;

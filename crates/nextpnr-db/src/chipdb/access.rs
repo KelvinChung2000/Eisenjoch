@@ -57,6 +57,16 @@ impl ChipDb {
         tt.pips.get().get(pip_idx)
     }
 
+    /// Whether the chipdb has a wire at `wire`'s tile and index.
+    pub fn has_wire(&self, wire: WireId) -> bool {
+        self.wire_info_checked(wire).is_some()
+    }
+
+    /// Whether the chipdb has a pip at `pip`'s tile and index.
+    pub fn has_pip(&self, pip: PipId) -> bool {
+        self.pip_info_checked(pip).is_some()
+    }
+
     #[inline]
     pub fn chip_info(&self) -> &ChipInfoPod {
         unsafe { &*self.chip_info }
