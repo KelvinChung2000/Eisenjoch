@@ -121,7 +121,7 @@ pub fn route(ctx: &mut Context, binary: &OsStr, seed: u64) -> Result<()> {
         let pip = PipId::new(tile.parse()?, index.parse()?);
         let db = ctx.chipdb();
         ensure!(
-            (0..db.num_tiles() as i32).contains(&pip.tile())
+            (0..db.num_tiles()).contains(&pip.tile())
                 && (0..db.tile_type(pip.tile()).pips.get().len() as i32).contains(&pip.index()),
             "unknown pip {parent}"
         );
