@@ -1,13 +1,13 @@
 //! Maps `synth_fabulous` LUTn and LUTFF cells onto the FABULOUS_LC BELs of a
-//! chipdb from FABulous's `himbaechel_db` plugin.
-//!
-//! A flop merges into the LUT that alone drives its D input, else into a
-//! pass-through LC, and sets FF so the LC's O is registered. Unused EN and SR
-//! tie to VCC and GND. A constant pin with no GND0 or VCC0 pip into it gets
-//! its own constant LC.
+//! FABulous `himbaechel_db` chipdb. A flop merges into the LUT that alone drives
+//! its D input and requests no other BEL, else into a pass-through LC, and sets
+//! FF to register O. Unused EN and SR tie to VCC and GND; a constant pin with no
+//! GND0 or VCC0 pip into it gets its own constant LC.
+
+use std::collections::BTreeMap;
 
 use super::helpers::{connect_port, disconnect_port};
-use super::PackerError;
+use super::{BindingFault, PackerError};
 use crate::chipdb::BelId;
 use crate::common::{IdString, PlaceStrength};
 use crate::context::{BelPin, Context};
@@ -19,6 +19,14 @@ const LC_INIT_BITS: usize = 16;
 const PASS_THROUGH_I0_INIT: &str = "1010101010101010";
 const GND_NET: &str = "$PACKER_GND_NET";
 const VCC_NET: &str = "$PACKER_VCC_NET";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BelRequest {
+    bel: BelId,
+    strength: PlaceStrength,
+}
+
+type BelRequests = BTreeMap<CellId, BelRequest>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SyncControl {
@@ -58,11 +66,12 @@ fn lut_inputs(cell_type: &str) -> Option<usize> {
     }
 }
 
-/// Pin `BEL="X0Y14.B"` cells, merge flops into LCs and retype every LUT as FABULOUS_LC.
-///
-/// Fails on a LUT or LUTFF type this fabric's LC cannot implement, a malformed INIT or a bad BEL attribute.
+/// Merge flops into LCs, retype every LUT as FABULOUS_LC and bind each cell that a `BEL="X0Y14.B"`
+/// attribute or an earlier binding places. A bound flop merges only into an LUT that requests no
+/// other BEL; the LC inherits the flop's BEL. Fails on a LUT or LUTFF type this fabric's LC cannot
+/// implement, a malformed INIT, a bad BEL attribute or an illegal binding.
 pub fn pack_fabulous(ctx: &mut Context) -> Result<(), PackerError> {
-    pin_bel_attributes(ctx)?;
+    let mut requests = take_bel_requests(ctx)?;
     let mut flops = Vec::new();
     let mut luts = Vec::new();
     for (id, cell) in ctx.design.iter_alive_cells() {
@@ -82,8 +91,9 @@ pub fn pack_fabulous(ctx: &mut Context) -> Result<(), PackerError> {
         retype_lut(ctx, lut, inputs)?;
     }
     for (flop, variant) in flops {
-        merge_flop(ctx, flop, variant)?;
+        merge_flop(ctx, flop, variant, &mut requests)?;
     }
+    bind_requests(ctx, requests)?;
     drive_far_constants(ctx, GND_NET, '0')?;
     drive_far_constants(ctx, VCC_NET, '1')?;
     Ok(())
@@ -186,46 +196,133 @@ fn reaches_constant_locally(ctx: &Context, cell: CellId, port: IdString, const_i
     })
 }
 
-fn pin_bel_attributes(ctx: &mut Context) -> Result<(), PackerError> {
+fn packed_type(cell_type: &str) -> &str {
+    if lut_inputs(cell_type).is_some() || FlopVariant::from_cell_type(cell_type).is_some() {
+        LC_TYPE
+    } else {
+        cell_type
+    }
+}
+
+fn bel_location(ctx: &Context, bel: BelId) -> String {
+    let chipdb = ctx.chipdb();
+    format!("{}.{}", chipdb.tile_name(bel.tile()), chipdb.bel_name(bel))
+}
+
+fn illegal_binding(ctx: &Context, cell: CellId, bel: BelId, fault: BindingFault) -> PackerError {
+    PackerError::IllegalBinding {
+        cell: ctx.name_of(ctx.design.cell(cell).name).to_owned(),
+        bel: bel_location(ctx, bel),
+        fault,
+    }
+}
+
+fn find_bel_attribute(ctx: &Context, cell: CellId, location: &str) -> Result<BelId, PackerError> {
+    let cell_name = ctx.name_of(ctx.design.cell(cell).name);
+    let (tile, bel_name) = location.split_once('.').ok_or_else(|| {
+        PackerError::Generic(format!(
+            "Cell {cell_name} has BEL attribute '{location}'. Write it as <tile>.<bel>, for example X0Y14.B."
+        ))
+    })?;
+    let chipdb = ctx.chipdb();
+    chipdb
+        .bels()
+        .find(|&bel| chipdb.tile_name(bel.tile()) == tile && chipdb.bel_name(bel) == bel_name)
+        .ok_or_else(|| {
+            PackerError::Generic(format!(
+                "Cell {cell_name} names BEL {location}, which the chipdb does not have."
+            ))
+        })
+}
+
+/// Collect every `BEL` attribute and every LUT or LUTFF binding, then unbind them until packing ends.
+///
+/// Fails on a malformed or unknown BEL attribute, an attribute that names a BEL other than the
+/// cell's binding, or a BEL whose type is not the type the cell packs to.
+fn take_bel_requests(ctx: &mut Context) -> Result<BelRequests, PackerError> {
     let bel_attr = ctx.id("BEL");
-    let pinned: Vec<(CellId, String)> = ctx
+    let candidates: Vec<(CellId, Option<String>, Option<BelRequest>)> = ctx
         .design
         .iter_alive_cells()
-        .filter_map(|(id, cell)| cell.attrs.get(&bel_attr).map(|loc| (id, loc.as_str())))
+        .filter_map(|(id, cell)| {
+            let attr = cell.attrs.get(&bel_attr).map(Property::as_str);
+            let repacked = packed_type(ctx.name_of(cell.cell_type)) == LC_TYPE;
+            let bound = cell
+                .bel
+                .filter(|_| repacked || attr.is_some())
+                .map(|bel| BelRequest {
+                    bel,
+                    strength: cell.bel_strength,
+                });
+            (attr.is_some() || bound.is_some()).then_some((id, attr, bound))
+        })
         .collect();
-    for (cell, location) in pinned {
-        let cell_name = ctx.name_of(ctx.design.cell(cell).name).to_owned();
-        let cell_type = ctx.name_of(ctx.design.cell(cell).cell_type).to_owned();
-        let (tile, bel_name) = location.split_once('.').ok_or_else(|| {
-            PackerError::Generic(format!(
-                "Cell {cell_name} has BEL attribute '{location}'. Write it as <tile>.<bel>, for example X0Y14.B."
-            ))
-        })?;
-        let chipdb = ctx.chipdb();
-        let bel = chipdb
-            .bels()
-            .find(|&bel| chipdb.tile_name(bel.tile()) == tile && chipdb.bel_name(bel) == bel_name)
-            .ok_or_else(|| {
-                PackerError::Generic(format!(
-                    "Cell {cell_name} names BEL {location}, which the chipdb does not have."
-                ))
-            })?;
-        if chipdb.bel_type(bel) != cell_type {
-            return Err(PackerError::Generic(format!(
-                "Cell {cell_name} of type {cell_type} names BEL {location} of type {}.",
-                chipdb.bel_type(bel)
-            )));
+    let mut requests = BelRequests::new();
+    for (cell, attr, bound) in candidates {
+        let request = match attr {
+            Some(location) => {
+                let bel = find_bel_attribute(ctx, cell, &location)?;
+                match bound {
+                    Some(bound) if bound.bel != bel => {
+                        let fault = BindingFault::AlreadyBound(bel_location(ctx, bound.bel));
+                        return Err(illegal_binding(ctx, cell, bel, fault));
+                    }
+                    Some(bound) => bound,
+                    None => BelRequest {
+                        bel,
+                        strength: PlaceStrength::User,
+                    },
+                }
+            }
+            None => bound.expect("collected for its attribute or its binding"),
+        };
+        let packed = packed_type(ctx.name_of(ctx.design.cell(cell).cell_type));
+        let bel_type = ctx.chipdb().bel_type(request.bel);
+        if bel_type != packed {
+            let fault = BindingFault::TypeMismatch {
+                bel_type: bel_type.to_owned(),
+                packed_type: packed.to_owned(),
+            };
+            return Err(illegal_binding(ctx, cell, request.bel, fault));
         }
-        if !ctx.bind_bel(bel, cell, PlaceStrength::User) {
-            return Err(PackerError::Generic(format!(
-                "Cell {cell_name} names BEL {location}, which another cell already holds."
-            )));
+        requests.insert(cell, request);
+    }
+    for (&cell, request) in &requests {
+        if ctx.design.cell(cell).bel.is_some() {
+            ctx.unbind_bel(request.bel);
         }
+    }
+    Ok(requests)
+}
+
+/// Bind every surviving cell to its requested BEL.
+///
+/// Fails when another cell already holds the BEL, such as two LCs that request one BEL.
+fn bind_requests(ctx: &mut Context, requests: BelRequests) -> Result<(), PackerError> {
+    for (cell, request) in requests {
+        if let Some(holder) = ctx.conflicting_bel_cell(request.bel) {
+            let holder = ctx.name_of(ctx.design.cell(holder).name).to_owned();
+            return Err(illegal_binding(
+                ctx,
+                cell,
+                request.bel,
+                BindingFault::Occupied(holder),
+            ));
+        }
+        assert!(
+            ctx.bind_bel(request.bel, cell, request.strength),
+            "a free chipdb BEL accepts the binding"
+        );
     }
     Ok(())
 }
 
-fn merge_flop(ctx: &mut Context, flop: CellId, variant: FlopVariant) -> Result<(), PackerError> {
+fn merge_flop(
+    ctx: &mut Context,
+    flop: CellId,
+    variant: FlopVariant,
+    requests: &mut BelRequests,
+) -> Result<(), PackerError> {
     let [d, o, clk, en, sr, e, r, s, i0] =
         ["D", "O", "CLK", "EN", "SR", "E", "R", "S", "I0"].map(|name| ctx.id(name));
     let flop_name = ctx.design.cell(flop).name;
@@ -235,7 +332,13 @@ fn merge_flop(ctx: &mut Context, flop: CellId, variant: FlopVariant) -> Result<(
             ctx.name_of(flop_name)
         ))
     })?;
-    let lc = match sole_lut_driver(ctx, d_net) {
+    let flop_request = requests.remove(&flop);
+    let absorbing_lut =
+        sole_lut_driver(ctx, d_net).filter(|lut| match (requests.get(lut), flop_request) {
+            (Some(lut_request), Some(flop_request)) => lut_request.bel == flop_request.bel,
+            _ => true,
+        });
+    let lc = match absorbing_lut {
         Some(lut) => {
             disconnect_port(ctx, lut, o);
             disconnect_port(ctx, flop, d);
@@ -255,6 +358,9 @@ fn merge_flop(ctx: &mut Context, flop: CellId, variant: FlopVariant) -> Result<(
             lc
         }
     };
+    if let Some(request) = flop_request {
+        requests.entry(lc).or_insert(request);
+    }
     let ff = ctx.id("FF");
     ctx.design
         .cell_edit(lc)
