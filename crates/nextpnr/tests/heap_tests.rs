@@ -1,7 +1,12 @@
 mod common;
 
+use nextpnr::chipdb::BelId;
+use nextpnr::common::PlaceStrength;
+use nextpnr::context::Context;
+use nextpnr::netlist::CellId;
 use nextpnr::placer::heap::{place_heap, PlacerHeapCfg};
-use nextpnr::placer::{Placer, PlacerHeap};
+use nextpnr::placer::{refine_placement, Placer, PlacerHeap, PlacerPipeline, RefineCfg};
+use rstest::rstest;
 
 // =====================================================================
 // Configuration tests
@@ -120,4 +125,73 @@ fn place_heap_via_trait() {
     PlacerHeap
         .place(&mut ctx, &cfg)
         .expect("trait dispatch should work");
+}
+
+const LUT_COUNT: usize = 32;
+
+fn lut_design(
+    lock_every: usize,
+    free_strength: Option<PlaceStrength>,
+) -> (Context, Vec<(CellId, BelId)>) {
+    let mut ctx = common::make_example_context();
+    let cells: Vec<CellId> = (0..LUT_COUNT)
+        .map(|i| common::add_cell(&mut ctx, &format!("lut{i}"), "LUT6"))
+        .collect();
+    for (i, &cell) in cells.iter().enumerate() {
+        let net = common::add_net(&mut ctx, &format!("n{i}"));
+        common::drive(&mut ctx, net, cell, "F");
+        common::sink(&mut ctx, net, cells[(i + 1) % LUT_COUNT], "I[0]");
+        common::sink(&mut ctx, net, cells[(i + 5) % LUT_COUNT], "I[1]");
+    }
+    ctx.populate_bel_buckets();
+    let lut6 = ctx.id("LUT6");
+    let bels: Vec<BelId> = ctx.bels_for_bucket(lut6).map(|bel| bel.id()).collect();
+    assert!(bels.len() >= 4 * LUT_COUNT, "the fixture spreads the locks");
+    let mut locked = Vec::new();
+    for (i, &cell) in cells.iter().enumerate() {
+        let (bel, strength) = match i % lock_every == 0 {
+            true => (bels[bels.len() - 1 - 3 * i], Some(PlaceStrength::User)),
+            false => (bels[i], free_strength),
+        };
+        if let Some(strength) = strength {
+            assert!(ctx.bind_bel(bel, cell, strength));
+        }
+        if strength == Some(PlaceStrength::User) {
+            locked.push((cell, bel));
+        }
+    }
+    (ctx, locked)
+}
+
+fn assert_user_locked(ctx: &Context, locked: &[(CellId, BelId)]) {
+    for &(cell, bel) in locked {
+        let info = ctx.design.cell(cell);
+        assert_eq!(
+            (info.bel, info.bel_strength),
+            (Some(bel), PlaceStrength::User)
+        );
+    }
+}
+
+#[rstest]
+#[case::every_second_cell(2)]
+#[case::every_seventh_cell(7)]
+fn heap_places_every_unbound_cell_around_user_locks(#[case] lock_every: usize) {
+    let (mut ctx, locked) = lut_design(lock_every, None);
+    PlacerHeap
+        .place(&mut ctx, &PlacerHeapCfg::default())
+        .expect("HeAP places the unbound cells");
+    PlacerPipeline::validate(&ctx).expect("every cell is placed");
+    assert_user_locked(&ctx, &locked);
+}
+
+#[rstest]
+#[case::every_second_cell(2)]
+#[case::every_seventh_cell(7)]
+fn refine_never_moves_user_locked_cells(#[case] lock_every: usize) {
+    let (mut ctx, locked) = lut_design(lock_every, Some(PlaceStrength::Weak));
+    let stats = refine_placement(&mut ctx, &RefineCfg::default()).expect("refinement runs");
+    assert_eq!(stats.autoplaced, LUT_COUNT - locked.len());
+    assert!(stats.moves_accepted > 0, "refinement moved a free cell");
+    assert_user_locked(&ctx, &locked);
 }
