@@ -107,7 +107,7 @@ impl Design {
 
     #[inline]
     pub fn iter_cell_indices(&self) -> impl Iterator<Item = CellId> + '_ {
-        self.cells.values().copied()
+        self.iter_cells().map(|(cell, _)| cell)
     }
 
     #[inline]
@@ -196,7 +196,7 @@ impl Design {
 
     #[inline]
     pub fn iter_net_indices(&self) -> impl Iterator<Item = NetId> + '_ {
-        self.nets.values().copied()
+        self.iter_nets().map(|(net, _)| net)
     }
 
     #[inline]

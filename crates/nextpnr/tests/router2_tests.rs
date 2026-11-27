@@ -423,19 +423,24 @@ fn subset_route_leaves_unlisted_nets_unrouted() {
 #[rstest]
 #[case::first_net(0)]
 #[case::middle_net(40)]
-#[case::late_net(120)]
-fn subset_route_avoids_a_wire_bound_to_another_net(#[case] index: usize) {
+#[case::late_net(117)]
+fn subset_route_avoids_a_wire_bound_to_another_net(#[case] from: usize) {
     let trees = free_trees();
-    let (target, tree) = &trees[index];
-    let (owner, _) = trees[(index + 1) % trees.len()];
     let mut ctx = clocked_baseline(None);
-    let sinks = collect_sink_wires(&ctx, *target);
-    let interior = tree
+    let interior_wire = |net: NetId, tree: &Tree| {
+        let sinks = collect_sink_wires(&ctx, net);
+        tree.iter()
+            .filter_map(|(&wire, &pip)| pip.map(|_| wire))
+            .filter(|wire| !sinks.contains(wire))
+            .min_by_key(|wire| (wire.tile(), wire.index()))
+    };
+    let (index, target, interior) = trees
         .iter()
-        .filter_map(|(&wire, &pip)| pip.map(|_| wire))
-        .filter(|wire| !sinks.contains(wire))
-        .min_by_key(|wire| (wire.tile(), wire.index()))
-        .expect("the free route has an interior wire");
+        .enumerate()
+        .skip(from)
+        .find_map(|(index, (net, tree))| interior_wire(*net, tree).map(|wire| (index, net, wire)))
+        .expect("a free route from this index on has an interior wire");
+    let (owner, _) = trees[(index + 1) % trees.len()];
     ctx.bind_wire(interior, owner, PlaceStrength::User);
     ctx.design
         .net_edit(owner)

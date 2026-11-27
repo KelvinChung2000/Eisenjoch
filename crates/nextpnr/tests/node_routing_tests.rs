@@ -11,7 +11,7 @@ use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
 use nextpnr::frontend::parse_json;
 use nextpnr::netlist::NetId;
-use nextpnr::router::common::{collect_sink_wires, resolve_source_wire};
+use nextpnr::router::common::{collect_sink_wires, resolve_source_wire, source_wire_const_value};
 use nextpnr::router::maze::Router1Cfg;
 use nextpnr::router::raster::RasterRouterCfg;
 use nextpnr::router::router2::Router2Cfg;
@@ -70,6 +70,19 @@ fn placed_nets(ctx: &Context) -> Vec<NetId> {
                 && net.num_users() > 0
                 && net.driver().is_some_and(|d| d.is_valid() && placed(d.cell))
                 && net.users().iter().all(|u| u.is_valid() && placed(u.cell))
+        })
+        .collect()
+}
+
+/// The placed nets not driven from a constant wire.
+fn placed_signal_nets(ctx: &Context) -> Vec<NetId> {
+    placed_nets(ctx)
+        .into_iter()
+        .filter(|&n| {
+            let source = resolve_source_wire(ctx, n)
+                .expect("a placed net resolves its source")
+                .expect("a placed net has a source wire");
+            source_wire_const_value(ctx, source) == 0
         })
         .collect()
 }
@@ -144,9 +157,10 @@ fn route_and_check<R: Router>(
     cfg: &R::Config,
     name: &str,
     reserves_pins: bool,
+    select: fn(&Context) -> Vec<NetId>,
 ) -> Coverage {
     let mut ctx = placed_context();
-    let nets = placed_nets(&ctx);
+    let nets = select(&ctx);
     let result = router.route_nets(&mut ctx, cfg, &nets);
     let c = coverage(&ctx, &nets);
     eprintln!(
@@ -200,11 +214,18 @@ fn route_and_check<R: Router>(
 
 #[test]
 fn router1_routes_placed_design_on_nodes() {
-    let c = route_and_check(&Router1, &Router1Cfg::default(), "router1", false);
-    // Router1 stops at the first unroutable net; this is what it connected
-    // before node-canonical wires, and the change must not lose any of it.
+    // Router1 stops at the first unroutable net, and no constant net routes
+    // on this fabric, so routing them would measure only their place in the
+    // net order.
+    let c = route_and_check(
+        &Router1,
+        &Router1Cfg::default(),
+        "router1",
+        false,
+        placed_signal_nets,
+    );
     assert!(
-        c.sinks_connected >= 115,
+        c.sinks_connected >= 187,
         "router1 connected {}",
         c.sinks_connected
     );
@@ -212,7 +233,13 @@ fn router1_routes_placed_design_on_nodes() {
 
 #[test]
 fn router2_routes_placed_design_on_nodes() {
-    let c = route_and_check(&Router2, &Router2Cfg::default(), "router2", false);
+    let c = route_and_check(
+        &Router2,
+        &Router2Cfg::default(),
+        "router2",
+        false,
+        placed_nets,
+    );
     assert!(
         c.sinks_connected >= 163,
         "router2 connected {}",
@@ -222,7 +249,13 @@ fn router2_routes_placed_design_on_nodes() {
 
 #[test]
 fn raster_routes_placed_design_on_nodes() {
-    let c = route_and_check(&RasterRouter, &RasterRouterCfg::default(), "raster", true);
+    let c = route_and_check(
+        &RasterRouter,
+        &RasterRouterCfg::default(),
+        "raster",
+        true,
+        placed_nets,
+    );
     assert!(
         c.sinks_connected >= 323,
         "raster connected {}",
