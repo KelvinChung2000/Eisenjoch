@@ -172,54 +172,18 @@ pub fn run(
     cancelled()?;
 
     log("Placing with HeAP");
-    let heap = PlacerHeapCfg {
-        seed: options.seed,
-        congestion_weight: HEAP_CONGESTION_WEIGHT,
-        ..PlacerHeapCfg::default()
-    };
-    PlacerHeap
-        .place(&mut ctx, &heap)
-        .map_err(|error| FlowError::placer(error, FlowError::Place))?;
-    ctx.publish_live(LiveProgress::bound("placed", None));
-
+    place(&mut ctx, options)?;
     log("Refining the placement");
-    let refine = RefineCfg {
-        timing_driven: options.timing_driven,
-        crit_norm: CritNorm::WnsRelaxed,
-        ..RefineCfg::default()
-    };
-    refine_placement(&mut ctx, &refine)
-        .and_then(|_| PlacerPipeline::validate(&ctx))
-        .map_err(|error| FlowError::placer(error, FlowError::Refine))?;
-    ctx.publish_live(LiveProgress::bound("refined", None));
-
+    refine(&mut ctx, options)?;
     log("Routing with Router2");
-    let router = Router2Cfg {
-        timing: options.timing_driven.then(TimingDrivenCfg::default),
-        ..Router2Cfg::default()
-    };
     let nets = collect_routable_nets(&ctx);
-    Router2
-        .route_nets(&mut ctx, &router, &nets)
-        .map_err(|error| match error {
-            RouterError::Cancelled(cancelled) => FlowError::Cancelled(cancelled),
-            error => FlowError::Route(error),
-        })?;
-    ctx.publish_live(LiveProgress::bound("routed", None));
+    route(&mut ctx, options, &nets)?;
     cancelled()?;
 
     let report = routed_timing(&ctx)?;
     let timing = report.to_string();
     log(&timing);
-    if let Some(path) = &options.report {
-        write(path, pretty(&report_json(&ctx, &report)))?;
-    }
-    if let Some(path) = &options.routed {
-        write(path, pretty(&routed_json(&ctx)?))?;
-    }
-    if let Some(path) = &options.fasm {
-        write(path, fasm_text(&fasm_features(&ctx)?)?)?;
-    }
+    write_outputs(&ctx, options, &report)?;
     let timing_failures = timing_failures(&report);
     for failure in &timing_failures {
         log(&format!("Timing check failed: {failure}"));
@@ -254,7 +218,70 @@ pub fn constrain_clocks(ctx: &mut Context, freq_mhz: f64) -> Result<Vec<String>,
         .collect())
 }
 
-fn routed_timing(ctx: &Context) -> Result<TimingReport, StaSessionError> {
+/// Place the design with HeAP, seeded from `options.seed`.
+pub fn place(ctx: &mut Context, options: &FlowOptions) -> Result<(), FlowError> {
+    let heap = PlacerHeapCfg {
+        seed: options.seed,
+        congestion_weight: HEAP_CONGESTION_WEIGHT,
+        ..PlacerHeapCfg::default()
+    };
+    PlacerHeap
+        .place(ctx, &heap)
+        .map_err(|error| FlowError::placer(error, FlowError::Place))?;
+    ctx.publish_live(LiveProgress::bound("placed", None));
+    Ok(())
+}
+
+/// Refine the placement, by STA criticality when `options.timing_driven`, then validate it.
+pub fn refine(ctx: &mut Context, options: &FlowOptions) -> Result<(), FlowError> {
+    let refine = RefineCfg {
+        timing_driven: options.timing_driven,
+        crit_norm: CritNorm::WnsRelaxed,
+        ..RefineCfg::default()
+    };
+    refine_placement(ctx, &refine)
+        .and_then(|_| PlacerPipeline::validate(ctx))
+        .map_err(|error| FlowError::placer(error, FlowError::Refine))?;
+    ctx.publish_live(LiveProgress::bound("refined", None));
+    Ok(())
+}
+
+/// Route `nets` with Router2, timing-driven when `options.timing_driven`.
+pub fn route(ctx: &mut Context, options: &FlowOptions, nets: &[NetId]) -> Result<(), FlowError> {
+    let router = Router2Cfg {
+        timing: options.timing_driven.then(TimingDrivenCfg::default),
+        ..Router2Cfg::default()
+    };
+    Router2
+        .route_nets(ctx, &router, nets)
+        .map_err(|error| match error {
+            RouterError::Cancelled(cancelled) => FlowError::Cancelled(cancelled),
+            error => FlowError::Route(error),
+        })?;
+    ctx.publish_live(LiveProgress::bound("routed", None));
+    Ok(())
+}
+
+/// Write the report, routed JSON and FASM that `options` names, overwriting each file.
+pub fn write_outputs(
+    ctx: &Context,
+    options: &FlowOptions,
+    report: &TimingReport,
+) -> Result<(), FlowError> {
+    if let Some(path) = &options.report {
+        write(path, pretty(&report_json(ctx, report)))?;
+    }
+    if let Some(path) = &options.routed {
+        write(path, pretty(&routed_json(ctx)?))?;
+    }
+    if let Some(path) = &options.fasm {
+        write(path, fasm_text(&fasm_features(ctx)?)?)?;
+    }
+    Ok(())
+}
+
+/// Time the routed design with the interconnect model the flow signs off with.
+pub fn routed_timing(ctx: &Context) -> Result<TimingReport, StaSessionError> {
     let model = InterconnectModel::new(ctx, NOTIONAL_CLASSLESS_PIPS, PlacedEstimate::ExactSearch)?;
     StaSession::build(ctx, model, InterconnectStage::Routed)?.report(ctx, 1)
 }
