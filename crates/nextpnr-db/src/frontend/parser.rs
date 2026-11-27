@@ -81,13 +81,23 @@ pub(crate) fn parse_netlist(
     constants: ConstantDrivers,
 ) -> Result<Design> {
     let json: Value = serde_json::from_str(json_str).context("Failed to parse JSON")?;
+    parse_netlist_value(&json, pool, constants)
+}
 
+pub(crate) fn top_module(json: &Value) -> Result<(&str, &Value)> {
     let modules = json
         .get("modules")
         .and_then(|m| m.as_object())
         .context("Missing or invalid 'modules' key in JSON")?;
+    find_top_module(modules)
+}
 
-    let (top_name, top_module) = find_top_module(modules)?;
+pub(crate) fn parse_netlist_value(
+    json: &Value,
+    pool: &IdStringPool,
+    constants: ConstantDrivers,
+) -> Result<Design> {
+    let (top_name, top_module) = top_module(json)?;
 
     let mut design = Design::new();
     design.top_module = pool.intern(top_name);
