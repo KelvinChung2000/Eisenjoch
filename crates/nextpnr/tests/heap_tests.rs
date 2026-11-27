@@ -195,3 +195,37 @@ fn refine_never_moves_user_locked_cells(#[case] lock_every: usize) {
     assert!(stats.moves_accepted > 0, "refinement moved a free cell");
     assert_user_locked(&ctx, &locked);
 }
+
+const PAIR_COUNT: usize = 16;
+
+#[test]
+fn heap_places_design_around_cluster_bound_through_root() {
+    let mut ctx = common::make_example_context();
+    let pairs: Vec<(CellId, CellId)> = (0..PAIR_COUNT)
+        .map(|i| common::add_lut_into_ff(&mut ctx, &format!("lut{i}"), &format!("ff{i}")))
+        .collect();
+    for (i, &(_, ff)) in pairs.iter().enumerate() {
+        let q = common::add_net(&mut ctx, &format!("q{i}"));
+        common::drive(&mut ctx, q, ff, "Q");
+        common::sink(&mut ctx, q, pairs[(i + 1) % PAIR_COUNT].0, "I[0]");
+    }
+    assert_eq!(common::cluster_lut_ff_pairs(&mut ctx), PAIR_COUNT);
+    ctx.populate_bel_buckets();
+    let (root, ff) = pairs[0];
+    let root_bel = ctx
+        .chipdb()
+        .bels()
+        .filter(|&bel| ctx.chipdb().bel_name(bel) == "L3_LUT")
+        .last()
+        .expect("the example chipdb has logic tiles");
+    ctx.try_bind_bel(root, root_bel, PlaceStrength::User)
+        .expect("the cluster fits at its root's BEL");
+    let bound = [root, ff].map(|cell| (cell, ctx.design.cell(cell).bel.unwrap()));
+
+    PlacerHeap
+        .place(&mut ctx, &PlacerHeapCfg::default())
+        .expect("HeAP places the rest of the design");
+
+    PlacerPipeline::validate(&ctx).expect("every cell is placed");
+    assert_user_locked(&ctx, &bound);
+}

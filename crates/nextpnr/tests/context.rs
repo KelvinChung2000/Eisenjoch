@@ -1,11 +1,12 @@
 //! Integration tests for the context module.
 //!
 //! Most tests use the minimal 2x2 chipdb from `nextpnr::chipdb::testutil`. The
-//! typed bind and swap tests use the example arch chipdb in `tests/fixtures`.
+//! typed bind, swap and unbind tests use the example arch chipdb in
+//! `tests/fixtures`.
 
 mod common;
 
-use nextpnr::chipdb::{BelId, PipId, WireId};
+use nextpnr::chipdb::{BelId, Loc, PipId, WireId};
 use nextpnr::common::{DelayQuad, DelayT};
 use nextpnr::common::{IdString, PlaceStrength};
 use nextpnr::context::{BelBindError, BelLocation, BelPin, Context};
@@ -666,6 +667,7 @@ fn placement(ctx: &Context) -> Placement {
 enum Edit {
     Bind { cell: CellId, bel: BelId },
     Swap { first: CellId, second: CellId },
+    Unbind { cell: CellId },
 }
 
 impl Edit {
@@ -673,6 +675,7 @@ impl Edit {
         match *self {
             Edit::Bind { cell, bel } => ctx.try_bind_bel(cell, bel, PlaceStrength::User),
             Edit::Swap { first, second } => ctx.try_swap_cells(first, second),
+            Edit::Unbind { cell } => ctx.try_unbind_cell(cell),
         }
     }
 }
@@ -827,6 +830,341 @@ fn swap_into_invalid_location() -> Refusal {
     }
 }
 
+struct ClusterFixture {
+    ctx: Context,
+    root: CellId,
+    ff: CellId,
+    lut_b: CellId,
+    root_bel: BelId,
+}
+
+impl ClusterFixture {
+    fn bel_at(&self, dx: i32, z: i32) -> BelId {
+        let loc = self.ctx.chipdb().bel_loc(self.root_bel);
+        self.ctx
+            .bel_by_location(Loc::new(loc.x + dx, loc.y, z))
+            .expect("the fixture tile row has this BEL")
+    }
+
+    fn expected_members(&self) -> [(CellId, BelLocation); 3] {
+        let root_tile = self.ctx.chipdb().tile_name(self.root_bel.tile());
+        let east_tile = self.ctx.chipdb().tile_name(self.bel_at(1, 0).tile());
+        [
+            (self.root, location(&self.ctx, self.root_bel)),
+            (
+                self.ff,
+                BelLocation {
+                    tile: root_tile.into(),
+                    bel: "L0_FF".into(),
+                },
+            ),
+            (
+                self.lut_b,
+                BelLocation {
+                    tile: east_tile.into(),
+                    bel: "L0_LUT".into(),
+                },
+            ),
+        ]
+    }
+}
+
+fn cluster() -> ClusterFixture {
+    let mut ctx = common::make_example_context();
+    let (root, ff) = common::add_lut_into_ff(&mut ctx, "lut", "ff");
+    assert_eq!(common::cluster_lut_ff_pairs(&mut ctx), 1);
+    let lut_b = common::add_cell(&mut ctx, "lut_b", "LUT6");
+    ctx.design
+        .cell_edit(lut_b)
+        .set_cluster(Some(root))
+        .set_constraints(1, 0, 0, false);
+    let members = ctx
+        .design
+        .clusters
+        .get_mut(&root)
+        .expect("lut roots a cluster");
+    members.members.push(lut_b);
+    members.constr_children.push(lut_b);
+    let root_bel = example_bels(&ctx, "LUT6")
+        .into_iter()
+        .find(|&bel| {
+            let loc = ctx.chipdb().bel_loc(bel);
+            ctx.chipdb().bel_name(bel) == "L0_LUT"
+                && ctx
+                    .bel_by_location(Loc::new(loc.x + 1, loc.y, 0))
+                    .is_some_and(|east| ctx.chipdb().bel_name(east) == "L0_LUT")
+        })
+        .expect("a logic tile has a logic tile to its east");
+    ClusterFixture {
+        ctx,
+        root,
+        ff,
+        lut_b,
+        root_bel,
+    }
+}
+
+fn placed_cluster() -> ClusterFixture {
+    let mut fixture = cluster();
+    fixture
+        .ctx
+        .try_bind_bel(fixture.root, fixture.root_bel, PlaceStrength::Placer)
+        .unwrap();
+    fixture
+}
+
+fn bind_cluster_child() -> Refusal {
+    let fixture = cluster();
+    let bel = fixture.bel_at(0, 1);
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.ff,
+            bel,
+        },
+        expected: BelBindError::ClusterChild {
+            cell: "ff".into(),
+            root: "lut".into(),
+        },
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_with_member_off_chip() -> Refusal {
+    let mut fixture = cluster();
+    fixture
+        .ctx
+        .design
+        .cell_edit(fixture.lut_b)
+        .set_constraints(0, 0, 16, false);
+    let root_loc = fixture.ctx.chipdb().bel_loc(fixture.root_bel);
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel: fixture.root_bel,
+        },
+        expected: BelBindError::NoBelAtClusterOffset {
+            cell: "lut_b".into(),
+            root: "lut".into(),
+            location: Loc::new(root_loc.x, root_loc.y, 16),
+        },
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_with_member_on_other_type() -> Refusal {
+    let mut fixture = cluster();
+    fixture
+        .ctx
+        .design
+        .cell_edit(fixture.ff)
+        .set_constraints(0, 0, 2, false);
+    let expected = BelBindError::TypeMismatch {
+        cell: "ff".into(),
+        bel: location(&fixture.ctx, fixture.bel_at(0, 2)),
+        cell_type: "DFF".into(),
+        bel_type: "LUT6".into(),
+    };
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel: fixture.root_bel,
+        },
+        expected,
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_with_bound_member() -> Refusal {
+    let mut fixture = cluster();
+    let elsewhere = fixture.bel_at(0, 4);
+    assert!(fixture
+        .ctx
+        .bind_bel(elsewhere, fixture.lut_b, PlaceStrength::Placer));
+    let expected = BelBindError::CellAlreadyBound {
+        cell: "lut_b".into(),
+        bel: location(&fixture.ctx, fixture.bel_at(1, 0)),
+        bound_to: location(&fixture.ctx, elsewhere),
+    };
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel: fixture.root_bel,
+        },
+        expected,
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_onto_occupied_member_bel() -> Refusal {
+    let mut fixture = cluster();
+    let occupant = common::add_cell(&mut fixture.ctx, "occupant", "DFF");
+    let ff_bel = fixture.bel_at(0, 1);
+    fixture
+        .ctx
+        .try_bind_bel(occupant, ff_bel, PlaceStrength::Placer)
+        .unwrap();
+    let expected = BelBindError::BelOccupied {
+        cell: "ff".into(),
+        bel: location(&fixture.ctx, ff_bel),
+        occupant: "occupant".into(),
+    };
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel: fixture.root_bel,
+        },
+        expected,
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_into_invalid_tile() -> Refusal {
+    let mut fixture = cluster();
+    let east = fixture.bel_at(1, 0);
+    fixture
+        .ctx
+        .set_validity_check(Arc::new(move |_, bel| bel != east));
+    let expected = BelBindError::InvalidLocation {
+        cell: "lut_b".into(),
+        bel: location(&fixture.ctx, east),
+    };
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel: fixture.root_bel,
+        },
+        expected,
+        ctx: fixture.ctx,
+    }
+}
+
+fn bind_cluster_root_off_its_absolute_z() -> Refusal {
+    let mut fixture = cluster();
+    fixture
+        .ctx
+        .design
+        .cell_edit(fixture.root)
+        .set_constraints(0, 0, 0, true);
+    let bel = fixture.bel_at(0, 2);
+    let expected = BelBindError::ClusterRootZ {
+        cell: "lut".into(),
+        bel: location(&fixture.ctx, bel),
+        required: location(&fixture.ctx, fixture.root_bel),
+    };
+    Refusal {
+        edit: Edit::Bind {
+            cell: fixture.root,
+            bel,
+        },
+        expected,
+        ctx: fixture.ctx,
+    }
+}
+
+fn placed_cluster_and_lone_lut() -> (ClusterFixture, CellId) {
+    let mut fixture = placed_cluster();
+    let lone = common::add_cell(&mut fixture.ctx, "lone", "LUT6");
+    let bel = fixture.bel_at(0, 4);
+    fixture
+        .ctx
+        .try_bind_bel(lone, bel, PlaceStrength::Placer)
+        .unwrap();
+    (fixture, lone)
+}
+
+fn swap_cluster_root() -> Refusal {
+    let (fixture, lone) = placed_cluster_and_lone_lut();
+    Refusal {
+        edit: Edit::Swap {
+            first: fixture.root,
+            second: lone,
+        },
+        expected: BelBindError::ClusterSwap {
+            cell: "lut".into(),
+            root: "lut".into(),
+        },
+        ctx: fixture.ctx,
+    }
+}
+
+fn swap_cluster_child() -> Refusal {
+    let (fixture, lone) = placed_cluster_and_lone_lut();
+    Refusal {
+        edit: Edit::Swap {
+            first: lone,
+            second: fixture.ff,
+        },
+        expected: BelBindError::ClusterSwap {
+            cell: "ff".into(),
+            root: "lut".into(),
+        },
+        ctx: fixture.ctx,
+    }
+}
+
+fn unbind_cluster_child() -> Refusal {
+    let fixture = placed_cluster();
+    Refusal {
+        edit: Edit::Unbind { cell: fixture.ff },
+        expected: BelBindError::ClusterChild {
+            cell: "ff".into(),
+            root: "lut".into(),
+        },
+        ctx: fixture.ctx,
+    }
+}
+
+fn unbind_unplaced_cell() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    Refusal {
+        ctx,
+        edit: Edit::Unbind { cell },
+        expected: BelBindError::CellNotPlaced { cell: "lut".into() },
+    }
+}
+
+#[test]
+fn try_bind_bel_places_cluster_through_root() {
+    let fixture = placed_cluster();
+    for (cell, expected) in fixture.expected_members() {
+        let info = fixture.ctx.design.cell(cell);
+        let bel = info.bel.expect("every cluster member is placed");
+        assert_eq!(location(&fixture.ctx, bel), expected);
+        assert_eq!(info.bel_strength, PlaceStrength::Placer);
+        assert_eq!(fixture.ctx.conflicting_bel_cell(bel), Some(cell));
+    }
+}
+
+type PlacedMembers = (Context, CellId, Vec<(CellId, BelId)>);
+
+fn unbind_lone_cell() -> PlacedMembers {
+    let (ctx, first, _, first_bel, _) = placed_luts();
+    (ctx, first, vec![(first, first_bel)])
+}
+
+fn unbind_cluster_root() -> PlacedMembers {
+    let fixture = placed_cluster();
+    let members = [fixture.root, fixture.ff, fixture.lut_b]
+        .into_iter()
+        .map(|cell| (cell, fixture.ctx.design.cell(cell).bel.unwrap()))
+        .collect();
+    (fixture.ctx, fixture.root, members)
+}
+
+#[rstest]
+#[case::lone_cell(unbind_lone_cell)]
+#[case::cluster_root(unbind_cluster_root)]
+fn try_unbind_cell_frees_every_member(#[case] setup: fn() -> PlacedMembers) {
+    let (mut ctx, cell, members) = setup();
+    ctx.try_unbind_cell(cell).unwrap();
+    for (member, bel) in members {
+        let info = ctx.design.cell(member);
+        assert_eq!((info.bel, info.bel_strength), (None, PlaceStrength::None));
+        assert_eq!(ctx.conflicting_bel_cell(bel), None);
+    }
+}
+
 #[test]
 fn try_bind_bel_binds_cell_with_strength() {
     let mut ctx = common::make_example_context();
@@ -859,6 +1197,17 @@ fn try_swap_cells_exchanges_bels_and_keeps_strengths() {
 #[case::swap_with_unplaced_cell(swap_with_unplaced_cell)]
 #[case::swap_across_types(swap_across_types)]
 #[case::swap_into_invalid_location(swap_into_invalid_location)]
+#[case::bind_cluster_child(bind_cluster_child)]
+#[case::bind_cluster_with_member_off_chip(bind_cluster_with_member_off_chip)]
+#[case::bind_cluster_with_member_on_other_type(bind_cluster_with_member_on_other_type)]
+#[case::bind_cluster_with_bound_member(bind_cluster_with_bound_member)]
+#[case::bind_cluster_onto_occupied_member_bel(bind_cluster_onto_occupied_member_bel)]
+#[case::bind_cluster_into_invalid_tile(bind_cluster_into_invalid_tile)]
+#[case::bind_cluster_root_off_its_absolute_z(bind_cluster_root_off_its_absolute_z)]
+#[case::swap_cluster_root(swap_cluster_root)]
+#[case::swap_cluster_child(swap_cluster_child)]
+#[case::unbind_cluster_child(unbind_cluster_child)]
+#[case::unbind_unplaced_cell(unbind_unplaced_cell)]
 fn refused_edit_returns_its_error(#[case] setup: fn() -> Refusal) {
     let Refusal {
         mut ctx,
@@ -877,6 +1226,17 @@ fn refused_edit_returns_its_error(#[case] setup: fn() -> Refusal) {
 #[case::swap_with_unplaced_cell(swap_with_unplaced_cell)]
 #[case::swap_across_types(swap_across_types)]
 #[case::swap_into_invalid_location(swap_into_invalid_location)]
+#[case::bind_cluster_child(bind_cluster_child)]
+#[case::bind_cluster_with_member_off_chip(bind_cluster_with_member_off_chip)]
+#[case::bind_cluster_with_member_on_other_type(bind_cluster_with_member_on_other_type)]
+#[case::bind_cluster_with_bound_member(bind_cluster_with_bound_member)]
+#[case::bind_cluster_onto_occupied_member_bel(bind_cluster_onto_occupied_member_bel)]
+#[case::bind_cluster_into_invalid_tile(bind_cluster_into_invalid_tile)]
+#[case::bind_cluster_root_off_its_absolute_z(bind_cluster_root_off_its_absolute_z)]
+#[case::swap_cluster_root(swap_cluster_root)]
+#[case::swap_cluster_child(swap_cluster_child)]
+#[case::unbind_cluster_child(unbind_cluster_child)]
+#[case::unbind_unplaced_cell(unbind_unplaced_cell)]
 fn refused_edit_leaves_placement_unchanged(#[case] setup: fn() -> Refusal) {
     let Refusal { mut ctx, edit, .. } = setup();
     let before = placement(&ctx);

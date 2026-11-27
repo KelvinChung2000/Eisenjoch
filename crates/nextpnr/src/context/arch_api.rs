@@ -301,6 +301,16 @@ impl Context {
         cluster: CellId,
         root_bel: BelId,
     ) -> Option<Vec<(CellId, BelId)>> {
+        self.resolve_cluster_placement(cluster, root_bel).ok()
+    }
+
+    /// [`Self::cluster_placement`], naming the first member that has no BEL
+    /// at its constrained location or whose BEL cannot host its cell type.
+    pub(crate) fn resolve_cluster_placement(
+        &self,
+        cluster: CellId,
+        root_bel: BelId,
+    ) -> Result<Vec<(CellId, BelId)>, ClusterPlacementMiss> {
         let root = self.cluster_root_cell(cluster);
         let root_info = self.design.cell(root);
         let mut root_bel = root_bel;
@@ -308,19 +318,13 @@ impl Context {
 
         if root_info.constr_abs_z {
             root_loc.z = root_info.constr_z;
-            root_bel = self.bel_by_location(root_loc)?;
-            if !self
-                .bel(root_bel)
-                .is_valid_for_cell_type(root_info.cell_type)
-            {
-                return None;
-            }
+            root_bel = self.member_bel(root, root_loc)?;
         }
 
         let mut placement = vec![(root, root_bel)];
 
         let Some(cluster_data) = self.design.clusters.get(&root) else {
-            return Some(placement);
+            return Ok(placement);
         };
 
         for &child in &cluster_data.constr_children {
@@ -334,15 +338,31 @@ impl Context {
                     root_loc.z + info.constr_z
                 },
             );
-            let child_bel = self.bel_by_location(want)?;
-            if !self.bel(child_bel).is_valid_for_cell_type(info.cell_type) {
-                return None;
-            }
-            placement.push((child, child_bel));
+            placement.push((child, self.member_bel(child, want)?));
         }
 
-        Some(placement)
+        Ok(placement)
     }
+
+    fn member_bel(&self, cell: CellId, loc: Loc) -> Result<BelId, ClusterPlacementMiss> {
+        let bel = self
+            .bel_by_location(loc)
+            .ok_or(ClusterPlacementMiss::NoBel { cell, loc })?;
+        match self
+            .bel(bel)
+            .is_valid_for_cell_type(self.design.cell(cell).cell_type)
+        {
+            true => Ok(bel),
+            false => Err(ClusterPlacementMiss::WrongType { cell, bel }),
+        }
+    }
+}
+
+/// The cluster member [`Context::resolve_cluster_placement`] could not place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClusterPlacementMiss {
+    NoBel { cell: CellId, loc: Loc },
+    WrongType { cell: CellId, bel: BelId },
 }
 
 /// nextpnr's `BoundingBox` -- inclusive on all four edges.

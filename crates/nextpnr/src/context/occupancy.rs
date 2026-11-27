@@ -1,9 +1,10 @@
-use crate::chipdb::{BelId, PipId, WireId};
+use crate::chipdb::{BelId, Loc, PipId, WireId};
 use crate::common::PlaceStrength;
 use crate::netlist::{CellId, NetId};
 use log::warn;
 use std::fmt;
 
+use super::arch_api::ClusterPlacementMiss;
 use super::Context;
 
 impl Context {
@@ -94,15 +95,139 @@ impl Context {
         }
     }
 
-    /// Bind `cell` to `bel` after checking that the BEL exists, matches the
-    /// cell's type and is free, that the cell is unbound, and that the tile is
-    /// valid with the cell in place. Every error leaves the Context unchanged.
+    /// Bind `cell` to `bel`, or a whole cluster through its root with each
+    /// child on the BEL [`Self::cluster_placement`] gives. Every member's BEL
+    /// must exist, match its type and be free, every member must be unbound,
+    /// and every touched tile must be valid afterwards. Refuses a cluster
+    /// child. Every error leaves the Context unchanged.
     pub fn try_bind_bel(
         &mut self,
         cell: CellId,
         bel: BelId,
         strength: PlaceStrength,
     ) -> Result<(), BelBindError> {
+        self.refuse_cluster_child(cell)?;
+        if self.bel_slot(bel).is_none() {
+            return Err(BelBindError::BelNotFound {
+                cell: self.cell_name(cell),
+                bel,
+            });
+        }
+        let members = self.bind_targets(cell, bel)?;
+        let previous: Vec<PlaceStrength> = members
+            .iter()
+            .map(|&(member, _)| self.design.cell(member).bel_strength)
+            .collect();
+        for (bound, &(member, member_bel)) in members.iter().enumerate() {
+            if let Err(err) = self.check_bind(member, member_bel) {
+                self.unbind_members(&members[..bound], &previous);
+                return Err(err);
+            }
+            assert!(self.bind_bel(member_bel, member, strength));
+        }
+        if let Some(&(member, member_bel)) = members
+            .iter()
+            .find(|&&(_, member_bel)| !self.is_bel_location_valid(member_bel))
+        {
+            self.unbind_members(&members, &previous);
+            return Err(self.invalid_location(member, member_bel));
+        }
+        Ok(())
+    }
+
+    /// Unbind `cell`, and every constrained child with it when `cell` is a
+    /// cluster root. Fails if `cell` is a cluster child or is not placed.
+    pub fn try_unbind_cell(&mut self, cell: CellId) -> Result<(), BelBindError> {
+        self.refuse_cluster_child(cell)?;
+        let bel = self.placed_bel(cell)?;
+        let child_bels: Vec<BelId> = self
+            .design
+            .clusters
+            .get(&cell)
+            .into_iter()
+            .flat_map(|cluster| &cluster.constr_children)
+            .filter_map(|&child| self.design.cell(child).bel)
+            .collect();
+        for member_bel in std::iter::once(bel).chain(child_bels) {
+            self.unbind_bel(member_bel);
+        }
+        Ok(())
+    }
+
+    /// Exchange the BELs of two placed, unclustered cells, each keeping its
+    /// own strength. Fails if either cell is clustered or unplaced, a cell's
+    /// type does not match the other's BEL, or either tile is invalid after
+    /// the exchange. Every error leaves the Context unchanged.
+    pub fn try_swap_cells(&mut self, first: CellId, second: CellId) -> Result<(), BelBindError> {
+        for cell in [first, second] {
+            if let Some(root) = self.cluster_root_of(cell) {
+                return Err(BelBindError::ClusterSwap {
+                    cell: self.cell_name(cell),
+                    root: self.cell_name(root),
+                });
+            }
+        }
+        let first_bel = self.placed_bel(first)?;
+        let second_bel = self.placed_bel(second)?;
+        self.check_bel_type(first, second_bel)?;
+        self.check_bel_type(second, first_bel)?;
+        self.place_pair(first, second_bel, second, first_bel);
+        for (cell, bel) in [(first, second_bel), (second, first_bel)] {
+            if !self.is_bel_location_valid(bel) {
+                self.place_pair(first, first_bel, second, second_bel);
+                return Err(self.invalid_location(cell, bel));
+            }
+        }
+        Ok(())
+    }
+
+    fn cluster_root_of(&self, cell: CellId) -> Option<CellId> {
+        self.design
+            .cell(cell)
+            .cluster
+            .map(|cluster| self.cluster_root_cell(cluster))
+    }
+
+    fn refuse_cluster_child(&self, cell: CellId) -> Result<(), BelBindError> {
+        match self.cluster_root_of(cell) {
+            Some(root) if root != cell => Err(BelBindError::ClusterChild {
+                cell: self.cell_name(cell),
+                root: self.cell_name(root),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    fn bind_targets(&self, cell: CellId, bel: BelId) -> Result<Vec<(CellId, BelId)>, BelBindError> {
+        if self.design.cell(cell).cluster.is_none() {
+            return Ok(vec![(cell, bel)]);
+        }
+        let placement = self
+            .resolve_cluster_placement(cell, bel)
+            .map_err(|miss| match miss {
+                ClusterPlacementMiss::NoBel { cell: member, loc } => {
+                    BelBindError::NoBelAtClusterOffset {
+                        cell: self.cell_name(member),
+                        root: self.cell_name(cell),
+                        location: loc,
+                    }
+                }
+                ClusterPlacementMiss::WrongType { cell: member, bel } => {
+                    self.type_mismatch(member, bel)
+                }
+            })?;
+        let (_, root_bel) = placement[0];
+        if root_bel != bel {
+            return Err(BelBindError::ClusterRootZ {
+                cell: self.cell_name(cell),
+                bel: self.bel_location(bel),
+                required: self.bel_location(root_bel),
+            });
+        }
+        Ok(placement)
+    }
+
+    fn check_bind(&self, cell: CellId, bel: BelId) -> Result<(), BelBindError> {
         let Some(&occupant) = self.bel_slot(bel) else {
             return Err(BelBindError::BelNotFound {
                 cell: self.cell_name(cell),
@@ -124,33 +249,14 @@ impl Context {
                 occupant: self.cell_name(occupant),
             });
         }
-        let previous_strength = self.design.cell(cell).bel_strength;
-        assert!(self.bind_bel(bel, cell, strength));
-        if !self.is_bel_location_valid(bel) {
-            self.unbind_bel(bel);
-            self.design.cell_mut(cell).bel_strength = previous_strength;
-            return Err(self.invalid_location(cell, bel));
-        }
         Ok(())
     }
 
-    /// Exchange the BELs of two placed cells, each keeping its own strength.
-    /// Fails if either cell is unplaced, a cell's type does not match the
-    /// other's BEL, or either tile is invalid after the exchange. Every error
-    /// leaves the Context unchanged.
-    pub fn try_swap_cells(&mut self, first: CellId, second: CellId) -> Result<(), BelBindError> {
-        let first_bel = self.placed_bel(first)?;
-        let second_bel = self.placed_bel(second)?;
-        self.check_bel_type(first, second_bel)?;
-        self.check_bel_type(second, first_bel)?;
-        self.place_pair(first, second_bel, second, first_bel);
-        for (cell, bel) in [(first, second_bel), (second, first_bel)] {
-            if !self.is_bel_location_valid(bel) {
-                self.place_pair(first, first_bel, second, second_bel);
-                return Err(self.invalid_location(cell, bel));
-            }
+    fn unbind_members(&mut self, members: &[(CellId, BelId)], previous: &[PlaceStrength]) {
+        for (&(cell, bel), &strength) in members.iter().zip(previous) {
+            self.unbind_bel(bel);
+            self.design.cell_mut(cell).bel_strength = strength;
         }
-        Ok(())
     }
 
     fn place_pair(&mut self, first: CellId, first_bel: BelId, second: CellId, second_bel: BelId) {
@@ -174,15 +280,19 @@ impl Context {
     fn check_bel_type(&self, cell: CellId, bel: BelId) -> Result<(), BelBindError> {
         let cell_type = self.name_of(self.design.cell(cell).cell_type);
         let bel_type = self.chipdb.bel_type(bel);
-        if cell_type == bel_type {
-            return Ok(());
+        match cell_type == bel_type {
+            true => Ok(()),
+            false => Err(self.type_mismatch(cell, bel)),
         }
-        Err(BelBindError::TypeMismatch {
+    }
+
+    fn type_mismatch(&self, cell: CellId, bel: BelId) -> BelBindError {
+        BelBindError::TypeMismatch {
             cell: self.cell_name(cell),
             bel: self.bel_location(bel),
-            cell_type: cell_type.into(),
-            bel_type: bel_type.into(),
-        })
+            cell_type: self.name_of(self.design.cell(cell).cell_type).into(),
+            bel_type: self.chipdb.bel_type(bel).into(),
+        }
     }
 
     fn invalid_location(&self, cell: CellId, bel: BelId) -> BelBindError {
@@ -283,7 +393,8 @@ impl fmt::Display for BelLocation {
     }
 }
 
-/// Why [`Context::try_bind_bel`] or [`Context::try_swap_cells`] refused an edit.
+/// Why [`Context::try_bind_bel`], [`Context::try_swap_cells`] or
+/// [`Context::try_unbind_cell`] refused an edit.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BelBindError {
     #[error("cell {cell} cannot bind to BEL {bel}, which is not in the chipdb. Pick a BEL the chipdb lists.")]
@@ -313,6 +424,22 @@ pub enum BelBindError {
         "cell {cell} at BEL {bel} leaves its tile in an invalid configuration. Pick another BEL."
     )]
     InvalidLocation { cell: Box<str>, bel: BelLocation },
-    #[error("cell {cell} is not placed, so it has no BEL to swap. Bind it first.")]
+    #[error("cell {cell} is not placed, so it has no BEL to swap or unbind. Bind it first.")]
     CellNotPlaced { cell: Box<str> },
+    #[error("cell {cell} is a child of the cluster rooted at {root}, which places it. Bind or unbind {root} instead.")]
+    ClusterChild { cell: Box<str>, root: Box<str> },
+    #[error("cell {cell} is in the cluster rooted at {root}, which moves only as a whole. Unbind {root} and bind it at the new BEL.")]
+    ClusterSwap { cell: Box<str>, root: Box<str> },
+    #[error("cluster member {cell} of root {root} would sit at {location}, where the chipdb has no BEL. Pick another BEL for {root}.")]
+    NoBelAtClusterOffset {
+        cell: Box<str>,
+        root: Box<str>,
+        location: Loc,
+    },
+    #[error("cluster root {cell} has an absolute z constraint, so it cannot bind to BEL {bel}. Bind it to {required}.")]
+    ClusterRootZ {
+        cell: Box<str>,
+        bel: BelLocation,
+        required: BelLocation,
+    },
 }

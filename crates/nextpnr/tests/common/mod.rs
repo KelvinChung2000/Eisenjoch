@@ -5,6 +5,7 @@ use nextpnr::chipdb::ChipDb;
 use nextpnr::common::IdString;
 use nextpnr::context::Context;
 use nextpnr::netlist::{CellId, NetId, PortType};
+use nextpnr::packer::passes::{constrain_cell_pairs, CellTypePort};
 
 pub fn make_context() -> Context {
     let chipdb = make_test_chipdb();
@@ -114,6 +115,26 @@ pub fn drive(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
         .add_port(port, PortType::Out)
         .set_port_net(port, Some(net), None);
     ctx.design.net_edit(net).set_driver(cell, port);
+}
+
+/// Add a LUT6 `lut` whose `F` output drives the `D` input of a DFF `ff`.
+pub fn add_lut_into_ff(ctx: &mut Context, lut: &str, ff: &str) -> (CellId, CellId) {
+    let lut = add_cell(ctx, lut, "LUT6");
+    let ff = add_cell(ctx, ff, "DFF");
+    let net = add_net(
+        ctx,
+        &format!("{}_f", ctx.name_of(ctx.design.cell(lut).name)),
+    );
+    drive(ctx, net, lut, "F");
+    sink(ctx, net, ff, "D");
+    (lut, ff)
+}
+
+/// Cluster each unclustered LUT6 with the one DFF it drives, the DFF at z + 1.
+pub fn cluster_lut_ff_pairs(ctx: &mut Context) -> usize {
+    let src = [CellTypePort::new(ctx.id("LUT6"), ctx.id("F"))];
+    let sink = [CellTypePort::new(ctx.id("DFF"), ctx.id("D"))];
+    constrain_cell_pairs(ctx, &src, &sink, 1, false)
 }
 
 pub fn sink(ctx: &mut Context, net: NetId, cell: CellId, port: &str) {
