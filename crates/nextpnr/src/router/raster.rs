@@ -16,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::astar::AStarExit;
 use super::astar::{
-    astar_search, default_pip_cost, reconstruct_path_to, AStarOptions, PathCostModel,
+    astar_search, default_pip_cost, reconstruct_path_to, AStarOptions, PathCostModel, VisitBudget,
 };
 use super::common::{
     apply_route_plan, collect_routable_nets, collect_sink_wires, find_local_const_pip,
@@ -1165,7 +1165,7 @@ fn route_sink_astar(
     sink_visit_limit: Option<usize>,
 ) -> (Option<Vec<PipId>>, AStarExit, usize) {
     let opts = AStarOptions {
-        visit_limit: sink_visit_limit,
+        visit_limit: VisitBudget::limit_or_scaled(sink_visit_limit),
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: true,
@@ -1336,7 +1336,7 @@ fn segment_astar(
         target_y,
     };
     let opts = AStarOptions {
-        visit_limit: Some(max_expansions),
+        visit_limit: VisitBudget::Limit(max_expansions),
         // Intermediate segments need the search to keep expanding even
         // after the anchor wire pops so we can harvest any other wire in
         // target_tile reached along the way. Final segments stop on the
@@ -1395,7 +1395,7 @@ fn local_route(
         }
     }
     let opts = AStarOptions {
-        visit_limit: Some(20_000),
+        visit_limit: VisitBudget::Limit(20_000),
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: false,
@@ -2094,7 +2094,7 @@ fn route_sink_overuse(
     sink_visit_limit: Option<usize>,
 ) -> Option<Vec<PipId>> {
     let opts = AStarOptions {
-        visit_limit: sink_visit_limit,
+        visit_limit: VisitBudget::limit_or_scaled(sink_visit_limit),
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: true,

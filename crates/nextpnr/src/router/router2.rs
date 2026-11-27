@@ -18,7 +18,7 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::time::{Duration, Instant};
 
-use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel};
+use super::astar::{astar_search, default_pip_cost, AStarOptions, PathCostModel, VisitBudget};
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
     resolve_source_wire, source_wire_const_value, NegotiationCfg, NegotiationState, RoutePlan,
@@ -145,6 +145,9 @@ impl<'a> PathCostModel for Router2CostModel<'a> {
 
 /// A* from `src_wires` to `dst_wire` under the negotiation costs in `state`,
 /// with the delay term of every edge scaled by `weight`.
+///
+/// The search has no visit cap: it ends when it reaches `dst_wire` or has
+/// expanded every node `bbox` admits, so `None` means no path inside `bbox`.
 pub fn astar_route_r2(
     ctx: &Context,
     src_wires: &FxHashSet<WireId>,
@@ -161,7 +164,7 @@ pub fn astar_route_r2(
         weight,
     };
     let opts = AStarOptions {
-        visit_limit: None,
+        visit_limit: VisitBudget::Unbounded,
         exhaustive: false,
         retain_trace: false,
         stop_on_first_touch: false,

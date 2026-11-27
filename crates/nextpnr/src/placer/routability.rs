@@ -39,7 +39,7 @@ use crate::common::DelayT;
 use crate::context::Context;
 use crate::metrics::BoundingBox;
 use crate::netlist::{CellPin, NetId};
-use crate::router::astar::{astar_search, AStarExit, AStarOptions, PathCostModel};
+use crate::router::astar::{astar_search, AStarExit, AStarOptions, PathCostModel, VisitBudget};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
@@ -401,7 +401,7 @@ fn check_net_perpair(
         };
 
         let opts = AStarOptions {
-            visit_limit: Some(visit_limit),
+            visit_limit: VisitBudget::Limit(visit_limit),
             exhaustive: false,
             retain_trace: false,
             stop_on_first_touch: true,

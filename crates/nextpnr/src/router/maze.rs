@@ -15,6 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::astar::{
     astar_search, default_pip_cost, AStarOptions, AStarTrace as CoreTrace, PathCostModel,
+    VisitBudget,
 };
 use super::common::{
     apply_route_plan, collect_constant_source_wires, collect_routable_nets, collect_sink_wires,
@@ -503,7 +504,7 @@ impl<'a> PathCostModel for MazeCostModel<'a> {
 
 /// One A* routing request: grow `net` from `src_wires` to `dst_wire` under
 /// `wire_penalty`, pruned to `bbox` and guided by `lookahead` when present.
-/// `visit_limit` caps heap pops; `None` searches until the heap drains.
+/// `visit_limit` caps heap pops; `None` applies [`VisitBudget::Scaled`].
 pub struct MazeQuery<'a> {
     pub net: NetId,
     pub src_wires: &'a FxHashSet<WireId>,
@@ -517,7 +518,7 @@ pub struct MazeQuery<'a> {
 impl MazeQuery<'_> {
     fn options(&self, retain_trace: bool) -> AStarOptions {
         AStarOptions {
-            visit_limit: self.visit_limit,
+            visit_limit: VisitBudget::limit_or_scaled(self.visit_limit),
             exhaustive: false,
             retain_trace,
             stop_on_first_touch: false,

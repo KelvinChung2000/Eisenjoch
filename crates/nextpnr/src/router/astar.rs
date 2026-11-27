@@ -95,9 +95,8 @@ pub trait PathCostModel {
 /// Optional parameters for [`astar_search`].
 #[derive(Clone, Copy, Debug)]
 pub struct AStarOptions {
-    /// Maximum number of wire pops before the search aborts. `None` means
-    /// use the kernel default of `grid_area * 10`.
-    pub visit_limit: Option<usize>,
+    /// How many heap pops the search may make before it gives up.
+    pub visit_limit: VisitBudget,
     /// Stop-on-dst disabled: run until the heap drains or the visit limit
     /// fires. Intended for building lookup tables (Dijkstra mode).
     pub exhaustive: bool,
@@ -115,11 +114,30 @@ pub struct AStarOptions {
 impl Default for AStarOptions {
     fn default() -> Self {
         Self {
-            visit_limit: None,
+            visit_limit: VisitBudget::Scaled,
             exhaustive: false,
             retain_trace: true,
             stop_on_first_touch: false,
         }
+    }
+}
+
+/// The most heap pops a search may make before it exits with
+/// [`AStarExit::VisitLimit`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VisitBudget {
+    /// Scaled from the source-sink distance and the search region's tiles.
+    Scaled,
+    /// At most this many pops.
+    Limit(usize),
+    /// No cap. A search with a region ends once its region is exhausted.
+    Unbounded,
+}
+
+impl VisitBudget {
+    /// `Limit(n)` for `Some(n)`, otherwise `Scaled`.
+    pub fn limit_or_scaled(limit: Option<usize>) -> Self {
+        limit.map_or(Self::Scaled, Self::Limit)
     }
 }
 
@@ -496,9 +514,13 @@ pub fn astar_search<M: PathCostModel>(
         })
         .min()
         .unwrap_or(0);
-    let max_visits = opts
-        .visit_limit
-        .unwrap_or_else(|| default_visit_limit_for_search(grid_area, min_manhattan, region_tiles));
+    let max_visits = match opts.visit_limit {
+        VisitBudget::Scaled => {
+            default_visit_limit_for_search(grid_area, min_manhattan, region_tiles)
+        }
+        VisitBudget::Limit(limit) => limit,
+        VisitBudget::Unbounded => usize::MAX,
+    };
 
     for &src in src_wires {
         let hval = model.heuristic(ctx, src, dst_wire);
@@ -787,6 +809,6 @@ mod tests {
         assert!(opts.retain_trace);
         assert!(!opts.exhaustive);
         assert!(!opts.stop_on_first_touch);
-        assert!(opts.visit_limit.is_none());
+        assert_eq!(opts.visit_limit, VisitBudget::Scaled);
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     context::Context,
     netlist::{CellId, NetId, PortType},
     router::{
-        astar::{astar_search, AStarOptions, PathCostModel},
+        astar::{astar_search, AStarOptions, PathCostModel, VisitBudget},
         common::{
             apply_route_plan, collect_sink_wires, resolve_source_wire, unroute_net,
             validate_all_routed, RoutePlan, SinkRoute,
@@ -249,7 +249,7 @@ fn shorten(ctx: &mut Context, net: NetId) -> bool {
     unroute_net(ctx, net);
     let sources = [source_wire].into_iter().collect();
     let options = AStarOptions {
-        visit_limit: Some(20_000),
+        visit_limit: VisitBudget::Limit(20_000),
         retain_trace: false,
         ..AStarOptions::default()
     };
