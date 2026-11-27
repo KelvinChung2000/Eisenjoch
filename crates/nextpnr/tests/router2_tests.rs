@@ -6,7 +6,7 @@ use nextpnr::common::DelayT;
 use nextpnr::common::PlaceStrength;
 use nextpnr::context::Context;
 use nextpnr::netlist::{NetId, PortType};
-use nextpnr::router::common::{collect_routable_nets, validate_all_routed};
+use nextpnr::router::common::{collect_routable_nets, collect_sink_wires, validate_all_routed};
 use nextpnr::router::router2::{DelaySource, Router2Cfg, Router2Report, TimingDrivenCfg};
 use nextpnr::router::{Router, Router2, RouterError};
 use nextpnr::sta::{
@@ -320,4 +320,180 @@ fn timing_takes_a_detouring_critical_connection_to_its_fastest_route(#[case] per
         critical.iter().map(|&(sink, _)| delay(sink)).sum()
     };
     assert!(total(&on) < total(&off));
+}
+
+type Tree = FxHashMap<WireId, Option<PipId>>;
+
+fn free_trees() -> Vec<(NetId, Tree)> {
+    let mut ctx = clocked_baseline(None);
+    route_baseline(&mut ctx, &Router2Cfg::default());
+    let nets = collect_routable_nets(&ctx);
+    nets.into_iter().zip(routed_trees(&ctx)).collect()
+}
+
+fn lock_at_user(ctx: &mut Context, net: NetId, tree: &Tree) {
+    for (&wire, &pip) in tree {
+        ctx.bind_wire(wire, net, PlaceStrength::User);
+        if let Some(pip) = pip {
+            ctx.bind_pip(pip, net, PlaceStrength::User);
+        }
+        ctx.design
+            .net_edit(net)
+            .add_wire(wire, pip, PlaceStrength::User);
+    }
+}
+
+fn assert_user_locked(ctx: &Context, net: NetId, tree: &Tree) {
+    let wires = &ctx.design.net(net).wires;
+    for (&wire, &pip) in tree {
+        let entry = wires
+            .get(&wire)
+            .unwrap_or_else(|| panic!("net {net:?} lost its User wire {wire:?}"));
+        assert_eq!((entry.pip, entry.strength), (pip, PlaceStrength::User));
+        assert_eq!(ctx.wire_binding(wire), Some((net, PlaceStrength::User)));
+        if let Some(pip) = pip {
+            let view = ctx.pip(pip);
+            let binding = view.bound_net().map(|bound| bound.id());
+            assert_eq!(
+                (binding, view.strength()),
+                (Some(net), Some(PlaceStrength::User))
+            );
+        }
+    }
+}
+
+fn sink_arc(ctx: &Context, net: NetId, tree: &Tree, sink_wire: WireId) -> Tree {
+    let chipdb = ctx.chipdb();
+    let by_node: FxHashMap<WireId, (WireId, Option<PipId>)> = tree
+        .iter()
+        .map(|(&wire, &pip)| (chipdb.canonical_wire(wire), (wire, pip)))
+        .collect();
+    let mut arc = Tree::default();
+    let mut node = chipdb.canonical_wire(sink_wire);
+    loop {
+        let (wire, pip) = by_node
+            .get(&node)
+            .copied()
+            .unwrap_or_else(|| panic!("net {net:?} routes sink {sink_wire:?} to its source"));
+        arc.insert(wire, pip);
+        match pip {
+            Some(pip) => node = chipdb.canonical_wire(chipdb.pip_src_wire(pip)),
+            None => return arc,
+        }
+    }
+}
+
+#[rstest]
+#[case::every_second_net(2)]
+#[case::every_fifth_net(5)]
+fn subset_route_keeps_user_locked_nets(#[case] lock_every: usize) {
+    let trees = free_trees();
+    let mut ctx = clocked_baseline(None);
+    let (locked, free): (Vec<_>, Vec<_>) = trees
+        .iter()
+        .enumerate()
+        .partition(|(index, _)| index % lock_every == 0);
+    for (_, (net, tree)) in &locked {
+        lock_at_user(&mut ctx, *net, tree);
+    }
+    let routed: Vec<NetId> = free.iter().map(|(_, (net, _))| *net).collect();
+    Router2
+        .route_nets(&mut ctx, &Router2Cfg::default(), &routed)
+        .expect("the free nets route around the locked ones");
+    for (_, (net, tree)) in &locked {
+        assert_user_locked(&ctx, *net, tree);
+        assert_eq!(ctx.design.net(*net).wires.len(), tree.len());
+    }
+    validate_all_routed(&ctx).expect("every net is routed and no wire is shared");
+}
+
+#[test]
+fn subset_route_leaves_unlisted_nets_unrouted() {
+    let mut ctx = clocked_baseline(None);
+    let nets = collect_routable_nets(&ctx);
+    let routed: Vec<NetId> = nets.iter().copied().step_by(2).collect();
+    Router2
+        .route_nets(&mut ctx, &Router2Cfg::default(), &routed)
+        .expect("negotiation converges on the subset");
+    for net in nets.iter().filter(|net| !routed.contains(net)) {
+        assert!(ctx.design.net(*net).wires.is_empty(), "{net:?} was routed");
+    }
+}
+
+#[rstest]
+#[case::first_net(0)]
+#[case::middle_net(40)]
+#[case::late_net(120)]
+fn subset_route_avoids_a_wire_bound_to_another_net(#[case] index: usize) {
+    let trees = free_trees();
+    let (target, tree) = &trees[index];
+    let (owner, _) = trees[(index + 1) % trees.len()];
+    let mut ctx = clocked_baseline(None);
+    let sinks = collect_sink_wires(&ctx, *target);
+    let interior = tree
+        .iter()
+        .filter_map(|(&wire, &pip)| pip.map(|_| wire))
+        .filter(|wire| !sinks.contains(wire))
+        .min_by_key(|wire| (wire.tile(), wire.index()))
+        .expect("the free route has an interior wire");
+    ctx.bind_wire(interior, owner, PlaceStrength::User);
+    ctx.design
+        .net_edit(owner)
+        .add_wire(interior, None, PlaceStrength::User);
+    Router2
+        .route_nets(&mut ctx, &Router2Cfg::default(), &[*target])
+        .expect("the target routes around the occupied wire");
+    let chipdb = ctx.chipdb();
+    let blocked = chipdb.canonical_wire(interior);
+    assert!(ctx
+        .design
+        .net(*target)
+        .wires
+        .keys()
+        .all(|&wire| chipdb.canonical_wire(wire) != blocked));
+    assert_eq!(
+        ctx.wire_binding(interior),
+        Some((owner, PlaceStrength::User))
+    );
+}
+
+#[rstest]
+#[case::one_sink_locked(1, None)]
+#[case::one_sink_locked_timing_driven(1, Some(4000))]
+#[case::every_sink_locked(usize::MAX, None)]
+fn route_keeps_user_arcs_of_partly_routed_nets(
+    #[case] locked_sinks: usize,
+    #[case] timed_period_ps: Option<DelayT>,
+) {
+    let trees = free_trees();
+    let mut ctx = clocked_baseline(timed_period_ps);
+    let arcs: Vec<(NetId, Tree)> = trees
+        .iter()
+        .filter_map(|(net, tree)| {
+            let sinks = collect_sink_wires(&ctx, *net);
+            (sinks.len() >= 2).then(|| {
+                let arc = sinks
+                    .iter()
+                    .take(locked_sinks)
+                    .flat_map(|&sink| sink_arc(&ctx, *net, tree, sink))
+                    .collect();
+                (*net, arc)
+            })
+        })
+        .collect();
+    assert!(!arcs.is_empty(), "the fixture has multi-sink nets");
+    for (net, arc) in &arcs {
+        lock_at_user(&mut ctx, *net, arc);
+    }
+    let cfg = Router2Cfg {
+        timing: timed_period_ps.map(|_| TimingDrivenCfg::default()),
+        ..Router2Cfg::default()
+    };
+    Router2
+        .route(&mut ctx, &cfg)
+        .expect("the router completes the partly routed nets");
+    for (net, arc) in &arcs {
+        assert_user_locked(&ctx, *net, arc);
+    }
+    validate_all_routed(&ctx).expect("every net is routed and no wire is shared");
 }
