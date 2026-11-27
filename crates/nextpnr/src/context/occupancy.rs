@@ -2,6 +2,7 @@ use crate::chipdb::{BelId, PipId, WireId};
 use crate::common::PlaceStrength;
 use crate::netlist::{CellId, NetId};
 use log::warn;
+use std::fmt;
 
 use super::Context;
 
@@ -93,6 +94,115 @@ impl Context {
         }
     }
 
+    /// Bind `cell` to `bel` after checking that the BEL exists, matches the
+    /// cell's type and is free, that the cell is unbound, and that the tile is
+    /// valid with the cell in place. Every error leaves the Context unchanged.
+    pub fn try_bind_bel(
+        &mut self,
+        cell: CellId,
+        bel: BelId,
+        strength: PlaceStrength,
+    ) -> Result<(), BelBindError> {
+        let Some(&occupant) = self.bel_slot(bel) else {
+            return Err(BelBindError::BelNotFound {
+                cell: self.cell_name(cell),
+                bel,
+            });
+        };
+        self.check_bel_type(cell, bel)?;
+        if let Some(bound_to) = self.design.cell(cell).bel {
+            return Err(BelBindError::CellAlreadyBound {
+                cell: self.cell_name(cell),
+                bel: self.bel_location(bel),
+                bound_to: self.bel_location(bound_to),
+            });
+        }
+        if let Some(occupant) = occupant {
+            return Err(BelBindError::BelOccupied {
+                cell: self.cell_name(cell),
+                bel: self.bel_location(bel),
+                occupant: self.cell_name(occupant),
+            });
+        }
+        let previous_strength = self.design.cell(cell).bel_strength;
+        assert!(self.bind_bel(bel, cell, strength));
+        if !self.is_bel_location_valid(bel) {
+            self.unbind_bel(bel);
+            self.design.cell_mut(cell).bel_strength = previous_strength;
+            return Err(self.invalid_location(cell, bel));
+        }
+        Ok(())
+    }
+
+    /// Exchange the BELs of two placed cells, each keeping its own strength.
+    /// Fails if either cell is unplaced, a cell's type does not match the
+    /// other's BEL, or either tile is invalid after the exchange. Every error
+    /// leaves the Context unchanged.
+    pub fn try_swap_cells(&mut self, first: CellId, second: CellId) -> Result<(), BelBindError> {
+        let first_bel = self.placed_bel(first)?;
+        let second_bel = self.placed_bel(second)?;
+        self.check_bel_type(first, second_bel)?;
+        self.check_bel_type(second, first_bel)?;
+        self.place_pair(first, second_bel, second, first_bel);
+        for (cell, bel) in [(first, second_bel), (second, first_bel)] {
+            if !self.is_bel_location_valid(bel) {
+                self.place_pair(first, first_bel, second, second_bel);
+                return Err(self.invalid_location(cell, bel));
+            }
+        }
+        Ok(())
+    }
+
+    fn place_pair(&mut self, first: CellId, first_bel: BelId, second: CellId, second_bel: BelId) {
+        for (cell, bel) in [(first, first_bel), (second, second_bel)] {
+            *self
+                .bel_slot_mut(bel)
+                .expect("a placed cell's BEL is in range") = Some(cell);
+            self.design.cell_mut(cell).bel = Some(bel);
+        }
+    }
+
+    fn placed_bel(&self, cell: CellId) -> Result<BelId, BelBindError> {
+        self.design
+            .cell(cell)
+            .bel
+            .ok_or_else(|| BelBindError::CellNotPlaced {
+                cell: self.cell_name(cell),
+            })
+    }
+
+    fn check_bel_type(&self, cell: CellId, bel: BelId) -> Result<(), BelBindError> {
+        let cell_type = self.name_of(self.design.cell(cell).cell_type);
+        let bel_type = self.chipdb.bel_type(bel);
+        if cell_type == bel_type {
+            return Ok(());
+        }
+        Err(BelBindError::TypeMismatch {
+            cell: self.cell_name(cell),
+            bel: self.bel_location(bel),
+            cell_type: cell_type.into(),
+            bel_type: bel_type.into(),
+        })
+    }
+
+    fn invalid_location(&self, cell: CellId, bel: BelId) -> BelBindError {
+        BelBindError::InvalidLocation {
+            cell: self.cell_name(cell),
+            bel: self.bel_location(bel),
+        }
+    }
+
+    fn cell_name(&self, cell: CellId) -> Box<str> {
+        self.name_of(self.design.cell(cell).name).into()
+    }
+
+    fn bel_location(&self, bel: BelId) -> BelLocation {
+        BelLocation {
+            tile: self.chipdb.tile_name(bel.tile()).into(),
+            bel: self.chipdb.bel_name(bel).into(),
+        }
+    }
+
     /// Bind `wire`'s node to a net.
     pub fn bind_wire(
         &mut self,
@@ -158,4 +268,51 @@ impl Context {
         };
         self.pip_to_net.remove(&(tile, index));
     }
+}
+
+/// A BEL named by its tile and its name within the tile, displayed as `<tile>.<bel>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BelLocation {
+    pub tile: Box<str>,
+    pub bel: Box<str>,
+}
+
+impl fmt::Display for BelLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.tile, self.bel)
+    }
+}
+
+/// Why [`Context::try_bind_bel`] or [`Context::try_swap_cells`] refused an edit.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BelBindError {
+    #[error("cell {cell} cannot bind to BEL {bel}, which is not in the chipdb. Pick a BEL the chipdb lists.")]
+    BelNotFound { cell: Box<str>, bel: BelId },
+    #[error("cell {cell} of type {cell_type} cannot bind to BEL {bel} of type {bel_type}. Pick a BEL of type {cell_type}.")]
+    TypeMismatch {
+        cell: Box<str>,
+        bel: BelLocation,
+        cell_type: Box<str>,
+        bel_type: Box<str>,
+    },
+    #[error(
+        "cell {cell} cannot bind to BEL {bel} while it is bound to {bound_to}. Unbind it first."
+    )]
+    CellAlreadyBound {
+        cell: Box<str>,
+        bel: BelLocation,
+        bound_to: BelLocation,
+    },
+    #[error("cell {cell} cannot bind to BEL {bel}, which holds cell {occupant}. Unbind {occupant} or swap the two cells.")]
+    BelOccupied {
+        cell: Box<str>,
+        bel: BelLocation,
+        occupant: Box<str>,
+    },
+    #[error(
+        "cell {cell} at BEL {bel} leaves its tile in an invalid configuration. Pick another BEL."
+    )]
+    InvalidLocation { cell: Box<str>, bel: BelLocation },
+    #[error("cell {cell} is not placed, so it has no BEL to swap. Bind it first.")]
+    CellNotPlaced { cell: Box<str> },
 }

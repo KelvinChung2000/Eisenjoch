@@ -24,6 +24,7 @@ pub use arch_api::BoundingBox;
 pub(crate) use buckets::example_context;
 pub use buckets::BucketGrid;
 pub use definition::{ArchValidityCheck, Context};
+pub use occupancy::{BelBindError, BelLocation};
 pub use rng::DeterministicRng;
 pub use views::{
     Bel, BelPin, BelPinView, Cell, CellPinView, ChipView, IdStringView, Net, Pip, PlacementView,

@@ -1,16 +1,17 @@
 //! Integration tests for the context module.
 //!
-//! Uses the synthetic chipdb builder from `nextpnr::chipdb::testutil` to create
-//! a minimal 2x2 chip database for testing Context operations.
+//! Most tests use the minimal 2x2 chipdb from `nextpnr::chipdb::testutil`. The
+//! typed bind and swap tests use the example arch chipdb in `tests/fixtures`.
 
 mod common;
 
 use nextpnr::chipdb::{BelId, PipId, WireId};
 use nextpnr::common::{DelayQuad, DelayT};
 use nextpnr::common::{IdString, PlaceStrength};
-use nextpnr::context::BelPin;
-use nextpnr::netlist::{PortType, Property};
+use nextpnr::context::{BelBindError, BelLocation, BelPin, Context};
+use nextpnr::netlist::{CellId, PortType, Property};
 use rstest::rstest;
+use std::sync::Arc;
 
 // =========================================================================
 // Construction and basic queries
@@ -627,4 +628,258 @@ fn shuffle_actually_shuffles() {
     let mut data = original.clone();
     rng.shuffle(&mut data);
     assert_ne!(data, original);
+}
+
+fn example_bels(ctx: &Context, bel_type: &str) -> Vec<BelId> {
+    ctx.chipdb()
+        .bels()
+        .filter(|&bel| ctx.chipdb().bel_type(bel) == bel_type)
+        .collect()
+}
+
+fn location(ctx: &Context, bel: BelId) -> BelLocation {
+    BelLocation {
+        tile: ctx.chipdb().tile_name(bel.tile()).into(),
+        bel: ctx.chipdb().bel_name(bel).into(),
+    }
+}
+
+type Placement = (
+    Vec<Option<CellId>>,
+    Vec<(CellId, Option<BelId>, PlaceStrength)>,
+);
+
+fn placement(ctx: &Context) -> Placement {
+    let bels = ctx
+        .chipdb()
+        .bels()
+        .map(|bel| ctx.conflicting_bel_cell(bel))
+        .collect();
+    let cells = ctx
+        .design
+        .iter_alive_cells()
+        .map(|(cell, info)| (cell, info.bel, info.bel_strength))
+        .collect();
+    (bels, cells)
+}
+
+enum Edit {
+    Bind { cell: CellId, bel: BelId },
+    Swap { first: CellId, second: CellId },
+}
+
+impl Edit {
+    fn apply(&self, ctx: &mut Context) -> Result<(), BelBindError> {
+        match *self {
+            Edit::Bind { cell, bel } => ctx.try_bind_bel(cell, bel, PlaceStrength::User),
+            Edit::Swap { first, second } => ctx.try_swap_cells(first, second),
+        }
+    }
+}
+
+struct Refusal {
+    ctx: Context,
+    edit: Edit,
+    expected: BelBindError,
+}
+
+fn bind_to_missing_bel() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let bel = BelId::new(ctx.chipdb().num_tiles(), 0);
+    Refusal {
+        ctx,
+        edit: Edit::Bind { cell, bel },
+        expected: BelBindError::BelNotFound {
+            cell: "lut".into(),
+            bel,
+        },
+    }
+}
+
+fn bind_to_other_type() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let bel = example_bels(&ctx, "DFF")[0];
+    let expected = BelBindError::TypeMismatch {
+        cell: "lut".into(),
+        bel: location(&ctx, bel),
+        cell_type: "LUT6".into(),
+        bel_type: "DFF".into(),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Bind { cell, bel },
+        expected,
+    }
+}
+
+fn bind_bound_cell() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let luts = example_bels(&ctx, "LUT6");
+    ctx.try_bind_bel(cell, luts[0], PlaceStrength::Placer)
+        .unwrap();
+    let expected = BelBindError::CellAlreadyBound {
+        cell: "lut".into(),
+        bel: location(&ctx, luts[1]),
+        bound_to: location(&ctx, luts[0]),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Bind { cell, bel: luts[1] },
+        expected,
+    }
+}
+
+fn bind_to_occupied_bel() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let occupant = common::add_cell(&mut ctx, "occupant", "LUT6");
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let bel = example_bels(&ctx, "LUT6")[0];
+    ctx.try_bind_bel(occupant, bel, PlaceStrength::Placer)
+        .unwrap();
+    let expected = BelBindError::BelOccupied {
+        cell: "lut".into(),
+        bel: location(&ctx, bel),
+        occupant: "occupant".into(),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Bind { cell, bel },
+        expected,
+    }
+}
+
+fn bind_to_invalid_location() -> Refusal {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let bel = example_bels(&ctx, "LUT6")[0];
+    ctx.set_validity_check(Arc::new(|_, _| false));
+    let expected = BelBindError::InvalidLocation {
+        cell: "lut".into(),
+        bel: location(&ctx, bel),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Bind { cell, bel },
+        expected,
+    }
+}
+
+fn placed_luts() -> (Context, CellId, CellId, BelId, BelId) {
+    let mut ctx = common::make_example_context();
+    let first = common::add_cell(&mut ctx, "lut_a", "LUT6");
+    let second = common::add_cell(&mut ctx, "lut_b", "LUT6");
+    let luts = example_bels(&ctx, "LUT6");
+    ctx.try_bind_bel(first, luts[0], PlaceStrength::Placer)
+        .unwrap();
+    ctx.try_bind_bel(second, luts[1], PlaceStrength::User)
+        .unwrap();
+    (ctx, first, second, luts[0], luts[1])
+}
+
+fn swap_with_unplaced_cell() -> Refusal {
+    let (mut ctx, first, _, _, _) = placed_luts();
+    let unplaced = common::add_cell(&mut ctx, "unplaced", "LUT6");
+    Refusal {
+        ctx,
+        edit: Edit::Swap {
+            first,
+            second: unplaced,
+        },
+        expected: BelBindError::CellNotPlaced {
+            cell: "unplaced".into(),
+        },
+    }
+}
+
+fn swap_across_types() -> Refusal {
+    let (mut ctx, first, _, _, _) = placed_luts();
+    let dff = common::add_cell(&mut ctx, "dff", "DFF");
+    let dff_bel = example_bels(&ctx, "DFF")[0];
+    ctx.try_bind_bel(dff, dff_bel, PlaceStrength::Placer)
+        .unwrap();
+    let expected = BelBindError::TypeMismatch {
+        cell: "lut_a".into(),
+        bel: location(&ctx, dff_bel),
+        cell_type: "LUT6".into(),
+        bel_type: "DFF".into(),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Swap { first, second: dff },
+        expected,
+    }
+}
+
+fn swap_into_invalid_location() -> Refusal {
+    let (mut ctx, first, second, first_bel, _) = placed_luts();
+    ctx.set_validity_check(Arc::new(move |_, bel| bel != first_bel));
+    let expected = BelBindError::InvalidLocation {
+        cell: "lut_b".into(),
+        bel: location(&ctx, first_bel),
+    };
+    Refusal {
+        ctx,
+        edit: Edit::Swap { first, second },
+        expected,
+    }
+}
+
+#[test]
+fn try_bind_bel_binds_cell_with_strength() {
+    let mut ctx = common::make_example_context();
+    let cell = common::add_cell(&mut ctx, "lut", "LUT6");
+    let bel = example_bels(&ctx, "LUT6")[0];
+    ctx.try_bind_bel(cell, bel, PlaceStrength::User).unwrap();
+    assert_eq!(ctx.conflicting_bel_cell(bel), Some(cell));
+    assert_eq!(ctx.design.cell(cell).bel, Some(bel));
+    assert_eq!(ctx.design.cell(cell).bel_strength, PlaceStrength::User);
+}
+
+#[test]
+fn try_swap_cells_exchanges_bels_and_keeps_strengths() {
+    let (mut ctx, first, second, first_bel, second_bel) = placed_luts();
+    ctx.try_swap_cells(first, second).unwrap();
+    assert_eq!(ctx.conflicting_bel_cell(first_bel), Some(second));
+    assert_eq!(ctx.conflicting_bel_cell(second_bel), Some(first));
+    assert_eq!(ctx.design.cell(first).bel, Some(second_bel));
+    assert_eq!(ctx.design.cell(second).bel, Some(first_bel));
+    assert_eq!(ctx.design.cell(first).bel_strength, PlaceStrength::Placer);
+    assert_eq!(ctx.design.cell(second).bel_strength, PlaceStrength::User);
+}
+
+#[rstest]
+#[case::bind_to_missing_bel(bind_to_missing_bel)]
+#[case::bind_to_other_type(bind_to_other_type)]
+#[case::bind_bound_cell(bind_bound_cell)]
+#[case::bind_to_occupied_bel(bind_to_occupied_bel)]
+#[case::bind_to_invalid_location(bind_to_invalid_location)]
+#[case::swap_with_unplaced_cell(swap_with_unplaced_cell)]
+#[case::swap_across_types(swap_across_types)]
+#[case::swap_into_invalid_location(swap_into_invalid_location)]
+fn refused_edit_returns_its_error(#[case] setup: fn() -> Refusal) {
+    let Refusal {
+        mut ctx,
+        edit,
+        expected,
+    } = setup();
+    assert_eq!(edit.apply(&mut ctx), Err(expected));
+}
+
+#[rstest]
+#[case::bind_to_missing_bel(bind_to_missing_bel)]
+#[case::bind_to_other_type(bind_to_other_type)]
+#[case::bind_bound_cell(bind_bound_cell)]
+#[case::bind_to_occupied_bel(bind_to_occupied_bel)]
+#[case::bind_to_invalid_location(bind_to_invalid_location)]
+#[case::swap_with_unplaced_cell(swap_with_unplaced_cell)]
+#[case::swap_across_types(swap_across_types)]
+#[case::swap_into_invalid_location(swap_into_invalid_location)]
+fn refused_edit_leaves_placement_unchanged(#[case] setup: fn() -> Refusal) {
+    let Refusal { mut ctx, edit, .. } = setup();
+    let before = placement(&ctx);
+    edit.apply(&mut ctx).unwrap_err();
+    assert_eq!(placement(&ctx), before);
 }
