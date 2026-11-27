@@ -66,6 +66,15 @@ enum PinSource {
 }
 
 impl PinSource {
+    fn cluster_offset(&self) -> Option<(f64, f64)> {
+        match *self {
+            Self::Movable { off_x, off_y, .. } if off_x != 0.0 || off_y != 0.0 => {
+                Some((off_x, off_y))
+            }
+            _ => None,
+        }
+    }
+
     #[inline]
     fn position(&self, cell_x: &[f64], cell_y: &[f64]) -> (f64, f64) {
         match *self {
@@ -106,6 +115,8 @@ struct NetInfo {
 /// `write_dist_row`), so a row is bounded by the net's search window and never
 /// by the chip.
 struct DistCache {
+    /// A shared meeting point supplies the labels for drivers and sinks alike.
+    hub_labels: bool,
     rows: Vec<FxHashMap<u32, f32>>,
     n_nets: usize,
     n_nodes: usize,
@@ -233,6 +244,7 @@ fn set_analytic_phase(outer: usize) -> bool {
 impl DistCache {
     fn new(n_nets: usize, n_nodes: usize) -> Self {
         Self {
+            hub_labels: false,
             rows: (0..n_nets).map(|_| FxHashMap::default()).collect(),
             n_nets,
             n_nodes,
@@ -1021,6 +1033,33 @@ struct SolveInputs<'a> {
     ws_pool: &'a WorkspacePool,
 }
 
+/// A rectilinear 1-median minimizes the unweighted sum of terminal-to-hub
+/// distances in a uniform fabric. For an even pin count, use the midpoint of the
+/// median interval so a two-pin connection can move coherently at both ends.
+fn terminal_hub(info: &NetInfo, width: usize) -> usize {
+    fn middle(axis: &mut [usize]) -> usize {
+        let k = axis.len() / 2;
+        let even = axis.len() % 2 == 0;
+        let (lower, hi, _) = axis.select_nth_unstable(k);
+        if even {
+            let lo = *lower.iter().max().unwrap();
+            lo + (*hi - lo) / 2
+        } else {
+            *hi
+        }
+    }
+    let a = info.pins[0].node;
+    if info.pins.len() == 2 {
+        let b = info.pins[1].node;
+        return ((a / width + b / width) / 2) * width + (a % width + b % width) / 2;
+    }
+    let mut axis: Vec<_> = info.pins.iter().map(|p| p.node % width).collect();
+    let x = middle(&mut axis);
+    axis.clear();
+    axis.extend(info.pins.iter().map(|p| p.node / width));
+    middle(&mut axis) * width + x
+}
+
 fn solve_all_nets_with_displacement(
     inputs: &SolveInputs<'_>,
     dist_cache: &mut DistCache,
@@ -1059,6 +1098,7 @@ fn solve_all_nets_with_displacement(
         None => skip_mask,
     };
 
+    let hub_labels = dist_cache.hub_labels;
     let batch_size =
         path_solver::auto_batch_size(cfg.net_parallel_batch_size, net_infos.len(), solve_pool);
 
@@ -1099,35 +1139,50 @@ fn solve_all_nets_with_displacement(
                 out.stats.failures += 1;
                 return 0.0;
             };
-            // Demand normalization: each NET represents ONE physical wire
-            // that the driver fans out to K sinks. Summed source-edge flow
-            // must therefore be 1 wire per net, not K. Splitting `1/K` across
-            // sinks gives the correct per-net source load; edge usage on
-            // shared common-path pipes accumulates to 1, which is the
-            // physical wire count.
+            // Every terminal needs a physical branch to the meeting point.
+            // The legacy driver-rooted field splits one unit among its sinks.
             let n_sinks = info.pins.iter().filter(|p| !p.is_driver).count();
             if n_sinks == 0 {
                 out.stats.failures += 1;
                 return 0.0;
             }
-            let per_sink = 1.0 / n_sinks as f64;
-            let sink_demands: Vec<(usize, f64)> = info
+            let per_sink = if hub_labels {
+                1.0
+            } else {
+                1.0 / n_sinks as f64
+            };
+            let sink_demands: Vec<_> = info
                 .pins
                 .iter()
-                .filter(|pin| !pin.is_driver)
-                .map(|pin| (pin.node, per_sink))
+                .filter(|p| hub_labels || !p.is_driver)
+                .map(|p| (p.node, per_sink))
                 .collect();
-
-            ws.begin_net();
-            let result = path_solver::dial_logit_load_dispatch(
-                network,
-                source,
-                &sink_demands,
-                ws,
-                collect_usage,
-                displacement,
-                cfg.graph_model,
-            );
+            let origin = if hub_labels {
+                terminal_hub(info, network.width as usize)
+            } else {
+                source
+            };
+            let solve = |ws: &mut PathSolverWorkspace, origin| {
+                ws.begin_net();
+                path_solver::dial_logit_load_dispatch(
+                    network,
+                    origin,
+                    &sink_demands,
+                    ws,
+                    collect_usage,
+                    displacement,
+                    cfg.graph_model,
+                )
+            };
+            let mut result = solve(ws, origin);
+            // A geometric meeting point can lie on a disconnected routing
+            // island. Retry from the physical driver before recording usage.
+            if origin != source && result.missing_demand > 0.0 {
+                out.stats.total_solves += 1;
+                out.stats.total_heap_pops += result.heap_pops;
+                out.stats.max_heap_pops = out.stats.max_heap_pops.max(result.heap_pops);
+                result = solve(ws, source);
+            }
 
             out.stats.total_solves += 1;
             out.stats.total_heap_pops += result.heap_pops;
@@ -1172,7 +1227,17 @@ fn solve_all_nets_with_displacement(
             if result.cap_armed {
                 out.diag_cap_armed += 1;
             }
-            flows.extend_from_slice(ws.edge_flows());
+            if hub_labels {
+                // The workspace has already combined all branches of this
+                // net. A shared trunk can occupy at most one wire per net.
+                flows.extend(
+                    ws.edge_flows()
+                        .iter()
+                        .map(|&(pipe, load)| (pipe, load.min(1.0))),
+                );
+            } else {
+                flows.extend_from_slice(ws.edge_flows());
+            }
             write_dist_row(dist_out, info, network, ws);
             net_path_weight(info, cfg) * result.energy
         },
@@ -2091,8 +2156,24 @@ fn evaluate_cell_at(
 
         let weight = dist_cache.path_weight[net_idx];
 
-        if !pin.is_driver {
-            let d = dist_cache.get_at(net_idx, node, gx, gy);
+        if dist_cache.hub_labels || !pin.is_driver {
+            // The candidate is a root tile. A constrained child can use a
+            // different part of the routing field even when its root stays put.
+            let offset = if dist_cache.hub_labels {
+                info.pin_src[pin_idx].cluster_offset()
+            } else {
+                None
+            };
+            let d = if let Some((dx, dy)) = offset {
+                let terminal = position_to_node(
+                    network,
+                    network.net_to_tile(cand_nx) + dx,
+                    network.net_to_tile(cand_ny) + dy,
+                );
+                dist_cache.get(net_idx, terminal)
+            } else {
+                dist_cache.get_at(net_idx, node, gx, gy)
+            };
             if !d.is_finite() {
                 return f64::INFINITY;
             }
@@ -2852,6 +2933,7 @@ impl SoftminAccumulator {
 /// a single code path.
 fn fullscan_sweep_probe(
     cell_idx: usize,
+    current_tile: (i32, i32),
     cell_nets: &[(usize, usize)],
     model: &NetCostModel<'_>,
     validity: &CellValidityMask,
@@ -2860,12 +2942,12 @@ fn fullscan_sweep_probe(
     collect_stats: bool,
 ) -> (SoftminAccumulator, Option<PlateauStat>) {
     let NetCostModel {
-        net_infos, network, ..
+        net_infos,
+        dist_cache,
+        network,
+        ..
     } = *model;
-    let cur_node = current_cell_node(cell_idx, cell_nets, net_infos);
-    let cur_x = network.nodes[cur_node].tile_x;
-    let cur_y = network.nodes[cur_node].tile_y;
-
+    let (cur_x, cur_y) = current_tile;
     let mut acc = SoftminAccumulator::new(theta);
     // Prime argmin with current position so a fully-INF scan still returns
     // something sensible.
@@ -2883,23 +2965,58 @@ fn fullscan_sweep_probe(
         ..PlateauStat::default()
     };
 
-    for gy in 0..network.height {
-        for gx in 0..network.width {
-            // Mux-slot filter: skip candidates that would exceed destination
-            // tile's output-mux capacity. This lets argmin/softmin fall
-            // through to the next-best *legal* position automatically, with
-            // no INF sentinels.
-            if !mux_tracker.would_fit(cell_idx, cur_x, cur_y, gx, gy) {
-                continue;
+    let mut probe = |gx, gy| {
+        // Mux-slot filter: skip candidates that would exceed destination
+        // tile's output-mux capacity. This lets argmin/softmin fall
+        // through to the next-best *legal* position automatically, with
+        // no INF sentinels.
+        if !mux_tracker.would_fit(cell_idx, cur_x, cur_y, gx, gy) {
+            return;
+        }
+        let cost = evaluate_cell_at(cell_idx, gx, gy, cell_nets, model, validity);
+        if collect_stats {
+            diag::update_plateau(&mut stat, cost);
+            if cost.is_finite() {
+                cost_buf.push(cost);
             }
-            let cost = evaluate_cell_at(cell_idx, gx, gy, cell_nets, model, validity);
-            if collect_stats {
-                diag::update_plateau(&mut stat, cost);
-                if cost.is_finite() {
-                    cost_buf.push(cost);
-                }
+        }
+        acc.observe(gx, gy, cost);
+    };
+
+    // A missing label on any sink net makes the candidate infinite. Use the
+    // sparsest such row as the candidate set when sorting it costs less than
+    // scanning the grid. Diagnostics count rejected tiles and need a full scan.
+    let area = network.width as usize * network.height as usize;
+    let sparse_row = if collect_stats || analytic_dist() {
+        None
+    } else {
+        cell_nets
+            .iter()
+            .filter(|&&(ni, pi)| dist_cache.hub_labels || !net_infos[ni].pins[pi].is_driver)
+            // An offset pin's row is indexed by the child, not the root
+            // position under enumeration. Only unshifted rows constrain it.
+            .filter(|&&(ni, pi)| {
+                !dist_cache.hub_labels || net_infos[ni].pin_src[pi].cluster_offset().is_none()
+            })
+            .map(|&(ni, _)| dist_cache.row(ni))
+            .min_by_key(|row| row.len())
+            .filter(|row| row.capacity() + row.len() * (row.len().max(1).ilog2() as usize) < area)
+    };
+    if let Some(row) = sparse_row {
+        // Row-major order preserves ties, fallback ranking and softmin rounding.
+        let mut nodes: Vec<_> = row.keys().copied().collect();
+        nodes.sort_unstable();
+        let width = network.width as u32;
+        for node in nodes {
+            if (node as usize) < area {
+                probe((node % width) as i32, (node / width) as i32);
             }
-            acc.observe(gx, gy, cost);
+        }
+    } else {
+        for gy in 0..network.height {
+            for gx in 0..network.width {
+                probe(gx, gy);
+            }
         }
     }
 
@@ -2988,6 +3105,7 @@ fn place_dcd_sweep(
             }
             let (acc, stats) = fullscan_sweep_probe(
                 ci,
+                (plan.old_gx, plan.old_gy),
                 cell_nets,
                 &NetCostModel {
                     net_infos,
@@ -3022,14 +3140,16 @@ fn place_dcd_sweep(
         let commit_cell = |ci: usize, plan: &CellPlan| -> (i32, i32, bool) {
             let (old_gx, old_gy) = (plan.old_gx, plan.old_gy);
             for &(cand_gx, cand_gy) in &plan.cands[..plan.n_cands] {
-                if cand_gx == old_gx && cand_gy == old_gy {
-                    continue;
-                }
                 let new_gx =
                     (alpha * cand_gx as f64 + (1.0 - alpha) * old_gx as f64).round() as i32;
                 let new_gy =
                     (alpha * cand_gy as f64 + (1.0 - alpha) * old_gy as f64).round() as i32;
+                // Staying put satisfies this ranked choice. Only rejected moves
+                // should fall through to a lower-ranked candidate.
                 if new_gx == old_gx && new_gy == old_gy {
+                    return (old_gx, old_gy, false);
+                }
+                if !validity.is_valid(ci, new_gx, new_gy) {
                     continue;
                 }
                 if mux_tracker.try_commit(ci, old_gx, old_gy, new_gx, new_gy) {
@@ -3100,9 +3220,10 @@ fn place_dcd_sweep(
         }
         cell_x[ci] = network.net_to_tile(new_gx as f64);
         cell_y[ci] = network.net_to_tile(new_gy as f64);
-        let new_node = coord_to_node(network, new_gx, new_gy);
         for &(net_idx, pin_idx) in &cell_net_map.map[ci] {
-            net_infos[net_idx].pins[pin_idx].node = new_node;
+            let info = &mut net_infos[net_idx];
+            let (px, py) = info.pin_src[pin_idx].position(cell_x, cell_y);
+            info.pins[pin_idx].node = position_to_node(network, px, py);
         }
         if collect_stats {
             diag.record_move(MoveRecord {
@@ -4639,6 +4760,7 @@ pub fn run_inner_outer(
         .unwrap_or(0.5);
     let max_disp_stalls = crate::env::var::<usize>("NPNR_OT_DISP_STALL").unwrap_or(3);
     let mut disp_stalls = 0usize;
+    let mut finish_annealing = false;
     let mut prev_cell_x: Option<Vec<f64>> = None;
     let mut prev_cell_y: Option<Vec<f64>> = None;
     let mut prev_state: Option<ObjState> = None;
@@ -4664,7 +4786,7 @@ pub fn run_inner_outer(
         // theta_end (sharp, argmin-like).
         let theta_iter = if !cfg.softmin_enabled {
             0.0
-        } else if max_iter <= 1 {
+        } else if max_iter <= 1 || finish_annealing {
             cfg.softmin_theta_end
         } else {
             let t = outer as f64 / (max_iter as f64 - 1.0);
@@ -4697,6 +4819,12 @@ pub fn run_inner_outer(
         }
         let prev_dist_cache_shape = (dist_cache.n_nets, dist_cache.n_nodes);
         dist_cache.ensure_shape(net_infos.len(), n_nodes);
+        // Analytic labels and Bresenham templates are driver-relative. Preserve
+        // those explicit model selections when running the Jacobi planner.
+        dist_cache.hub_labels = cfg.sweep_mode == super::config::SweepMode::JacobiHub
+            && cfg.path_model == PathModel::DialLogit
+            && !analytic_dist()
+            && analytic_until() == 0;
         let dist_cache_was_realloced =
             prev_dist_cache_shape != (dist_cache.n_nets, dist_cache.n_nodes) || outer == 0;
 
@@ -5484,17 +5612,19 @@ pub fn run_inner_outer(
             mux_tracker: &mux_tracker,
         };
         let moved = match cfg.sweep_mode {
-            super::config::SweepMode::JacobiFullscan => place_dcd_sweep(
-                &sweep_inputs,
-                SweepState {
-                    net_infos: &mut net_infos,
-                    cell_x,
-                    cell_y,
-                    diag: &mut diag_ctx,
-                },
-                &dist_cache,
-                theta_iter,
-            ),
+            super::config::SweepMode::JacobiHub | super::config::SweepMode::JacobiFullscan => {
+                place_dcd_sweep(
+                    &sweep_inputs,
+                    SweepState {
+                        net_infos: &mut net_infos,
+                        cell_x,
+                        cell_y,
+                        diag: &mut diag_ctx,
+                    },
+                    &dist_cache,
+                    theta_iter,
+                )
+            }
             super::config::SweepMode::SequentialBisection => place_dcd_sweep_sequential_bisection(
                 &sweep_inputs,
                 SweepState {
@@ -6187,6 +6317,21 @@ pub fn run_inner_outer(
         netinfo_buf = net_infos;
         post_netinfo_buf = post_net_infos;
 
+        // A stationary warm softmin can still move when its distribution
+        // sharpens. Finish at the configured end temperature before stopping.
+        if (moved == 0 || disp_stalls >= max_disp_stalls)
+            && matches!(
+                cfg.sweep_mode,
+                super::config::SweepMode::JacobiFullscan | super::config::SweepMode::JacobiHub
+            )
+            && cfg.softmin_enabled
+            && theta_iter < cfg.softmin_theta_end
+            && outer + 1 < max_iter
+        {
+            finish_annealing = true;
+            disp_stalls = 0;
+            continue;
+        }
         if moved == 0 {
             eprintln!("  DCD converged: no cells moved in iteration {}", outer);
             break;
@@ -6572,7 +6717,15 @@ mod driver_hole_tests {
         vec![NetInfo {
             net_id: NetId::from_raw(0),
             debug_name: Arc::from("n"),
-            pin_src: Vec::new(),
+            pin_src: vec![
+                PinSource::Movable {
+                    idx: 0,
+                    off_x: 0.0,
+                    off_y: 0.0,
+                },
+                PinSource::Fixed { x: 6.0, y: 0.0 },
+                PinSource::Fixed { x: 7.0, y: 0.0 },
+            ],
             pins: vec![
                 PinNode {
                     node: 0,
@@ -6595,6 +6748,102 @@ mod driver_hole_tests {
             ],
             has_fixed_pin: true,
         }]
+    }
+
+    #[test]
+    fn sparse_probe_matches_exhaustive_probe_with_tied_costs() {
+        let network = line_network();
+        let mut nets = driver_net();
+        nets[0].pins[1].cell_idx = Some(1);
+        let mut cache = DistCache::new(1, network.num_nodes());
+        cache.row_mut(0).extend([(6, 1.0), (2, 1.0)]);
+        let cfg = OptTransPlacerCfg::default();
+        let validity = CellValidityMask::all_valid(2, GRID_W, H);
+        let ctx = Context::new(crate::chipdb::testutil::make_test_chipdb());
+        let mux = MuxSlotTracker::build(&ctx, &[], 0, 0);
+        let probe = |stats| {
+            fullscan_sweep_probe(
+                1,
+                (6, 0),
+                &[(0, 1)],
+                &NetCostModel {
+                    net_infos: &nets,
+                    dist_cache: &cache,
+                    network: &network,
+                    cfg: &cfg,
+                },
+                &validity,
+                &mux,
+                0.5,
+                stats,
+            )
+            .0
+        };
+        let sparse = probe(false);
+        let exhaustive = probe(true);
+        assert_eq!(sparse.argmin(), (2, 0));
+        assert_eq!(sparse.topk(), exhaustive.topk());
+        assert_eq!(sparse.softmin_continuous(), exhaustive.softmin_continuous());
+    }
+
+    #[test]
+    fn hub_cost_prices_both_ends_of_a_two_pin_net() {
+        let network = line_network();
+        let mut nets = driver_net();
+        nets[0].pins.truncate(2);
+        nets[0].pins[1].cell_idx = Some(1);
+        let hub = terminal_hub(&nets[0], GRID_W as usize);
+        assert_eq!(hub, 3);
+        let mut cache = DistCache::new(1, network.num_nodes());
+        cache.hub_labels = true;
+        for node in 0..network.num_nodes() {
+            cache
+                .row_mut(0)
+                .insert(node as u32, node.abs_diff(hub) as f32);
+        }
+        let cfg = OptTransPlacerCfg::default();
+        let validity = CellValidityMask::all_valid(2, GRID_W, H);
+        for pin in 0..2 {
+            let cost = |x| {
+                evaluate_cell_at(
+                    pin,
+                    x,
+                    0,
+                    &[(0, pin)],
+                    &NetCostModel {
+                        net_infos: &nets,
+                        dist_cache: &cache,
+                        network: &network,
+                        cfg: &cfg,
+                    },
+                    &validity,
+                )
+            };
+            assert_eq!(cost(hub as i32), 0.0);
+            assert_eq!(cost(nets[0].pins[pin].node as i32), 3.0);
+        }
+        nets[0].pin_src[1] = PinSource::Movable {
+            idx: 1,
+            off_x: 1.0,
+            off_y: 0.0,
+        };
+        assert_eq!(
+            evaluate_cell_at(
+                1,
+                2,
+                0,
+                &[(0, 1)],
+                &NetCostModel {
+                    net_infos: &nets,
+                    dist_cache: &cache,
+                    network: &network,
+                    cfg: &cfg
+                },
+                &validity
+            ),
+            0.0
+        );
+        assert_eq!(terminal_hub(&driver_net()[0], GRID_W as usize), 6);
     }
 
     fn driver_cost_profile(mst_w: f64) -> Vec<f64> {
@@ -6635,13 +6884,13 @@ mod driver_hole_tests {
             .collect()
     }
 
-    /// THE DRIVER HOLE. `evaluate_cell_at` charges `weight * d` only for
+    /// In driver-rooted mode, `evaluate_cell_at` charges `weight * d` only for
     /// non-driver pins, so a cell's own fanout exerts zero pull on it: the
     /// driver's cost is identical at every legal position, and the argmin is
     /// whatever the tie-break happens to pick. This is the mechanism behind
     /// LUT->FF pairs only ever being tightened from the FF side.
     #[test]
-    fn driver_cost_is_flat_without_a_tension_term() {
+    fn driver_rooted_cost_is_flat_without_a_tension_term() {
         let profile = driver_cost_profile(0.0);
         let first = profile[0];
         for (gx, &c) in profile.iter().enumerate() {

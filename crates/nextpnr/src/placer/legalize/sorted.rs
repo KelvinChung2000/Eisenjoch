@@ -16,6 +16,7 @@ use crate::placer::PlacerError;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+use super::pin_access::AccessDemand;
 use super::{leg_timers, Legalizer};
 
 /// Nearest-BEL legalization with region support.
@@ -34,6 +35,22 @@ impl Legalizer for SortedLegalizer {
         _type_aware: &TypeAwarePlacement,
     ) -> Result<f64, PlacerError> {
         sorted_legalize(ctx, idx_to_cell, cell_x, cell_y, _type_aware)
+    }
+}
+
+/// Nearest-site placement with physical pin access ranking within the first tile.
+pub struct PinAccessLegalizer;
+
+impl Legalizer for PinAccessLegalizer {
+    fn legalize(
+        &self,
+        ctx: &mut Context,
+        cells: &[CellId],
+        x: &[f64],
+        y: &[f64],
+        _type_aware: &TypeAwarePlacement,
+    ) -> Result<f64, PlacerError> {
+        place_sorted(ctx, cells, x, y, true)
     }
 }
 
@@ -136,6 +153,7 @@ fn try_bind_cell(
     ctx: &mut Context,
     info: &CellLegalizeInfo,
     registry: &mut DriverNodeRegistry,
+    demand: &mut Option<AccessDemand>,
     // `(BelId, enumeration index)`. The region-constrained path has no
     // enumeration index and passes `u32::MAX`.
     candidates: impl Iterator<Item = (BelId, u32)>,
@@ -154,7 +172,12 @@ fn try_bind_cell(
         .map(|&(child_id, ..)| build_cell_pin_template(ctx, child_id))
         .collect();
 
-    'outer: for (bel, enum_index) in candidates {
+    let mut candidates = candidates.peekable();
+    let nearby = demand.as_ref().map_or_else(Vec::new, |demand| {
+        demand.rank_nearest_tile(ctx, registry, info.cell_idx, &mut candidates)
+    });
+
+    'outer: for (bel, enum_index) in nearby.into_iter().chain(candidates) {
         let bel_view = ctx.bel(bel);
         if !bel_view.is_available() {
             continue;
@@ -253,6 +276,12 @@ fn try_bind_cell(
             continue 'outer;
         }
 
+        if let Some(demand) = demand {
+            demand.record(ctx, info.cell_idx, bel);
+            for (&(child, _), &site) in child_bels.iter().zip(&child_bound) {
+                demand.record(ctx, child, site);
+            }
+        }
         registry.record(ctx, info.cell_idx, bel);
         for (&(child_id, _), &bound_bel) in child_bels.iter().zip(&child_bound) {
             registry.record(ctx, child_id, bound_bel);
@@ -282,6 +311,16 @@ pub fn sorted_legalize(
     cell_x: &[f64],
     cell_y: &[f64],
     _type_aware: &TypeAwarePlacement,
+) -> Result<f64, PlacerError> {
+    place_sorted(ctx, idx_to_cell, cell_x, cell_y, false)
+}
+
+fn place_sorted(
+    ctx: &mut Context,
+    idx_to_cell: &[CellId],
+    cell_x: &[f64],
+    cell_y: &[f64],
+    prefer_pin_access: bool,
 ) -> Result<f64, PlacerError> {
     let n = idx_to_cell.len();
     if n == 0 {
@@ -360,6 +399,7 @@ pub fn sorted_legalize(
     // fixed cells: BUFG, IO, clock buffers). Movable cells were just unbound
     // so they don't contribute.
     let mut registry = DriverNodeRegistry::seed_from_bound(ctx);
+    let mut demand = prefer_pin_access.then(|| AccessDemand::seed_from_bound(ctx));
     if leg_timers() {
         eprintln!(
             "  LEG_T registry_seed: {:.3}s",
@@ -398,6 +438,7 @@ pub fn sorted_legalize(
                 ctx,
                 info,
                 &mut registry,
+                &mut demand,
                 candidates.into_iter().map(|b| (b, u32::MAX)),
                 &mut cluster_footprint_rejects,
                 &mut shared_mux_rejects,
@@ -414,6 +455,7 @@ pub fn sorted_legalize(
                 ctx,
                 info,
                 &mut registry,
+                &mut demand,
                 RingCandidates::new(grid, &pool.taken, info.target_x, info.target_y),
                 &mut cluster_footprint_rejects,
                 &mut shared_mux_rejects,

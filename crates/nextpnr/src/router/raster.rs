@@ -382,6 +382,7 @@ fn scoped_ripup_route(
     let blocker_list: Vec<NetId> = blockers.iter().copied().collect();
     let snapshots: Vec<NetSnapshot> = blocker_list.iter().map(|&b| snapshot_net(ctx, b)).collect();
 
+    *budget -= 1;
     for &b in &blocker_list {
         unroute_net(ctx, b);
         neg_state.bump_rip_up(b);
@@ -452,7 +453,6 @@ fn scoped_ripup_route(
         }
     }
 
-    *budget -= 1;
     eprintln!(
         "  scoped_ripup: routed net via {} blocker rip-ups (budget={} left)",
         blocker_list.len(),
@@ -1060,12 +1060,12 @@ impl<'a> PathCostModel for RasterCostModel<'a> {
         1
     }
 
-    fn wire_penalty(&self, ctx: &Context, wire: WireId) -> DelayT {
-        if let Some((owner, _)) = ctx.wire_binding(wire) {
-            if owner != self.net {
-                return DelayT::MAX / 4;
-            }
-        }
+    fn is_blocked(&self, ctx: &Context, wire: WireId) -> bool {
+        ctx.wire_binding(wire)
+            .is_some_and(|(owner, _)| owner != self.net)
+    }
+
+    fn wire_penalty(&self, _ctx: &Context, wire: WireId) -> DelayT {
         (self.cong_weight * self.cong.congestion_at(wire.tile())) as DelayT
     }
 
@@ -3751,6 +3751,7 @@ fn route_nets_exclusive(
                         // blocker. Full rollback on any cascade so the baseline
                         // is preserved.
                         if sink_routes.is_empty()
+                            && ctx.net(net).wires().is_empty()
                             && ripup_budget > 0
                             && scoped_ripup_route(
                                 ctx,
@@ -3916,23 +3917,12 @@ mod tests {
         assert_eq!(pips.len(), 1);
     }
 
-    /// The search prices a foreign-bound wire at `DelayT::MAX / 4` rather
-    /// than excluding it, so it can return a plan `apply_route_plan` must
-    /// reject. Excluding it via `PathCostModel::is_blocked` was built and
-    /// measured: FPGA01 pass 0 kept identical search sizes (177852 sinks
-    /// reached at 3217 pops each, 83703 capped) and identical outcomes
-    /// (82069 routed, 41560 unrouted) while wall time rose 1005s -> 1175s,
-    /// because every candidate edge then pays a `wire_binding` lookup on top
-    /// of the one `wire_penalty` already does. The rejected plans it would
-    /// have saved do not exist: `apply_conflicts` is 0 on both FPGA01 and
-    /// stereovision3. This test pins the behaviour so the exclusion is not
-    /// reintroduced as an obvious cleanup.
     #[test]
-    fn prices_a_foreign_bound_wire_rather_than_excluding_it() {
+    fn exclusive_search_skips_a_foreign_bound_wire() {
         let (mut ctx, owner, intruder) = ctx_with_two_nets();
         ctx.try_bind_wire_node(W1, owner, PlaceStrength::Strong)
             .expect("W1 is free before the test binds it");
-        assert!(route_w0_to_w1(&ctx, intruder).is_some());
+        assert!(route_w0_to_w1(&ctx, intruder).is_none());
     }
 
     /// The net's own wires stay usable: a partial tree is extended through

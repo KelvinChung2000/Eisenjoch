@@ -16,4 +16,4 @@ class PlaceOptions:
     timing_weight: float = 0.0
     init_strategy: str = "topological"
     num_threads: int = 8
-    legalization: str = "ring"
+    legalization: str = "pin_access"

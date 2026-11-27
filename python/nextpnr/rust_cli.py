@@ -34,7 +34,15 @@ def main(
         None, "--json", help="Input Yosys JSON netlist"
     ),
     placer: str = typer.Option("heap", help="Placer algorithm [heap|sa]"),
-    router: str = typer.Option("router2", help="Router algorithm [router1|router2]"),
+    router: str = typer.Option(
+        "router2", help="Router algorithm [router1|router2|raster|native-router2]"
+    ),
+    native_router2: Optional[Path] = typer.Option(
+        None, help="Path to a Python-enabled nextpnr-generic executable"
+    ),
+    route_refine_passes: int = typer.Option(
+        0, min=0, help="Post-route delay refinement passes for combinational LUT6/IOB designs"
+    ),
     seed: int = typer.Option(1, help="Random seed"),
     freq: Optional[float] = typer.Option(
         None,
@@ -142,6 +150,12 @@ def main(
             "Error: --freq and --sdc both define clocks; put create_clock in the SDC",
             err=True,
         )
+        raise typer.Exit(1)
+    if router == "native-router2" and native_router2 is None:
+        typer.echo("Error: --router native-router2 requires --native-router2 PATH", err=True)
+        raise typer.Exit(1)
+    if native_router2 is not None and router != "native-router2":
+        typer.echo("Error: --native-router2 requires --router native-router2", err=True)
         raise typer.Exit(1)
     if timing_driven and router != "router2":
         typer.echo(
@@ -259,7 +273,17 @@ def main(
 
         if verbose:
             typer.echo(f"Running router ({router})...")
-        ctx.route(router=router, timing_driven=timing_driven)
+        ctx.route(
+            router=router,
+            timing_driven=timing_driven,
+            native_binary=str(native_router2) if native_router2 is not None else None,
+            seed=seed,
+        )
+        if route_refine_passes:
+            delays = ctx.refine_routed_timing(route_refine_passes)
+            typer.echo(
+                f"Modeled route timing: {delays[0] / 1000:.3f} ns → {delays[-1] / 1000:.3f} ns"
+            )
         snapshot("3-routed")
     except Exception as e:
         typer.echo(f"P&R error: {e}", err=True)

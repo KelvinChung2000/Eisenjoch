@@ -6,9 +6,12 @@ use rustc_hash::FxHashMap;
 /// Sweep strategy for the DCD optimizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SweepMode {
+    /// Route from a shared terminal meeting point and move both ends against
+    /// the resulting congestion-priced distance field.
+    #[default]
+    JacobiHub,
     /// Jacobi: every cell scans the full grid against a frozen dist_cache, then
     /// all winning moves are applied simultaneously with damping `jacobi_alpha`.
-    #[default]
     JacobiFullscan,
     /// Sequential: cells processed in topo order, each uses log-depth bisection
     /// in x then y, commits immediately, and refreshes dist_cache for nets it
@@ -150,7 +153,8 @@ pub struct OptTransPlacerCfg {
     /// dependent (`auto_batch_size`), so changing this shifts float summation
     /// order — results move within run-to-run noise, not bit-identically.
     pub num_threads: usize,
-    /// Legalization strategy: "ring", "sorted", "bipartite", "greedy".
+    /// Legalization strategy. The default `pin_access` ranks same-tile BELs by
+    /// local routing connectivity before applying the sorted legalizer’s checks.
     pub legalization: String,
 
     // --- DCD optimizer ---
@@ -326,11 +330,11 @@ impl Default for OptTransPlacerCfg {
             lap_max_cells: 10000,
             init_strategy: InitStrategy::Topological,
             num_threads: solve_threads_default(),
-            legalization: "sorted".to_string(),
+            legalization: "pin_access".to_string(),
             max_outer_iters: 50,
             dcd_iters_per_cell: 8,
             jacobi_alpha: 1.0,
-            sweep_mode: SweepMode::JacobiFullscan,
+            sweep_mode: SweepMode::JacobiHub,
             path_model: PathModel::DialLogit,
             graph_model: GraphModel::TwoLevelPip,
             bisect_seed_k: 8,
@@ -387,6 +391,7 @@ impl OptTransPlacerCfg {
         }
         if let Ok(v) = env::var("NPNR_OT_SWEEP") {
             self.sweep_mode = match v.as_str() {
+                "hub" | "JacobiHub" => SweepMode::JacobiHub,
                 "jacobi" | "JacobiFullscan" => SweepMode::JacobiFullscan,
                 "seq" | "SequentialBisection" => SweepMode::SequentialBisection,
                 "jacobi_bb" | "JacobiBB" => SweepMode::JacobiBB,

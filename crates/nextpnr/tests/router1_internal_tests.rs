@@ -462,6 +462,32 @@ fn compute_route_produces_valid_plan() {
 }
 
 #[test]
+fn failed_plan_preserves_existing_pin_reservation() {
+    let mut ctx = common::make_context();
+    let net = ctx.design.add_net(ctx.id("first"));
+    let blocker = ctx.design.add_net(ctx.id("second"));
+    let pip = PipId::new(0, 0);
+    let src = ctx.pip(pip).src_wire().id();
+    let dst = ctx.pip(pip).dst_wire().id();
+    ctx.bind_wire(src, net, PlaceStrength::Fixed);
+    ctx.bind_wire(dst, blocker, PlaceStrength::Strong);
+    let plan = RoutePlan {
+        net,
+        source_wire: src,
+        sink_routes: vec![SinkRoute {
+            sink_wire: dst,
+            pips: vec![pip],
+        }],
+    };
+    assert_eq!(apply_route_plan(&mut ctx, &plan), Err(dst));
+    assert_eq!(ctx.wire(src).bound_net().map(|net| net.id()), Some(net));
+    assert_eq!(ctx.wire(src).strength(), Some(PlaceStrength::Fixed));
+    assert_eq!(ctx.wire(dst).bound_net().map(|net| net.id()), Some(blocker));
+    assert!(ctx.net(net).wires().is_empty());
+    assert!(ctx.pip(pip).is_available());
+}
+
+#[test]
 fn apply_route_plan_binds_wires() {
     let mut ctx = common::make_context();
     let net_idx = ctx.design.add_net(ctx.id("net_plan"));

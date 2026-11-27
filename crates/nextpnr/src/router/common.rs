@@ -64,68 +64,43 @@ pub fn resolve_source_wire(
 /// Apply a computed RoutePlan by binding source wire, PIPs, and dest wires.
 ///
 /// Binds atomically: if any wire (including any of its node-equivalents) is
-/// already claimed by a different net, all bindings applied by this call are
-/// rolled back and `Err(conflicting_wire)` is returned. No partial state is
-/// left behind in the context or in the net's wire map. A source node the net
-/// already holds keeps its binding, strength and wire-map entry.
+/// already claimed by a different net, return that wire and preserve all
+/// bindings, including same-net pin reservations and existing branches.
 pub fn apply_route_plan(ctx: &mut Context, plan: &RoutePlan) -> Result<(), WireId> {
-    // Track wires we've bound so we can unwind on conflict. Source wire is
-    // first; PIP destinations follow in the order they were bound. PIPs get
-    // their own tracking vec.
-    let mut bound_wires: Vec<WireId> = Vec::new();
-    let mut bound_pips: Vec<PipId> = Vec::new();
-    let mut net_wire_entries: Vec<WireId> = Vec::new();
-
-    // Helper closure: unwind on conflict.
-    // We cannot easily capture &mut ctx in a closure here, so inline the
-    // rollback at each failure site.
-
-    let holds_source = ctx
-        .wire_binding(plan.source_wire)
-        .is_some_and(|(owner, _)| owner == plan.net);
-    if !holds_source {
-        ctx.try_bind_wire_node(plan.source_wire, plan.net, PlaceStrength::Strong)?;
-        bound_wires.push(plan.source_wire);
-        ctx.design
-            .net_edit(plan.net)
-            .add_wire(plan.source_wire, None, PlaceStrength::Strong);
-        net_wire_entries.push(plan.source_wire);
-    }
-
-    // Bind each sink route's PIPs and destination wires.
-    for sink in &plan.sink_routes {
-        for &pip in &sink.pips {
-            let dst_wire = ctx.pip(pip).dst_wire().id();
-
-            // Try to bind the destination wire (and its node-equivalents).
-            if let Err(conflict) = ctx.try_bind_wire_node(dst_wire, plan.net, PlaceStrength::Strong)
-            {
-                // Unwind: release PIPs, wires, and the net's wire map entries.
-                for &p in &bound_pips {
-                    ctx.unbind_pip(p);
-                }
-                // Each bound wire is one node binding.
-                for &w in &bound_wires {
-                    ctx.unbind_wire(w);
-                }
-                for w in net_wire_entries.iter().rev() {
-                    ctx.design.net_edit(plan.net).remove_wire(*w);
-                }
-                return Err(conflict);
-            }
-
-            // Bind the PIP itself.
-            ctx.bind_pip(pip, plan.net, PlaceStrength::Strong);
-            bound_pips.push(pip);
-            bound_wires.push(dst_wire);
-
-            ctx.design
-                .net_edit(plan.net)
-                .add_wire(dst_wire, Some(pip), PlaceStrength::Strong);
-            net_wire_entries.push(dst_wire);
+    // Check the complete plan before modifying the context. A rollback that
+    // unbinds a reused wire can destroy an older reservation or tree branch.
+    let pips = || {
+        plan.sink_routes
+            .iter()
+            .flat_map(|sink| sink.pips.iter().copied())
+    };
+    let db = ctx.chipdb();
+    let wires = std::iter::once(plan.source_wire).chain(pips().map(|pip| db.pip_dst_wire(pip)));
+    for wire in wires {
+        if ctx
+            .wire_binding(wire)
+            .is_some_and(|(owner, _)| owner != plan.net)
+        {
+            return Err(wire);
         }
     }
 
+    if ctx.wire_binding(plan.source_wire).is_none() {
+        ctx.bind_wire(plan.source_wire, plan.net, PlaceStrength::Strong);
+    }
+    if !ctx.net(plan.net).wires().contains_key(&plan.source_wire) {
+        ctx.design
+            .net_edit(plan.net)
+            .add_wire(plan.source_wire, None, PlaceStrength::Strong);
+    }
+    for pip in pips() {
+        let dst = ctx.chipdb().pip_dst_wire(pip);
+        ctx.bind_wire(dst, plan.net, PlaceStrength::Strong);
+        ctx.bind_pip(pip, plan.net, PlaceStrength::Strong);
+        ctx.design
+            .net_edit(plan.net)
+            .add_wire(dst, Some(pip), PlaceStrength::Strong);
+    }
     Ok(())
 }
 
